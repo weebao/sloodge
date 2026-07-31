@@ -37,7 +37,8 @@
  * carry two copies of a 2 MB slide. Eviction is FIFO — the oldest entry is dropped first, so undo
  * always reaches as far back as the budget allows. The newest entry is never evicted even if it
  * exceeds the byte cap on its own: dropping it would make the edit the user just made
- * un-undoable, which is a worse outcome than briefly exceeding a soft cap.
+ * un-undoable, which is a worse outcome than briefly exceeding a soft cap. `#push` spells out
+ * what that exemption costs — in short, the real bound is `maxBytes` plus one agent turn.
  *
  * History is per document, is cleared by `reset()` on `doc:open`, and is deliberately *not*
  * persisted in v1 (§11) — the recovery journal covers crash survival, not history survival.
@@ -45,6 +46,7 @@
 
 import {
   applyBatch,
+  cloneCommand,
   commandBytes,
   type CommandError,
   type CommandErrorCode,
@@ -231,11 +233,18 @@ export class DocumentHistory<D extends DeckDoc> {
     this.#rev += 1
     this.#redo = []
 
-    const forward = [...commands]
+    // Deep-copied, not `[...commands]`: a shallow array copy still holds the caller's command
+    // objects, so an `html` mutated after `apply` returned would change what `redo()` replays.
+    // The stack has to describe what happened, not what the caller is holding now.
+    const forward = commands.map(cloneCommand)
     const bytes = batchBytes(forward) + batchBytes(applied.inverse)
     const open = this.#open
     if (open) {
       open.forward.push(...forward)
+      // `unshift`, not `push`: the transaction's inverse is applied front-to-back, so each new
+      // batch's inverse has to land *in front* of everything already accumulated. With `push`, a
+      // turn whose batches do not commute (a remove followed by two moves) undoes to a different
+      // slide order than it started in — silently, and only for multi-batch agent turns.
       open.inverse.unshift(...applied.inverse)
       open.bytes += bytes
       open.origin ??= origin
@@ -344,6 +353,14 @@ export class DocumentHistory<D extends DeckDoc> {
     const applied = applyBatch(this.#doc, open.inverse)
     // Leave the transaction *open* on failure: the document is still mid-transaction, and
     // silently closing it would strand the accumulated inverse with no way to retry the rollback.
+    //
+    // Unreachable by construction, and left unpinned on purpose — the same call the store makes
+    // for its `allowed > budget` branch. Every command in `open.inverse` was inverted against the
+    // exact state its forward command was applied to, and `abortTransaction` runs from that state,
+    // so the only way here is a bug in this file. A test could only reach it by reaching into the
+    // private open transaction, which would pin the reach-in rather than the behaviour. The
+    // sibling branch in `undo()` *is* reachable (an entry's `inverse` is exposed by `undoStack()`)
+    // and is pinned there.
     if (!applied.ok) return { ok: false, error: applied.error }
     this.#open = null
     this.#doc = applied.doc
@@ -361,7 +378,24 @@ export class DocumentHistory<D extends DeckDoc> {
     return total
   }
 
-  /** Push and evict, oldest first, under both caps. The newest entry is never evicted. */
+  /**
+   * Push and evict, oldest first, under both caps. The newest entry is never evicted.
+   *
+   * Two honest limits on what the byte cap buys, both consequences of never evicting the newest
+   * entry rather than oversights:
+   *
+   *  - **One entry is always exempt**, and a committed agent turn is *one* entry — the largest
+   *    thing this system produces. The cap therefore bounds the stack, not the worst case: a turn
+   *    that rewrote forty slides is retained in full, deliberately, because dropping it would make
+   *    the edit the user is most likely to want back the one they cannot undo.
+   *  - **An open transaction is not measured against the cap at all.** `#push` never runs while
+   *    one is open (that is what makes a turn a single entry), so a turn accumulates until it
+   *    commits and is only weighed afterwards — at which point it is the newest entry and exempt.
+   *
+   * The bound this really provides is: `maxBytes` plus the largest single turn. Both `maxTurns`
+   * and `maxBudgetUsd` bound that turn upstream in `AgentService` (10-architecture.md §3), which
+   * is the layer that can actually stop it.
+   */
   #push(entry: HistoryEntry): void {
     this.#undo.push(entry)
     while (this.#undo.length > this.#maxEntries) this.#undo.shift()

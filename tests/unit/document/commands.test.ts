@@ -490,6 +490,47 @@ describe('immutability and prototype discipline', () => {
     expect(Object.getPrototypeOf(removed.manifest.slides)).toBeNull()
   })
 
+  it('copies what a command stores into the document, so a caller cannot edit it afterwards', () => {
+    // Revert-proof guard for the copy boundary. Without it the caller's `SlideEntry` *is* the
+    // entry in the manifest, and editing it later rewrites the live deck with no revision, no
+    // history entry and no patch — the back door the whole funnel exists to close.
+    const { doc } = makeDoc(1)
+    const entry = createSlideEntry({ now: T0 + 60, title: 'Original' })
+    const after = expectOk(applyCommand(doc, { t: 'slide.insert', at: 0, slide: entry, html: 'h' }))
+    expect(getSlide(after.manifest, entry.id)).not.toBe(entry)
+
+    entry.title = 'HIJACKED'
+    expect(getSlide(after.manifest, entry.id)?.title).toBe('Original')
+  })
+
+  it('copies a theme in, so retinting the caller’s object does not retint the deck', () => {
+    const { doc } = makeDoc(1)
+    const theme = makeTheme()
+    const after = expectOk(applyCommand(doc, { t: 'deck.setTheme', theme }))
+    expect(after.theme).not.toBe(theme)
+
+    theme.tokens.color['bg'] = '#ff00ff'
+    theme.name = 'HIJACKED'
+    expect(after.theme?.tokens.color['bg']).toBe('#0d1220')
+    expect(after.theme?.name).toBe('Fixture theme')
+  })
+
+  it('rejects a `__proto__` token name loudly instead of quietly doing nothing', () => {
+    // Revert-proof guard for the null-prototype token maps: on an ordinary object the assignment
+    // hits the prototype setter and vanishes, so the command would report success having changed
+    // nothing. Null-prototype makes it a real key, which `parseTheme` then refuses.
+    const { doc } = makeDoc(1, { theme: makeTheme() })
+    // A computed key, because `{ __proto__: x }` in a literal is the prototype setter and never
+    // becomes an own property at all — the patch would arrive empty.
+    const color: Record<string, string> = { ['__proto__']: '#ffffff' }
+    expect(Object.hasOwn(color, '__proto__')).toBe(true)
+
+    const error = expectErr(applyCommand(doc, { t: 'deck.setThemeTokens', patch: { color } }))
+    expect(error.code).toBe('invalid-theme')
+    // And nothing leaked onto the real prototype chain on the way.
+    expect(({} as Record<string, unknown>)['__proto__']).toBe(Object.prototype)
+  })
+
   it('carries fields it does not know about straight through', () => {
     // `DocumentSession` applies commands to a whole `DeckBundle`; `extras` is the forward-compat
     // payload of §5.2 and losing it on the first edit would silently drop unknown archive entries.

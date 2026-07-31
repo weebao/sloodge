@@ -25,6 +25,13 @@
  *    reference if any command in the batch fails, so a half-applied batch cannot exist. This is
  *    free precisely because nothing mutates in place.
  *
+ *  - **Commands are copied at the boundary, never aliased.** Anything a command puts *into* the
+ *    document — `slide.insert`'s entry, `deck.setTheme`'s theme, the arrays in a meta or token
+ *    patch — is deep-copied first. A caller that keeps a reference to the `SlideEntry` it just
+ *    inserted and edits it later would otherwise be editing the live deck with no revision, no
+ *    history entry and no patch: exactly the back door the funnel exists to close. `history.ts`
+ *    copies the *commands* for the same reason, so what `redo()` replays cannot change under it.
+ *
  *  - **No clock.** Commands are pure functions of `(doc, command)`; nothing stamps `updatedAt`.
  *    That is what makes undo an exact restoration rather than an approximation — a command layer
  *    that touched `updatedAt` could never satisfy `apply(inverse(apply(d)))` deep-equal `d`.
@@ -70,7 +77,6 @@ import {
   parseManifest,
   parseTheme,
   SlideEntrySchema,
-  slideFilePath,
   type DeckManifest,
   type ManifestIssue,
   type SlideEntry,
@@ -265,7 +271,10 @@ function fromDeckError(error: unknown) {
  * -------------------------------------------------------------------------------------------- */
 
 function applySlideInsert<D extends DeckDoc>(doc: D, command: DocCommand & { t: 'slide.insert' }) {
-  const entry = command.slide
+  // Copied, not referenced: everything a command stores in the document is deep-copied at this
+  // boundary (see the file header). Without it, a caller that keeps editing the `SlideEntry` it
+  // just inserted edits the live deck behind the funnel's back — no revision, no history entry.
+  const entry = structuredClone(command.slide)
   const parsed = SlideEntrySchema.safeParse(entry)
   if (!parsed.success) {
     return err('invalid-slide-entry', `slide.insert entry failed validation`, {
@@ -275,11 +284,9 @@ function applySlideInsert<D extends DeckDoc>(doc: D, command: DocCommand & { t: 
       })),
     })
   }
-  // The schema pins `file` to `slides/<id>.html` already; this catches the *document*-level half
-  // of the same invariant, where a caller hand-builds an entry from a stale id.
-  if (entry.file !== slideFilePath(entry.id)) {
-    return err('invalid-slide-entry', `slide ${entry.id} must live at ${slideFilePath(entry.id)}`)
-  }
+  // No `entry.file` check here: `SlideEntrySchema.superRefine` already rejects any entry whose
+  // `file` is not `slides/<id>.html` (types.ts), so a second guard is dead code that reads as
+  // though the schema were weaker than it is.
   const wantsNotes = entry.notes !== undefined
   if (wantsNotes !== (command.notes !== undefined)) {
     return err(
@@ -389,8 +396,11 @@ function applyDeckSetTheme<D extends DeckDoc>(
   doc: D,
   command: DocCommand & { t: 'deck.setTheme' },
 ) {
-  if (command.theme !== null) {
-    const parsed = parseTheme(command.theme)
+  // Copied for the same reason as `slide.insert`'s entry: a caller that retints the `Theme` object
+  // it handed us would otherwise be retinting the live document.
+  const theme = command.theme === null ? null : structuredClone(command.theme)
+  if (theme !== null) {
+    const parsed = parseTheme(theme)
     if (!parsed.ok) {
       return err('invalid-theme', `theme failed validation — ${issuesOf(parsed.issues)}`, {
         issues: parsed.issues,
@@ -401,15 +411,24 @@ function applyDeckSetTheme<D extends DeckDoc>(
   const manifest = { ...doc.manifest }
   if (path === null) delete manifest.theme
   else manifest.theme = path
-  return { ok: true as const, doc: withDoc(doc, { manifest, theme: command.theme }) }
+  return { ok: true as const, doc: withDoc(doc, { manifest, theme }) }
 }
 
-/** Merge one `{ token: value | null }` group into its current object. `null` deletes. */
+/**
+ * Merge one `{ token: value | null }` group into its current object. `null` deletes.
+ *
+ * Null-prototype, like every other map in this file: `next['__proto__'] = '#fff'` on an ordinary
+ * object hits the prototype *setter* and is silently discarded, so a patch naming a token
+ * `__proto__` would return `{ ok: true }` having changed nothing — the "succeeded while doing
+ * nothing" failure this layer exists to prevent. On a null-prototype object it is an ordinary own
+ * key, which `parseTheme` then rejects outright (`__proto__ is not a permitted key`), so the
+ * caller gets a loud `invalid-theme` instead.
+ */
 function mergeGroup<V extends string | number>(
   current: Readonly<Record<string, unknown>>,
   patch: Readonly<Record<string, V | null>>,
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...current }
+  const next = copyMap(current)
   for (const key of Object.keys(patch)) {
     const value = patch[key]
     if (value === null || value === undefined) delete next[key]
@@ -508,7 +527,9 @@ function invertGroup<V extends string | number>(
   current: Readonly<Record<string, unknown>>,
   forward: Readonly<Record<string, V | null>>,
 ): Record<string, V | null> {
-  const out: Record<string, V | null> = {}
+  // Null-prototype for the reason `mergeGroup` spells out: the inverse of a `__proto__` token has
+  // to be a real key too, or it would report success while restoring nothing.
+  const out = emptyMap<V | null>()
   for (const key of Object.keys(forward)) {
     out[key] = Object.hasOwn(current, key) ? (current[key] as V) : null
   }
@@ -655,16 +676,40 @@ export function applyBatch<D extends DeckDoc>(
 }
 
 /**
- * A rough retained-bytes cost for a command, used by history.ts's soft memory cap. Only the
- * unbounded fields are counted (slide HTML, notes); everything else is bounded by the schema and
- * rounded into a small constant, so this is an estimate by design — the cap it feeds is a soft
- * one whose job is to stop a hundred rewrites of a 2 MB slide from pinning 400 MB.
+ * Deep-copy a command. Used by `history.ts` before a batch is pushed onto the undo stack, so that
+ * a caller mutating the object it passed to `apply` cannot change what `redo()` replays.
+ *
+ * `structuredClone` rather than a JSON round-trip: commands *are* JSON-pure data (that is what
+ * lets the §6 recovery journal replay them), but `structuredClone` says so without silently
+ * dropping a key the way `JSON.stringify` would if that ever stopped being true.
+ */
+export function cloneCommand(command: DocCommand): DocCommand {
+  return structuredClone(command)
+}
+
+/**
+ * An estimated retained cost for a command, used by history.ts's soft memory cap. It counts the
+ * fields that are actually unbounded — slide HTML, notes, a serialized slide entry or theme — and
+ * folds everything else into a small constant.
+ *
+ * Deliberately an estimate, and it under-counts in two known ways: string lengths are UTF-16 code
+ * units rather than UTF-8 bytes (so non-Latin decks cost more than this reports), and the small
+ * constant stands in for object overhead that a real heap walk would charge more for. The cap it
+ * feeds is a soft one whose job is to stop a hundred rewrites of a 2 MB slide from pinning 400 MB,
+ * not to be an allocator.
  */
 export function commandBytes(command: DocCommand): number {
   const overhead = 128
   switch (command.t) {
     case 'slide.insert':
-      return overhead + command.html.length + (command.notes?.length ?? 0)
+      // The entry rides in the command too, and a `slide.remove`'s inverse is a `slide.insert` —
+      // so leaving it out under-reported the cost of every delete.
+      return (
+        overhead +
+        command.html.length +
+        (command.notes?.length ?? 0) +
+        JSON.stringify(command.slide).length
+      )
     case 'slide.setHtml':
       return overhead + command.html.length
     case 'slide.setNotes':

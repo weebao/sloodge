@@ -158,6 +158,37 @@ describe('undo and redo', () => {
     expect(expectErr(history.redo()).code).toBe('nothing-to-redo')
   })
 
+  it('replays the command it recorded, not the object the caller kept', () => {
+    // Revert-proof guard for the deep copy in `apply`: a shallow `[...commands]` retains the
+    // caller's objects, so mutating one after `apply` returned rewrites history — `redo()` then
+    // replays an edit the user never made.
+    const { history, ids } = makeHistory()
+    const command: DocCommand = { t: 'slide.setHtml', id: ids[0]!, html: 'recorded' }
+    expectOk(history.apply([command], USER))
+    expectOk(history.undo())
+
+    command.html = 'MUTATED'
+    expectOk(history.redo())
+    expect(history.doc.slides[ids[0]!]).toBe('recorded')
+    expect(history.undoStack()[0]?.forward[0]).toMatchObject({ html: 'recorded' })
+  })
+
+  it('does not touch the document or the stacks when an undo cannot be applied', () => {
+    // The defensive branch in `undo()`, reached the only way it can be: an entry whose inverse is
+    // no longer applicable. Popping before checking would strand the document mid-rollback.
+    const { history, ids } = makeHistory()
+    expectOk(history.apply([{ t: 'slide.setHtml', id: ids[0]!, html: 'a' }], USER))
+    const before = history.doc
+    const entry = history.undoStack()[0]!
+    entry.inverse = [{ t: 'slide.remove', id: newSlideId(T0) }]
+
+    expect(expectErr(history.undo()).code).toBe('slide-not-found')
+    expect(history.doc).toBe(before)
+    expect(history.rev).toBe(1)
+    expect(history.undoStack()).toHaveLength(1)
+    expect(history.redoStack()).toHaveLength(0)
+  })
+
   it('reports an empty stack instead of silently doing nothing', () => {
     const { history, ids } = makeHistory()
     expect(expectErr(history.undo()).code).toBe('nothing-to-undo')
@@ -259,6 +290,39 @@ describe('transactions', () => {
     expect(history.doc.slides[ids[0]!]).toBe('a')
     expect(history.doc.slides[ids[1]!]).toBe('b')
     expect(history.doc.theme?.tokens.color['accent']).toBe('#101010')
+  })
+
+  it('undoes non-commuting batches in reverse order, exactly', () => {
+    // Revert-proof guard for `open.inverse.unshift(...)`. The batches below do not commute, so a
+    // `push` accumulation undoes them front-to-back and lands on a *different* slide order —
+    // silently, in the code path every multi-step agent turn takes.
+    const { history, ids, initial } = makeHistory()
+    const [s0, s1, s2, s3] = [ids[0]!, ids[1]!, ids[2]!, newSlideId(T0)]
+    expect(s3).not.toBe(s2)
+
+    expectOk(history.beginTransaction('AI: "tighten the deck"'))
+    expectOk(history.apply([{ t: 'slide.remove', id: s1 }], USER))
+    expectOk(history.apply([{ t: 'slide.move', id: s2, to: 0 }], USER))
+    expectOk(history.apply([{ t: 'slide.move', id: s0, to: 1 }], USER))
+    expectOk(history.commitTransaction())
+    expect(history.doc.manifest.slideOrder).toEqual([s2, s0])
+
+    const entry = history.undoStack()[0]!
+    expect(entry.forward.map((command) => command.t)).toEqual([
+      'slide.remove',
+      'slide.move',
+      'slide.move',
+    ])
+    // Reverse of the forward order — the last batch applied is the first one undone.
+    expect(entry.inverse.map((command) => command.t)).toEqual([
+      'slide.move',
+      'slide.move',
+      'slide.insert',
+    ])
+
+    expectOk(history.undo())
+    expect(history.doc.manifest.slideOrder).toEqual([s0, s1, s2])
+    expect(history.doc).toEqual(initial)
   })
 
   it('pushes nothing for a transaction that applied nothing', () => {
