@@ -46,7 +46,10 @@ File                          Edit
 ├─ Export ▸                   ├─ ──────────────
 │   ├─ Export as PPTX…        ├─ Cut          Ctrl/⌘+X
 │   ├─ Export as PDF…         ├─ Copy         Ctrl/⌘+C
-│   └─ Export as HTML…        └─ Paste        Ctrl/⌘+V
+│   └─ Export as HTML…        ├─ Paste        Ctrl/⌘+V
+├─ ──────────────             ├─ Paste and Match Style (macOS)
+└─ Close (macOS) /            ├─ Delete
+   Quit (Win, Linux)          └─ Select All   Ctrl/⌘+A
 ```
 Accelerators use `CmdOrCtrl` so they are OS-native automatically. (Save/Save As ship too — Ctrl/⌘+S — even though not in the original menu spec; a deck editor without Save is a footgun. Flagged as an addition.)
 

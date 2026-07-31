@@ -7,7 +7,7 @@ Recent models (Kimi K3, Gemini Flash, Claude Opus, …) are excellent at SVG ani
 
 ## Product shape
 - Local Electron desktop app, Windows + macOS.
-- UI mirrors PowerPoint's layout exactly: slide-thumbnail rail (left), current-slide canvas (right), chat box docked on the canvas side, text-formatting tab on top, bottom status bar with deck info and a **Present** (fullscreen) button. Menu bar: **File** (New / Open / Export ▸ PPTX, PDF, HTML) and **Edit** (Undo / Redo / — / Cut / Copy / Paste) with OS-native accelerators (Ctrl on Windows, ⌘ on macOS).
+- UI mirrors PowerPoint's layout exactly: slide-thumbnail rail (left), current-slide canvas (right), chat box docked on the canvas side, text-formatting tab on top, bottom status bar with deck info and a **Present** (fullscreen) button. Menu bar: **File** (New / Open / Export ▸ PPTX, PDF, HTML / — / Close on macOS, Quit elsewhere) and **Edit** (Undo / Redo / — / Cut / Copy / Paste / Paste and Match Style on macOS / Delete / Select All) with OS-native accelerators (Ctrl on Windows, ⌘ on macOS). Edit items are native Electron roles, so they act on whatever has focus.
 - Each slide is a self-contained 1280×720 HTML document rendered in a sandboxed frame. Animations are CSS/SMIL; interactivity is vanilla JS. This contract was validated experimentally (see [experiments](../../../experiments/init/) and [90-experiments.md](90-experiments.md)).
 - The agent runtime is the **Claude Agent SDK** running in the Electron main process, equipped with the three validated skills (`slide-deck`, `svg-animation`, `interactive-graph`) plus in-process MCP tools for slide CRUD.
 
