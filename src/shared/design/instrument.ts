@@ -8,11 +8,10 @@
  * entities and drop comments — and every one of those rewrites a byte that a `Span` in the map
  * still points at, silently invalidating the whole patcher.
  *
- * So this splices fixed strings into a copy of the original source at offsets the map already
- * knows, right-to-left so that each insertion leaves every earlier offset untouched. The map's
- * spans keep describing the **original** source, which is what patches operate on; the
- * instrumented string is a render artifact that is never saved (§1.1: `data-sl-id` never reaches
- * the `.sloodge` file on disk).
+ * So this assembles the output from slices of the original source and fixed strings inserted at
+ * offsets the map already knows. The map's spans keep describing the **original** source, which
+ * is what patches operate on; the instrumented string is a render artifact that is never saved
+ * (§1.1: `data-sl-id` never reaches the `.sloodge` file on disk).
  */
 
 import type { SlideMap } from './types'
@@ -59,6 +58,16 @@ const UNSAFE_SLIDE_ID = /["'`<>&\s\\]/
  * does not rewrite author bytes, and it would put the map's own spans out of date with the string
  * they were derived from.
  *
+ * ## Why the fixpoint depends on the map, not just on rule 1
+ *
+ * Rule 1 only holds if each start tag is offered at most one id. When `buildSlideMap` minted an
+ * id per *tree* element, an adoption-agency clone (§ `mapElement`) gave one start tag two ids:
+ * rule 1 saw the first and skipped it, rule 2 then added the second in front, and every
+ * round-trip grew the document by another attribute — measured 111 to 221 characters over five
+ * generations. The fixpoint is a property of the pair, which is why the map collapses clones to
+ * one addressable element and why the loop below throws if two insertions ever land on one
+ * offset.
+ *
  * ## Not yet injected
  *
  * §1.3 also puts the in-frame agent script and the highlight stylesheet before `</body>`, both
@@ -86,12 +95,28 @@ export function instrument(map: SlideMap): string {
     insertions.push({ at: span.attrInsert, text: ` ${SL_ID_ATTR}="${span.slId}"` })
   }
 
-  // Right-to-left: each splice only moves offsets after it, and we have already passed those.
-  insertions.sort((left, right) => right.at - left.at)
+  // Ascending, so the source can be consumed left to right in one pass.
+  insertions.sort((left, right) => left.at - right.at)
 
-  let out = map.source
+  // Chunked assembly, not repeated splicing. Rebuilding the whole document once per insertion is
+  // O(elements x length): measured at 20.4s for a 525KB / 30k-element slide, against the M8 goal
+  // of a 500KB slide well under 100ms. Collecting slices and joining once is the same bytes in
+  // single-digit milliseconds, and Design Mode enters on the UI thread.
+  const parts: string[] = []
+  let cursor = 0
+  let previousAt = -1
   for (const { at, text } of insertions) {
-    out = `${out.slice(0, at)}${text}${out.slice(at)}`
+    if (at === previousAt) {
+      // Two ids in one start tag — the adoption-agency aliasing defect. `buildSlideMap` mints at
+      // most one id per start-tag offset, so this is unreachable; it throws rather than quietly
+      // emitting a duplicate attribute, because the shape that produces is an element the bridge
+      // can never find (a duplicate attribute keeps the first and drops the rest).
+      throw new Error(`Two data-sl-id insertions at offset ${String(at)}`)
+    }
+    parts.push(map.source.slice(cursor, at), text)
+    cursor = at
+    previousAt = at
   }
-  return out
+  parts.push(map.source.slice(cursor))
+  return parts.join('')
 }

@@ -117,12 +117,18 @@ export interface ElementSpan {
   childSlIds: string[]
   /**
    * Child-element index chain from the document root, counting **all** element nodes including
-   * the parser-implied `<html>`/`<head>`/`<body>`.
+   * the parser-implied `<html>`/`<head>`/`<body>` and adoption-agency clones.
    *
-   * This is the re-resolution key of §1.5: after a structural edit the `n` in an `slId` shifts,
-   * but the path of an element that did not move does not. Implied elements are counted because
-   * they are deterministic — the parser inserts the same ones for the same input — and skipping
-   * them would make a path depend on whether the author happened to write `<body>`.
+   * This is the re-resolution key of §1.5, and it is worth being exact about what it recovers: a
+   * path survives an edit that changes neither the element's ancestor chain nor the **number of
+   * element siblings before it**. It does *not* survive every edit that leaves the element
+   * untouched — inserting a new first child into its parent shifts the element's own last index
+   * by one, exactly as its `slId` shifts. What a path buys over an id is that it is unaffected by
+   * changes *elsewhere* in the document, which is where most structural edits happen.
+   *
+   * Implied elements are counted because they are deterministic — the parser inserts the same
+   * ones for the same input — and skipping them would make a path depend on whether the author
+   * happened to write `<body>`.
    */
   path: number[]
   /**
@@ -145,6 +151,22 @@ export interface ElementSpan {
    * instead of a second one. `null` when the author wrote no `data-sl-id`.
    */
   authoredSlId: string | null
+  /**
+   * How many nodes in the rendered DOM this one source element produces. Normally `1`.
+   *
+   * Greater than one when the parser's adoption agency algorithm cloned the element to resolve
+   * mis-nested formatting — `<p><b>x</p><p>y</b></p>` renders two `<b>` nodes from a single `<b>`
+   * in the source. All of them carry this `slId`, because the injected attribute lives in the one
+   * start tag they share and is copied along with it, so a hit-test on any of them resolves here
+   * correctly.
+   *
+   * Consumers that map an id back to nodes in the frame must therefore use `querySelectorAll`,
+   * not `querySelector`, whenever this is greater than one: measuring only the first node would
+   * report a bounding box that misses half of what the user can see. Patching is unaffected —
+   * there is one source element and one set of spans, which is the whole point of collapsing the
+   * clones (see `mapElement`).
+   */
+  domNodeCount: number
 }
 
 /** The parse result: the original source plus every span derived from it. */

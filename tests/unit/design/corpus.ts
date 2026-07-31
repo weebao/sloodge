@@ -80,6 +80,25 @@ export const CORPUS: readonly CorpusEntry[] = [
     html: '<table><div>fostered</div><tr><td>c</td></tr></table>',
   },
 
+  // Mis-nested formatting: the adoption agency CLONES the formatting element, and parse5 copies
+  // the original's sourceCodeLocation onto the clone — so one physical start tag backs several
+  // tree elements. Ordinary output from a model writing slide HTML, and the shape that falsified
+  // an earlier fixpoint claim (one extra data-sl-id per round-trip, unbounded).
+  { name: 'mis-nested formatting', html: '<p><b>bold<i>both</p><p>italic</i></p>' },
+  { name: 'mis-nested across paragraphs', html: '<p><strong>a</p><p>b</strong></p>' },
+  { name: 'mis-nested bold', html: '<p><b>x</p><p>y</b></p>' },
+  { name: 'mis-nested anchor with attributes', html: '<p><a href="#">x</p><p>y</a></p>' },
+  {
+    name: 'mis-nested realistic slide',
+    html: '<div class="slide"><p><strong>Q3 <em>revenue</em></p><p>rose</strong></em></p></div>',
+  },
+  { name: 'mis-nested three deep', html: '<p><b><i><u>x</p><p>y</u></i></b></p>' },
+  { name: 'mis-nested formatting wrapping a block', html: '<b><p>x</b>y</p>' },
+  {
+    name: 'mis-nested with a fresh element inside the clone',
+    html: '<p><b>x</p><p>y<span>s</span></b></p>',
+  },
+
   // Foreign content.
   {
     name: 'svg with camelCase attributes',
@@ -92,6 +111,9 @@ export const CORPUS: readonly CorpusEntry[] = [
   },
   { name: 'mathml', html: '<math><mi>x</mi></math>' },
   { name: 'svg self-closed and unclosed', html: '<svg><rect/><circle></svg>' },
+  // The `/` here belongs to the UNQUOTED attribute value `a/`, not to a self-closing solidus.
+  { name: 'svg unquoted value ending in a solidus', html: '<svg><image href=a/></svg>' },
+  { name: 'svg quoted value ending in a solidus', html: '<svg><image href="a/"/></svg>' },
 
   // Template.
   { name: 'template content', html: '<template><i>y</i><b>z</b></template>' },

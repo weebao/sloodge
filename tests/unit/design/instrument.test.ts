@@ -109,25 +109,64 @@ describe('instrument — what ends up in the DOM', () => {
    * The map is only useful if the ids it holds are the ids the frame will see. This parses the
    * instrumented output back and checks the DOM agrees with the map, element for element.
    */
+  /**
+   * The assertion the aliasing blocker needed. An id that is in the map but absent from the DOM
+   * is an element the bridge can never find, and Design Mode surfaces that as an element that is
+   * silently unselectable rather than as an error. Before the fix, `<p><b>x</p><p>y</b></p>` put
+   * two `data-sl-id` attributes into one start tag and the tokenizer dropped the second.
+   */
+  it.each(CORPUS)('makes every id in the map reachable in the DOM ($name)', ({ html }) => {
+    const map = build(html)
+    const found = parsedElements(instrument(map)).map(slIdOf)
+    for (const slId of map.order) expect(found).toContain(slId)
+  })
+
   it.each(CORPUS)(
     'gives every mapped element its own id, in the same order ($name)',
     ({ html }) => {
       const map = build(html)
       const elements = parsedElements(instrument(map))
 
-      expect(elements).toHaveLength(map.order.length)
-      expect(elements.map(slIdOf)).toEqual(map.order)
-      expect(elements.map((element) => element.tagName)).toEqual(
-        map.order.map((slId) => map.byId.get(slId)!.tagName),
+      // One source element yields `domNodeCount` DOM nodes — more than one only where the
+      // adoption agency cloned it, and each clone carries the same id because it shares the one
+      // start tag the id was injected into.
+      const expectedNodes = map.order.reduce(
+        (total, slId) => total + map.byId.get(slId)!.domNodeCount,
+        0,
       )
-      expect(new Set(elements.map(slIdOf)).size).toBe(elements.length)
+      expect(elements).toHaveLength(expectedNodes)
+
+      // Every DOM element carries an id, and every id it carries is one the map knows.
+      for (const element of elements) expect(slIdOf(element)).toBeDefined()
+      for (const slId of new Set(elements.map(slIdOf))) expect(map.order).toContain(slId)
+
+      // First occurrence of each id, in DOM order, reproduces the map's order.
+      const firstOccurrences = elements
+        .map(slIdOf)
+        .filter((slId, index, all) => all.indexOf(slId) === index)
+      expect(firstOccurrences).toEqual(map.order)
     },
   )
 
+  it('gives a cloned formatting element the same id as its source original', () => {
+    const map = build('<p><b>x</p><p>y</b></p>', 's_deck')
+    const instrumented = instrument(map)
+
+    // One insertion, into the one physical start tag; the parser copies it onto the clone.
+    expect(instrumented).toBe(
+      '<p data-sl-id="s_deck:0"><b data-sl-id="s_deck:1">x</p><p data-sl-id="s_deck:2">y</b></p>',
+    )
+
+    const bolds = parsedElements(instrumented).filter((element) => element.tagName === 'b')
+    expect(bolds).toHaveLength(2)
+    expect(bolds.map(slIdOf)).toEqual(['s_deck:1', 's_deck:1'])
+    expect(map.byId.get('s_deck:1')!.domNodeCount).toBe(2)
+  })
+
   /**
-   * Right-to-left splicing is what keeps offsets valid, and foster parenting is the case that
-   * proves it matters: the map's insertion points are not in ascending order there, so a naive
-   * left-to-right pass over `map.order` would corrupt the document.
+   * Insertion points are not in id order when foster parenting moves an element, so the assembly
+   * has to order by offset rather than by `map.order`. A pass that trusted id order would splice
+   * at stale offsets and corrupt the document.
    */
   it('splices correctly when insertion points are not in id order', () => {
     const map = build('<table><div>fostered</div><tr><td>c</td></tr></table>', 's_deck')
@@ -185,6 +224,26 @@ describe('instrument — idempotence', () => {
     const html = '<div data-sl-id="s_deck:0"><p data-sl-id="s_deck:1">x</p></div>'
     expect(instrument(build(html, 's_deck'))).toBe(html)
   })
+
+  /**
+   * The fixpoint used to be false for mis-nested formatting: each generation added one more
+   * `data-sl-id` to the cloned element's start tag, measured growing 111 -> 221 characters over
+   * five round-trips. Length is asserted directly because that is the shape the growth took.
+   */
+  it.each([
+    '<p><b>x</p><p>y</b></p>',
+    '<p><b>bold<i>both</p><p>italic</i></p>',
+    '<div class="slide"><p><strong>Q3 <em>revenue</em></p><p>rose</strong></em></p></div>',
+    '<p><b><i><u>x</p><p>y</u></i></b></p>',
+  ])('does not grow a mis-nested document over repeated round-trips (%s)', (html) => {
+    let current = instrument(build(html))
+    const first = current
+    for (let generation = 0; generation < 5; generation += 1) {
+      current = instrument(build(current))
+      expect(current).toBe(first)
+    }
+    expect(current.length).toBe(first.length)
+  })
 })
 
 describe('instrument — sources that already carry a data-sl-id', () => {
@@ -222,6 +281,61 @@ describe('instrument — sources that already carry a data-sl-id', () => {
     const instrumented = instrument(build('<div data-sl-id>x</div>', 's_deck'))
     expect(instrumented).toBe('<div data-sl-id="s_deck:0" data-sl-id>x</div>')
     expect(slIdOf(parsedElements(instrumented)[0]!)).toBe('s_deck:0')
+  })
+})
+
+/** A slide with `rows` table rows, ~5 elements each — the shape the reviewer measured against. */
+function generateLargeSlide(rows: number): string {
+  const parts = ['<!doctype html><html><body><div class="slide"><table>']
+  for (let row = 0; row < rows; row += 1) {
+    parts.push(
+      `<tr class="r${String(row)}"><td class="a"><span>cell ${String(row)}</span></td>` +
+        `<td class="b"><span>value ${String(row)}</span></td></tr>`,
+    )
+  }
+  parts.push('</table></div></body></html>')
+  return parts.join('')
+}
+
+describe('instrument — performance', () => {
+  /**
+   * Rebuilding the whole document once per insertion is O(elements x length). Measured on this
+   * generator before the chunked rewrite: 5k elements / 86KB = 461ms, 20k / 349KB = 10.2s,
+   * 30k / 525KB = 20.4s — against the M8 stress goal of a 500KB slide well under 100ms, on the UI
+   * thread. The bound below is deliberately generous so it does not flake on shared CI hardware
+   * while still being ~40x tighter than the old behaviour at this size.
+   */
+  it('instruments a 500KB, 30k-element slide well inside the stress budget', () => {
+    const html = generateLargeSlide(6000)
+    expect(html.length).toBeGreaterThan(500_000)
+
+    const map = buildSlideMap(SLIDE_ID, html)
+    expect(map.order.length).toBeGreaterThan(30_000)
+
+    const started = performance.now()
+    const instrumented = instrument(map)
+    const elapsed = performance.now() - started
+
+    expect(elapsed).toBeLessThan(500)
+    // Still correct, not just fast.
+    expect(stripInjections(instrumented, SLIDE_ID)).toBe(html)
+  })
+
+  it('scales roughly linearly rather than quadratically', () => {
+    const time = (rows: number): number => {
+      const map = buildSlideMap(SLIDE_ID, generateLargeSlide(rows))
+      const started = performance.now()
+      instrument(map)
+      return performance.now() - started
+    }
+
+    // Warm up so the first measurement does not pay JIT costs the second avoids.
+    time(500)
+    const small = Math.max(time(1000), 0.5)
+    const large = time(8000)
+
+    // 8x the input. Linear would be ~8x; the quadratic version was ~64x (and 44x in practice).
+    expect(large / small).toBeLessThan(30)
   })
 })
 

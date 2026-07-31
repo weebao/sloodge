@@ -182,9 +182,23 @@ function isContentless(
   ns: SlideNamespace,
   outer: Span,
   startTag: Span,
+  attrs: Record<string, AttrSpan>,
 ): boolean {
   if (ns === 'html') return VOID_HTML_ELEMENTS.has(node.tagName)
-  return startTag.end === outer.end && source[outer.end - 2] === '/'
+  if (startTag.end !== outer.end) return false
+
+  const solidus = outer.end - 2
+  if (source[solidus] !== '/') return false
+
+  // In the attribute-value-unquoted state a `/` is an ordinary value character, so the `/` in
+  // `<image href=a/>` closes nothing — the value is `a/`. Only a solidus outside every attribute
+  // is the self-closing one. The attribute spans we just built are the authority on where that
+  // boundary is, which is why this takes `attrs` rather than re-scanning the start tag: a second
+  // scan would be a second, independently-wrong opinion about attribute syntax.
+  for (const attr of Object.values(attrs)) {
+    if (solidus >= attr.whole.start && solidus < attr.whole.end) return false
+  }
+  return true
 }
 
 interface WalkState {
@@ -192,20 +206,60 @@ interface WalkState {
   readonly slideId: string
   readonly spans: ElementSpan[]
   readonly byId: Map<string, ElementSpan>
+  /**
+   * Start-tag start offset -> the one element that owns it. See `mapElement` on cloning.
+   *
+   * A given offset in the source is one physical start tag, so this is the identity of a *source*
+   * element as opposed to a *tree* element — and the two are not one-to-one.
+   */
+  readonly ownerByStartTag: Map<number, ElementSpan>
 }
 
 /**
  * Map one element, or return `null` if it is not addressable.
  *
- * Not addressable means **no source location**, which is parse5's signal for an element the tree
- * builder invented: the implied `<html>`, `<head>` and `<body>` that appear for any fragment-like
- * slide. 40-design-mode.md §1.2 is explicit that those get no `data-sl-id` and are not
- * selectable — there is nothing in the source to point at, so there is nothing to patch, and
- * fabricating a span would hand the patcher an offset that means nothing.
+ * ## No source location
+ *
+ * parse5's signal for an element the tree builder invented: the implied `<html>`, `<head>` and
+ * `<body>` that appear for any fragment-like slide. 40-design-mode.md §1.2 is explicit that those
+ * get no `data-sl-id` and are not selectable — there is nothing in the source to point at, so
+ * there is nothing to patch, and fabricating a span would hand the patcher an offset that means
+ * nothing.
  *
  * A missing `startTag` is treated the same way. It should not occur for a located element, but if
  * it ever did we would have no tag name to insert an attribute after, and the conservative
  * failure is to leave the element unaddressable rather than to guess an offset.
+ *
+ * ## Adoption agency clones — one source element, several tree elements
+ *
+ * Mis-nested formatting is ordinary model output (`<p><b>x</p><p>y</b></p>`), and the HTML
+ * parser's adoption agency algorithm resolves it by **cloning** the formatting element into the
+ * second paragraph. parse5 copies the original's `sourceCodeLocation` onto the clone, so the tree
+ * holds two `<b>` elements that both claim to start at offset 3 — and the clone's `outer` is
+ * widened as it closes, to `[3,19)`, a range spanning `</p><p>` and so covering bytes belonging
+ * to two paragraphs it does not own.
+ *
+ * Minting an id per *tree* element there is wrong three ways, all of them measured: `instrument`
+ * emits two `data-sl-id` attributes into the one physical start tag, so the second id never
+ * reaches the DOM and is silently unselectable; the fixpoint guarantee becomes false and each
+ * round-trip grows the document; and a patch aimed at the clone's `outer` rewrites the original
+ * element's source plus whatever else that range crosses.
+ *
+ * So identity here is the **source** element, not the tree element: an element is addressable
+ * only if it is the first in tree order to claim its start-tag offset. Later claimants are
+ * clones — unaddressable in exactly the way implied elements are, and transparent for
+ * parent/child linking, so any genuinely new element the adoption agency moved inside a clone is
+ * still mapped and simply attaches to the nearest mapped ancestor.
+ *
+ * First-in-tree-order is the right survivor, not an arbitrary tie-break: across every mis-nesting
+ * shape probed (including three-deep `<b><i><u>`) it is the clone that carries the widened,
+ * boundary-crossing `outer`, while the first claimant keeps the tight span that really is the
+ * element's source extent.
+ *
+ * Nothing is lost in the DOM. Because both tree elements share one start tag, the single
+ * `data-sl-id` injected there is copied onto the clone by the very same cloning step — so both
+ * rendered nodes carry the surviving id, and a click on either resolves to the one source element
+ * that produced them. `ElementSpan.domNodeCount` records how many nodes to expect.
  */
 function mapElement(
   state: WalkState,
@@ -215,6 +269,12 @@ function mapElement(
 ): ElementSpan | null {
   const location = node.sourceCodeLocation
   if (!location?.startTag) return null
+
+  const owner = state.ownerByStartTag.get(location.startTag.startOffset)
+  if (owner) {
+    owner.domNodeCount += 1
+    return null
+  }
 
   const { source } = state
   const outer: Span = { start: location.startOffset, end: location.endOffset }
@@ -229,7 +289,7 @@ function mapElement(
     })
   }
 
-  const contentless = isContentless(source, node, ns, outer, startTag)
+  const contentless = isContentless(source, node, ns, outer, startTag, attrs)
   const inner: Span | null = contentless
     ? null
     : { start: startTag.end, end: location.endTag ? location.endTag.startOffset : outer.end }
@@ -237,7 +297,7 @@ function mapElement(
   const children = childrenOf(node)
   const slIdAttr = attrs[SL_ID_ATTR]
 
-  return {
+  const span: ElementSpan = {
     slId: `${state.slideId}:${String(state.spans.length)}`,
     tagName: node.tagName,
     outer,
@@ -250,17 +310,21 @@ function mapElement(
     textOnly: !contentless && children.every((child) => child.nodeName === '#text'),
     ns,
     authoredSlId: slIdAttr?.value ? source.slice(slIdAttr.value.start, slIdAttr.value.end) : null,
+    domNodeCount: 1,
   }
+  state.ownerByStartTag.set(startTag.start, span)
+  return span
 }
 
 /**
  * Depth-first walk in tree order, assigning ids and stitching the mapped-only parent/child links.
  *
- * `path` counts *every* element child including unmapped implied ones, while `parentSlId` and
- * `childSlIds` skip them — an unmapped element is transparent, so a mapped element's parent is
- * its nearest mapped ancestor and its children are its nearest mapped descendants. That is what
- * lets the breadcrumb and keyboard traversal of §4.2 walk a clean tree of addressable nodes while
- * §1.5's path re-resolution still runs against the real, deterministic parser output.
+ * `path` counts *every* element child including unmapped implied ones and adoption-agency clones,
+ * while `parentSlId` and `childSlIds` skip them — an unmapped element is transparent, so a mapped
+ * element's parent is its nearest mapped ancestor and its children are its nearest mapped
+ * descendants. That is what lets the breadcrumb and keyboard traversal of §4.2 walk a clean tree
+ * of addressable nodes while §1.5's path re-resolution still runs against the real, deterministic
+ * parser output.
  */
 function walk(
   state: WalkState,
@@ -331,7 +395,13 @@ export function buildSlideMap(
   options: BuildSlideMapOptions = {},
 ): SlideMap {
   const document = parse(source, { sourceCodeLocationInfo: true })
-  const state: WalkState = { source, slideId, spans: [], byId: new Map() }
+  const state: WalkState = {
+    source,
+    slideId,
+    spans: [],
+    byId: new Map(),
+    ownerByStartTag: new Map(),
+  }
 
   walk(state, document, [], null)
 

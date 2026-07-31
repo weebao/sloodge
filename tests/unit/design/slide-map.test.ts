@@ -32,20 +32,42 @@ function one(map: SlideMap, tagName: string): ElementSpan {
 }
 
 /**
- * Count elements the way a browser would, so the map can be checked against an independent
- * traversal rather than against itself. Includes `<template>` content, which the parser stores
- * outside `childNodes`.
+ * Count *source* elements the way the map should, via an independent traversal: distinct start-tag
+ * offsets among located elements. Distinct offsets rather than element count, because the adoption
+ * agency clones mis-nested formatting elements and parse5 copies one location onto every clone —
+ * counting tree elements would count a clone as a second addressable element.
+ *
+ * Includes `<template>` content, which the parser stores outside `childNodes`.
  */
-function countLocatedElements(html: string): number {
+function countSourceElements(html: string): number {
+  const startTags = new Set<number>()
+  const visit = (node: unknown): void => {
+    const record = node as {
+      tagName?: string
+      sourceCodeLocation?: { startTag?: { startOffset: number } } | null
+      childNodes?: unknown[]
+      content?: unknown
+    }
+    const startTag = record.sourceCodeLocation?.startTag
+    if (record.tagName !== undefined && startTag) startTags.add(startTag.startOffset)
+    for (const child of record.childNodes ?? []) visit(child)
+    if (record.content) visit(record.content)
+  }
+  visit(parse(html, { sourceCodeLocationInfo: true }))
+  return startTags.size
+}
+
+/** Total tree elements carrying a source location, clones included. */
+function countTreeElements(html: string): number {
   let count = 0
   const visit = (node: unknown): void => {
     const record = node as {
       tagName?: string
-      sourceCodeLocation?: unknown
+      sourceCodeLocation?: { startTag?: unknown } | null
       childNodes?: unknown[]
       content?: unknown
     }
-    if (record.tagName !== undefined && record.sourceCodeLocation) count += 1
+    if (record.tagName !== undefined && record.sourceCodeLocation?.startTag) count += 1
     for (const child of record.childNodes ?? []) visit(child)
     if (record.content) visit(record.content)
   }
@@ -94,10 +116,57 @@ describe('buildSlideMap — span accuracy', () => {
     }
   })
 
-  it('maps every located element and no invented ones', () => {
+  it('maps every source element once, and no invented ones', () => {
     for (const { html } of CORPUS) {
-      expect(build(html).order).toHaveLength(countLocatedElements(html))
+      expect(build(html).order).toHaveLength(countSourceElements(html))
     }
+  })
+
+  /**
+   * Two elements must never claim the same bytes. This is the invariant the adoption-agency
+   * blocker violated: a clone and its original carried different `outer` spans over one start
+   * tag, so a patch aimed at one would have rewritten the other's source.
+   */
+  it.each(CORPUS)('never gives two ids the same start tag ($name)', ({ html }) => {
+    const map = build(html)
+    const starts = spans(map).map((span) => span.outer.start)
+    expect(new Set(starts).size).toBe(starts.length)
+
+    const inserts = spans(map).map((span) => span.attrInsert)
+    expect(new Set(inserts).size).toBe(inserts.length)
+  })
+
+  /**
+   * A child never begins before its parent. Full containment (`child.end <= parent.end`) is
+   * deliberately *not* asserted: parse5 truncates the `outer` span of some implicitly-closed
+   * elements, so its own data violates it — see the quirk pinned below.
+   */
+  it.each(CORPUS)('never starts a child before its parent starts ($name)', ({ html }) => {
+    const map = build(html)
+    for (const span of spans(map)) {
+      if (span.parentSlId === null) continue
+      expect(span.outer.start).toBeGreaterThanOrEqual(map.byId.get(span.parentSlId)!.outer.start)
+    }
+  })
+
+  /**
+   * A parse5 quirk worth knowing before the patcher is built: an element closed implicitly at EOF
+   * can be given an `endOffset` that stops short of its own children. `<head><title>t</title>`
+   * reports `head` as ending at 14, mid-`</title>`, while `title` correctly runs to 22.
+   *
+   * The *child* spans stay exact, which is what patching targets, so this is a caveat rather than
+   * a defect — but a patcher that assumed `parent.inner` encloses every child's `outer` would be
+   * wrong here. Pinned so the assumption is never made silently.
+   */
+  it('records parse5 truncating an implicitly-closed element’s outer span', () => {
+    const map = build('<head><title>t</title>')
+    expect(slice(map, one(map, 'head').outer)).toBe('<head><title>t')
+    expect(slice(map, one(map, 'title').outer)).toBe('<title>t</title>')
+    expect(one(map, 'title').outer.end).toBeGreaterThan(one(map, 'head').outer.end)
+
+    const body = build('<body><p>x</p>')
+    expect(slice(body, one(body, 'body').outer)).toBe('<body>')
+    expect(slice(body, one(body, 'p').outer)).toBe('<p>x</p>')
   })
 
   it('slices an element, its content and its attribute values exactly', () => {
@@ -451,6 +520,125 @@ describe('buildSlideMap — id assignment', () => {
           expect(map.byId.get(span.parentSlId)!.childSlIds).toContain(span.slId)
         }
       }
+    }
+  })
+})
+
+describe('buildSlideMap — adoption agency clones', () => {
+  /**
+   * `<p><b>x</p><p>y</b></p>`: the parser clones the `<b>` into the second paragraph and parse5
+   * copies the original's location onto the clone, so the tree holds two `<b>` elements both
+   * claiming to start at offset 3. Only the source-original is addressable.
+   */
+  it('mints one id for a formatting element the parser cloned', () => {
+    const html = '<p><b>x</p><p>y</b></p>'
+    const map = build(html, 's_deck')
+
+    // Four tree elements, three source elements.
+    expect(countTreeElements(html)).toBe(4)
+    expect(map.order).toEqual(['s_deck:0', 's_deck:1', 's_deck:2'])
+    expect(byTag(map, 'b')).toHaveLength(1)
+  })
+
+  it('keeps the tight span, not the clone’s boundary-crossing one', () => {
+    const map = build('<p><b>x</p><p>y</b></p>')
+    const bold = one(map, 'b')
+    // The clone's outer was [3,19) — `<b>x</p><p>y</b>`, covering bytes of both paragraphs.
+    expect(slice(map, bold.outer)).toBe('<b>x')
+    expect(slice(map, bold.inner!)).toBe('x')
+  })
+
+  it('records how many DOM nodes the one source element produces', () => {
+    const map = build('<p><b>x</p><p>y</b></p>')
+    expect(one(map, 'b').domNodeCount).toBe(2)
+    for (const span of byTag(map, 'p')) expect(span.domNodeCount).toBe(1)
+    // The ordinary case is always 1.
+    expect(one(build('<p>plain</p>'), 'p').domNodeCount).toBe(1)
+  })
+
+  it('collapses clones at every depth of a nested mis-nesting', () => {
+    const map = build('<p><b><i><u>x</p><p>y</u></i></b></p>')
+    expect(byTag(map, 'b')).toHaveLength(1)
+    expect(byTag(map, 'i')).toHaveLength(1)
+    expect(byTag(map, 'u')).toHaveLength(1)
+    expect(slice(map, one(map, 'b').outer)).toBe('<b><i><u>x')
+    expect(slice(map, one(map, 'u').outer)).toBe('<u>x')
+    for (const tag of ['b', 'i', 'u']) expect(one(map, tag).domNodeCount).toBe(2)
+  })
+
+  it('keeps the clone’s attributes addressable exactly once', () => {
+    const map = build('<p><a href="#">x</p><p>y</a></p>')
+    const anchor = one(map, 'a')
+    expect(slice(map, anchor.attrs['href']!.value!)).toBe('#')
+    expect(anchor.domNodeCount).toBe(2)
+  })
+
+  /**
+   * The adoption agency can move a genuinely new element inside the clone. It is not itself a
+   * clone, so it stays addressable and simply attaches to the nearest mapped ancestor.
+   */
+  it('still maps a fresh element that the parser moved inside a clone', () => {
+    const map = build('<p><b>x</p><p>y<span>s</span></b></p>')
+    const span = one(map, 'span')
+    expect(slice(map, span.outer)).toBe('<span>s</span>')
+    expect(span.domNodeCount).toBe(1)
+    // Its parent is the clone, which is transparent — so it attaches to the second <p>.
+    expect(map.byId.get(span.parentSlId!)!.tagName).toBe('p')
+  })
+
+  it('treats a clone the parser gave no location as unaddressable too', () => {
+    // `<b><p>x</b>y</p>` clones <b> with sourceCodeLocation === null.
+    const map = build('<b><p>x</b>y</p>')
+    expect(byTag(map, 'b')).toHaveLength(1)
+    expect(slice(map, one(map, 'b').outer)).toBe('<b><p>x</b>')
+  })
+})
+
+describe('buildSlideMap — self-closing versus a solidus in an attribute value', () => {
+  /**
+   * In the attribute-value-unquoted state `/` is an ordinary value character, so the `/` in
+   * `<image href=a/>` belongs to the value `a/` and closes nothing. Reading it as a self-closing
+   * solidus marked a foreign element that can hold content as `inner: null`, which a patcher
+   * reads as "refuse content edits".
+   */
+  it('does not mistake an unquoted value’s trailing slash for a self-closing tag', () => {
+    const map = build('<svg><image href=a/></svg>')
+    const image = one(map, 'image')
+    expect(slice(map, image.attrs['href']!.value!)).toBe('a/')
+    expect(image.inner).not.toBeNull()
+    expect(image.inner).toEqual({ start: 20, end: 20 })
+  })
+
+  it('still recognises a real self-closing tag after a quoted value ending in a slash', () => {
+    const map = build('<svg><image href="a/"/></svg>')
+    const image = one(map, 'image')
+    expect(slice(map, image.attrs['href']!.value!)).toBe('a/')
+    expect(image.inner).toBeNull()
+  })
+
+  it('recognises a self-closing tag with no attributes and an unclosed one', () => {
+    const map = build('<svg><rect/><circle></svg>')
+    expect(one(map, 'rect').inner).toBeNull()
+    expect(one(map, 'circle').inner).not.toBeNull()
+  })
+
+  it('is unaffected by an unquoted value with no slash', () => {
+    expect(one(build('<svg><image href=a></svg>'), 'image').inner).not.toBeNull()
+  })
+
+  /**
+   * An element declared contentless must really hold nothing. This is the class-level guard
+   * behind the solidus repro: misreading a start tag as self-closing on an element that actually
+   * has children would both hide those children's container and tell a patcher to refuse edits.
+   */
+  it.each(CORPUS)('gives a contentless element no content and no children ($name)', ({ html }) => {
+    const map = build(html)
+    for (const span of spans(map)) {
+      if (span.inner !== null) continue
+      expect(span.childSlIds).toEqual([])
+      expect(span.textOnly).toBe(false)
+      // Its whole source extent is the start tag: there is no content region at all.
+      expect(slice(map, span.outer).endsWith('>')).toBe(true)
     }
   })
 })
