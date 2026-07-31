@@ -1,10 +1,19 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../src/renderer/src/app/AppShell'
 import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
+import type { MenuAction } from '../../src/shared/ipc-contract'
 
 const NOW = 1_770_000_000_000
 
@@ -132,5 +141,134 @@ describe('AppShell', () => {
     }
 
     expect(within(toolbar).getByRole('button', { name: /design mode/i })).toBeTruthy()
+  })
+})
+
+const railRegion = (): HTMLElement => screen.getByRole('navigation', { name: 'Slides' })
+const statusText = (): string =>
+  screen.getByRole('contentinfo', { name: 'Status bar' }).textContent ?? ''
+
+/**
+ * M1.4 end to end: the rail's gestures reach the store's command layer and come back out as a
+ * changed canvas, rail and status bar — and the undo chord is bound at the shell, where the focus
+ * guard has to survive contact with a real text field (the chat composer).
+ */
+describe('AppShell slide CRUD', () => {
+  it('appends and selects a slide from [+ New]', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+
+    expect(statusText()).toContain('Slide 4 of 4')
+    expect(useDeckStore.getState().deck.slideOrder).toHaveLength(4)
+  })
+
+  it('duplicates and deletes through the context menu', () => {
+    render(<AppShell />)
+
+    fireEvent.contextMenu(within(railRegion()).getByRole('button', { name: /Slide 2 thumbnail/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }))
+    expect(statusText()).toContain('Slide 3 of 4')
+
+    fireEvent.contextMenu(within(railRegion()).getByRole('button', { name: /Slide 3 thumbnail/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(statusText()).toContain('Slide 3 of 3')
+  })
+
+  it('undoes and redoes with the keyboard', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+    expect(statusText()).toContain('of 4')
+
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+    expect(statusText()).toContain('Slide 3 of 3')
+
+    // Redo brings the fourth slide back. The selection stays on the slide the user is looking at,
+    // which survived the round trip — see `reselect` in the store.
+    fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })
+    expect(statusText()).toContain('Slide 3 of 4')
+  })
+
+  it('does not rewind the deck when the chord is typed in the chat composer', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+    fireEvent.keyDown(screen.getByPlaceholderText('Ask Claude…'), { key: 'z', ctrlKey: true })
+
+    expect(statusText()).toContain('Slide 4 of 4')
+  })
+})
+
+/**
+ * Undo has exactly one owner per host, and in Electron it is the native menu — a menu item's
+ * accelerator is registered with the OS, so CmdOrCtrl+Z fires the menu and may never reach the
+ * page. These two tests are the pair that matters: with the bridge present the keydown path is
+ * *gone* (so one keypress can never be handled twice), and the menu path works in its place.
+ */
+const menuListeners = new Set<(action: MenuAction) => void>()
+
+/**
+ * Fire an `app:menu` event the way the preload would.
+ *
+ * `act`, because an IPC event is not a React event: without it the store updates but the render it
+ * schedules has not flushed when the assertion reads the DOM.
+ */
+function emit(action: MenuAction): void {
+  act(() => {
+    for (const listener of menuListeners) listener(action)
+  })
+}
+
+describe('AppShell under Electron (bridge present)', () => {
+  beforeEach(() => {
+    menuListeners.clear()
+    window.sloodge = {
+      onMenuAction: (listener) => {
+        menuListeners.add(listener)
+        return () => menuListeners.delete(listener)
+      },
+    }
+  })
+
+  afterEach(() => {
+    delete window.sloodge
+  })
+
+  it('leaves the chord to the menu — the window handler is not bound at all', () => {
+    render(<AppShell />)
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+
+    const event = createEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+    fireEvent(document.body, event)
+
+    expect(statusText()).toContain('Slide 4 of 4')
+    // Not merely ignored: nothing is listening, so the keystroke is not even consumed.
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('undoes and redoes from the menu instead', () => {
+    render(<AppShell />)
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+
+    emit('edit.undo')
+    expect(statusText()).toContain('Slide 3 of 3')
+
+    emit('edit.redo')
+    expect(statusText()).toContain('of 4')
+  })
+
+  it('sends a chord typed in the composer to the field, never to the deck', () => {
+    render(<AppShell />)
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+    screen.getByPlaceholderText('Ask Claude…').focus()
+
+    const execCommand = vi.fn(() => true)
+    // happy-dom has no execCommand; the spy is the observation point either way.
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    emit('edit.undo')
+
+    expect(execCommand).toHaveBeenCalledWith('undo')
+    expect(statusText()).toContain('Slide 4 of 4')
   })
 })

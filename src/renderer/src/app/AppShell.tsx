@@ -6,6 +6,8 @@ import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
+import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
+import { useUndoRedoKeys } from './useUndoRedoKeys'
 
 /**
  * The PowerPoint-like frame (20-ui-wireframes.md): tab strip + format bar on top, thumbnail rail /
@@ -23,6 +25,19 @@ export function AppShell(): JSX.Element {
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const currentSlideId = useDeckStore((state) => state.currentSlideId)
   const selectSlide = useDeckStore((state) => state.selectSlide)
+  const addSlide = useDeckStore((state) => state.addSlide)
+  const deleteSlide = useDeckStore((state) => state.deleteSlide)
+  const duplicateSlide = useDeckStore((state) => state.duplicateSlide)
+  const moveSlide = useDeckStore((state) => state.moveSlide)
+  const undo = useDeckStore((state) => state.undo)
+  const redo = useDeckStore((state) => state.redo)
+
+  // Undo/redo has one owner per host, never two: the native Edit menu in Electron (its items own
+  // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
+  // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
+  const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
+  useMenuActions(editHandlers)
+  useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
@@ -40,6 +55,10 @@ export function AppShell(): JSX.Element {
           slides={slides}
           currentSlideId={currentSlideId}
           onSelectSlide={selectSlide}
+          onAddSlide={addSlide}
+          onDuplicateSlide={duplicateSlide}
+          onDeleteSlide={deleteSlide}
+          onMoveSlide={moveSlide}
         />
         <SlideCanvas slide={currentSlide} />
         <ChatPanel />

@@ -1,11 +1,19 @@
 /**
- * Renderer-side deck state: the open deck's manifest, the slide HTML the frames render, and the
- * current selection.
+ * Renderer-side deck state: the open deck's manifest, the slide HTML the frames render, the
+ * current selection, and — since M1.4 — the CRUD actions that change any of it.
  *
- * Scope is deliberately M1.3-shaped — **read and select, nothing else**. Add/delete/reorder/edit go
- * through M1.4's command layer (`DocumentSession.apply` + `invert`, §5 of 10-architecture.md) so
- * that every mutation is undoable by construction; adding a bare `addSlide` action here would be a
- * mutation path that undo can never see, and it would have to be taken back out.
+ * **Every mutation goes through `DocumentHistory`** (§5 of 10-architecture.md). The store owns one
+ * `DocumentHistory<DeckDoc>` and its `deck` / `slideHtml` fields are *views of `history.doc`*, never
+ * independently maintained copies: an action builds a `DocCommand`, hands it to `history.apply`,
+ * and then republishes `history.doc.manifest` / `history.doc.slides`. A store action that edited a
+ * manifest directly would be a mutation undo can never see, and the two states would drift on the
+ * first Ctrl+Z.
+ *
+ * Actions return `boolean` — `true` when a command was applied, `false` when the store declined
+ * (unknown id, out-of-range index, a no-op drag, the last-slide guard) or the funnel rejected the
+ * batch. Errors are values here exactly as they are in `commands.ts`; a click handler must not
+ * throw, but a *silent* no-op is the failure mode that layer exists to prevent, so the caller (and
+ * the test) can always tell whether anything happened.
  *
  * Slide text lives beside the manifest rather than inside it because the manifest is the *file*
  * `manifest.json` and must round-trip byte-faithfully (§5.2 "unknown fields are preserved").
@@ -18,15 +26,18 @@
  * document. Every map here is null-prototype and every read goes through `getSlideHtml`.
  */
 
+import type { DeckDoc, DocCommand } from '../../../shared/document/commands'
 import {
-  addSlide,
+  addSlide as addSlideToDeck,
   createEmptyDeck,
   createSlideEntry,
+  duplicateSlide as duplicateSlideInDeck,
   getSlide,
   hasSlide,
 } from '../../../shared/document/deck'
+import { DocumentHistory } from '../../../shared/document/history'
 import { createStarterSlideHtml } from '../../../shared/document/starter-slide'
-import type { DeckManifest, SlideId } from '../../../shared/document/types'
+import type { DeckManifest, SlideEntry, SlideId } from '../../../shared/document/types'
 import { createStore } from './createStore'
 
 /** One slide as the rail and canvas need it: identity, label, and the bytes to render. */
@@ -39,10 +50,35 @@ export type SlideView = {
 export type SlideHtmlMap = Readonly<Record<string, string>>
 
 export type DeckSnapshot = {
+  /**
+   * The undo funnel, and the owner of the document. `deck` and `slideHtml` below are
+   * `history.doc.manifest` / `history.doc.slides` by identity — replacing one without the other
+   * would fork the document from its own history.
+   *
+   * It is a state field rather than a module singleton so that `setState(createStarterDeck())`
+   * replaces the document *and* its history in one atomic patch, which is what "open a new deck"
+   * means (§5: history is per document and cleared on `doc:open`) and what every test needs
+   * between cases.
+   */
+  readonly history: DocumentHistory<DeckDoc>
   readonly deck: DeckManifest
   readonly slideHtml: SlideHtmlMap
   /** `null` only for a deck with no slides — the shell renders its empty state then. */
   readonly currentSlideId: SlideId | null
+  /**
+   * Mirrors of `history.canUndo` / `canRedo`. Kept as primitives in the state rather than read off
+   * the instance in a selector because the history object's identity never changes, so a component
+   * subscribing to it would never re-render when the stacks moved.
+   *
+   * **No production consumer yet** — nothing in the renderer renders an undo affordance, because
+   * since M1.4 the only one is the native Edit menu, and graying its items out needs a
+   * renderer -> main channel that M5.1 (File/Edit menus with OS accelerators) owns. These two are
+   * kept rather than dropped because they are what that channel will send, and because they are
+   * the cheapest possible statement of history state for the tests that assert it. If M5.1 slips
+   * past this becoming stale, delete them — a `set` that maintains state for nobody is a cost.
+   */
+  readonly canUndo: boolean
+  readonly canRedo: boolean
 }
 
 export type DeckState = DeckSnapshot & {
@@ -50,6 +86,35 @@ export type DeckState = DeckSnapshot & {
   selectSlide: (id: SlideId) => void
   /** Select by position in `slideOrder`; out-of-range indices are ignored. */
   selectSlideAt: (index: number) => void
+  /** Append a starter slide and select it. */
+  addSlide: () => boolean
+  /**
+   * Remove a slide and select its neighbour. Declines on the deck's last slide — see
+   * `canDeleteSlide`.
+   */
+  deleteSlide: (id: SlideId) => boolean
+  /** Insert a copy directly after the original, and select the copy. */
+  duplicateSlide: (id: SlideId) => boolean
+  /** Move the slide at `fromIndex` to `toIndex` (absolute, post-move) and keep it selected. */
+  moveSlide: (fromIndex: number, toIndex: number) => boolean
+  undo: () => boolean
+  redo: () => boolean
+}
+
+/**
+ * UI policy, deliberately *not* a document-layer rule: the rail always keeps at least one slide.
+ *
+ * The document model permits an empty deck — `DeckManifestSchema.slideOrder` has no minimum,
+ * `slide.remove` has no last-slide guard, and `SlideCanvas` already renders a `null` slide — and
+ * nothing in the plan says otherwise, so removing the last slide is *representable*. What the plan
+ * does not describe anywhere is what an empty rail should look like or how a user gets back out of
+ * it: the wireframes' rail is a list of slides with `[+ New]` under it, and an editor whose canvas
+ * can be emptied by a context menu is a state no screen was designed for. Enforcing the floor here,
+ * in the action, keeps that a *view* decision — the commands, the file format and a future
+ * agent tool are all still free to produce a zero-slide deck.
+ */
+export function canDeleteSlide(deck: DeckManifest, id: SlideId): boolean {
+  return deck.slideOrder.length > 1 && hasSlide(deck, id)
 }
 
 function htmlMap(entries: readonly (readonly [SlideId, string])[]): SlideHtmlMap {
@@ -133,7 +198,7 @@ export function createStarterDeck(now: number = Date.now()): DeckSnapshot {
       kind: index === 0 ? 'title' : 'content',
       origin: { type: 'template' },
     })
-    deck = addSlide(deck, entry)
+    deck = addSlideToDeck(deck, entry)
     html.push([
       entry.id,
       createStarterSlideHtml({
@@ -144,24 +209,192 @@ export function createStarterDeck(now: number = Date.now()): DeckSnapshot {
     ])
   }
 
+  const history = new DocumentHistory<DeckDoc>({
+    manifest: deck,
+    slides: htmlMap(html),
+    notes: Object.create(null) as Record<string, string>,
+    theme: null,
+  })
+
   return {
-    deck,
-    slideHtml: htmlMap(html),
+    history,
+    ...published(history),
     currentSlideId: deck.slideOrder[0] ?? null,
   }
 }
 
-export const useDeckStore = createStore<DeckState>((set, get) => ({
-  ...createStarterDeck(),
+/* ------------------------------------------------------------------------------------------ *
+ * Mutation plumbing
+ * ------------------------------------------------------------------------------------------ */
 
-  selectSlide: (id) => {
-    if (!hasSlide(get().deck, id)) return
-    set({ currentSlideId: id })
-  },
+/** The document fields the store publishes, re-read from the history after every apply. */
+function published(history: DocumentHistory<DeckDoc>): {
+  deck: DeckManifest
+  slideHtml: SlideHtmlMap
+  canUndo: boolean
+  canRedo: boolean
+} {
+  return {
+    deck: history.doc.manifest,
+    slideHtml: history.doc.slides,
+    canUndo: history.canUndo,
+    canRedo: history.canRedo,
+  }
+}
 
-  selectSlideAt: (index) => {
-    const id = get().deck.slideOrder[index]
-    if (id === undefined) return
-    set({ currentSlideId: id })
-  },
-}))
+/**
+ * Selection after an undo/redo, which can delete the slide the user was looking at.
+ *
+ * Keep the current slide when it survived — the common case, and the one where moving the selection
+ * would be the surprise. Otherwise fall back to whatever now occupies its old position, and to the
+ * new last slide when the deck got shorter: "nearest surviving slide", by index, in the document
+ * the user is now looking at.
+ *
+ * Deliberately *not* "select whatever the batch put back": undoing a delete or redoing a `+ New`
+ * could reasonably jump to the restored slide, but working that out means reading the applied
+ * entry's commands, and the rule stops being one sentence the moment a batch touches two slides —
+ * which every agent turn will (§5: one turn is one undo entry). One rule that is right for a
+ * one-command entry and defensible for a fifty-command one beats two that disagree.
+ */
+function reselect(
+  deck: DeckManifest,
+  current: SlideId | null,
+  previousIndex: number,
+): SlideId | null {
+  if (current !== null && hasSlide(deck, current)) return current
+  if (deck.slideOrder.length === 0) return null
+  const index = Math.min(Math.max(previousIndex, 0), deck.slideOrder.length - 1)
+  return deck.slideOrder[index] ?? null
+}
+
+export const useDeckStore = createStore<DeckState>((set, get) => {
+  /**
+   * The one place a command reaches the document. Applies the batch, and republishes the document
+   * plus the caller's selection only if the funnel accepted it — a rejected batch leaves the
+   * document identical *by reference*, so publishing anyway would notify every subscriber that
+   * nothing had changed.
+   */
+  const dispatch = (
+    commands: readonly DocCommand[],
+    label: string,
+    currentSlideId: SlideId | null,
+  ): boolean => {
+    const { history } = get()
+    const result = history.apply(commands, { kind: 'user', label })
+    if (!result.ok) return false
+    set({ ...published(history), currentSlideId })
+    return true
+  }
+
+  return {
+    ...createStarterDeck(),
+
+    selectSlide: (id) => {
+      if (!hasSlide(get().deck, id)) return
+      set({ currentSlideId: id })
+    },
+
+    selectSlideAt: (index) => {
+      const id = get().deck.slideOrder[index]
+      if (id === undefined) return
+      set({ currentSlideId: id })
+    },
+
+    addSlide: () => {
+      const { deck } = get()
+      const entry = createSlideEntry({
+        title: 'Untitled slide',
+        kind: 'content',
+        origin: { type: 'template' },
+      })
+      const html = createStarterSlideHtml({ id: entry.id, title: entry.title })
+      return dispatch(
+        [{ t: 'slide.insert', at: deck.slideOrder.length, slide: entry, html }],
+        'New slide',
+        entry.id,
+      )
+    },
+
+    deleteSlide: (id) => {
+      const state = get()
+      if (!canDeleteSlide(state.deck, id)) return false
+      const index = state.deck.slideOrder.indexOf(id)
+      // Resolved against the *post-remove* order: the slide that slides into the deleted one's
+      // position, or the new last slide when the deleted one was at the end.
+      const survivors = state.deck.slideOrder.filter((candidate) => candidate !== id)
+      const neighbour = survivors[index] ?? survivors.at(-1) ?? null
+      const selected = state.currentSlideId === id ? neighbour : state.currentSlideId
+      return dispatch([{ t: 'slide.remove', id }], 'Delete slide', selected)
+    },
+
+    duplicateSlide: (id) => {
+      const state = get()
+      const index = state.deck.slideOrder.indexOf(id)
+      if (index === -1) return false
+      // The copy's *entry* is built by `deck.duplicateSlide` and then lifted back out of the
+      // manifest it returned, which is thrown away. Reusing it rather than open-coding the copy
+      // keeps one definition of what duplication means (fresh id and paths, reset validation,
+      // dropped thumbnail) instead of a second one here that can drift from it.
+      let copy: SlideEntry | undefined
+      try {
+        // `deck.duplicateSlide` inserts the copy at `index + 1` of the order it returns.
+        const duplicated = duplicateSlideInDeck(state.deck, id)
+        const copyId = duplicated.slideOrder[index + 1]
+        copy = copyId === undefined ? undefined : getSlide(duplicated, copyId)
+      } catch {
+        return false
+      }
+      if (copy === undefined) return false
+      const html = getSlideHtml(state.slideHtml, id) ?? ''
+      const notes = state.history.doc.notes
+      // `slide.insert` rejects a batch whose notes text and notes path disagree, so the two are
+      // decided together: the copy declares a notes file iff the original had one.
+      const command: DocCommand =
+        copy.notes === undefined
+          ? { t: 'slide.insert', at: index + 1, slide: copy, html }
+          : {
+              t: 'slide.insert',
+              at: index + 1,
+              slide: copy,
+              html,
+              notes: Object.hasOwn(notes, id) ? (notes[id] ?? '') : '',
+            }
+      return dispatch([command], 'Duplicate slide', copy.id)
+    },
+
+    moveSlide: (fromIndex, toIndex) => {
+      const { deck } = get()
+      const id = deck.slideOrder[fromIndex]
+      if (id === undefined) return false
+      if (!Number.isInteger(toIndex) || toIndex < 0 || toIndex >= deck.slideOrder.length) {
+        return false
+      }
+      // A drop that changes nothing must not consume a Ctrl+Z; `slide.move` would happily record
+      // an entry whose inverse is also a no-op.
+      if (fromIndex === toIndex) return false
+      return dispatch([{ t: 'slide.move', id, to: toIndex }], 'Move slide', id)
+    },
+
+    undo: () => {
+      const state = get()
+      const index = selectCurrentIndex(state.deck, state.currentSlideId)
+      if (!state.history.undo().ok) return false
+      set({
+        ...published(state.history),
+        currentSlideId: reselect(state.history.doc.manifest, state.currentSlideId, index),
+      })
+      return true
+    },
+
+    redo: () => {
+      const state = get()
+      const index = selectCurrentIndex(state.deck, state.currentSlideId)
+      if (!state.history.redo().ok) return false
+      set({
+        ...published(state.history),
+        currentSlideId: reselect(state.history.doc.manifest, state.currentSlideId, index),
+      })
+      return true
+    },
+  }
+})

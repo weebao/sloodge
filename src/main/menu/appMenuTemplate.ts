@@ -19,7 +19,8 @@ export type AppMenuTemplateOptions = {
   appName?: string
 }
 
-function fileItem(
+/** One menu item that forwards a shared action id; the only kind we hand-roll. */
+function actionItem(
   label: string,
   action: MenuAction,
   accelerator: string | undefined,
@@ -34,6 +35,16 @@ function fileItem(
   }
 }
 
+/**
+ * Redo's accelerator, per platform — deliberately the *same* chord Electron's
+ * own `redo` role registers (`lib/browser/api/menu-item-roles.ts`): Ctrl+Y on
+ * Windows, Shift+CmdOrCtrl+Z everywhere else. Replacing the role must not
+ * silently move a user's keyboard shortcut; only who handles it changes.
+ */
+export function redoAccelerator(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'Ctrl+Y' : 'Shift+CmdOrCtrl+Z'
+}
+
 export function buildAppMenuTemplate({
   onAction,
   platform = process.platform,
@@ -46,15 +57,15 @@ export function buildAppMenuTemplate({
   const fileMenu: MenuItemConstructorOptions = {
     label: '&File',
     submenu: [
-      fileItem('New', 'file.new', 'CmdOrCtrl+N', onAction),
-      fileItem('Open…', 'file.open', 'CmdOrCtrl+O', onAction),
+      actionItem('New', 'file.new', 'CmdOrCtrl+N', onAction),
+      actionItem('Open…', 'file.open', 'CmdOrCtrl+O', onAction),
       { type: 'separator' },
       {
         label: 'Export',
         submenu: [
-          fileItem('Export as PPTX…', 'file.export.pptx', undefined, onAction),
-          fileItem('Export as PDF…', 'file.export.pdf', undefined, onAction),
-          fileItem('Export as HTML…', 'file.export.html', undefined, onAction),
+          actionItem('Export as PPTX…', 'file.export.pptx', undefined, onAction),
+          actionItem('Export as PDF…', 'file.export.pdf', undefined, onAction),
+          actionItem('Export as HTML…', 'file.export.html', undefined, onAction),
         ],
       },
       { type: 'separator' },
@@ -62,15 +73,38 @@ export function buildAppMenuTemplate({
     ],
   }
 
-  // Roles only, so Electron routes these to the focused webContents and native
-  // undo/clipboard keeps working in text inputs. When M1.2 adds document-level
-  // undo, main-side handlers must forward to the document only when no editable
-  // element owns focus — never by replacing these roles wholesale.
+  // Clipboard stays on roles, so Electron routes cut/copy/paste/selectAll to the
+  // focused webContents and native editing keeps working in text inputs.
+  //
+  // Undo and Redo are NOT roles, and that is a reversal of what this comment said
+  // through M0.4 ("never by replacing these roles wholesale"). The intent behind
+  // that line — never break native undo in a focused text field — is kept; the
+  // letter could not be. A role registers CmdOrCtrl+Z with the OS menu
+  // (`registerAccelerator` defaults to true), so it consumes the chord and the
+  // renderer's keydown handler never runs: document undo by keyboard would be
+  // dead in the packaged app while every test stayed green. Two owners of one
+  // accelerator cannot be ordered from the renderer side, so there is exactly
+  // one owner — this menu — and it forwards the intent to the renderer, which
+  // routes to native text undo or to the document by the same editable-focus
+  // rule the role was there to protect (§5 of 10-architecture.md;
+  // `renderer/src/app/editActions.ts`).
+  //
+  // Measured, not assumed, in a real Electron window under WSLg
+  // (`experiments/init/harness/smoke-menu-undo.mjs`, 8/8): the live menu reports
+  // Undo:CmdOrCtrl+Z and Redo:Shift+CmdOrCtrl+Z with `registerAccelerator: true`
+  // — i.e. the OS really does hold these chords — and firing the item rewinds
+  // the deck through IPC, while a renderer-level Ctrl+Z does nothing at all
+  // (the keydown handler is unbound when the bridge is present) and the same
+  // item with the chat composer focused leaves the deck untouched. The one link
+  // that remains unverified by environment is the OS delivering the physical
+  // keystroke to the item: that needs window-server input injection (xdotool),
+  // which is not installed here. It is also the link Electron itself owns and
+  // the one the replaced roles depended on identically.
   const editMenu: MenuItemConstructorOptions = {
     label: '&Edit',
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      actionItem('Undo', 'edit.undo', 'CmdOrCtrl+Z', onAction),
+      actionItem('Redo', 'edit.redo', redoAccelerator(platform), onAction),
       { type: 'separator' },
       { role: 'cut' },
       { role: 'copy' },
