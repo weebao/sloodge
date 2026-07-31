@@ -1,0 +1,52 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect scaffold
+        id: scaffold
+        run: |
+          if [ -f package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.scaffold.outputs.present == 'true'
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        if: steps.scaffold.outputs.present == 'true'
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        if: steps.scaffold.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        if: steps.scaffold.outputs.present == 'true'
+        run: pnpm lint
+
+      - name: Unit tests
+        if: steps.scaffold.outputs.present == 'true'
+        run: pnpm test
+
+      - name: No scaffold yet — skip
+        if: steps.scaffold.outputs.present == 'false'
+        run: echo "package.json not present; unit job is a no-op until the scaffold lands."
