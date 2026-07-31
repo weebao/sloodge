@@ -27,7 +27,7 @@
  *
  *     node experiments/init/harness/csp-meta-placement.mjs
  *
- * Measured 2026-07-31, Chromium via Playwright: all 15 probes PASS both halves. Each fix in this
+ * Measured 2026-07-31, Chromium via Playwright: all 19 probes PASS both halves. Each fix in this
  * file's history was proven by the corresponding probe going red first: before the implied-body
  * fix, probes 1-3 failed both halves; before the `noframes`/`template` fixes, those two did.
  */
@@ -57,6 +57,12 @@ const PROBES = [
   ['decoy: head in noframes', `<!doctype html><html><noframes><head></noframes><body>${CANARY}`],
   // Template children parse into a separate DocumentFragment, so a meta there is not in the head.
   ['decoy: head in template', `<!doctype html><html><template><head></head></template><body>${CANARY}`],
+  // End tags that cascade past the head: before-head -> in-head -> after-head -> body inserted.
+  ['end tag: </br>', `<!doctype html><html></br><head></head><body>${CANARY}`],
+  ['end tag: </html>', `<!doctype html><html></html><head></head><body>${CANARY}`],
+  ['end tag: <meta> then </br>', `<!doctype html><html><meta charset="utf-8"></br><head></head><body>${CANARY}`],
+  // Control: `</p>` is a parse error in these modes and is ignored, so the head is still open.
+  ['control: ignored </p>', `<!doctype html><html></p><head></head><body>${CANARY}`],
   ['fallback: no head', `<!doctype html><html><body>${CANARY}`],
   ['fallback: bare fragment', `<p>hi</p>${CANARY}`],
 ]

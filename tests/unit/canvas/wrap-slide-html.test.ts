@@ -104,14 +104,16 @@ describe('wrapSlideHtml', () => {
 /**
  * The enumeration guard.
  *
- * Rounds 1, 3 and 4 of review each found one more missed member of the element tables — a
- * `<head>` inside `<style>`, then inside RCDATA, then inside `<noframes>`, each silently dropping
- * the whole layer-3 policy. The tables are now derived from one source, and these tests are what
- * make that source *closed*: the head-content set must be exactly the HTML spec's "in head" list,
- * and every member of it must carry a content model. Adding an element without classifying it, or
- * classifying one that is not head content, fails here rather than in a future review round.
+ * Rounds 1, 3, 4 and 5 of review each found one more missed member of the anchor tables — a
+ * `<head>` inside `<style>`, then inside RCDATA, then inside `<noframes>`, then `<template>`, then
+ * `</br>`/`</html>` — each silently dropping the whole layer-3 policy. Two axes carry the whole
+ * decision: which elements keep the implied head open (and hide markup), and which end tags cascade
+ * past it. Both are now single-sourced, and these tests are what make them *closed*: the
+ * head-content set must equal the spec's "in head" list, every member must carry a content model,
+ * and the handled end tags must be exactly {head, body, html, br}. Adding a member without
+ * classifying it, or dropping one, fails here rather than in a future review round.
  */
-describe('anchor element tables are spec-complete', () => {
+describe('anchor tables are spec-complete', () => {
   // https://html.spec.whatwg.org/multipage/parsing.html — "in head" insertion mode.
   const SPEC_HEAD_CONTENT = [
     'base',
@@ -155,6 +157,14 @@ describe('anchor element tables are spec-complete', () => {
     for (const [name, model] of Object.entries(expected)) {
       expect(ANCHOR_TABLES.CONTENT_MODEL.get(name), name).toBe(model)
     }
+  })
+
+  // The second axis. In before-head / in-head / after-head, these four end tags are *acted on* and
+  // cascade the document past the head; every other end tag is a parse error and is ignored.
+  it('handled end tags are exactly head, body, html, br', () => {
+    expect([...ANCHOR_TABLES.HANDLED_END_TAGS].toSorted()).toEqual(
+      ['body', 'br', 'head', 'html'].toSorted(),
+    )
   })
 
   it('reads element names as data, not through the prototype chain', () => {
@@ -383,6 +393,38 @@ describe('wrapSlideHtml anchor is markup-aware', () => {
     assertLivePolicy(wrapped)
     expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
     expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<template>'))
+  })
+
+  /**
+   * End tags open the body too. `</br>` and `</html>` cascade before-head -> in-head -> after-head
+   * -> body inserted, so the `<head>` that follows is a discarded parse error and a meta anchored
+   * there is a child of `<body>`, where the policy is dropped. Chromium-confirmed: before this was
+   * handled, the `script-src 'none'` canary RAN for each of these.
+   */
+  it.each([
+    ['</br>', '<!doctype html>\n<html></br><head><title>t</title>'],
+    ['</html>', '<!doctype html>\n<html></html><head><title>t</title>'],
+    [
+      'a <meta> then </br>',
+      '<!doctype html>\n<html><meta charset="utf-8"></br><head><title>t</title>',
+    ],
+  ])('ignores a <head> that %s has already pushed into the body', (_label, source) => {
+    const wrapped = wrapSlideHtml(source)
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<head>'))
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<html>'))
+  })
+
+  // Negative control for the same axis: `</p>` is a parse error in these modes and is *ignored*,
+  // so the implied head is still open and the literal `<head>` after it is still a valid anchor.
+  // The end-tag rule must not overreach into "any end tag ends the head".
+  it('still anchors on a <head> after an ignored end tag', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html></p><head><title>t</title>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
   })
 
   it('treats a bare `<` in text as text, not as a tag', () => {

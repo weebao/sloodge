@@ -112,15 +112,33 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CS
  * The guarantee is: unknown input degrades to a worse-looking but correct placement. A *wrong*
  * rule still produces a wrong answer, so each rule is pinned by a mutation-verified test.
  *
- * ## The element enumeration is closed
+ * ## What is modelled, and what is not
  *
- * Review rounds 1, 3 and 4 each found one more missed element — `<style>`, then RCDATA, then
- * `<noframes>` — because head-content and text-content were two independent hand-maintained lists
- * with nothing forcing them to agree or forcing a member to be classified. There is now **one**
- * table (`CONTENT_MODEL`), both predicates are derived from it, and `HEAD_CONTENT` is the HTML
- * spec's "in head" element list *in full*. Unit tests assert that set equality, that every member
- * carries a content model, and that the non-markup models are the right ones — so a future element
- * cannot be added unclassified, and the two facts about an element cannot drift apart.
+ * The anchor decision depends on exactly two axes, and both are now closed enumerations taken from
+ * the spec and pinned by tests:
+ *
+ *  1. **Element content models** — `CONTENT_MODEL`, the single table from which both "does this
+ *     keep the implied head open" and "is this element's interior text" are derived. `HEAD_CONTENT`
+ *     is the spec's "in head" element list in full.
+ *  2. **Insertion-mode transitions** — character data (non-whitespace opens the body), start tags
+ *     (anything not head content opens the body), and `HANDLED_END_TAGS`, the complete set of end
+ *     tags the parser acts on in the head-adjacent modes: `head`, `body`, `html`, `br`.
+ *
+ * Rounds 1, 3, 4 and 5 of review each found one more missed member of one of those two axes —
+ * `<style>`, the implied body, RCDATA, `<noframes>`, `<template>`, `</br>`, `</html>`. Each was the
+ * same silent failure: the meta lands where the tree builder does not honour it, and the whole
+ * policy is dropped. The enumerations are now single-sourced and test-asserted so a member cannot
+ * be added unclassified, and the two facts about an element cannot drift apart.
+ *
+ * **Not modelled: foreign content.** Inside `<svg>`/`<math>`, HTML content models do not apply —
+ * SVG's `<title>` is not RCDATA, so this walk's classification of `title` is simply wrong there.
+ * That is currently harmless, and it is worth being precise about why: `svg` and `math` are not
+ * head content, so `keepsHeadOpen` is false and `bodyImplied` is set at the start tag *before* the
+ * interior is ever walked — the anchor is already dead and the fallback already recorded, so the
+ * misclassification cannot change the outcome. Verified in Chromium for four shapes including an
+ * unclosed `<svg><title><head>`. **That is an accident of ordering, not a design.** If foreign
+ * elements are ever added to `CONTENT_MODEL`, or the interior walk is ever reached with the anchor
+ * still live, this stops being safe — so it is named here rather than left to be rediscovered.
  */
 
 /**
@@ -201,6 +219,26 @@ const CONTENT_MODEL = new Map<string, ContentModel>([
   ['plaintext', 'plaintext'],
 ])
 
+/**
+ * **The complete set of end tags the parser acts on in the head-adjacent insertion modes.**
+ *
+ * Per the HTML parsing spec, in "before head" an end tag named `head`, `body`, `html` or `br` is
+ * treated as "anything else" — insert an html head element, switch to "in head", reprocess. "In
+ * head" then treats `</body>`, `</html>`, `</br>` as "anything else" — pop the head, switch to
+ * "after head", reprocess. "After head" treats them as "anything else" again — insert a body
+ * element and switch to "in body". So each of these four cascades the document *past* the head,
+ * after which a literal `<head>` start tag is a discarded parse error and cannot be an anchor.
+ *
+ * **Every other end tag in those modes is a parse error and is ignored**, which is why `</p>`
+ * before a `<head>` must *not* set `bodyImplied` — the implied head is still open and the anchor
+ * is still good. That negative is pinned by a test too.
+ *
+ * This is the second of the two axes the anchor decision depends on, and it is closed the same way
+ * the element axis is: one named set, spec-cited, asserted by a test — not conditions scattered
+ * across the walk, which is how `</br>` and `</html>` went missing for five review rounds.
+ */
+const HANDLED_END_TAGS = new Set(['head', 'body', 'html', 'br'])
+
 /** The spec's "in head" element list. Pinned exactly by a test; `html`/`head` are not members. */
 const HEAD_CONTENT = new Set([
   'base',
@@ -220,7 +258,7 @@ const HEAD_CONTENT = new Set([
  * Exposed for the completeness test — the guard that makes this enumeration closed rather than
  * merely long. Not part of the module's API.
  */
-export const ANCHOR_TABLES = { CONTENT_MODEL, HEAD_CONTENT } as const
+export const ANCHOR_TABLES = { CONTENT_MODEL, HEAD_CONTENT, HANDLED_END_TAGS } as const
 
 /**
  * Does a start tag keep the implied `<head>` open?
@@ -344,11 +382,13 @@ function findAnchorOffset(html: string): number | null {
       return end
     }
     if (!closing && name === 'html' && htmlEnd === null) htmlEnd = end
-    // Past the head, whatever we thought we saw. Injecting into <body> is worse than the
+    // A real <body> start tag ends the prologue outright. Injecting into <body> is worse than the
     // <html>/doctype fallbacks below, which are still inside the document's prologue.
-    if (name === 'body' || (closing && name === 'head')) break
+    if (!closing && name === 'body') break
     // Any start tag that does not keep the implied head open opens the body, exactly as text does.
     if (!closing && !keepsHeadOpen(name)) bodyImplied = true
+    // ...and so does any end tag the parser *acts on* in these modes. See HANDLED_END_TAGS.
+    if (closing && HANDLED_END_TAGS.has(name)) bodyImplied = true
 
     if (!closing && textModelOf(name) !== null) {
       // Text content is not markup: a `<head>` in a JS string, a CSS selector or a <title> is data.
