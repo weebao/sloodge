@@ -150,23 +150,52 @@ describe('buildSlideMap — span accuracy', () => {
   })
 
   /**
-   * A parse5 quirk worth knowing before the patcher is built: an element closed implicitly at EOF
-   * can be given an `endOffset` that stops short of its own children. `<head><title>t</title>`
-   * reports `head` as ending at 14, mid-`</title>`, while `title` correctly runs to 22.
+   * Spans of two *distinct addressable elements* can partially overlap — neither nested nor
+   * disjoint. The contract for this lives on `outer` in types.ts, where a patcher author will
+   * read it; these are the two measured causes, pinned.
    *
-   * The *child* spans stay exact, which is what patching targets, so this is a caveat rather than
-   * a defect — but a patcher that assumed `parent.inner` encloses every child's `outer` would be
-   * wrong here. Pinned so the assumption is never made silently.
+   * Cause 1: a parent implicitly closed at EOF ends short of its own children.
    */
-  it('records parse5 truncating an implicitly-closed element’s outer span', () => {
+  it('records a parent implicitly closed at EOF ending short of its children', () => {
     const map = build('<head><title>t</title>')
-    expect(slice(map, one(map, 'head').outer)).toBe('<head><title>t')
-    expect(slice(map, one(map, 'title').outer)).toBe('<title>t</title>')
-    expect(one(map, 'title').outer.end).toBeGreaterThan(one(map, 'head').outer.end)
+    const head = one(map, 'head')
+    const title = one(map, 'title')
+
+    expect(slice(map, head.outer)).toBe('<head><title>t')
+    expect(slice(map, title.outer)).toBe('<title>t</title>')
+    // `title` is a child of `head` and escapes both its parent's outer and its inner.
+    expect(title.parentSlId).toBe(head.slId)
+    expect(title.outer.end).toBeGreaterThan(head.outer.end)
+    expect(title.outer.end).toBeGreaterThan(head.inner!.end)
 
     const body = build('<body><p>x</p>')
     expect(slice(body, one(body, 'body').outer)).toBe('<body>')
     expect(slice(body, one(body, 'p').outer)).toBe('<p>x</p>')
+  })
+
+  /**
+   * Cause 2, and the common one: mis-nested formatting whose furthest block is a block element,
+   * in a **fully closed** document with nothing EOF-implied. Here the two elements are siblings,
+   * so this is not a containment failure at all — their spans simply run into each other, which
+   * is why the contract is stated as "may partially overlap" rather than "a child may escape its
+   * parent".
+   */
+  it('records mis-nested formatting giving two siblings overlapping spans', () => {
+    const map = build('<b><p>x</b>y</p>')
+    const bold = one(map, 'b')
+    const paragraph = one(map, 'p')
+
+    expect(slice(map, bold.outer)).toBe('<b><p>x</b>')
+    expect(slice(map, paragraph.outer)).toBe('<p>x</b>y</p>')
+
+    // Siblings — neither is the other's parent.
+    expect(bold.parentSlId).toBeNull()
+    expect(paragraph.parentSlId).toBeNull()
+
+    // Partial overlap: each starts inside the other's span and ends outside it.
+    expect(paragraph.outer.start).toBeGreaterThan(bold.outer.start)
+    expect(paragraph.outer.start).toBeLessThan(bold.outer.end)
+    expect(paragraph.outer.end).toBeGreaterThan(bold.outer.end)
   })
 
   it('slices an element, its content and its attribute values exactly', () => {
@@ -550,10 +579,10 @@ describe('buildSlideMap — adoption agency clones', () => {
 
   it('records how many DOM nodes the one source element produces', () => {
     const map = build('<p><b>x</p><p>y</b></p>')
-    expect(one(map, 'b').domNodeCount).toBe(2)
-    for (const span of byTag(map, 'p')) expect(span.domNodeCount).toBe(1)
+    expect(one(map, 'b').minDomNodeCount).toBe(2)
+    for (const span of byTag(map, 'p')) expect(span.minDomNodeCount).toBe(1)
     // The ordinary case is always 1.
-    expect(one(build('<p>plain</p>'), 'p').domNodeCount).toBe(1)
+    expect(one(build('<p>plain</p>'), 'p').minDomNodeCount).toBe(1)
   })
 
   it('collapses clones at every depth of a nested mis-nesting', () => {
@@ -563,14 +592,14 @@ describe('buildSlideMap — adoption agency clones', () => {
     expect(byTag(map, 'u')).toHaveLength(1)
     expect(slice(map, one(map, 'b').outer)).toBe('<b><i><u>x')
     expect(slice(map, one(map, 'u').outer)).toBe('<u>x')
-    for (const tag of ['b', 'i', 'u']) expect(one(map, tag).domNodeCount).toBe(2)
+    for (const tag of ['b', 'i', 'u']) expect(one(map, tag).minDomNodeCount).toBe(2)
   })
 
   it('keeps the clone’s attributes addressable exactly once', () => {
     const map = build('<p><a href="#">x</p><p>y</a></p>')
     const anchor = one(map, 'a')
     expect(slice(map, anchor.attrs['href']!.value!)).toBe('#')
-    expect(anchor.domNodeCount).toBe(2)
+    expect(anchor.minDomNodeCount).toBe(2)
   })
 
   /**
@@ -581,16 +610,34 @@ describe('buildSlideMap — adoption agency clones', () => {
     const map = build('<p><b>x</p><p>y<span>s</span></b></p>')
     const span = one(map, 'span')
     expect(slice(map, span.outer)).toBe('<span>s</span>')
-    expect(span.domNodeCount).toBe(1)
+    expect(span.minDomNodeCount).toBe(1)
     // Its parent is the clone, which is transparent — so it attaches to the second <p>.
     expect(map.byId.get(span.parentSlId!)!.tagName).toBe('p')
   })
 
-  it('treats a clone the parser gave no location as unaddressable too', () => {
-    // `<b><p>x</b>y</p>` clones <b> with sourceCodeLocation === null.
+  /**
+   * When the adoption agency's furthest block is a block element, parse5 gives the clone no
+   * `sourceCodeLocation` at all — so it is unaddressable (correct) *and* invisible to the clone
+   * accounting, which is why `minDomNodeCount` is contracted as a lower bound. The DOM really has
+   * two `<b>` nodes here; the bound says 1. Pinned so the gap is deliberate rather than
+   * incidental — the exact DOM counts live in instrument.test.ts, against a reparse.
+   */
+  it('treats a clone the parser gave no location as unaddressable, and under-counts it', () => {
     const map = build('<b><p>x</b>y</p>')
     expect(byTag(map, 'b')).toHaveLength(1)
     expect(slice(map, one(map, 'b').outer)).toBe('<b><p>x</b>')
+    expect(one(map, 'b').minDomNodeCount).toBe(1)
+  })
+
+  it('never claims more DOM nodes than a source element really renders', () => {
+    // The bound must hold for the located family too, where it happens to be exact.
+    expect(one(build('<p><b>x</p><p>y</b></p>'), 'b').minDomNodeCount).toBe(2)
+    expect(one(build('<p><b>x</p><p>y</p><p>z</b></p>'), 'b').minDomNodeCount).toBe(3)
+    for (const { html } of CORPUS) {
+      for (const span of spans(build(html))) {
+        expect(span.minDomNodeCount).toBeGreaterThanOrEqual(1)
+      }
+    }
   })
 })
 

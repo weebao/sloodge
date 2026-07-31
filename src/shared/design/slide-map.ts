@@ -259,7 +259,15 @@ interface WalkState {
  * Nothing is lost in the DOM. Because both tree elements share one start tag, the single
  * `data-sl-id` injected there is copied onto the clone by the very same cloning step — so both
  * rendered nodes carry the surviving id, and a click on either resolves to the one source element
- * that produced them. `ElementSpan.domNodeCount` records how many nodes to expect.
+ * that produced them.
+ *
+ * `ElementSpan.minDomNodeCount` counts the clones we can see, and is a **lower bound**: when the
+ * adoption agency's furthest block is a block element (`<b><p>x</b>y</p>`) parse5 gives the clone
+ * no location at all, so it arrives at the guard above and is indistinguishable here from an
+ * implied `<body>`. That costs nothing operationally — the id still reaches every rendered node,
+ * so nothing is unselectable, and consumers are told to use `querySelectorAll` unconditionally —
+ * but the field must not be read as exact. See its docstring for why counting those structurally
+ * was tried and rejected.
  */
 function mapElement(
   state: WalkState,
@@ -272,7 +280,7 @@ function mapElement(
 
   const owner = state.ownerByStartTag.get(location.startTag.startOffset)
   if (owner) {
-    owner.domNodeCount += 1
+    owner.minDomNodeCount += 1
     return null
   }
 
@@ -310,7 +318,7 @@ function mapElement(
     textOnly: !contentless && children.every((child) => child.nodeName === '#text'),
     ns,
     authoredSlId: slIdAttr?.value ? source.slice(slIdAttr.value.start, slIdAttr.value.end) : null,
-    domNodeCount: 1,
+    minDomNodeCount: 1,
   }
   state.ownerByStartTag.set(startTag.start, span)
   return span

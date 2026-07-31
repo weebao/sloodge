@@ -12,6 +12,17 @@
  * offsets the map already knows. The map's spans keep describing the **original** source, which
  * is what patches operate on; the instrumented string is a render artifact that is never saved
  * (§1.1: `data-sl-id` never reaches the `.sloodge` file on disk).
+ *
+ * ## Departure from §1.3: chunked assembly, not right-to-left splicing
+ *
+ * The plan prescribes splicing "right-to-left so earlier offsets stay valid". That is correct but
+ * quadratic — each splice rebuilds the whole document, which measured 20.4s on a 525KB slide.
+ * This module instead sorts insertions ascending and assembles the result from slices in one
+ * pass, joining once. The output is byte-identical (the corpus asserts it) and the reason the
+ * plan gives for right-to-left — keeping earlier offsets valid — is satisfied more directly here,
+ * since the source is never mutated at all and every offset stays an index into `map.source`
+ * throughout. Recorded here rather than silently, per this repo's convention for spec departures
+ * (see also the §1.2 attribute-key note in `types.ts`).
  */
 
 import type { SlideMap } from './types'
@@ -99,9 +110,15 @@ export function instrument(map: SlideMap): string {
   insertions.sort((left, right) => left.at - right.at)
 
   // Chunked assembly, not repeated splicing. Rebuilding the whole document once per insertion is
-  // O(elements x length): measured at 20.4s for a 525KB / 30k-element slide, against the M8 goal
-  // of a 500KB slide well under 100ms. Collecting slices and joining once is the same bytes in
-  // single-digit milliseconds, and Design Mode enters on the UI thread.
+  // O(elements x length): measured at 20.4s for a 525KB / 30k-element slide. Collecting slices and
+  // joining once is the same bytes in ~12ms.
+  //
+  // That removed instrument as the bottleneck; it did not on its own meet the M8 stress goal of a
+  // 500KB slide well under 100ms. Entering Design Mode costs `buildSlideMap` + `instrument`, and
+  // the remaining time is now almost entirely the former: at ~500-625KB the pair measures roughly
+  // 150-260ms, of which instrument is ~12-32ms and the parse plus walk is the rest. Closing the
+  // last ~1.5-2.5x has to come from there — caching the parse across reloads (M8.5) rather than
+  // from anything in this file.
   const parts: string[] = []
   let cursor = 0
   let previousAt = -1

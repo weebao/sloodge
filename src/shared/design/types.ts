@@ -72,7 +72,35 @@ export interface ElementSpan {
   slId: string
   /** Tag name as parse5 reports it: lowercased for HTML, adjusted for SVG (`foreignObject`). */
   tagName: string
-  /** The whole element including both tags. */
+  /**
+   * The whole element including both tags.
+   *
+   * ## Spans of different elements can partially overlap — do not assume a tree
+   *
+   * The obvious mental model is that these spans nest like the DOM does: a child inside its
+   * parent, siblings disjoint. **That is not guaranteed**, and the exceptions are ordinary
+   * model-written slides rather than pathological ones. Two distinct addressable elements can
+   * have `outer` spans that are neither nested nor disjoint but *partially overlapping*, from two
+   * measured causes:
+   *
+   *  1. **A parent implicitly closed at EOF can end short of its own children.** In
+   *     `<head><title>t</title>` parse5 reports `head.outer` as `[0,14)` — stopping mid-`</title>`
+   *     — while `title.outer` is `[6,22)`. So `title` escapes both its parent's `outer` and its
+   *     `inner`.
+   *  2. **Mis-nested formatting over a block furthest block.** In `<b><p>x</b>y</p>` the `<b>` and
+   *     the `<p>` are *siblings* in the tree, and their spans are `[0,11)` and `[3,16)`: each runs
+   *     into the other. Nothing here is EOF-implied — the document is fully closed — and this is
+   *     the common cause, not the rare one.
+   *
+   * The only ordering that always holds is `child.outer.start >= parent.outer.start`.
+   *
+   * The consequence for a patcher: an edit anchored to one element's `outer` or `inner` may
+   * rewrite bytes another element also claims, so a multi-element patch must check its spans for
+   * overlap rather than assuming tree containment makes them disjoint. `applyOps` already asserts
+   * non-overlap between the ops in a single patch (§1.4); that assertion is the thing standing
+   * between this quirk and a corrupted slide, so it must not be relaxed into "these are nested
+   * anyway".
+   */
   outer: Span
   /**
    * The span between `>` and `</tag`, i.e. the element's content.
@@ -81,6 +109,10 @@ export interface ElementSpan {
    * or a self-closed foreign element (`<rect/>`). An empty *non-void* element yields an empty
    * span, not `null` — `<div></div>` is a legitimate target for setting text content, `<br>` is
    * not, and collapsing the two would let a patcher inject children into a void element.
+   *
+   * Like `outer`, this does **not** reliably enclose the element's children — see the overlap
+   * note on `outer`. Validating a child edit against its parent's `inner`, or computing a child
+   * offset relative to it, is wrong on every mis-nested slide.
    */
   inner: Span | null
   /**
@@ -152,21 +184,44 @@ export interface ElementSpan {
    */
   authoredSlId: string | null
   /**
-   * How many nodes in the rendered DOM this one source element produces. Normally `1`.
+   * A **lower bound** on how many nodes in the rendered DOM this one source element produces.
+   * Normally `1`. Never assume it is exact — see the caveat below.
    *
-   * Greater than one when the parser's adoption agency algorithm cloned the element to resolve
-   * mis-nested formatting — `<p><b>x</p><p>y</b></p>` renders two `<b>` nodes from a single `<b>`
-   * in the source. All of them carry this `slId`, because the injected attribute lives in the one
-   * start tag they share and is copied along with it, so a hit-test on any of them resolves here
-   * correctly.
+   * It exceeds one when the parser's adoption agency algorithm cloned the element to resolve
+   * mis-nested formatting: `<p><b>x</p><p>y</b></p>` renders two `<b>` nodes from a single `<b>`
+   * in the source. Every one of them carries this `slId`, because the injected attribute lives in
+   * the one start tag they share and is copied along with it, so a hit-test on any of them
+   * resolves here correctly. Patching is unaffected — there is one source element and one set of
+   * spans, which is the whole point of collapsing the clones (see `mapElement`).
    *
-   * Consumers that map an id back to nodes in the frame must therefore use `querySelectorAll`,
-   * not `querySelector`, whenever this is greater than one: measuring only the first node would
-   * report a bounding box that misses half of what the user can see. Patching is unaffected —
-   * there is one source element and one set of spans, which is the whole point of collapsing the
-   * clones (see `mapElement`).
+   * ## Always use `querySelectorAll`
+   *
+   * A consumer mapping an id back to nodes in the frame must use `querySelectorAll`
+   * **unconditionally**, not `querySelector`, and not `querySelector` guarded by this field being
+   * `1`. Measuring only the first node reports a bounding box missing half of what the user can
+   * see, and this field cannot be trusted to warn you.
+   *
+   * ## Why it is a bound and not a count
+   *
+   * When the adoption agency's *furthest block* is a block element, parse5 gives the clone **no
+   * `sourceCodeLocation` at all** — so there is no offset to tie it back to the element it was
+   * cloned from, and it is not counted here. `<b><p>x</b>y</p>` renders two `<b>` nodes and this
+   * field reports `1`.
+   *
+   * Counting those structurally was tried and rejected. The obvious rule — an unlocated
+   * formatting element belongs to the most recent mapped element with the same tag and namespace
+   * — is exact on 47 of 49 measured shapes and wrong on the nested-same-tag family:
+   * `<b>1<b>2<p>3</b>4</b>` really renders 2 and 2, and that rule says 1 and 3, because the
+   * adoption agency reconstructs the *active formatting elements list* and clones every open
+   * entry, not just the innermost. Getting it right means reimplementing that algorithm against
+   * parse5's internals — a second, independently-wrong opinion about HTML parsing of exactly the
+   * kind `wrapSlideHtml.ts` documents five review rounds of. A bound that is always safe beats a
+   * count that is usually right, because `querySelectorAll` makes the bound free.
+   *
+   * The test suite pins this against ground truth — the reparsed instrumented DOM — so the bound
+   * is verified to hold rather than assumed.
    */
-  domNodeCount: number
+  minDomNodeCount: number
 }
 
 /** The parse result: the original source plus every span derived from it. */

@@ -117,6 +117,26 @@ instrumented:  <div data-sl-id="s04:12" class="title">Q3</div>
 Right-to-left splicing means a single pass, no offset bookkeeping, and the map's offsets keep
 referring to the **original** source — which is exactly what patches operate on.
 
+> **Implementation note (M3.1).** `src/shared/design/instrument.ts` keeps the property this
+> paragraph is after — offsets always refer to the original source — but gets it a different way:
+> insertions are sorted *ascending* and the output is assembled from source slices in one pass,
+> joined once. Right-to-left splicing rebuilds the whole document per insertion, which is
+> O(elements × length): 20.4s on a 525KB / 30k-element slide, against M8's sub-100ms goal. Chunked
+> assembly is byte-identical (asserted over the corpus) at ~12ms, and it never mutates the source
+> at all, so no offset can go stale in the first place.
+>
+> Two further M3.1 findings that belong with §1.2's parse pass:
+>
+> - `sourceCodeLocation.attrs` keys are **lowercased in every namespace**, SVG included — the
+>   camelCase `viewBox` survives only on `node.attrs`. The map keys attributes by the lowercased
+>   name and keeps the source casing alongside, rather than keying by source-cased name as §1.2
+>   describes.
+> - The adoption agency **clones** mis-nested formatting elements and parse5 copies the original's
+>   `sourceCodeLocation` onto each clone, so one physical start tag can back several tree
+>   elements. Element identity is therefore the start-tag offset, not the tree node: the first
+>   claimant in tree order is addressable and later ones are treated like implied elements. This
+>   matters for §1.1's "document order index" — the index counts *source* elements.
+
 The instrumented document also gets, injected just before `</body>`:
 - `<script>` — the **agent script** (§2.2), the in-frame half of the bridge.
 - `<style>` — the in-frame highlight styles for hover/selection *fallback* (see §3.3 note).
