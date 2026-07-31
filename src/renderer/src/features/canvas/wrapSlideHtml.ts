@@ -65,12 +65,38 @@ const BOM = '﻿'
 /**
  * Where the injection goes: just past the doctype, or the front of the document.
  *
- * The scan covers exactly what HTML's "initial" insertion mode accepts *before* a doctype, which is
- * a closed and very short list: a BOM, whitespace, and comment tokens — where "comment token"
- * includes `<!-- … -->`, the abrupt `<!-->` / `<!--->` forms, and bogus declarations such as
- * `<!foo>`, all of which the tokenizer emits as comments. Anything else (a tag, text) means the
- * parser has already left "initial", so a doctype later in the document is a parse error it
- * discards — the document is already quirks and the front is the right place.
+ * ## The closed set of tokens that may precede a doctype
+ *
+ * "Initial" ignores exactly three kinds of token — whitespace characters, comments, and nothing
+ * else — and processes a DOCTYPE. Anything else is "anything else": quirks mode, reprocess in
+ * "before html". So the scan has to step over precisely the source forms that tokenize to
+ * whitespace or to a comment, and stop at everything else. From the tokenizer's tag-open,
+ * markup-declaration-open, end-tag-open and bogus-comment states, that set is closed and complete:
+ *
+ *  1. **Whitespace** characters.
+ *  2. `<!-- … -->` — a comment. Including the abrupt-closing `<!-->` and `<!--->` forms, which are
+ *     complete comments and contain no `-->` to search for.
+ *  3. `<!` + anything that is not `--` and not `DOCTYPE` — *markup declaration open* falls through
+ *     to **bogus comment**, e.g. `<!foo>`, `<![CDATA[…]]>` outside foreign content. Ends at `>`.
+ *  4. `<?` … `>` — *tag open* sees `?`, which is a parse error
+ *     (`unexpected-question-mark-instead-of-tag-name`) reconsumed as a **bogus comment**. This is
+ *     why an XML declaration is a comment in HTML, not a processing instruction.
+ *  5. `</` + a character that is not ASCII alpha and not `>` — *end tag open* reports
+ *     `invalid-first-character-of-tag-name` and reconsumes as a **bogus comment**, e.g. `</ x>`,
+ *     `</1>`. Ends at `>`.
+ *  6. `</>` — *end tag open* sees `>`, reports `missing-end-tag-name`, and emits **nothing at all**.
+ *     Three characters, no token, parser still in "initial".
+ *  7. The **DOCTYPE** itself, which ends the scan.
+ *
+ * Everything else — a real start or end tag, a bare `<` (character data), any non-whitespace text —
+ * takes the parser out of "initial", which means a doctype later in the document is a parse error it
+ * discards. The document is already quirks at that point, so the front is the right place and
+ * injecting there changes nothing.
+ *
+ * Forms 4-6 were missed in the first version of this scan: the injection landed ahead of a doctype
+ * the parser would have honoured, silently dropping the document into quirks mode, where the slide's
+ * box model stops matching the 1280x720 the format contract measured. Each is pinned by a unit test
+ * and by a Chromium probe that compares compat mode with and without injection.
  *
  * The BOM is skipped rather than injected before: displacing it would stop it being a BOM and turn
  * it into a zero-width character in the rendered document.
@@ -113,6 +139,22 @@ export function cspInjectionOffset(html: string): number {
       continue
     }
 
+    // `</>` emits no token whatsoever (missing-end-tag-name), so it is simply three characters.
+    if (html.startsWith('</>', index)) {
+      index += 3
+      continue
+    }
+
+    // Forms 4 and 5: `<?…>` and `</` + a non-alpha, both reconsumed as bogus comments ending at `>`.
+    // `</` at EOF is *not* one of these — the tokenizer emits it as character data, which leaves
+    // "initial" — and correctly falls through to the break below.
+    if (html.startsWith('<?', index) || /^<\/[^a-zA-Z>]/.test(html.slice(index, index + 3))) {
+      const close = html.indexOf('>', index)
+      if (close === -1) break
+      index = close + 1
+      continue
+    }
+
     break
   }
 
@@ -150,7 +192,7 @@ export function cspInjectionOffset(html: string): number {
  * All of them are handled by construction now, because nothing looks for `<head>` any more. The walk
  * was never load-bearing for correctness: it only made the meta land *inside* the author's literal
  * head rather than just before it. It was cosmetics, and all five defects lived in it. The Chromium
- * corpus that found them is kept as the regression net — 22 probes in
+ * corpus that found them is kept as the regression net — 26 probes in
  * `experiments/init/harness/csp-meta-placement.mjs`, each asserting the policy is a head child, that
  * it is actually enforced, and that compat mode is unchanged.
  *

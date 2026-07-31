@@ -28,9 +28,18 @@
  * question is now asked of the DOM. Evaluation runs over CDP, which is not subject to the page's
  * own CSP, so the enforcing variant can still be interrogated.
  *
- * Run (needs the playwright browsers this harness already downloads):
+ * Run:
  *
+ *     pnpm --dir experiments/init/harness add -D playwright@1.62.1
+ *     npx playwright install chromium
  *     node experiments/init/harness/csp-meta-placement.mjs
+ *
+ * **`playwright` is not a dependency of the repo, and `experiments/init/harness/node_modules` does
+ * not exist in a fresh checkout or in a git worktree** — without the install above the script dies
+ * with `ERR_MODULE_NOT_FOUND`. Reviewers working in a worktree have instead symlinked the main
+ * checkout's copy (`ln -s <main-checkout>/experiments/init/harness/node_modules
+ * experiments/init/harness/node_modules`), which avoids a second browser download; remember to
+ * remove the symlink afterwards so it is not committed.
  *
  * ## This corpus outlived the code it was written against
  *
@@ -45,7 +54,7 @@
  * proves the simpler implementation is not a regression, and what will catch the next person who
  * decides the injection point should be cleverer.
  *
- * Measured 2026-07-31, Chromium via Playwright: all 22 probes PASS all three checks.
+ * Measured 2026-07-31, Chromium via Playwright: all 26 probes PASS all three checks.
  */
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -86,6 +95,13 @@ const PROBES = [
   ['degenerate: no doctype', `<html><head></head><body>${CANARY}`],
   ['degenerate: comment first', `<!-- c --><!doctype html><html><body>${CANARY}`],
   ['degenerate: BOM first', `﻿<!doctype html><html><body>${CANARY}`],
+  // Tokenizer forms that "initial" tolerates before a doctype: `?` and an invalid character after
+  // `</` are both reconsumed as bogus comments, and `</>` emits nothing. Injecting ahead of the
+  // doctype in any of these silently flips the document to quirks mode.
+  ['prologue: XML declaration', `<?xml version="1.0" encoding="utf-8"?><!doctype html><html><body>${CANARY}`],
+  ['prologue: empty end tag', `</><!doctype html><html><body>${CANARY}`],
+  ['prologue: bogus end tag (space)', `</ x><!doctype html><html><body>${CANARY}`],
+  ['prologue: bogus end tag (digit)', `</1><!doctype html><html><body>${CANARY}`],
 ]
 
 const dir = mkdtempSync(join(tmpdir(), 'sloodge-csp-'))

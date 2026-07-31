@@ -134,8 +134,16 @@ describe('cspInjectionOffset', () => {
     }
   })
 
-  // Everything HTML's "initial" insertion mode allows before a doctype has to be stepped over, or
-  // the meta lands ahead of the doctype and the document silently becomes quirks.
+  /**
+   * Everything HTML's "initial" insertion mode allows before a doctype has to be stepped over, or
+   * the meta lands ahead of the doctype and the document silently becomes quirks — where the box
+   * model stops matching the 1280x720 the format contract measured.
+   *
+   * This table is the closed set from the module docstring, case for case: whitespace, comments
+   * (including both abrupt forms), and the three source forms the tokenizer reconsumes as bogus
+   * comments or discards entirely — `<!foo>`, `<?…>`, `</` + non-alpha, and `</>`. If a form is
+   * added to the scan it belongs here; if one is missing here the scan is not provably complete.
+   */
   it.each([
     ['leading whitespace', '\n\t  <!doctype html><html>'],
     ['a comment', '<!-- hello --><!doctype html><html>'],
@@ -143,6 +151,15 @@ describe('cspInjectionOffset', () => {
     ['an abrupt comment', '<!--><!doctype html><html>'],
     ['the other abrupt comment', '<!---><!doctype html><html>'],
     ['a bogus declaration', '<!foo><!doctype html><html>'],
+    // `?` in tag-open is a parse error reconsumed as a bogus comment, so an XML declaration is a
+    // comment in HTML — not a processing instruction, and not something that leaves "initial".
+    ['an XML declaration', '<?xml version="1.0" encoding="utf-8"?><!doctype html><html>'],
+    ['a processing instruction', '<?php echo 1; ?><!doctype html><html>'],
+    // `</` + a non-alpha is invalid-first-character-of-tag-name: also a bogus comment.
+    ['a bogus end tag with a space', '</ x><!doctype html><html>'],
+    ['a bogus end tag with a digit', '</1><!doctype html><html>'],
+    // `</>` is missing-end-tag-name: it emits no token at all.
+    ['an empty end tag', '</><!doctype html><html>'],
   ])('steps over %s to keep the doctype first', (_label, source) => {
     const wrapped = wrapSlideHtml(source)
 
@@ -174,5 +191,14 @@ describe('cspInjectionOffset', () => {
   it('does not run past an unterminated comment or declaration', () => {
     expect(cspInjectionOffset('<!-- unterminated <!doctype html>')).toBe(0)
     expect(cspInjectionOffset('<!unterminated')).toBe(0)
+    expect(cspInjectionOffset('<?unterminated')).toBe(0)
+  })
+
+  // The boundary of form 5: `</` + ASCII alpha is a *real* end tag, which takes the parser out of
+  // "initial" — so the document is already quirks and a later doctype is discarded. And `</` at EOF
+  // is emitted as character data, not as a bogus comment. Both must stop the scan.
+  it('stops at a real end tag or a bare `</` at EOF', () => {
+    expect(cspInjectionOffset('</p><!doctype html>')).toBe(0)
+    expect(cspInjectionOffset('</')).toBe(0)
   })
 })
