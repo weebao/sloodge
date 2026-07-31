@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
+import { installAgentIpc } from './ipc/agent'
 import { installAppMenu } from './menu/appMenu'
 import { isAllowedNavigation, toSafeExternalUrl } from './security/externalUrls'
 import { installSlideProtocol, registerSlideSchemePrivileges } from './slide/protocol'
@@ -85,6 +86,11 @@ if (!gotSingleInstanceLock) {
   void app.whenReady().then(() => {
     installAppMenu()
     const slideRegistry = installSlideProtocol()
+    // The agent service owns the CLI subprocesses; keep a handle so quit can tear them down (§9).
+    const agentService = installAgentIpc()
+    app.on('before-quit', () => {
+      void agentService.disposeAll()
+    })
     createMainWindow()
 
     app.on('activate', () => {

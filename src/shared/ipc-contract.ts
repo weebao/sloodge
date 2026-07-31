@@ -7,6 +7,8 @@
  * M0.3 stub — channels are declared, payloads land with their features.
  */
 
+import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
+
 /**
  * Native-menu action ids, and the single source of truth for them: the main
  * process builds the menu from this union and the renderer switches on it.
@@ -67,16 +69,33 @@ export type SlidePublishResponse = { id: string }
 export type SlideRevokeRequest = { id: string }
 export type SlideRevokeResponse = { revoked: boolean }
 
+/**
+ * The agent surface (M2.1). The API key travels in via `agent:setKey` and can only ever be read back
+ * masked (`ApiKeyStatus`) — the plaintext never returns toward the renderer (50-agent-integration.md
+ * §4). Turns are driven by `agent:send` / `agent:interrupt`; assistant deltas, tool chips, usage and
+ * typed errors stream back one-way on `agent:event`.
+ */
+export type AgentSetKeyResponse = { status: ApiKeyStatus }
+export type AgentKeyStatusResponse = { status: ApiKeyStatus }
+export type AgentSendResponse = { accepted: boolean }
+export type AgentInterruptResponse = { interrupted: boolean }
+
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
   'app:ping': { req: Record<string, never>; res: { pong: true } }
   'slide:publish': { req: SlidePublishRequest; res: SlidePublishResponse }
   'slide:revoke': { req: SlideRevokeRequest; res: SlideRevokeResponse }
+  'agent:setKey': { req: ApiKeySetRequest; res: AgentSetKeyResponse }
+  'agent:clearKey': { req: Record<string, never>; res: AgentKeyStatusResponse }
+  'agent:keyStatus': { req: Record<string, never>; res: AgentKeyStatusResponse }
+  'agent:send': { req: AgentSendRequest; res: AgentSendResponse }
+  'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
 export type IpcEvents = {
   'app:menu': MenuAction
+  'agent:event': AgentEvent
 }
 
 export type IpcRequestChannel = keyof IpcRequests
@@ -109,6 +128,18 @@ export const SLIDE_PUBLISH_CHANNEL = 'slide:publish' satisfies IpcRequestChannel
 export const SLIDE_REVOKE_CHANNEL = 'slide:revoke' satisfies IpcRequestChannel
 
 /**
+ * The agent channels, constants for the same reason the slide ones are: main registers the handlers,
+ * preload invokes/subscribes, and nothing links the two literals at runtime. `AGENT_EVENT_CHANNEL`
+ * is the streaming path (main -> renderer); the four request channels are `ipcRenderer.invoke` only.
+ */
+export const AGENT_SET_KEY_CHANNEL = 'agent:setKey' satisfies IpcRequestChannel
+export const AGENT_CLEAR_KEY_CHANNEL = 'agent:clearKey' satisfies IpcRequestChannel
+export const AGENT_KEY_STATUS_CHANNEL = 'agent:keyStatus' satisfies IpcRequestChannel
+export const AGENT_SEND_CHANNEL = 'agent:send' satisfies IpcRequestChannel
+export const AGENT_INTERRUPT_CHANNEL = 'agent:interrupt' satisfies IpcRequestChannel
+export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
+
+/**
  * Runtime allow-lists: the declaration of every channel that may cross, which
  * call sites are expected to honour.
  *
@@ -124,9 +155,17 @@ export const IPC_REQUEST_CHANNELS = [
   'app:ping',
   SLIDE_PUBLISH_CHANNEL,
   SLIDE_REVOKE_CHANNEL,
+  AGENT_SET_KEY_CHANNEL,
+  AGENT_CLEAR_KEY_CHANNEL,
+  AGENT_KEY_STATUS_CHANNEL,
+  AGENT_SEND_CHANNEL,
+  AGENT_INTERRUPT_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]
 
-export const IPC_EVENT_CHANNELS = [MENU_EVENT_CHANNEL] as const satisfies readonly IpcEventChannel[]
+export const IPC_EVENT_CHANNELS = [
+  MENU_EVENT_CHANNEL,
+  AGENT_EVENT_CHANNEL,
+] as const satisfies readonly IpcEventChannel[]
 
 export function isIpcRequestChannel(value: string): value is IpcRequestChannel {
   return (IPC_REQUEST_CHANNELS as readonly string[]).includes(value)

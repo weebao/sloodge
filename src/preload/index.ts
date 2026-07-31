@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
+import { createAgentBridge } from './agentBridge'
 import { createMenuActionHandler } from './menuActionHandler'
 import { createSlideBridge } from './slideBridge'
 
@@ -38,11 +39,28 @@ const { publishSlide, revokeSlide } = createSlideBridge(async (channel, payload)
   ipcRenderer.invoke(channel, payload),
 )
 
+/**
+ * M2.1's agent surface. Streaming events arrive on a one-way channel, so the bridge takes a
+ * `subscribe` that wraps `ipcRenderer.on`/`removeListener` and hands the listener the payload only —
+ * the same shape `onMenuAction` uses, kept local because the decisions live in `agentBridge.ts`.
+ */
+const agent = createAgentBridge(
+  async (channel, payload) => ipcRenderer.invoke(channel, payload),
+  (channel, handler) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => handler(payload)
+    ipcRenderer.on(channel, wrapped)
+    return () => {
+      ipcRenderer.removeListener(channel, wrapped)
+    }
+  },
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
   publishSlide,
   revokeSlide,
+  agent,
 } as const
 
 export type SloodgeApi = typeof api
