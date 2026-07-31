@@ -573,6 +573,23 @@ describe('commandBytes', () => {
     expect(commandBytes({ t: 'slide.setNotes', id: 's', notes: null })).toBeLessThan(1000)
   })
 
+  it('never throws on a payload JSON cannot serialize', () => {
+    // An estimate feeding an eviction cap has no business throwing, and `structuredClone` — the
+    // boundary these payloads have already cleared — accepts both of these.
+    const bigint = createSlideEntry({ now: T0 + 81 }) as Record<string, unknown>
+    bigint['weight'] = 10n
+    const cyclic = createSlideEntry({ now: T0 + 82 }) as Record<string, unknown>
+    cyclic['self'] = cyclic
+
+    for (const slide of [bigint, cyclic]) {
+      const command = { t: 'slide.insert', at: 0, slide, html: 'x' } as unknown as DocCommand
+      expect(() => commandBytes(command)).not.toThrow()
+      expect(Number.isFinite(commandBytes(command))).toBe(true)
+      // Charged high, not low: an unmeasurable payload should be evicted sooner, not retained.
+      expect(commandBytes(command)).toBeGreaterThan(1000)
+    }
+  })
+
   it('counts the slide entry an insert carries — which is every delete’s inverse', () => {
     const entry = createSlideEntry({ now: T0 + 80, title: 'Counted', withNotes: true })
     const html = 'x'.repeat(1000)

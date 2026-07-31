@@ -226,16 +226,25 @@ export class DocumentHistory<D extends DeckDoc> {
    * command against a document that diverged from the one it was computed for.
    */
   apply(commands: readonly DocCommand[], origin: CommandOrigin, label?: string): HistoryResult<D> {
+    // An empty batch changes nothing, so it must not consume a Ctrl+Z or destroy the redo stack.
+    // A well-behaved producer emits one: an agent tool call that resolved to no changes, a
+    // design-mode drag that coalesced to nothing. `commitTransaction` guards the same case for
+    // the same reason; the two paths have to agree.
+    if (commands.length === 0) return { ok: true, doc: this.#doc, rev: this.#rev }
+
     // Deep-copied first, and `[...commands]` would not do: a shallow array copy still holds the
     // caller's command objects, so an `html` — or a nested `SlideEntry` — mutated after `apply`
     // returned would change what `redo()` replays. The stack has to describe what happened, not
     // what the caller is holding now. Copying *before* applying also keeps the one failure mode
     // (a non-cloneable payload) in front of any state change.
     const forward: DocCommand[] = []
-    for (const command of commands) {
+    for (const [index, command] of commands.entries()) {
       const cloned = cloneCommand(command)
       if (!cloned.ok) {
-        return this.#fail('not-cloneable', `command ${command.t} ${cloned.message}`)
+        // The message deliberately does not read `command.t`: this object has just proven itself
+        // hostile, and a `Proxy` whose `get` trap throws would turn the error *value* back into a
+        // throw. The index says as much as the discriminant does.
+        return this.#fail('not-cloneable', `command at index ${String(index)} ${cloned.message}`)
       }
       forward.push(cloned.value)
     }
@@ -243,11 +252,19 @@ export class DocumentHistory<D extends DeckDoc> {
     const applied = applyBatch(this.#doc, forward)
     if (!applied.ok) return { ok: false, error: applied.error }
 
+    // Measured *before* the state change, not after — belt to `commandBytes`'s braces. That
+    // function is total, so this ordering is unobservable today and deliberately unpinned: moving
+    // these two lines below the commit reds nothing, and only reds together with a mutation that
+    // makes `commandBytes` throw again (verified both ways). It stays because the failure it
+    // guards against is the one shape this class exists to make impossible — a document mutated,
+    // `rev` bumped and the redo stack cleared, with no undo entry to reverse any of it — and a
+    // future byte term that can throw should not be able to reintroduce it from a distance.
+    const bytes = batchBytes(forward) + batchBytes(applied.inverse)
+
     this.#doc = applied.doc
     this.#rev += 1
     this.#redo = []
 
-    const bytes = batchBytes(forward) + batchBytes(applied.inverse)
     const open = this.#open
     if (open) {
       open.forward.push(...forward)

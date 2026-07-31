@@ -206,6 +206,75 @@ describe('undo and redo', () => {
     expect(history.canUndo).toBe(false)
   })
 
+  it('survives a payload JSON cannot serialize, without a state change it cannot undo', () => {
+    // `structuredClone` *accepts* values `JSON.stringify` refuses — a BigInt, a cyclic reference —
+    // so the copy boundary passes them through and the byte estimator is the next thing to touch
+    // them. If it throws, it throws from inside `apply`, and the worst possible landing spot is
+    // after the document has changed: a mutated deck with `rev` bumped and no undo entry.
+    const { history } = makeHistory()
+    const bigint = createSlideEntry({ now: T0 + 90, title: 'Big' }) as Record<string, unknown>
+    bigint['weight'] = 10n
+    const cyclic = createSlideEntry({ now: T0 + 91, title: 'Cyclic' }) as Record<string, unknown>
+    cyclic['self'] = cyclic
+
+    for (const [index, slide] of [bigint, cyclic].entries()) {
+      const command = { t: 'slide.insert', at: 0, slide, html: 'body' } as unknown as DocCommand
+      const revBefore = history.rev
+      const depthBefore = history.undoStack().length
+
+      expect(() => history.apply([command], USER)).not.toThrow()
+
+      // Either outcome is acceptable; an incoherent middle is not. A state change must always
+      // come with the undo entry that reverses it.
+      const changed = history.rev !== revBefore
+      expect(history.undoStack().length).toBe(depthBefore + (changed ? 1 : 0))
+      expect(history.canUndo).toBe(changed)
+      expect(history.summary().retainedBytes).toBeGreaterThanOrEqual(0)
+      expect(Number.isFinite(history.summary().retainedBytes)).toBe(true)
+      expect(index).toBeLessThan(2)
+    }
+
+    // And the edits really are reversible, which is the property the coherence check stands for.
+    while (history.canUndo) expectOk(history.undo())
+    expect(history.doc.manifest.slideOrder).toHaveLength(3)
+  })
+
+  it('treats an empty batch as a no-op, keeping the redo stack and the revision', () => {
+    // Revert-proof guard: without the early return an empty batch pushes a phantom entry that
+    // consumes a Ctrl+Z and does nothing visible, *and* silently destroys redoable work.
+    const { history, ids } = makeHistory()
+    expectOk(history.apply([{ t: 'slide.setHtml', id: ids[0]!, html: 'a' }], USER, 'Edit'))
+    expectOk(history.undo())
+    expect(history.summary()).toMatchObject({ canRedo: true, redoLabel: 'Edit', undoDepth: 0 })
+
+    const revBefore = history.rev
+    expectOk(history.apply([], { kind: 'user', label: 'No-op tool call' }))
+    expect(history.rev).toBe(revBefore)
+    expect(history.summary()).toMatchObject({ canRedo: true, redoLabel: 'Edit', undoDepth: 0 })
+
+    // Still redoable, which is the work the phantom entry used to throw away.
+    expectOk(history.redo())
+    expect(history.doc.slides[ids[0]!]).toBe('a')
+  })
+
+  it('reports a hostile command as a value even when reading its type would throw', () => {
+    // The error message must not read `command.t`: the object has just proven itself hostile, and
+    // a `Proxy` whose `get` trap throws would turn the error value back into a throw.
+    const { history } = makeHistory()
+    const hostile = new Proxy(
+      { t: 'slide.setHtml', id: 'x', html: 'y' },
+      {
+        get(_target, property) {
+          throw new Error(`trap on ${String(property)}`)
+        },
+      },
+    ) as unknown as DocCommand
+
+    expect(expectErr(history.apply([hostile], USER)).code).toBe('not-cloneable')
+    expect(history.rev).toBe(0)
+    expect(history.canUndo).toBe(false)
+  })
+
   it('does not touch the document or the stacks when an undo cannot be applied', () => {
     // The defensive branch in `undo()`, reached the only way it can be: an entry whose inverse is
     // no longer applicable. Popping before checking would strand the document mid-rollback.

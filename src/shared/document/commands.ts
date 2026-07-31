@@ -738,36 +738,58 @@ export function cloneCommand(command: DocCommand): CloneResult<DocCommand> {
   return clone(command)
 }
 
+const BYTES_OVERHEAD = 128
+
+/**
+ * What an object costs when we cannot measure it. Deliberately large: `commandBytes` feeds an
+ * eviction cap, so charging an unmeasurable payload a high flat rate errs toward dropping it from
+ * the history sooner, which is the safe direction for a bound on retained memory.
+ */
+const UNMEASURABLE_BYTES = 64 * 1024
+
+/**
+ * `JSON.stringify(value).length`, made total.
+ *
+ * `structuredClone` — the copy boundary every command payload passes through — *accepts* values
+ * `JSON.stringify` refuses: a BigInt and a cyclic reference are both cloneable and both make
+ * `stringify` throw. A byte *estimate* has no business throwing at all, and the caller is
+ * `history.apply`, where an escaping `TypeError` would mean a mutated document with no undo entry.
+ */
+function measure(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? UNMEASURABLE_BYTES
+  } catch {
+    return UNMEASURABLE_BYTES
+  }
+}
+
 /**
  * An estimated retained cost for a command, used by history.ts's soft memory cap. It counts the
  * fields that are actually unbounded — slide HTML, notes, a serialized slide entry or theme — and
  * folds everything else into a small constant.
  *
- * Deliberately an estimate, and it under-counts in two known ways: string lengths are UTF-16 code
- * units rather than UTF-8 bytes (so non-Latin decks cost more than this reports), and the small
- * constant stands in for object overhead that a real heap walk would charge more for. The cap it
- * feeds is a soft one whose job is to stop a hundred rewrites of a 2 MB slide from pinning 400 MB,
- * not to be an allocator.
+ * **Total: it never throws**, for the reason `measure` gives. Deliberately an estimate otherwise,
+ * and it under-counts in two known ways: string lengths are UTF-16 code units rather than UTF-8
+ * bytes (so non-Latin decks cost more than this reports), and the small constant stands in for
+ * object overhead that a real heap walk would charge more for. The cap it feeds is a soft one
+ * whose job is to stop a hundred rewrites of a 2 MB slide from pinning 400 MB, not to be an
+ * allocator.
  */
 export function commandBytes(command: DocCommand): number {
-  const overhead = 128
   switch (command.t) {
     case 'slide.insert':
       // The entry rides in the command too, and a `slide.remove`'s inverse is a `slide.insert` —
       // so leaving it out under-reported the cost of every delete.
       return (
-        overhead +
-        command.html.length +
-        (command.notes?.length ?? 0) +
-        JSON.stringify(command.slide).length
+        BYTES_OVERHEAD + command.html.length + (command.notes?.length ?? 0) + measure(command.slide)
       )
     case 'slide.setHtml':
-      return overhead + command.html.length
+      return BYTES_OVERHEAD + command.html.length
     case 'slide.setNotes':
-      return overhead + (command.notes?.length ?? 0)
+      return BYTES_OVERHEAD + (command.notes?.length ?? 0)
     case 'deck.setTheme':
-      return overhead + (command.theme === null ? 0 : JSON.stringify(command.theme).length)
+      return BYTES_OVERHEAD + (command.theme === null ? 0 : measure(command.theme))
     default:
-      return overhead
+      return BYTES_OVERHEAD
   }
 }
