@@ -4,6 +4,7 @@ import {
   IPC_REQUEST_CHANNELS,
   isIpcEventChannel,
   isIpcRequestChannel,
+  isMenuAction,
 } from '../../src/shared/ipc-contract'
 import { createSlideId, encodeTime, isSlideId, MAX_ULID_TIME } from '../../src/shared/slide-id'
 
@@ -18,6 +19,23 @@ describe('ipc-contract', () => {
     expect(isIpcRequestChannel('doc:destroyEverything')).toBe(false)
     expect(isIpcEventChannel('app:menu')).toBe(true)
     expect(isIpcEventChannel('app:menu ')).toBe(false)
+  })
+
+  it('accepts declared menu actions and rejects everything else', () => {
+    // The preload's boundary guard. Its consequence today is small — the one
+    // consumer compares against the two literals itself — but it is asserted as
+    // a safety property in the file header, and those should be testable.
+    expect(isMenuAction('edit.undo')).toBe(true)
+    expect(isMenuAction('file.export.pdf')).toBe(true)
+    expect(isMenuAction('edit.undo ')).toBe(false)
+    expect(isMenuAction('edit.wipeDeck')).toBe(false)
+    expect(isMenuAction(null)).toBe(false)
+    expect(isMenuAction(undefined)).toBe(false)
+    expect(isMenuAction(7)).toBe(false)
+    // Not resolved through the prototype chain, the same discipline the deck
+    // maps keep: `includes` on an array is safe, and this pins that it stays so.
+    expect(isMenuAction('toString')).toBe(false)
+    expect(isMenuAction('constructor')).toBe(false)
   })
 
   it('keeps request and event channel namespaces disjoint', () => {

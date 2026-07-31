@@ -68,12 +68,33 @@ export type IpcResponsePayload<C extends IpcRequestChannel> = IpcRequests[C]['re
 export type IpcEventPayload<C extends IpcEventChannel> = IpcEvents[C]
 
 /**
- * Runtime allow-lists. The preload's subscribe/invoke helpers refuse any
- * channel not present here, so this array is load-bearing, not documentation.
+ * The channel both ends of the menu hop must agree on.
+ *
+ * A constant rather than a string literal at each site because the two ends are
+ * in different build targets: `main` sends and `preload` subscribes, nothing
+ * links them at runtime, and a typo in either literal compiles, type-checks,
+ * lints and ships — with the only symptom being that keyboard undo silently
+ * stops working in the packaged app. `satisfies` ties it to `IpcEvents`, so
+ * renaming the channel there is a compile error at every call site instead of a
+ * silent divergence.
+ */
+export const MENU_EVENT_CHANNEL = 'app:menu' satisfies IpcEventChannel
+
+/**
+ * Runtime allow-lists: the declaration of every channel that may cross, which
+ * call sites are expected to honour.
+ *
+ * They are *not* enforcement, and the comment here used to claim they were —
+ * there are no central subscribe/invoke helpers to refuse an unlisted channel,
+ * and M1.4's first real channel subscribes directly. What actually enforces
+ * agreement today is `MENU_EVENT_CHANNEL` above plus the `satisfies` clauses
+ * below; the guards exist for values arriving as untyped strings. A future
+ * preload helper that funnels every channel through `isIpcEventChannel` would
+ * make these load-bearing, and is the right shape once there is more than one.
  */
 export const IPC_REQUEST_CHANNELS = ['app:ping'] as const satisfies readonly IpcRequestChannel[]
 
-export const IPC_EVENT_CHANNELS = ['app:menu'] as const satisfies readonly IpcEventChannel[]
+export const IPC_EVENT_CHANNELS = [MENU_EVENT_CHANNEL] as const satisfies readonly IpcEventChannel[]
 
 export function isIpcRequestChannel(value: string): value is IpcRequestChannel {
   return (IPC_REQUEST_CHANNELS as readonly string[]).includes(value)

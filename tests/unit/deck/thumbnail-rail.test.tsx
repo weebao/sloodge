@@ -135,16 +135,27 @@ describe('the context menu', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
-  it('returns focus to the selected slide when the user finishes with it', () => {
-    // The rail owns the selection in this test, so re-render with the copy selected the way the
-    // store would after Duplicate.
+  /*
+   * Asserted by *identity*, never by text.
+   *
+   * `expect(document.activeElement?.textContent).toContain('Slide 2 thumbnail')` — the shape these
+   * two started life with — passes when focus has fallen all the way to `<body>`, because
+   * `body.textContent` is every card's sr-only label concatenated. It survived deleting the entire
+   * focus-return effect. The element either *is* the button or the test is worthless.
+   */
+  it('returns focus to the selected slide’s card when the user finishes with it', () => {
+    // The rail takes the selection as a prop, so this is the state the store would publish after
+    // Duplicate: the copy selected.
     const { onDuplicateSlide } = setup({ currentSlideId: ids[1]! })
     fireEvent.contextMenu(card(1))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }))
 
     expect(onDuplicateSlide).toHaveBeenCalledWith(ids[1])
     // Not `<body>`: a keyboard user must not lose their place in the rail.
-    expect(document.activeElement?.textContent).toContain('Slide 2 thumbnail')
+    expect(document.activeElement).toBe(within(card(1)).getByRole('button'))
+    expect(
+      document.activeElement?.closest('[data-slide-index]')?.getAttribute('data-slide-index'),
+    ).toBe('1')
   })
 
   it('returns focus on Escape too', () => {
@@ -152,7 +163,8 @@ describe('the context menu', () => {
     fireEvent.contextMenu(card(2))
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
 
-    expect(document.activeElement?.textContent).toContain('Slide 3 thumbnail')
+    expect(document.activeElement).toBe(within(card(2)).getByRole('button'))
+    expect(document.activeElement).not.toBe(document.body)
   })
 
   it('does not steal focus when it is dismissed from outside', () => {

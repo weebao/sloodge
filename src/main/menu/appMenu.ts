@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu } from 'electron'
-import type { MenuAction } from '../../shared/ipc-contract'
+import { MENU_EVENT_CHANNEL, type MenuAction } from '../../shared/ipc-contract'
 import { buildAppMenuTemplate, type MenuActionHandler } from './appMenuTemplate'
+import { menuActionTarget, pickTargetWindow } from './menuRouting'
 
 /**
  * Installs the native application menu (File / Edit).
@@ -13,22 +14,19 @@ import { buildAppMenuTemplate, type MenuActionHandler } from './appMenuTemplate'
  */
 
 /**
- * Deliver to the window the chord was pressed in.
- *
- * `getFocusedWindow()`, not a broadcast: undo is per document, and once Present
- * (M4.1) opens a second window, broadcasting would rewind a deck the user is
- * not looking at. The fallback to the first window covers the case where a menu
- * fires with no focused window — the macOS app menu with every window
- * minimised.
+ * Deliver to the window the chord was pressed in. Which window that is, and
+ * whether the action goes to the renderer at all, are decided by the pure
+ * functions in `menuRouting.ts` — everything Electron-specific is right here,
+ * and it is three lines on purpose.
  */
 export function sendMenuAction(action: MenuAction): void {
-  const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-  if (!target || target.isDestroyed()) return
-  target.webContents.send('app:menu', action)
+  const target = pickTargetWindow(BrowserWindow.getFocusedWindow(), BrowserWindow.getAllWindows())
+  if (target === null) return
+  target.webContents.send(MENU_EVENT_CHANNEL, action)
 }
 
 const defaultHandler: MenuActionHandler = (action: MenuAction) => {
-  if (action.startsWith('edit.')) {
+  if (menuActionTarget(action) === 'renderer') {
     sendMenuAction(action)
     return
   }

@@ -1,5 +1,6 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { isMenuAction, type MenuAction } from '../shared/ipc-contract'
+import { contextBridge, ipcRenderer } from 'electron'
+import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
+import { createMenuActionHandler } from './menuActionHandler'
 
 /**
  * The entire renderer-visible surface. Every future capability (doc, agent,
@@ -14,19 +15,16 @@ import { isMenuAction, type MenuAction } from '../shared/ipc-contract'
 /**
  * Subscribe to native-menu actions. Returns an unsubscribe function.
  *
- * The payload is validated here rather than trusted: `contextBridge` is the
- * boundary past which the renderer can no longer check anything about where a
- * value came from, and an unknown id must not reach a `switch` written against
- * the union. Only the action string crosses the bridge — the `IpcRendererEvent`
- * (which carries `sender`, a live `ipcRenderer` handle) never does.
+ * The channel is the shared constant, not a literal: the sender lives in a
+ * different build target, so a typo here would type-check and ship as "keyboard
+ * undo stopped working". What may cross is decided by
+ * `createMenuActionHandler`, which is where that rule is testable.
  */
 function onMenuAction(listener: (action: MenuAction) => void): () => void {
-  const handler = (_event: IpcRendererEvent, action: unknown): void => {
-    if (isMenuAction(action)) listener(action)
-  }
-  ipcRenderer.on('app:menu', handler)
+  const handler = createMenuActionHandler(listener)
+  ipcRenderer.on(MENU_EVENT_CHANNEL, handler)
   return () => {
-    ipcRenderer.removeListener('app:menu', handler)
+    ipcRenderer.removeListener(MENU_EVENT_CHANNEL, handler)
   }
 }
 
