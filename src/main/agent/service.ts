@@ -103,28 +103,52 @@ export class AgentService {
     return { interrupted: await session.interrupt() }
   }
 
-  /** Tear down one renderer's session — call on `destroyed` / `render-process-gone`. */
+  /**
+   * Tear down one renderer's session — call on `destroyed` / `render-process-gone`.
+   *
+   * Mirror of the send-side race: `createSession` only stores the session *after* `await
+   * loadApiKey()`, so a dispose that arrives mid-creation would read no session, no-op, and let the
+   * creation install a live session/subprocess for an already-gone renderer (§9's worst case). We
+   * wait for the in-flight creation to settle, then close whatever it produced — and we swallow a
+   * *rejecting* creation so teardown still runs and this never throws (it is floated from the
+   * WebContents event handler).
+   *
+   * Known edge, deliberately un-guarded: a send that arrives *after* the `sessions.delete` below but
+   * before `close()` resolves would build a fresh session (starts=2/returns=1). It is unreachable in
+   * production — dispose fires only on terminal WebContents events and app before-quit, after which
+   * that renderer cannot invoke `agent:send` (its sender is gone, and the send handler also guards
+   * `event.sender.isDestroyed()`). If a non-terminal dispose trigger is ever added, gate `send` on a
+   * tearing-down-senderId set here — until then the state is not worth carrying.
+   */
   async dispose(senderId: number): Promise<void> {
-    // Mirror of the send-side race: `createSession` only stores the session *after*
-    // `await loadApiKey()`, so a dispose that arrives mid-creation would read no session, no-op, and
-    // let the creation install a live session/subprocess for an already-gone renderer (§9's worst
-    // case). Wait for the in-flight creation to settle, then close whatever it produced.
     const inFlight = this.creating.get(senderId)
-    if (inFlight !== undefined) await inFlight
+    if (inFlight !== undefined) {
+      try {
+        await inFlight
+      } catch {
+        // The creation rejected; no session was installed for this sender, so there is nothing to
+        // close — but teardown must still proceed and dispose must not throw.
+      }
+    }
     const session = this.sessions.get(senderId)
     if (session === undefined) return
     this.sessions.delete(senderId)
     await session.close()
   }
 
-  /** Tear down every session — call on `app.before-quit`. No orphaned subprocess (§9). */
+  /**
+   * Tear down every session — call on `app.before-quit`. No orphaned subprocess (§9).
+   *
+   * disposeAll must **never** throw before every session is closed — a rejection here orphans every
+   * live subprocess at quit, the exact failure this method exists to prevent. So both stages use
+   * `Promise.allSettled`: a rejecting in-flight creation cannot abort the sweep, and neither can a
+   * misbehaving `close()`. `allSettled` drains its iterator synchronously, before any creation's
+   * `finally` clears its `creating` entry, so passing it directly is safe.
+   */
   async disposeAll(): Promise<void> {
-    // In-flight creations aren't in `sessions` yet; wait for them so their subprocesses are closed
-    // here, not orphaned past quit. `Promise.all` drains the iterator synchronously, before any
-    // creation's `finally` deletes its `creating` entry, so passing it directly is safe.
-    await Promise.all(this.creating.values())
+    await Promise.allSettled(this.creating.values())
     const all = [...this.sessions.values()]
     this.sessions.clear()
-    await Promise.all(all.map((session) => session.close()))
+    await Promise.allSettled(all.map((session) => session.close()))
   }
 }

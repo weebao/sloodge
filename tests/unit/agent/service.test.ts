@@ -131,6 +131,52 @@ describe('AgentService', () => {
     expect(rec.returns).toHaveBeenCalledTimes(1)
   })
 
+  it('disposeAll closes every live session even when an in-flight creation rejects (no orphans at quit)', async () => {
+    const rec = recordingQueryFn()
+    let rejectB: (reason?: unknown) => void = NOOP
+    const loadApiKey = vi
+      .fn<() => Promise<string | null>>()
+      .mockResolvedValueOnce('sk-ant-live') // sender A: resolves, becomes a live session
+      .mockImplementationOnce(
+        () =>
+          new Promise<string | null>((_resolve, reject) => {
+            rejectB = reject // sender B: creation will reject
+          }),
+      )
+    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+
+    await service.send(1, 'a', () => {}) // A live, subprocess started
+    expect(rec.starts()).toBe(1)
+
+    const bSend = service.send(2, 'b', () => {}) // B creation in flight
+    const allP = service.disposeAll() // quit races the rejecting creation
+    rejectB(new Error('vault boom'))
+
+    await expect(bSend).rejects.toThrow('vault boom')
+    await expect(allP).resolves.toBeUndefined() // disposeAll must not throw...
+    expect(rec.returns).toHaveBeenCalledTimes(1) // ...and A must still be closed, not orphaned
+  })
+
+  it('dispose does not throw when the in-flight creation rejects', async () => {
+    const rec = recordingQueryFn()
+    let rejectKey: (reason?: unknown) => void = NOOP
+    const loadApiKey = vi.fn(
+      () =>
+        new Promise<string | null>((_resolve, reject) => {
+          rejectKey = reject
+        }),
+    )
+    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+
+    const sendP = service.send(4, 'a', () => {})
+    const disposeP = service.dispose(4)
+    rejectKey(new Error('vault boom'))
+
+    await expect(sendP).rejects.toThrow('vault boom')
+    await expect(disposeP).resolves.toBeUndefined()
+    expect(rec.starts()).toBe(0) // nothing was created or started
+  })
+
   it('keeps sessions per sender distinct', async () => {
     const rec = recordingQueryFn()
     const service = new AgentService({
