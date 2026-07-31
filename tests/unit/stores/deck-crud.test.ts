@@ -8,7 +8,7 @@
  * mutating it directly would pass the first kind of assertion and fail the second.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   canDeleteSlide,
   createStarterDeck,
@@ -60,6 +60,31 @@ describe('the store is a view of its history', () => {
 
     const parsed = parseManifest(JSON.parse(JSON.stringify(state().deck)))
     expect(parsed.ok ? [] : parsed.issues).toEqual([])
+  })
+})
+
+describe('a batch the funnel rejects', () => {
+  /**
+   * Unreachable from the UI today — every dispatched command is pre-validated by its action (fresh
+   * ULIDs for insert, `canDeleteSlide` for remove, bounds-checked indices for move) — but the file
+   * header sells the boolean return as the thing that lets a caller tell a no-op from a success,
+   * and that promise is only worth what a rejected batch actually does. Stubbing `history.apply` is
+   * the only way to reach it, and it is what a future command with a runtime-validated payload
+   * (`slide.patchHtml`, agent tool calls) will hit for real.
+   */
+  it('reports false and leaves the document identical by reference', () => {
+    const before = state().deck
+    const history = state().history
+    const apply = vi
+      .spyOn(history, 'apply')
+      .mockReturnValue({ ok: false, error: { code: 'slide-not-found', message: 'stubbed' } })
+
+    expect(state().addSlide()).toBe(false)
+
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(state().deck).toBe(before)
+    expect(state().canUndo).toBe(false)
+    apply.mockRestore()
   })
 })
 
@@ -270,6 +295,30 @@ describe('undo and redo', () => {
     expect(state().redo()).toBe(true)
     expect(order().at(-1)).toBe(first)
     expect(state().currentSlideId).toBe(first)
+  })
+
+  /**
+   * The keep-current clause, pinned by the only kind of case that can see it: one where the
+   * surviving slide is at a *different index* after the undo than the selection was before it.
+   *
+   * Every other undo case in this file is satisfied by the index fallback alone — delete slide B
+   * while A is selected and A is still at index 0 either way — so replacing
+   * `if (current !== null && hasSlide(...)) return current` with `if (false)` leaves them all
+   * green. Here the moved slide travels from index 0 back to index 2, so the two rules disagree:
+   * the clause returns C, the fallback returns whatever now sits at index 0, which is A.
+   */
+  it('keeps the selected slide across an undo that moves it to a different index', () => {
+    const [first, , third] = order()
+    state().selectSlide(third!)
+    state().moveSlide(2, 0)
+    expect(order()[0]).toBe(third)
+
+    state().undo()
+
+    expect(order()).toEqual([first, order()[1], third])
+    expect(state().currentSlideId).toBe(third)
+    // Spelled out, because this is exactly what the mutant returns instead.
+    expect(state().currentSlideId).not.toBe(first)
   })
 
   it('keeps a selection that survived the undo', () => {

@@ -124,6 +124,53 @@ describe('the context menu', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
+  it('dismisses when the rail scrolls under it', () => {
+    setup()
+    fireEvent.contextMenu(card(0))
+    expect(screen.getByRole('menu')).toBeTruthy()
+
+    // The rail is `overflow-y-auto` and the menu is `fixed`: without this the thumbnails slide
+    // away and the menu is left labelling a slide that is no longer under it.
+    fireEvent.scroll(screen.getByRole('list'))
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('returns focus to the selected slide when the user finishes with it', () => {
+    // The rail owns the selection in this test, so re-render with the copy selected the way the
+    // store would after Duplicate.
+    const { onDuplicateSlide } = setup({ currentSlideId: ids[1]! })
+    fireEvent.contextMenu(card(1))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }))
+
+    expect(onDuplicateSlide).toHaveBeenCalledWith(ids[1])
+    // Not `<body>`: a keyboard user must not lose their place in the rail.
+    expect(document.activeElement?.textContent).toContain('Slide 2 thumbnail')
+  })
+
+  it('returns focus on Escape too', () => {
+    setup({ currentSlideId: ids[2]! })
+    fireEvent.contextMenu(card(2))
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+
+    expect(document.activeElement?.textContent).toContain('Slide 3 thumbnail')
+  })
+
+  it('does not steal focus when it is dismissed from outside', () => {
+    setup({ currentSlideId: ids[1]! })
+    const elsewhere = document.createElement('input')
+    document.body.append(elsewhere)
+
+    fireEvent.contextMenu(card(1))
+    elsewhere.focus()
+    fireEvent.mouseDown(elsewhere)
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    // The user is already somewhere else; pulling focus back to the rail would take it off
+    // whatever they just clicked.
+    expect(document.activeElement).toBe(elsewhere)
+    elsewhere.remove()
+  })
+
   it('walks its items with the arrow keys, skipping disabled ones', () => {
     setup({ slides: slides.slice(0, 1) })
     fireEvent.contextMenu(card(0))

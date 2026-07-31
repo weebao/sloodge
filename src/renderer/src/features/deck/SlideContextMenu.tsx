@@ -30,13 +30,23 @@ export type SlideContextMenuItem = {
   onSelect: () => void
 }
 
+/**
+ * Why the menu closed, because the answer decides where focus goes.
+ *
+ * `select` and `escape` are the user finishing with the menu, and the invoker gets focus back
+ * (WAI-ARIA's menu-button pattern). `dismiss` — an outside press, or the window losing focus — is
+ * the user going *somewhere else*, and pulling focus back to the rail would take it away from
+ * whatever they just clicked.
+ */
+export type MenuCloseReason = 'select' | 'escape' | 'dismiss'
+
 export type SlideContextMenuProps = {
   /** Viewport coordinates of the pointer that opened the menu. */
   x: number
   y: number
   label: string
   items: readonly SlideContextMenuItem[]
-  onClose: () => void
+  onClose: (reason: MenuCloseReason) => void
 }
 
 export function SlideContextMenu({
@@ -69,19 +79,31 @@ export function SlideContextMenu({
 
   // Pointer*down*, not click: a menu that survives until mouseup would swallow the press that was
   // meant to dismiss it. Capture phase, so a handler that stops propagation cannot strand it open.
+  //
+  // Scroll dismisses too, and it has to: the rail is `overflow-y-auto` while this is positioned at
+  // fixed viewport coordinates, so a wheel over the rail slides the thumbnails out from under a
+  // menu that stays put. It would still act on the slide it was opened on — but it would be
+  // labelling a different one, which is a menu that lies.
   useEffect(() => {
+    const dismiss = (): void => {
+      onClose('dismiss')
+    }
     const onPointerDown = (event: PointerEvent | MouseEvent): void => {
       const element = menuRef.current
       if (element && event.target instanceof Node && element.contains(event.target)) return
-      onClose()
+      dismiss()
     }
     window.addEventListener('pointerdown', onPointerDown, true)
     window.addEventListener('mousedown', onPointerDown, true)
-    window.addEventListener('blur', onClose)
+    window.addEventListener('blur', dismiss)
+    // Capture, because the scroller is a descendant of nothing this listener sits on: a scroll
+    // event does not bubble past its own element, but it does capture from the window down.
+    window.addEventListener('scroll', dismiss, true)
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true)
       window.removeEventListener('mousedown', onPointerDown, true)
-      window.removeEventListener('blur', onClose)
+      window.removeEventListener('blur', dismiss)
+      window.removeEventListener('scroll', dismiss, true)
     }
   }, [onClose])
 
@@ -89,7 +111,7 @@ export function SlideContextMenu({
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        onClose('escape')
         return
       }
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -128,12 +150,12 @@ function MenuItem({
   onClose,
 }: {
   item: SlideContextMenuItem
-  onClose: () => void
+  onClose: (reason: MenuCloseReason) => void
 }): JSX.Element {
   const handleClick = useCallback(() => {
     // Close first: the action can delete the slide this menu describes, and a menu still on screen
     // would then be pointing at nothing.
-    onClose()
+    onClose('select')
     item.onSelect()
   }, [item, onClose])
 

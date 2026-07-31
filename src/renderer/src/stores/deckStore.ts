@@ -69,6 +69,13 @@ export type DeckSnapshot = {
    * Mirrors of `history.canUndo` / `canRedo`. Kept as primitives in the state rather than read off
    * the instance in a selector because the history object's identity never changes, so a component
    * subscribing to it would never re-render when the stacks moved.
+   *
+   * **No production consumer yet** — nothing in the renderer renders an undo affordance, because
+   * since M1.4 the only one is the native Edit menu, and graying its items out needs a
+   * renderer -> main channel that M5.1 (File/Edit menus with OS accelerators) owns. These two are
+   * kept rather than dropped because they are what that channel will send, and because they are
+   * the cheapest possible statement of history state for the tests that assert it. If M5.1 slips
+   * past this becoming stale, delete them — a `set` that maintains state for nobody is a cost.
    */
   readonly canUndo: boolean
   readonly canRedo: boolean

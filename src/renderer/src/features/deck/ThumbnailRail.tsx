@@ -1,7 +1,9 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type DragEvent,
   type JSX,
@@ -12,7 +14,11 @@ import { SlideFrame } from '../canvas/SlideFrame'
 import { fitSlide, SLIDE_SIZE } from '../canvas/slideFit'
 import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
-import { SlideContextMenu, type SlideContextMenuItem } from './SlideContextMenu'
+import {
+  SlideContextMenu,
+  type MenuCloseReason,
+  type SlideContextMenuItem,
+} from './SlideContextMenu'
 
 /**
  * Thumbnail width in CSS px, and with it the mini-frame's scale.
@@ -143,6 +149,7 @@ const ThumbnailCard = memo(function ThumbnailCard({
   return (
     <li
       draggable
+      data-slide-id={slide.id}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
@@ -160,7 +167,10 @@ const ThumbnailCard = memo(function ThumbnailCard({
         aria-current={selected ? 'true' : undefined}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
-        className={`flex w-full items-start gap-2 rounded text-left outline-none ${
+        // `outline-none` kills the UA outline (it would frame the whole row, thumbnail included);
+        // `focus-visible` puts a real ring back for the keyboard, which is the point of returning
+        // focus here at all. Pointer-driven focus stays unringed — the browser's own heuristic.
+        className={`flex w-full items-start gap-2 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
           selected ? 'text-accent' : 'text-chrome-muted dark:text-ink-muted'
         }`}
       >
@@ -233,10 +243,37 @@ export function ThumbnailRail({
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
+  const railRef = useRef<HTMLElement | null>(null)
+  const restoreFocus = useRef(false)
 
-  const closeMenu = useCallback(() => {
+  const closeMenu = useCallback((reason: MenuCloseReason) => {
+    // Only when the user finished *with the menu*. On an outside press they are already somewhere
+    // else, and yanking focus back into the rail would take it off what they just clicked.
+    restoreFocus.current = reason !== 'dismiss'
     setMenu(null)
   }, [])
+
+  /**
+   * Put focus back on the rail after the menu closes — on the *selected* slide's card, which is
+   * the right answer for all three endings: Duplicate selects the copy, Delete selects the
+   * neighbour that replaced the slide the menu was about, and Escape leaves the right-clicked
+   * slide selected. Chasing the invoking element instead would leave focus on a button that
+   * Delete had just unmounted.
+   */
+  useEffect(() => {
+    if (menu !== null || !restoreFocus.current) return
+    restoreFocus.current = false
+    if (currentSlideId === null) return
+    // Matched by comparing the attribute, not by interpolating the id into a selector string: slide
+    // ids are attacker-influenced (§1.2), and the same discipline that keeps them out of object
+    // keys keeps them out of CSS selectors.
+    for (const card of railRef.current?.querySelectorAll<HTMLElement>('[data-slide-id]') ?? []) {
+      if (card.dataset['slideId'] === currentSlideId) {
+        card.querySelector('button')?.focus()
+        return
+      }
+    }
+  }, [menu, currentSlideId])
 
   const openMenu = useCallback((slideId: SlideId, x: number, y: number) => {
     setMenu({ slideId, x, y })
@@ -267,7 +304,7 @@ export function ThumbnailRail({
   )
 
   const handleAdd = useCallback(() => {
-    closeMenu()
+    closeMenu('dismiss')
     onAddSlide()
   }, [closeMenu, onAddSlide])
 
@@ -297,6 +334,7 @@ export function ThumbnailRail({
 
   return (
     <nav
+      ref={railRef}
       aria-label="Slides"
       className="flex w-[188px] shrink-0 flex-col border-r border-chrome-line bg-chrome dark:border-ink-line dark:bg-ink"
     >

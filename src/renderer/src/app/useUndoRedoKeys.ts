@@ -1,17 +1,23 @@
 /**
- * Ctrl/⌘+Z and Ctrl+Y / Shift+⌘+Z, bound on the window.
+ * Ctrl/⌘+Z and Ctrl+Y / Shift+⌘+Z, bound on the window — **for the host that has no menu**.
  *
- * The native Edit menu keeps its `undo`/`redo` *roles* (see the comment in
- * `main/menu/appMenuTemplate.ts`), which is what makes text fields' own undo work; §5 of
- * 10-architecture.md then says the renderer binds the same chords "*only* when focus is not inside
- * a text input that has its own native undo". So this handler's first job is to decline: if the
- * event came from an editable element, it does nothing at all — no `preventDefault`, no document
- * undo — and the platform's field-local undo runs untouched. Getting that backwards would rewind
- * the whole deck while the user was trying to take back three characters of a slide title.
+ * In Electron this is not the undo path and must not be enabled: the Edit menu's items register
+ * their accelerators with the OS, so the chord fires the menu and the renderer's keydown may never
+ * run. Undo arrives instead as an `app:menu` event and is routed by `editActions.ts`. This handler
+ * exists for the *other* host — the evidence recorder and the unit tests, which mount this renderer
+ * in a plain browser where no menu exists — and `useMenuActions.menuOwnsEditAccelerators()` is what
+ * picks between them, so the two paths are mutually exclusive by construction and no keypress can
+ * be handled twice. See the header of `useMenuActions.ts`.
  *
- * The pieces are exported separately from the hook because the guard *is* the feature: a keyboard
- * handler is only testable through a real event, and `isEditableTarget` / `matchUndoRedoKey` are
- * where the decisions live.
+ * The guard is the same either way, and it is the feature: §5 of 10-architecture.md binds these
+ * chords "*only* when focus is not inside a text input that has its own native undo". If the event
+ * came from an editable element this does nothing at all — no `preventDefault`, no document undo —
+ * so the platform's field-local undo runs untouched. Getting that backwards would rewind the whole
+ * deck while the user was trying to take back three characters of a slide title.
+ *
+ * The pieces are exported separately from the hook because a keyboard handler is only testable
+ * through a real event, and `isEditableTarget` / `matchUndoRedoKey` are where the decisions live —
+ * `isEditableTarget` is shared with the menu dispatcher, so both paths route by one rule.
  */
 
 import { useEffect } from 'react'
@@ -64,9 +70,14 @@ export function matchUndoRedoKey(event: KeyboardEvent): UndoRedoAction | null {
  *
  * Bound on `window` rather than the shell element so a chord still works when focus has fallen to
  * `<body>` — which is where it lands after the rail deletes the button the user just clicked.
+ *
+ * `enabled: false` unbinds entirely rather than returning early inside the handler, so in Electron
+ * — where the menu owns these chords — there is no listener to reason about at all.
  */
-export function useUndoRedoKeys(undo: () => unknown, redo: () => unknown): void {
+export function useUndoRedoKeys(undo: () => unknown, redo: () => unknown, enabled = true): void {
   useEffect(() => {
+    if (!enabled) return
+
     const onKeyDown = (event: KeyboardEvent): void => {
       // A handler closer to the action already dealt with it (a dialog, a future inline editor).
       if (event.defaultPrevented) return
@@ -82,5 +93,5 @@ export function useUndoRedoKeys(undo: () => unknown, redo: () => unknown): void 
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [undo, redo])
+  }, [undo, redo, enabled])
 }

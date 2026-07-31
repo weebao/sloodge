@@ -1,0 +1,64 @@
+/**
+ * The renderer's end of the native menu, and the one place that decides which
+ * of the two undo paths is live.
+ *
+ * There are two hosts for this renderer, and exactly one of them has a menu:
+ *
+ *   Electron  — `window.sloodge` exists. The application menu owns CmdOrCtrl+Z
+ *               (an accelerator is registered with the OS), so undo arrives as
+ *               an `app:menu` event and the window keydown handler must stay
+ *               out of it.
+ *   A browser — `window.sloodge` is undefined: the evidence recorder serves the
+ *               built renderer over http, and the unit tests mount it in
+ *               happy-dom. No menu exists, so nothing would handle the chord at
+ *               all unless the keydown handler does.
+ *
+ * `useUndoRedoKeys` is therefore enabled *iff* the bridge is absent. That is
+ * what makes double-undo impossible by construction rather than by timing: the
+ * two paths are selected by a static fact about the host, not raced against
+ * each other, so no keypress can ever reach both. A guard that de-duplicated by
+ * timestamp would have to guess how long "the same keypress" lasts.
+ */
+
+import { useEffect } from 'react'
+import type { MenuAction } from '../../../shared/ipc-contract'
+import { documentEditHost, runEditAction, type EditActionHandlers } from './editActions'
+
+/** The preload surface, as much of it as the renderer needs to know about. */
+export type SloodgeBridge = {
+  onMenuAction: (listener: (action: MenuAction) => void) => () => void
+}
+
+declare global {
+  interface Window {
+    sloodge?: SloodgeBridge
+  }
+}
+
+/** The bridge, or `undefined` when this renderer is not running inside Electron. */
+export function getBridge(): SloodgeBridge | undefined {
+  return typeof window === 'undefined' ? undefined : window.sloodge
+}
+
+/**
+ * True when a native menu owns the Edit accelerators, i.e. the renderer must
+ * not bind them itself.
+ */
+export function menuOwnsEditAccelerators(): boolean {
+  return getBridge() !== undefined
+}
+
+/** Route `app:menu` events. Inert — and unsubscribed — when there is no bridge. */
+export function useMenuActions(handlers: EditActionHandlers): void {
+  const { undo, redo } = handlers
+  useEffect(() => {
+    const bridge = getBridge()
+    if (bridge === undefined) return
+    return bridge.onMenuAction((action) => {
+      if (action === 'edit.undo' || action === 'edit.redo') {
+        runEditAction(action, { undo, redo }, documentEditHost())
+      }
+      // Every other id belongs to File; its milestone will claim it here.
+    })
+  }, [undo, redo])
+}

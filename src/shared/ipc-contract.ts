@@ -11,9 +11,21 @@
  * Native-menu action ids, and the single source of truth for them: the main
  * process builds the menu from this union and the renderer switches on it.
  *
- * Edit's Undo/Redo/Cut/Copy/Paste are deliberately absent — they are Electron
- * `role:` items so the OS drives native undo/clipboard in focused inputs, and
- * they never reach the renderer as `app:menu`.
+ * `edit.undo` / `edit.redo` were deliberately *absent* through M0.4: Undo and
+ * Redo were Electron `role:` items so the OS drove native undo in focused
+ * inputs, and they never reached the renderer. M1.4 reinstates them, because a
+ * role and a document-undo accelerator cannot both own CmdOrCtrl+Z. Electron
+ * registers a menu item's accelerator with the OS (`registerAccelerator`
+ * defaults to true), so a role would consume the chord before any renderer
+ * keydown — document undo by keyboard would simply not exist in the shipped
+ * app, invisibly to a test suite that runs in happy-dom and a recording that
+ * runs in plain Chromium.
+ *
+ * So the menu owns the chord and forwards it, and the renderer decides what it
+ * means: native text undo when an editable element has focus, document undo
+ * otherwise — the rule 10-architecture.md §5 states, now enforced at the one
+ * place the keystroke arrives. Cut/Copy/Paste/SelectAll stay roles; nothing
+ * about the clipboard is ambiguous.
  */
 export const MENU_ACTIONS = [
   'file.new',
@@ -21,9 +33,22 @@ export const MENU_ACTIONS = [
   'file.export.pptx',
   'file.export.pdf',
   'file.export.html',
+  'edit.undo',
+  'edit.redo',
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
+
+/** The two ids the renderer's edit dispatcher answers to. */
+export type EditMenuAction = Extract<MenuAction, `edit.${string}`>
+
+/**
+ * Runtime guard for a value crossing the IPC boundary. The renderer must not
+ * switch on a string it merely hopes is one of ours.
+ */
+export function isMenuAction(value: unknown): value is MenuAction {
+  return typeof value === 'string' && (MENU_ACTIONS as readonly string[]).includes(value)
+}
 
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
