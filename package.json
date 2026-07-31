@@ -23,8 +23,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "fflate": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@tailwindcss/vite": "catalog:",
