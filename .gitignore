@@ -9,3 +9,6 @@ coverage/
 .DS_Store
 experiments/init/harness/node_modules/
 experiments/init/harness/package-lock.json
+
+# Review-loop verdicts are session artifacts, not product code
+.claude/reviews/
