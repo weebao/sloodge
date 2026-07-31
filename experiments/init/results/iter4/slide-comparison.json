@@ -1,5 +1,0 @@
-{
-  "confidence": 100,
-  "defects": [],
-  "summary": "All prompt requirements verified: title 'Monolith vs Microservices', two comparison columns with headers (Monolith, Microservices), exactly 4 comparison rows (Deployment, Scaling, Team Structure, Fault Isolation) each with both column cells filled, and a full-width verdict banner pinned to the bottom reading 'Recommended: Microservices for teams over 20 engineers'. Viewport clean at 1280x720 (report.json scrollW/scrollH = 1280/720, overflows=false); grid bottom lands at ~541px vs banner top at 584px so no overlap or clipping. All body/label text is 20px, headers and banner text 24px, title 44px, all at or above the 20px legibility floor with high-contrast dark-on-light and white-on-indigo pairings. SVG people icon in the banner renders as clean stroked paths with no stray artifacts. No console errors; static slide so identical t0/t2/t5 frames are expected and correct."
-}

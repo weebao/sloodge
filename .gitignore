@@ -12,3 +12,6 @@ experiments/init/harness/package-lock.json
 
 # Review-loop verdicts are session artifacts, not product code
 .claude/reviews/
+
+# Skill-iteration experiments and harnesses are local artifacts
+experiments/
