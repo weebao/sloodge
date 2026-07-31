@@ -1,0 +1,26 @@
+@import 'tailwindcss';
+
+/* CSS-first design tokens (Tailwind v4 @theme). The PowerPoint-like palette
+   lands with the shell UI; these are placeholders so the pipeline is wired. */
+@theme {
+  --color-shell-bg: #f3f3f3;
+  --color-shell-fg: #1b1b1b;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--color-shell-bg);
+  color: var(--color-shell-fg);
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  overflow: hidden;
+}

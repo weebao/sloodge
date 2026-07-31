@@ -1,0 +1,26 @@
+packages:
+  - .
+
+# Single source of truth for versions; package.json references them as "catalog:"
+catalog:
+  react: ^19.2.8
+  react-dom: ^19.2.8
+  '@types/react': ^19.2
+  '@types/react-dom': ^19.2
+  typescript: 7.0.2
+  vite: 7.3.6
+  vitest: ^4.1.10
+  tailwindcss: ^4.3.3
+  '@tailwindcss/vite': ^4.3.3
+
+# Only these may run postinstall scripts (pnpm 11 replaces onlyBuiltDependencies)
+allowBuilds:
+  electron: true
+  esbuild: true
+  '@tailwindcss/oxide': true
+
+# Supply-chain guard: don't adopt an npm publish younger than 3 days
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - '@anthropic-ai/claude-agent-sdk'
+  - '@anthropic-ai/claude-agent-sdk-*'

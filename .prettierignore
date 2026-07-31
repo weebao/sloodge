@@ -1,0 +1,6 @@
+node_modules
+dist
+out
+pnpm-lock.yaml
+.claude/plans
+experiments
