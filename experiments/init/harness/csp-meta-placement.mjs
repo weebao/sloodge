@@ -8,13 +8,18 @@
  * and HTML's CSP pragma processing returns early for a meta whose parent is not the head — so the
  * whole layer-3 policy is silently dropped.
  *
- * This measures both halves against real Chromium, using the **real** `wrapSlideHtml`:
+ * This measures three things against real Chromium, using the **real** `wrapSlideHtml`:
  *
  *   PLACEMENT   `document.head.querySelector('meta[http-equiv="Content-Security-Policy"]')` — a
  *               *structural* question asked of the parsed tree.
  *   ENFORCEMENT re-point the injected policy at `script-src 'none'`, give the probe an inline
  *               script that stamps `data-inline="RAN"`, and check the stamp is absent — i.e. the
  *               policy was really applied, not merely present in the tree.
+ *   COMPAT MODE `document.compatMode` is identical with and without the injection. Injecting ahead
+ *               of a doctype would silently drop the document into quirks, where the slide's box
+ *               model stops matching the 1280x720 the format contract measured. Comparing against
+ *               the *unwrapped* document is what makes this an assertion about the injector rather
+ *               than about the probe input: a document with no doctype is quirks either way.
  *
  * The placement oracle used to slice the serialized DOM between `<head>` and `</head>` and look for
  * the string `Content-Security-Policy`. That reported a **false pass** for the `noframes` probe,
@@ -27,9 +32,20 @@
  *
  *     node experiments/init/harness/csp-meta-placement.mjs
  *
- * Measured 2026-07-31, Chromium via Playwright: all 19 probes PASS both halves. Each fix in this
- * file's history was proven by the corresponding probe going red first: before the implied-body
- * fix, probes 1-3 failed both halves; before the `noframes`/`template` fixes, those two did.
+ * ## This corpus outlived the code it was written against
+ *
+ * Every probe here was added because it broke the *previous* implementation: a markup walk that
+ * searched for a literal `<head>` to inject after. Five review rounds found five ways to fool it —
+ * a `<head>` in a comment, a script string, an attribute, RCDATA, `<noframes>`, a `<template>`;
+ * one pushed into the body by text or a `<div>`; one after `</br>` or `</html>`. That walk is gone;
+ * `wrapSlideHtml` now injects immediately after the doctype and never looks for `<head>` at all,
+ * which makes every one of these correct by construction rather than by enumeration.
+ *
+ * The corpus is kept exactly as it was, because it is the part with the evidence in it. It is what
+ * proves the simpler implementation is not a regression, and what will catch the next person who
+ * decides the injection point should be cleverer.
+ *
+ * Measured 2026-07-31, Chromium via Playwright: all 22 probes PASS all three checks.
  */
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -65,6 +81,11 @@ const PROBES = [
   ['control: ignored </p>', `<!doctype html><html></p><head></head><body>${CANARY}`],
   ['fallback: no head', `<!doctype html><html><body>${CANARY}`],
   ['fallback: bare fragment', `<p>hi</p>${CANARY}`],
+  // Degenerate prologues. The injector must step over everything HTML's "initial" insertion mode
+  // allows before a doctype, or the meta lands ahead of the doctype and the document goes quirks.
+  ['degenerate: no doctype', `<html><head></head><body>${CANARY}`],
+  ['degenerate: comment first', `<!-- c --><!doctype html><html><body>${CANARY}`],
+  ['degenerate: BOM first', `﻿<!doctype html><html><body>${CANARY}`],
 ]
 
 const dir = mkdtempSync(join(tmpdir(), 'sloodge-csp-'))
@@ -95,10 +116,18 @@ for (const [label, source] of PROBES) {
     () => document.documentElement.getAttribute('data-inline') !== 'RAN',
   )
 
-  const ok = placement && enforced
+  // Injecting must not move the doctype. Compared against the *unwrapped* document, so this is an
+  // assertion about the injector: a doctype-less probe is quirks before and after, and passes.
+  await load(source, `${slug}_bare`)
+  const bareMode = await page.evaluate(() => document.compatMode)
+  await load(wrapped, `${slug}_mode`)
+  const wrappedMode = await page.evaluate(() => document.compatMode)
+  const modeKept = bareMode === wrappedMode
+
+  const ok = placement && enforced && modeKept
   if (!ok) failures += 1
   console.log(
-    `${ok ? 'PASS' : 'FAIL'}  ${label.padEnd(26)} meta-in-head=${String(placement).padEnd(5)} inline-blocked=${String(enforced)}`,
+    `${ok ? 'PASS' : 'FAIL'}  ${label.padEnd(26)} meta-in-head=${String(placement).padEnd(5)} inline-blocked=${String(enforced).padEnd(5)} mode=${wrappedMode}${modeKept ? '' : ` (was ${bareMode})`}`,
   )
 }
 

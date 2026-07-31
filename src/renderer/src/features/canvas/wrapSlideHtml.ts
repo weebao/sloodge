@@ -1,7 +1,7 @@
 /**
  * Layer 3 of the four-layer slide sandbox (§7 of 10-architecture.md): the slide document's *own*
- * Content-Security-Policy, injected as the first child of `<head>` — before any author content, so
- * the policy governs every byte the model wrote.
+ * Content-Security-Policy, injected ahead of all author markup so the policy governs every byte
+ * the model wrote.
  *
  * Layer 1 is the host renderer's own CSP + `contextIsolation`; layer 2 is the `sandbox="allow-scripts"`
  * iframe with **no** `allow-same-origin` (see `SlideFrame.tsx`); layer 4 is the postMessage protocol
@@ -29,11 +29,11 @@
  * So a slide document is governed by the intersection of the host policy and this one, and this
  * one is currently the *stricter* of the two on everything that matters. Two consequences:
  *
- *  - An anchor that misses (see below) does not currently open a hole — the inherited host policy
- *    still denies remote fetches. That is a safety net, not a design.
+ *  - An injection that misses does not currently open a hole — the inherited host policy still
+ *    denies remote fetches. That is a safety net, not a design.
  *  - `slide://` delivery, which the roadmap tracks as an M2 prerequisite for interactive slides,
  *    removes the net: a non-local scheme escapes inheritance, so this becomes the only policy on
- *    the frame. **The walk below has to be right before that lands, not after.**
+ *    the frame. **This injection has to be right before that lands, not after.**
  */
 
 /**
@@ -56,355 +56,114 @@ export const SLIDE_CSP = [
   "form-action 'none'",
 ].join('; ')
 
-const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`
+/** The exact markup inserted, including its leading newline. Its length *is* the offset shift. */
+export const SLIDE_CSP_INJECTION = `\n<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`
+
+/** A byte-order mark is only stripped by the parser when it is the very first thing in the stream. */
+const BOM = '﻿'
 
 /**
- * Where the meta goes: immediately after `<head>` if there is one, else after `<html>`, else after
- * the doctype, else at the very front.
+ * Where the injection goes: just past the doctype, or the front of the document.
  *
- * That ordering is what keeps the document in standards mode — a meta prepended ahead of
- * `<!doctype html>` pushes Chromium into quirks mode, where the slide's box model no longer matches
- * the 1280x720 the contract measured.
+ * The scan covers exactly what HTML's "initial" insertion mode accepts *before* a doctype, which is
+ * a closed and very short list: a BOM, whitespace, and comment tokens — where "comment token"
+ * includes `<!-- … -->`, the abrupt `<!-->` / `<!--->` forms, and bogus declarations such as
+ * `<!foo>`, all of which the tokenizer emits as comments. Anything else (a tag, text) means the
+ * parser has already left "initial", so a doctype later in the document is a parse error it
+ * discards — the document is already quirks and the front is the right place.
  *
- * ## Why this is a scanner and not a regex
- *
- * A regex for `<head>` matches the first *textual* occurrence, which need not be a tag at all. For
- * model-authored HTML — and models emit comments freely — `<!-- <head> is below --> <head>…` puts
- * the anchor inside the comment, so the entire injected meta is swallowed by `<!-- … -->` and the
- * slide runs with **no layer-3 policy**, silently: the document still renders, nothing logs. The
- * same happens for `<script>var s = "<head>"</script>` and for an attribute value such as
- * `<html data-note="<head>">`.
- *
- * Today the inherited host policy (see above) still denies the fetch a swallowed policy would
- * permit, so a missed anchor is not currently exploitable. Under `slide://` delivery it would be —
- * this is the policy that carries `connect-src 'none'`, i.e. the only thing standing between a
- * hostile slide and exfiltrating the deck.
- *
- * So the anchor is located by walking the markup: comments (including the abrupt `<!-->` forms),
- * quoted attribute values, and the interiors of every element whose content model is text rather
- * than markup — RAWTEXT, RCDATA, script data including the double-escaped state, and `plaintext`.
- * It yields a byte *offset* and the caller slices the original string at it — author bytes are
- * never rewritten, which is what keeps Design Mode's byte-span patcher (§3.3 of 30-slide-format.md)
- * valid.
- *
- * ## Tag position is not enough: the implied body
- *
- * Finding a real `<head>` *tag* is necessary but not sufficient, because the tree builder may
- * discard it. Non-whitespace text, or any start tag that is not head content, closes the implied
- * head and opens the body; a `<head>` token after that is a parse error and is dropped. A meta
- * injected there is a child of `<body>`, and HTML's CSP pragma processing returns early for a meta
- * whose parent is not the head — so the policy is dropped in full, silently. Measured, not
- * reasoned: for `<!doctype html><html>hello<head>`, Chromium's `--dump-dom` showed an *empty*
- * `<head>` with the meta in the body, and an enforcement probe under `script-src 'none'` let the
- * inline script run. So the walk tracks whether the body has been implied, and stops seeking a
- * literal `<head>` once it has. See `experiments/init/harness/csp-meta-placement.mjs`.
- *
- * ## Fail-safe for *unrecognised* states — not unconditionally
- *
- * This is a hand-rolled tokenizer, and hand-rolled tokenizers diverge from the spec at the edges.
- * The bound is that every state it does not recognise sends it to the `<html>`/doctype fallback or
- * to a prepend, all three of which sit in "before head", where the parser hoists the meta into the
- * implied `<head>` — verified in Chromium for every probe input, including the fallbacks.
- *
- * That is a statement about *unknown* states only. An earlier revision of this comment claimed the
- * walk "cannot fail to inject" the policy, full stop; the implied-body case above is precisely a
- * state it recognised and got wrong, and there the policy landed nowhere the document honoured.
- * The guarantee is: unknown input degrades to a worse-looking but correct placement. A *wrong*
- * rule still produces a wrong answer, so each rule is pinned by a mutation-verified test.
- *
- * ## What is modelled, and what is not
- *
- * The anchor decision depends on exactly two axes, and both are now closed enumerations taken from
- * the spec and pinned by tests:
- *
- *  1. **Element content models** — `CONTENT_MODEL`, the single table from which both "does this
- *     keep the implied head open" and "is this element's interior text" are derived. `HEAD_CONTENT`
- *     is the spec's "in head" element list in full.
- *  2. **Insertion-mode transitions** — character data (non-whitespace opens the body), start tags
- *     (anything not head content opens the body), and `HANDLED_END_TAGS`, the complete set of end
- *     tags the parser acts on in the head-adjacent modes: `head`, `body`, `html`, `br`.
- *
- * Rounds 1, 3, 4 and 5 of review each found one more missed member of one of those two axes —
- * `<style>`, the implied body, RCDATA, `<noframes>`, `<template>`, `</br>`, `</html>`. Each was the
- * same silent failure: the meta lands where the tree builder does not honour it, and the whole
- * policy is dropped. The enumerations are now single-sourced and test-asserted so a member cannot
- * be added unclassified, and the two facts about an element cannot drift apart.
- *
- * **Not modelled: foreign content.** Inside `<svg>`/`<math>`, HTML content models do not apply —
- * SVG's `<title>` is not RCDATA, so this walk's classification of `title` is simply wrong there.
- * That is currently harmless, and it is worth being precise about why: `svg` and `math` are not
- * head content, so `keepsHeadOpen` is false and `bodyImplied` is set at the start tag *before* the
- * interior is ever walked — the anchor is already dead and the fallback already recorded, so the
- * misclassification cannot change the outcome. Verified in Chromium for four shapes including an
- * unclosed `<svg><title><head>`. **That is an accident of ordering, not a design.** If foreign
- * elements are ever added to `CONTENT_MODEL`, or the interior walk is ever reached with the anchor
- * still live, this stops being safe — so it is named here rather than left to be rediscovered.
+ * The BOM is skipped rather than injected before: displacing it would stop it being a BOM and turn
+ * it into a zero-width character in the rendered document.
  */
-
-/**
- * End offset (exclusive) of the tag that starts at `from`, honouring quoted attribute values —
- * `<html data-note="a>b">` ends at the second `>`, not the first.
- *
- * `null` for an unterminated tag. A truncated document must not yield an anchor *inside* an open
- * tag, where the injected meta would be parsed as a pile of stray attributes rather than a policy.
- */
-function tagEnd(html: string, from: number): number | null {
-  let quote = ''
-  for (let index = from; index < html.length; index += 1) {
-    const char = html[index]!
-    if (quote !== '') {
-      if (char === quote) quote = ''
-    } else if (char === '"' || char === "'") {
-      quote = char
-    } else if (char === '>') {
-      return index + 1
-    }
-  }
-  return null
-}
-
-const TAG_START = /^<(\/?)([a-zA-Z][^\s/>]*)/
-
-/**
- * How an element's children are parsed, for anchor purposes.
- *
- *  - `normal`     — ordinary markup; keep walking into it.
- *  - `rawtext`    — RAWTEXT: children are character data (`style`, `noframes`, `xmp`, `iframe`,
- *                   and `noscript` because slide frames are `allow-scripts`, i.e. scripting-enabled).
- *  - `rcdata`     — RCDATA: character data with entities (`title`, `textarea`).
- *  - `script`     — script data, including the double-escaped state.
- *  - `plaintext`  — swallows the rest of the document; there is no end tag.
- *  - `fragment`   — children are parsed into a *separate* `DocumentFragment` (`template`), so
- *                   nothing inside is a child of the head no matter how it looks in the source.
- *
- * Everything except `normal` means a `<head>` found inside is not a head element, so the walk must
- * not anchor there.
- */
-type ContentModel = 'normal' | 'rawtext' | 'rcdata' | 'script' | 'plaintext' | 'fragment'
-
-/**
- * **The single source of truth, and it is spec-complete for head content.**
- *
- * Four review rounds each found one more missed member of what used to be two independent
- * hand-maintained sets — an element could be listed as head content but not as text content
- * (`noframes`), and nothing forced the two to agree or forced a member to be classified at all.
- * So there is now one table, both sets are *derived* from it, and `HEAD_CONTENT` below is the
- * complete "in head" element list from the HTML spec — base, basefont, bgsound, link, meta,
- * noframes, noscript, script, style, template, title — every member carrying a content model.
- * A test asserts that set equality and that classification is total, so a future member cannot be
- * added unclassified, and a classification cannot silently disagree with itself.
- *
- * A `Map`, not an object literal: element names come from untrusted markup, and `model['constructor']`
- * on a plain object resolves up the prototype chain to a function — truthy, and a misclassification.
- */
-const CONTENT_MODEL = new Map<string, ContentModel>([
-  // The HTML spec's head-content elements, in full.
-  ['base', 'normal'],
-  ['basefont', 'normal'],
-  ['bgsound', 'normal'],
-  ['link', 'normal'],
-  ['meta', 'normal'],
-  ['noframes', 'rawtext'],
-  ['noscript', 'rawtext'],
-  ['script', 'script'],
-  ['style', 'rawtext'],
-  ['template', 'fragment'],
-  ['title', 'rcdata'],
-  // Elements outside head content whose children are still not markup. They imply a body (they
-  // are not head content), but their interiors must be skipped so a `<head>` in a textarea's
-  // text cannot be mistaken for a tag.
-  ['textarea', 'rcdata'],
-  ['xmp', 'rawtext'],
-  ['iframe', 'rawtext'],
-  ['plaintext', 'plaintext'],
-])
-
-/**
- * **The complete set of end tags the parser acts on in the head-adjacent insertion modes.**
- *
- * Per the HTML parsing spec, in "before head" an end tag named `head`, `body`, `html` or `br` is
- * treated as "anything else" — insert an html head element, switch to "in head", reprocess. "In
- * head" then treats `</body>`, `</html>`, `</br>` as "anything else" — pop the head, switch to
- * "after head", reprocess. "After head" treats them as "anything else" again — insert a body
- * element and switch to "in body". So each of these four cascades the document *past* the head,
- * after which a literal `<head>` start tag is a discarded parse error and cannot be an anchor.
- *
- * **Every other end tag in those modes is a parse error and is ignored**, which is why `</p>`
- * before a `<head>` must *not* set `bodyImplied` — the implied head is still open and the anchor
- * is still good. That negative is pinned by a test too.
- *
- * This is the second of the two axes the anchor decision depends on, and it is closed the same way
- * the element axis is: one named set, spec-cited, asserted by a test — not conditions scattered
- * across the walk, which is how `</br>` and `</html>` went missing for five review rounds.
- */
-const HANDLED_END_TAGS = new Set(['head', 'body', 'html', 'br'])
-
-/** The spec's "in head" element list. Pinned exactly by a test; `html`/`head` are not members. */
-const HEAD_CONTENT = new Set([
-  'base',
-  'basefont',
-  'bgsound',
-  'link',
-  'meta',
-  'noframes',
-  'noscript',
-  'script',
-  'style',
-  'template',
-  'title',
-])
-
-/**
- * Exposed for the completeness test — the guard that makes this enumeration closed rather than
- * merely long. Not part of the module's API.
- */
-export const ANCHOR_TABLES = { CONTENT_MODEL, HEAD_CONTENT, HANDLED_END_TAGS } as const
-
-/**
- * Does a start tag keep the implied `<head>` open?
- *
- * `html` and `head` are not head *content* but obviously do not close it. `template` is head
- * content and genuinely does not open a body — but its children land in a separate tree, so a
- * later `<head>` token cannot be trusted to be a head we can inject into. Treating it as
- * body-implying is deliberately conservative: it costs a fallback placement (verified correct in
- * Chromium) and buys immunity from the whole fragment-scoping question.
- */
-function keepsHeadOpen(name: string): boolean {
-  if (name === 'html' || name === 'head') return true
-  return HEAD_CONTENT.has(name) && CONTENT_MODEL.get(name) !== 'fragment'
-}
-
-/** Elements whose interior is character data and must be skipped wholesale. */
-function textModelOf(name: string): ContentModel | null {
-  const model = CONTENT_MODEL.get(name)
-  if (model === undefined || model === 'normal' || model === 'fragment') return null
-  return model
-}
-
-/** Start and end offsets of the next `</name …>` end tag at or after `from`. */
-function findEndTag(
-  html: string,
-  name: string,
-  from: number,
-): { start: number; end: number } | null {
-  const pattern = new RegExp(`</${name}(?=[\\s/>])`, 'gi')
-  pattern.lastIndex = from
-  const match = pattern.exec(html)
-  if (match === null) return null
-  return { start: match.index, end: tagEnd(html, match.index) ?? html.length }
-}
-
-/**
- * The script-data-double-escaped state. Inside a `<script>`, once the tokenizer has seen `<!--`
- * followed by `<script`, the *next* `</script>` does not close the element — it returns the
- * tokenizer to the singly-escaped state, and the element runs to the one after that. So in
- * `<script>"<!--<script>"</script><head>` that `<head>` is still script text, where a scanner
- * stopping at the first `</script>` would happily anchor.
- */
-function isDoubleEscaped(interior: string): boolean {
-  const comment = interior.indexOf('<!--')
-  if (comment === -1) return false
-  return /<script(?=[\s/>])/i.test(interior.slice(comment))
-}
-
-/** Offset just past the text content of `name`, whose content starts at `contentStart`. */
-function skipTextContent(html: string, name: string, contentStart: number): number {
-  // `plaintext` has no end tag at all: everything after it is text, forever.
-  if (name === 'plaintext') return html.length
-
-  const first = findEndTag(html, name, contentStart)
-  if (first === null) return html.length
-  if (name !== 'script') return first.end
-
-  if (!isDoubleEscaped(html.slice(contentStart, first.start))) return first.end
-  const second = findEndTag(html, name, first.end)
-  return second === null ? html.length : second.end
-}
-
-/** Offset at which to insert, or `null` for "no anchor — prepend". */
-function findAnchorOffset(html: string): number | null {
-  let htmlEnd: number | null = null
-  let doctypeEnd: number | null = null
-  let bodyImplied = false
-  let index = 0
+export function cspInjectionOffset(html: string): number {
+  const start = html.startsWith(BOM) ? BOM.length : 0
+  let index = start
 
   while (index < html.length) {
-    const open = html.indexOf('<', index)
-    if (open === -1) break
+    const char = html[index]!
 
-    // Character data between tokens. Anything non-whitespace ends the "before head" insertion
-    // mode: the parser closes the implied head and opens the body, so a `<head>` start tag after
-    // this point is a parse error the tree builder discards. Whitespace alone is ignored.
-    if (!bodyImplied && html.slice(index, open).trim() !== '') bodyImplied = true
+    if (/\s/.test(char)) {
+      index += 1
+      continue
+    }
 
-    if (html.startsWith('<!--', open)) {
-      // Abrupt-closing comments: `<!-->` and `<!--->` are complete comments, not the start of one.
-      // Handled explicitly because searching for `-->` from `open + 4` cannot match either, and
-      // the walk would blind itself to EOF and silently fall back past a perfectly good `<head>`.
-      if (html.startsWith('<!-->', open)) {
-        index = open + 5
+    if (html.startsWith('<!--', index)) {
+      // Abrupt-closing forms are complete comments; searching for `-->` would run past them.
+      if (html.startsWith('<!-->', index)) {
+        index += 5
         continue
       }
-      if (html.startsWith('<!--->', open)) {
-        index = open + 6
+      if (html.startsWith('<!--->', index)) {
+        index += 6
         continue
       }
-      const close = html.indexOf('-->', open + 4)
-      index = close === -1 ? html.length : close + 3
+      const close = html.indexOf('-->', index + 4)
+      if (close === -1) break // unterminated: nothing after it can be a doctype
+      index = close + 3
       continue
     }
 
-    if (html.startsWith('<!', open)) {
-      const end = tagEnd(html, open)
-      if (end === null) break
-      if (doctypeEnd === null && /^<!doctype\b/i.test(html.slice(open, end))) doctypeEnd = end
-      index = end
+    if (html.startsWith('<!', index)) {
+      // The tokenizer ends a doctype at the first `>` even inside a quoted identifier (a parse
+      // error there), so a plain search matches it. A bogus `<!foo>` comment ends the same way.
+      const close = html.indexOf('>', index)
+      if (close === -1) break
+      if (/^<!doctype/i.test(html.slice(index, index + 9))) return close + 1
+      index = close + 1
       continue
     }
 
-    const match = TAG_START.exec(html.slice(open, open + 32))
-    if (!match) {
-      // A bare `<` in text (`a < b`). Not markup; keep scanning past it.
-      index = open + 1
-      continue
-    }
-
-    const closing = match[1] === '/'
-    const name = match[2]!.toLowerCase()
-    const end = tagEnd(html, open)
-    if (end === null) break
-
-    // A literal `<head>` is only an anchor while the implied head is still open. Past that point
-    // the tree builder ignores the token, and a meta injected after it is a child of `<body>`,
-    // where CSP pragma processing drops the policy entirely. Falling back is what saves it.
-    if (!closing && name === 'head') {
-      if (bodyImplied) break
-      return end
-    }
-    if (!closing && name === 'html' && htmlEnd === null) htmlEnd = end
-    // A real <body> start tag ends the prologue outright. Injecting into <body> is worse than the
-    // <html>/doctype fallbacks below, which are still inside the document's prologue.
-    if (!closing && name === 'body') break
-    // Any start tag that does not keep the implied head open opens the body, exactly as text does.
-    if (!closing && !keepsHeadOpen(name)) bodyImplied = true
-    // ...and so does any end tag the parser *acts on* in these modes. See HANDLED_END_TAGS.
-    if (closing && HANDLED_END_TAGS.has(name)) bodyImplied = true
-
-    if (!closing && textModelOf(name) !== null) {
-      // Text content is not markup: a `<head>` in a JS string, a CSS selector or a <title> is data.
-      index = skipTextContent(html, name, end)
-      continue
-    }
-
-    index = end
+    break
   }
 
-  return htmlEnd ?? doctypeEnd
+  return start
 }
 
-/** Inject the slide CSP into a complete slide document. Pure; author bytes are never rewritten. */
+/**
+ * Inject the slide CSP into a slide document.
+ *
+ * ## The contract
+ *
+ * This is a **constant-length prefix insertion at a computed offset**. `SLIDE_CSP_INJECTION` goes
+ * immediately after the document's doctype (or at the front when there is none) and nothing else
+ * changes:
+ *
+ *  - every author byte before the offset keeps its position,
+ *  - every author byte after it shifts by exactly `SLIDE_CSP_INJECTION.length`,
+ *  - no author byte is rewritten, reordered or re-serialized.
+ *
+ * That is the whole guarantee, and it is what keeps Design Mode's byte-span patcher valid: a span
+ * into the *file* maps into the *rendered document* by adding one known constant.
+ *
+ * ## Why the doctype is the right place, and why that is enough
+ *
+ * A meta here is parsed in the "before html" / "before head" insertion modes, where the tree builder
+ * creates the implied `<html>` and `<head>` and inserts the meta *into that head* — and the author's
+ * own `<head>`, wherever it appears, merges into the same element. So the policy is a head child for
+ * every input, including documents whose `<head>` is missing, late, or discarded as a parse error.
+ *
+ * This replaced ~200 lines that walked the markup looking for a literal `<head>` to inject after.
+ * Five consecutive review rounds each found one more input where that walk anchored somewhere the
+ * tree builder did not honour — a `<head>` inside a comment, a script string, an attribute value,
+ * RCDATA, `<noframes>`, a `<template>`; a `<head>` after text or a `<div>` had implicitly opened the
+ * body; a `<head>` after `</br>` or `</html>` — and every miss silently dropped the whole policy.
+ * All of them are handled by construction now, because nothing looks for `<head>` any more. The walk
+ * was never load-bearing for correctness: it only made the meta land *inside* the author's literal
+ * head rather than just before it. It was cosmetics, and all five defects lived in it. The Chromium
+ * corpus that found them is kept as the regression net — 22 probes in
+ * `experiments/init/harness/csp-meta-placement.mjs`, each asserting the policy is a head child, that
+ * it is actually enforced, and that compat mode is unchanged.
+ *
+ * ## Standards mode
+ *
+ * The one thing this must not do is displace the doctype: a doctype that is no longer first puts
+ * Chromium in quirks mode, where the slide's box model stops matching the 1280x720 the contract
+ * measured. Hence "after the doctype", and hence the prologue scan. A document with *no* doctype is
+ * already quirks before this function touches it — injecting at the front neither causes nor repairs
+ * that. Repairing it belongs to the linter (SL-G* of 30-slide-format.md): silently inserting a
+ * doctype would change how an author's document lays out, which is not this function's business.
+ */
 export function wrapSlideHtml(html: string): string {
-  const at = findAnchorOffset(html)
-  if (at === null) return `${CSP_META}\n${html}`
-  return `${html.slice(0, at)}\n${CSP_META}${html.slice(at)}`
+  const at = cspInjectionOffset(html)
+  return `${html.slice(0, at)}${SLIDE_CSP_INJECTION}${html.slice(at)}`
 }

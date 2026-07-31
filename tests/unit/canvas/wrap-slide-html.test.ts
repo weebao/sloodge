@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ANCHOR_TABLES,
+  cspInjectionOffset,
   SLIDE_CSP,
+  SLIDE_CSP_INJECTION,
   wrapSlideHtml,
 } from '../../../src/renderer/src/features/canvas/wrapSlideHtml'
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
 
 const SLIDE_ID = 's_01H8XQZ4P7K2M9NB3VYRTC6FDA'
 const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`
+const BOM = '﻿'
 
 describe('SLIDE_CSP', () => {
   it('is the layer-3 policy of 10-architecture.md §7', () => {
@@ -32,67 +34,6 @@ describe('SLIDE_CSP', () => {
     expect(SLIDE_CSP).not.toContain("'self'")
     expect(SLIDE_CSP).not.toContain('*')
   })
-})
-
-describe('wrapSlideHtml', () => {
-  it('injects the policy as the first thing inside <head>', () => {
-    const wrapped = wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID, title: 'Q3' }))
-    const meta = wrapped.indexOf('<meta http-equiv="Content-Security-Policy"')
-    expect(meta).toBeGreaterThan(-1)
-    expect(wrapped).toContain(`content="${SLIDE_CSP}"`)
-    // Before every piece of author content the policy has to govern.
-    expect(meta).toBeGreaterThan(wrapped.indexOf('<head>'))
-    expect(meta).toBeLessThan(wrapped.indexOf('<title>'))
-    expect(meta).toBeLessThan(wrapped.indexOf('<style>'))
-    expect(meta).toBeLessThan(wrapped.indexOf('<body>'))
-  })
-
-  it('keeps the doctype first so the slide stays out of quirks mode', () => {
-    const wrapped = wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))
-    expect(wrapped.startsWith('<!doctype html>')).toBe(true)
-  })
-
-  it('preserves the author bytes exactly — injection is an insert, never a re-serialization', () => {
-    const original = createStarterSlideHtml({ id: SLIDE_ID, title: 'Q3', subtitle: '<b> & "x"' })
-    const wrapped = wrapSlideHtml(original)
-    const injected = wrapped.replace(/\n<meta http-equiv="Content-Security-Policy"[^>]*>/, '')
-    expect(injected).toBe(original)
-  })
-
-  it('falls back to <html> when there is no head', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html lang="en"><body>hi</body></html>')
-    expect(wrapped.indexOf('<meta')).toBeGreaterThan(wrapped.indexOf('<html lang="en">'))
-    expect(wrapped.indexOf('<meta')).toBeLessThan(wrapped.indexOf('<body>'))
-  })
-
-  it('falls back to the doctype when there is no html tag', () => {
-    const wrapped = wrapSlideHtml('<!DOCTYPE html>\n<body>hi</body>')
-    expect(wrapped.startsWith('<!DOCTYPE html>')).toBe(true)
-    expect(wrapped.indexOf('<meta')).toBeLessThan(wrapped.indexOf('<body>'))
-  })
-
-  it('prepends to a bare fragment', () => {
-    expect(wrapSlideHtml('<p>hi</p>')).toBe(
-      `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">\n<p>hi</p>`,
-    )
-  })
-
-  it('matches head and html case-insensitively, with attributes', () => {
-    const wrapped = wrapSlideHtml('<HTML><HEAD data-x="1"><title>t</title></HEAD></HTML>')
-    expect(wrapped.indexOf('<meta')).toBeGreaterThan(wrapped.indexOf('<HEAD data-x="1">'))
-    expect(wrapped.indexOf('<meta')).toBeLessThan(wrapped.indexOf('<title>'))
-  })
-
-  // CSP composes by intersection: a second policy can only narrow the document further, so a
-  // hostile slide shipping its own permissive meta cannot widen ours. Nothing is stripped —
-  // rewriting author bytes is what Design Mode's byte-span patcher must never have to undo.
-  it('leaves an author-supplied policy in place and adds ours ahead of it', () => {
-    const hostile =
-      '<html><head><meta http-equiv="Content-Security-Policy" content="default-src *">'
-    const wrapped = wrapSlideHtml(hostile)
-    expect(wrapped).toContain('content="default-src *"')
-    expect(wrapped.indexOf(SLIDE_CSP)).toBeLessThan(wrapped.indexOf('default-src *'))
-  })
 
   it('never emits a sandbox-defeating token', () => {
     expect(wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))).not.toContain(
@@ -102,334 +43,136 @@ describe('wrapSlideHtml', () => {
 })
 
 /**
- * The enumeration guard.
- *
- * Rounds 1, 3, 4 and 5 of review each found one more missed member of the anchor tables — a
- * `<head>` inside `<style>`, then inside RCDATA, then inside `<noframes>`, then `<template>`, then
- * `</br>`/`</html>` — each silently dropping the whole layer-3 policy. Two axes carry the whole
- * decision: which elements keep the implied head open (and hide markup), and which end tags cascade
- * past it. Both are now single-sourced, and these tests are what make them *closed*: the
- * head-content set must equal the spec's "in head" list, every member must carry a content model,
- * and the handled end tags must be exactly {head, body, html, br}. Adding a member without
- * classifying it, or dropping one, fails here rather than in a future review round.
+ * The contract is a constant-length prefix insertion at a computed offset. These are the properties
+ * every caller depends on — most of all Design Mode, whose byte spans into the file map into the
+ * rendered document by adding exactly one constant.
  */
-describe('anchor tables are spec-complete', () => {
-  // https://html.spec.whatwg.org/multipage/parsing.html — "in head" insertion mode.
-  const SPEC_HEAD_CONTENT = [
-    'base',
-    'basefont',
-    'bgsound',
-    'link',
-    'meta',
-    'noframes',
-    'noscript',
-    'script',
-    'style',
-    'template',
-    'title',
+describe('wrapSlideHtml is a pure insertion', () => {
+  const SOURCES = [
+    createStarterSlideHtml({ id: SLIDE_ID, title: 'Q3', subtitle: '<b> & "x"' }),
+    '<!doctype html>\n<html><head><title>t</title></head><body>b</body></html>',
+    '<html>no doctype</html>',
+    '<p>fragment</p>',
+    '',
+    `${BOM}<!doctype html><html>`,
+    '<!-- leading comment --><!doctype html><html>',
   ]
 
-  it('head content is exactly the spec list — no more, no less', () => {
-    expect([...ANCHOR_TABLES.HEAD_CONTENT].toSorted()).toEqual(SPEC_HEAD_CONTENT.toSorted())
+  it.each(SOURCES.map((source, index) => [index, source] as const))(
+    'leaves every author byte intact (%i)',
+    (_index, source) => {
+      const at = cspInjectionOffset(source)
+      const wrapped = wrapSlideHtml(source)
+
+      // Byte identity, stated three ways: the prefix, the suffix, and removing the injection.
+      expect(wrapped.slice(0, at)).toBe(source.slice(0, at))
+      expect(wrapped.slice(at + SLIDE_CSP_INJECTION.length)).toBe(source.slice(at))
+      expect(wrapped.replace(SLIDE_CSP_INJECTION, '')).toBe(source)
+      expect(wrapped).toHaveLength(source.length + SLIDE_CSP_INJECTION.length)
+    },
+  )
+
+  it.each(SOURCES.map((source, index) => [index, source] as const))(
+    'shifts trailing author offsets by exactly one constant (%i)',
+    (_index, source) => {
+      const at = cspInjectionOffset(source)
+      const wrapped = wrapSlideHtml(source)
+
+      for (let offset = at; offset < source.length; offset += 1) {
+        expect(wrapped[offset + SLIDE_CSP_INJECTION.length]).toBe(source[offset])
+      }
+    },
+  )
+
+  it('injects the policy exactly once', () => {
+    const wrapped = wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))
+    expect(wrapped.split('http-equiv="Content-Security-Policy"')).toHaveLength(2)
   })
 
-  it('classifies every head-content element', () => {
-    for (const name of SPEC_HEAD_CONTENT) {
-      expect(ANCHOR_TABLES.CONTENT_MODEL.get(name), `${name} is unclassified`).toBeDefined()
-    }
-  })
+  // Policies compose by intersection, so an author's own meta can only narrow their document
+  // further. Nothing is stripped — rewriting author bytes is what the contract above forbids.
+  it('leaves an author-supplied policy in place and adds ours ahead of it', () => {
+    const hostile =
+      '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src *">'
+    const wrapped = wrapSlideHtml(hostile)
 
-  // The classification has to be right, not merely present. These are the four that are not
-  // ordinary markup, and each one is a policy-dropping bug if it is recorded as `normal`.
-  it('records the non-markup content models correctly', () => {
-    const expected: Record<string, string> = {
-      noframes: 'rawtext',
-      noscript: 'rawtext',
-      style: 'rawtext',
-      script: 'script',
-      title: 'rcdata',
-      template: 'fragment',
-      textarea: 'rcdata',
-      xmp: 'rawtext',
-      iframe: 'rawtext',
-      plaintext: 'plaintext',
-    }
-    for (const [name, model] of Object.entries(expected)) {
-      expect(ANCHOR_TABLES.CONTENT_MODEL.get(name), name).toBe(model)
-    }
-  })
-
-  // The second axis. In before-head / in-head / after-head, these four end tags are *acted on* and
-  // cascade the document past the head; every other end tag is a parse error and is ignored.
-  it('handled end tags are exactly head, body, html, br', () => {
-    expect([...ANCHOR_TABLES.HANDLED_END_TAGS].toSorted()).toEqual(
-      ['body', 'br', 'head', 'html'].toSorted(),
-    )
-  })
-
-  it('reads element names as data, not through the prototype chain', () => {
-    // A `Map`, so a hostile `<constructor>` tag cannot resolve to a truthy classification.
-    expect(ANCHOR_TABLES.CONTENT_MODEL.get('constructor')).toBeUndefined()
-    expect(ANCHOR_TABLES.CONTENT_MODEL.get('toString')).toBeUndefined()
-    expect(ANCHOR_TABLES.HEAD_CONTENT.has('constructor')).toBe(false)
+    expect(wrapped).toContain('content="default-src *"')
+    expect(wrapped.indexOf(SLIDE_CSP)).toBeLessThan(wrapped.indexOf('default-src *'))
   })
 })
 
 /**
- * The anchor must be a *tag*, never merely the text `<head>`.
+ * The injection point. Only two things can go wrong: displacing the doctype (which drops the
+ * document into quirks mode, where the slide's box model no longer matches the 1280x720 the format
+ * contract measured), and landing after author markup (where the policy would not govern it).
  *
- * A `<head>` inside a comment, a script string or an attribute value captures a naive regex, and
- * the injected meta is then swallowed by whatever it landed inside — the policy vanishes with the
- * document still rendering perfectly and nothing logged. Today the host policy the frame inherits
- * still denies the fetch that would need (see `useSlideUrl`), but `slide://` delivery removes that
- * net and makes this policy the only thing enforcing `connect-src 'none'` — at which point each of
- * these is a silent exfiltration path.
- *
- * Every case asserts the meta is really *outside* the decoy and inside the real head. Placement in
- * the *parsed tree* — the half a string assertion cannot see — is measured against Chromium by
+ * That the resulting meta really is a child of `<head>` and really is enforced is not a string
+ * property and is not asserted here — it is measured against Chromium for all 22 corpus inputs by
  * `experiments/init/harness/csp-meta-placement.mjs`.
  */
-describe('wrapSlideHtml anchor is markup-aware', () => {
-  function assertLivePolicy(wrapped: string): void {
+describe('cspInjectionOffset', () => {
+  it('lands immediately after the doctype, before all author markup', () => {
+    const wrapped = wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID, title: 'Q3' }))
+
+    expect(wrapped.startsWith('<!doctype html>')).toBe(true)
     const meta = wrapped.indexOf(CSP_META)
     expect(meta).toBeGreaterThan(-1)
-    // Not buried in a comment: no unclosed `<!--` may precede the meta.
-    const commentOpen = wrapped.lastIndexOf('<!--', meta)
-    if (commentOpen !== -1) {
-      expect(wrapped.indexOf('-->', commentOpen)).toBeLessThan(meta)
+    for (const authorMarkup of ['<html', '<head', '<title>', '<style>', '<body>']) {
+      expect(meta).toBeLessThan(wrapped.indexOf(authorMarkup))
     }
-    // Not buried in a script.
-    const scriptOpen = wrapped.lastIndexOf('<script', meta)
-    if (scriptOpen !== -1) {
-      expect(wrapped.indexOf('</script', scriptOpen)).toBeLessThan(meta)
-    }
-  }
-
-  it('ignores a <head> hidden inside an HTML comment', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html>\n<!-- <head> is below -->\n<head><title>t</title></head>\n<body>b</body></html>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('-->'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
   })
 
-  it('ignores a <head> inside a script string', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html><script>var s = "<head>"</script>\n<head><title>t</title></head>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('</script>'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
-  })
-
-  it('ignores a <head> inside a quoted attribute value', () => {
-    const wrapped = wrapSlideHtml('<html data-note="<head> not really"><head><title>t</title>')
-
-    assertLivePolicy(wrapped)
-    // Strictly after the attribute value closes: landing inside it would parse the whole policy
-    // as part of `data-note` and leave the document with no CSP at all.
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('not really">'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
-  })
-
-  it('ignores a <head> inside a style block', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html><style>a[x="<head>"]{color:red}</style><head><title>t</title>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('</style>'))
-  })
-
-  it('anchors on an uppercase <HEAD> and on an attributed <head lang=…>', () => {
-    for (const source of [
-      '<!doctype html>\n<HTML><HEAD><TITLE>t</TITLE>',
-      '<!doctype html>\n<html><head lang="en" data-x=\'a>b\'><title>t</title>',
+  it('matches the doctype case-insensitively and with legacy identifiers', () => {
+    for (const doctype of [
+      '<!DOCTYPE html>',
+      '<!DocType HTML>',
+      '<!DOCTYPE html SYSTEM "about:legacy-compat">',
     ]) {
-      const wrapped = wrapSlideHtml(source)
-      assertLivePolicy(wrapped)
-      expect(wrapped.toLowerCase().indexOf(CSP_META.toLowerCase())).toBeLessThan(
-        wrapped.toLowerCase().indexOf('<title>'),
-      )
+      const wrapped = wrapSlideHtml(`${doctype}<html><head>`)
+      expect(wrapped.startsWith(`${doctype}\n`)).toBe(true)
+      expect(wrapped.indexOf(CSP_META)).toBe(doctype.length + 1)
     }
   })
 
-  it('never injects into the middle of an unterminated tag', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html lang="en"')
-    assertLivePolicy(wrapped)
-    // The tag runs to EOF, so the doctype is the only usable anchor.
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<html'))
-  })
-
-  it('falls back rather than injecting inside <body>', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><body><p>no head here</p></body></html>')
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<body>'))
-  })
-
-  it('leaves an unterminated comment blinded to the end of the document', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html>\n<!-- <head> and no terminator')
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<!--'))
-  })
-
-  // The tokenizer has several states in which `<head>` is character data rather than a tag. Each
-  // of these anchors the meta into a text node, where the policy is inert — the same silent
-  // failure class as the comment case, reached with adversarial rather than ordinary input.
-  it('ignores a <head> inside RCDATA (<title>)', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><title>a<head>b</title>')
-
-    assertLivePolicy(wrapped)
-    // Anchored at the <html> fallback, before the decoy — not between `a` and `b`.
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
-  })
-
-  it('ignores a <head> inside RCDATA (<textarea>)', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><textarea><head></textarea>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<textarea>'))
-  })
-
-  // Slide frames are `allow-scripts`, i.e. scripting-enabled, so <noscript> content is raw text.
-  it('ignores a <head> inside <noscript>', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><noscript><head></noscript>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<noscript>'))
-  })
-
-  // Inside a script, `<!--` followed by `<script` enters the double-escaped state, where the next
-  // `</script>` does NOT close the element — so the `<head>` after it is still script text.
-  it('ignores a <head> after a script-data-double-escaped false close', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html><script>/*<!--<script>*/</script><head><title>t</title>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<script>'))
-  })
-
-  // Fail-safe, not fail-open: `<!-->` is a complete comment, and mishandling it used to blind the
-  // walk to EOF and skip a perfectly good <head>.
-  it('handles the abrupt-closing comment forms and still finds the real head', () => {
-    for (const abrupt of ['<!-->', '<!--->']) {
-      const wrapped = wrapSlideHtml(`<!doctype html>\n<html>${abrupt}<head><title>t</title>`)
-
-      assertLivePolicy(wrapped)
-      expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
-      expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
-    }
-  })
-
-  /**
-   * A `<head>` *tag* is not enough — the tree builder has to keep it. Non-whitespace text or a
-   * non-head start tag closes the implied head and opens the body, and the `<head>` token after
-   * that is discarded. A meta injected there is a child of `<body>`, where CSP pragma processing
-   * drops the policy outright (verified in Chromium: `--dump-dom` shows an empty `<head>`, and
-   * under `script-src 'none'` the inline script runs). The fallback placement is what saves it.
-   *
-   * See `experiments/init/harness/csp-meta-placement.mjs`.
-   */
+  // Everything HTML's "initial" insertion mode allows before a doctype has to be stepped over, or
+  // the meta lands ahead of the doctype and the document silently becomes quirks.
   it.each([
-    ['text', '<!doctype html>\n<html>hello<head><title>t</title>'],
-    ['a <div>', '<!doctype html>\n<html><div></div><head><title>t</title>'],
-    ['a <p> with text', '<!doctype html>\n<html><p>x<head><title>t</title>'],
-  ])('ignores a <head> that %s has already pushed into the body', (_label, source) => {
+    ['leading whitespace', '\n\t  <!doctype html><html>'],
+    ['a comment', '<!-- hello --><!doctype html><html>'],
+    ['several comments and whitespace', '<!--a-->\n<!--b--> <!doctype html><html>'],
+    ['an abrupt comment', '<!--><!doctype html><html>'],
+    ['the other abrupt comment', '<!---><!doctype html><html>'],
+    ['a bogus declaration', '<!foo><!doctype html><html>'],
+  ])('steps over %s to keep the doctype first', (_label, source) => {
     const wrapped = wrapSlideHtml(source)
 
-    assertLivePolicy(wrapped)
-    // Anchored at the <html> fallback — before the body-implying content, where the parser is
-    // still in "before head" and hoists the meta into the implied head.
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<head>'))
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<html>'))
+    const doctypeEnd = wrapped.indexOf('<!doctype html>') + '<!doctype html>'.length
+    expect(wrapped.indexOf(CSP_META)).toBe(doctypeEnd + 1)
   })
 
-  // Negative control: `<style>` IS head content, so the implied head is still open and the literal
-  // `<head>` after it remains a valid anchor. The implied-body rule must not overreach.
-  it('still anchors on a <head> preceded only by head content', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html><style>.a{}</style><head><title>t</title>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
+  it('keeps a byte-order mark first', () => {
+    expect(wrapSlideHtml(`${BOM}<!doctype html><html>`).startsWith(BOM)).toBe(true)
+    // With no doctype the injection still goes after the BOM, never before it.
+    expect(cspInjectionOffset(`${BOM}<html>`)).toBe(1)
+    expect(wrapSlideHtml(`${BOM}<html>`).startsWith(BOM)).toBe(true)
   })
 
-  it('is not tripped by whitespace before the head', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html>\n\t  \n<head><title>t</title>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+  it('injects at the front when there is no doctype', () => {
+    expect(cspInjectionOffset('<html><head>')).toBe(0)
+    expect(cspInjectionOffset('')).toBe(0)
+    expect(cspInjectionOffset('<p>fragment</p>')).toBe(0)
   })
 
-  // `noframes` is RAWTEXT, like `style` — but it is also head content, so it does not imply a
-  // body either. Both facts have to be recorded, which is why they now come from one table.
-  it('ignores a <head> inside RAWTEXT <noframes>', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><noframes><head></noframes>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<noframes>'))
+  // A doctype only counts in the prologue. After author markup the parser discards it as a parse
+  // error and the document is already quirks, so injecting after it would gain nothing and would
+  // put the policy behind author content.
+  it('ignores a doctype that appears after author markup', () => {
+    expect(cspInjectionOffset('<html><!doctype html>')).toBe(0)
+    expect(cspInjectionOffset('text<!doctype html>')).toBe(0)
   })
 
-  // A template's children are parsed into a separate DocumentFragment, so a meta injected there is
-  // not a child of the head and CSP pragma processing ignores it.
-  it('ignores a <head> inside a <template>', () => {
-    const wrapped = wrapSlideHtml(
-      '<!doctype html>\n<html><template><head></head></template><title>t</title>',
-    )
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<template>'))
-  })
-
-  it('still anchors on a real <head> that precedes a <template>', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><head><template><p>x</p></template>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<template>'))
-  })
-
-  /**
-   * End tags open the body too. `</br>` and `</html>` cascade before-head -> in-head -> after-head
-   * -> body inserted, so the `<head>` that follows is a discarded parse error and a meta anchored
-   * there is a child of `<body>`, where the policy is dropped. Chromium-confirmed: before this was
-   * handled, the `script-src 'none'` canary RAN for each of these.
-   */
-  it.each([
-    ['</br>', '<!doctype html>\n<html></br><head><title>t</title>'],
-    ['</html>', '<!doctype html>\n<html></html><head><title>t</title>'],
-    [
-      'a <meta> then </br>',
-      '<!doctype html>\n<html><meta charset="utf-8"></br><head><title>t</title>',
-    ],
-  ])('ignores a <head> that %s has already pushed into the body', (_label, source) => {
-    const wrapped = wrapSlideHtml(source)
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<head>'))
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<html>'))
-  })
-
-  // Negative control for the same axis: `</p>` is a parse error in these modes and is *ignored*,
-  // so the implied head is still open and the literal `<head>` after it is still a valid anchor.
-  // The end-tag rule must not overreach into "any end tag ends the head".
-  it('still anchors on a <head> after an ignored end tag', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html></p><head><title>t</title>')
-
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
-    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
-  })
-
-  it('treats a bare `<` in text as text, not as a tag', () => {
-    const wrapped = wrapSlideHtml('<!doctype html>\n<html><head><p>a < b</p>')
-    assertLivePolicy(wrapped)
-    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+  it('does not run past an unterminated comment or declaration', () => {
+    expect(cspInjectionOffset('<!-- unterminated <!doctype html>')).toBe(0)
+    expect(cspInjectionOffset('<!unterminated')).toBe(0)
   })
 })
