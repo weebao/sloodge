@@ -7,6 +7,24 @@
  * M0.3 stub — channels are declared, payloads land with their features.
  */
 
+/**
+ * Native-menu action ids, and the single source of truth for them: the main
+ * process builds the menu from this union and the renderer switches on it.
+ *
+ * Edit's Undo/Redo/Cut/Copy/Paste are deliberately absent — they are Electron
+ * `role:` items so the OS drives native undo/clipboard in focused inputs, and
+ * they never reach the renderer as `app:menu`.
+ */
+export const MENU_ACTIONS = [
+  'file.new',
+  'file.open',
+  'file.export.pptx',
+  'file.export.pdf',
+  'file.export.html',
+] as const
+
+export type MenuAction = (typeof MENU_ACTIONS)[number]
+
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
   'app:ping': { req: Record<string, never>; res: { pong: true } }
@@ -14,7 +32,7 @@ export type IpcRequests = {
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
 export type IpcEvents = {
-  'app:menu': { action: string }
+  'app:menu': MenuAction
 }
 
 export type IpcRequestChannel = keyof IpcRequests

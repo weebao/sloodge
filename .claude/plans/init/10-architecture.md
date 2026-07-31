@@ -125,7 +125,7 @@ export type IpcEvents = {
   'agent:ask':      PermissionRequest;   // canUseTool / AskUserQuestion round-trip
   'present:state':  { index: number; step: number; elapsedMs: number };
   'export:progress':{ jobId: string; done: number; total: number; phase: string };
-  'app:menu':       MenuAction;          // native menu -> renderer (e.g. 'edit.undo')
+  'app:menu':       MenuAction;          // native menu -> renderer (e.g. 'file.new'; Edit items are roles, not events)
 };
 ```
 

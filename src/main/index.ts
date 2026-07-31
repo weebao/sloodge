@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
+import { installAppMenu } from './menu/appMenu'
 
 const preloadPath = fileURLToPath(new URL('../preload/index.cjs', import.meta.url))
 const rendererDistIndex = fileURLToPath(new URL('../renderer/index.html', import.meta.url))
@@ -11,7 +12,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 1024,
     minHeight: 640,
     show: false,
-    autoHideMenuBar: true,
+    autoHideMenuBar: false,
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: preloadPath,
@@ -48,6 +49,7 @@ if (!gotSingleInstanceLock) {
   app.quit()
 } else {
   void app.whenReady().then(() => {
+    installAppMenu()
     createMainWindow()
 
     app.on('activate', () => {
