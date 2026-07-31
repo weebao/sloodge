@@ -41,18 +41,23 @@ import { resolveSlideRequest } from './slideResponse'
  *   permits. It grants the scheme no privilege over the app: the frame is still an opaque origin
  *   from `sandbox="allow-scripts"` with no `allow-same-origin`.
  *
- * - `supportFetchAPI: false` — the slide contract forbids network at runtime and the injected
- *   policy says `connect-src 'none'`, so no slide has any business `fetch`-ing anything, least of
- *   all another `slide://` URL. Leaving it off means the scheme answers navigations only; a
- *   document cannot use it as a read primitive against sibling slides even if it guessed an id.
+ * - `supportFetchAPI: false` — defence in depth, **not** the operative guard it was first described
+ *   as. The slide contract forbids runtime network and the injected `connect-src 'none'` already
+ *   blocks a slide from `fetch`-ing a sibling `slide://` URL: measured with `supportFetchAPI: true`,
+ *   the sibling read still failed, because the slide's own policy governs regardless. Leaving it off
+ *   is correct hygiene — the scheme answers navigations only — but the sibling-read boundary is
+ *   `connect-src`, not this flag.
  *
  * - `corsEnabled: false` — follows from the above. There are no cross-origin reads to enable
  *   because there are no subresource loads at all: slides inline every asset as a `data:` URI
  *   (§3.5 of 30-slide-format.md).
  *
- * - `bypassCSP: false` — the load-bearing negative. This flag makes a scheme's responses ignore CSP
- *   entirely; on the one scheme that carries semi-untrusted model-generated code it would undo the
- *   whole of sandbox layer 3.
+ * - `bypassCSP: false` — correct, but weaker than "load-bearing" once claimed. This flag governs
+ *   whether *other* pages may load `slide://` resources despite **their** CSP; it does not exempt a
+ *   slide document's own outbound requests from the slide's own policy. Measured: flipping it (and
+ *   `supportFetchAPI`) to `true` left containment intact — zero exfil, sibling reads still rejected —
+ *   because layer 3 is what governs the slide. Kept `false` as hygiene; the real boundary is the
+ *   injected policy plus the opaque origin.
  *
  * - `allowServiceWorkers: false` — a service worker outlives the document that registered it and
  *   would survive revoke, which is precisely the lifetime guarantee this milestone is built on.
@@ -97,6 +102,19 @@ const trackedPublishers = new WeakSet<WebContents>()
  * slide — so the visible symptom of "you have reloaded forty times" is slides that quietly render
  * blank. Hence three hooks, not one: navigation covers reload, `destroyed` covers close, and
  * `render-process-gone` covers the crash that precedes an automatic reload.
+ *
+ * The navigation hook is `did-navigate`, deliberately, and the choice is load-bearing. An earlier
+ * revision used `did-start-navigation`, which fires the instant a navigation is *attempted* —
+ * including main-frame navigations that the app's own `will-navigate` guard then refuses, and
+ * including an ordinary anchor click or a file dropped on the window. That wiped the whole registry
+ * for a navigation that never happened, leaving every live slide frame pointing at a `slide://` URL
+ * whose document had just been reclaimed — the deck poisoned, blank on the next reload of any frame,
+ * with nothing in any log. `did-navigate` fires only for a main-frame navigation that has actually
+ * committed, which is exactly the set that invalidates the renderer's published documents; it still
+ * covers reload and HMR full refresh (a committed navigation to the same URL), and it does not fire
+ * for in-page/hash navigations (those keep the document and its frames). Verified by the mocked-IPC
+ * test in `tests/unit/slide/slide-protocol.test.ts` — a blocked navigation must leave the registry
+ * intact, a committed one must clear it.
  */
 function trackPublisher(registry: SlideRegistry, sender: WebContents): void {
   if (trackedPublishers.has(sender)) return
@@ -108,11 +126,10 @@ function trackPublisher(registry: SlideRegistry, sender: WebContents): void {
 
   sender.on('destroyed', drop)
   sender.on('render-process-gone', drop)
-  sender.on('did-start-navigation', (details) => {
-    // Subframe navigations are the slides themselves loading; only the *app* document going away
-    // invalidates the whole set. A same-document navigation keeps the renderer and its frames.
-    if (details.isMainFrame && !details.isSameDocument) drop()
-  })
+  // `did-navigate`, NOT `did-start-navigation`: the latter fires for navigations that are then
+  // refused (a `will-navigate` block, an anchor click), which would empty the registry while the
+  // page stays put. This one fires only after a main-frame navigation commits.
+  sender.on('did-navigate', drop)
 }
 
 /**
@@ -153,12 +170,15 @@ export function installSlideProtocol(registry: SlideRegistry = new SlideRegistry
     return { id: result.id }
   })
 
-  ipcMain.handle(SLIDE_REVOKE_CHANNEL, (_event, payload: unknown): SlideRevokeResponse => {
+  ipcMain.handle(SLIDE_REVOKE_CHANNEL, (event, payload: unknown): SlideRevokeResponse => {
     const id = (payload as { id?: unknown } | null)?.id
     if (!isSlideDocumentId(id)) {
       throw new Error('slide:revoke requires a slide document id')
     }
-    return { revoked: registry.revoke(id) }
+    // Owner-scoped, mirroring publish: a renderer may only revoke what it published, so one window
+    // cannot drop another window's slide. Not exploitable today (ids are 128-bit and never leave
+    // the publishing renderer), but it makes the ownership model uniform rather than half-applied.
+    return { revoked: registry.revoke(id, event.sender.id) }
   })
 
   return registry

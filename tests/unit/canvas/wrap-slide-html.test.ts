@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   cspInjectionOffset,
+  SLIDE_BLOCKED_SOCKET_APIS,
   SLIDE_CSP,
   SLIDE_CSP_INJECTION,
+  SLIDE_RUNTIME_GUARD,
   wrapSlideHtml,
 } from '../../../src/renderer/src/features/canvas/wrapSlideHtml'
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
@@ -39,6 +41,60 @@ describe('SLIDE_CSP', () => {
     expect(wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))).not.toContain(
       'allow-same-origin',
     )
+  })
+})
+
+/**
+ * The socket-API guard. No CSP directive governs WebRTC, so `connect-src 'none'` does not stop a
+ * running slide from reaching an arbitrary host through `RTCPeerConnection` — measured, real STUN
+ * packets left a `slide://` slide. The guard neutralizes the constructors before author script runs.
+ * That behaviour is proven end-to-end in Chromium by the smoke harness (probe 7); these pin the
+ * static shape so the guard cannot be quietly gutted, and the browser evaluates the emitted script
+ * so the string is at least syntactically live.
+ */
+describe('SLIDE_RUNTIME_GUARD', () => {
+  it('injects a bootstrap that neutralizes every socket API CSP cannot reach', () => {
+    for (const api of SLIDE_BLOCKED_SOCKET_APIS) {
+      expect(SLIDE_RUNTIME_GUARD).toContain(api)
+    }
+    // WebRTC is the confirmed channel; WebTransport is the belt-and-braces sibling.
+    expect(SLIDE_BLOCKED_SOCKET_APIS).toContain('RTCPeerConnection')
+    expect(SLIDE_BLOCKED_SOCKET_APIS).toContain('WebTransport')
+  })
+
+  it('is part of the injection and runs after the policy that permits it', () => {
+    const wrapped = wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))
+    const meta = wrapped.indexOf('http-equiv="Content-Security-Policy"')
+    const guard = wrapped.indexOf('RTCPeerConnection')
+
+    expect(guard).toBeGreaterThan(-1)
+    // The meta declares `script-src 'unsafe-inline'`; it must precede the inline guard it authorizes.
+    expect(meta).toBeGreaterThan(-1)
+    expect(meta).toBeLessThan(guard)
+  })
+
+  it('actually removes the constructors when evaluated', () => {
+    // Execute the guard's IIFE against a fake global and confirm the properties become undefined and
+    // non-configurable — the string is otherwise untested logic shipped into every slide.
+    const script = SLIDE_RUNTIME_GUARD.replace(/^<script>/, '').replace(/<\/script>$/, '')
+    const win: Record<string, unknown> = {
+      RTCPeerConnection: function () {},
+      WebTransport: function () {},
+    }
+    new Function('window', 'Object', script)(win, Object)
+
+    expect(win['RTCPeerConnection']).toBeUndefined()
+    expect(win['WebTransport']).toBeUndefined()
+    const descriptor = Object.getOwnPropertyDescriptor(win, 'RTCPeerConnection')
+    expect(descriptor?.configurable).toBe(false)
+    expect(descriptor?.writable).toBe(false)
+  })
+
+  it('the emitted guard is one <script> with no closing-tag break-out', () => {
+    // A stray `</script>` in the payload would end the tag early and dump the rest as text.
+    expect(SLIDE_RUNTIME_GUARD.startsWith('<script>')).toBe(true)
+    expect(SLIDE_RUNTIME_GUARD.endsWith('</script>')).toBe(true)
+    expect(SLIDE_RUNTIME_GUARD.slice(8, -9)).not.toContain('</script')
   })
 })
 

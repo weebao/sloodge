@@ -128,6 +128,15 @@ describe('the slide:// transport', () => {
    * React's teardown.
    */
   it('swallows a failed revoke instead of rejecting into React teardown', async () => {
+    // Watch for an *actual* unhandled rejection, not just a synchronous throw — the rejection is
+    // async, so asserting only `not.toThrow()` would stay green even if the `.catch()` were deleted.
+    const unhandled: unknown[] = []
+    const onUnhandled = (event: PromiseRejectionEvent): void => {
+      event.preventDefault()
+      unhandled.push(event.reason)
+    }
+    window.addEventListener('unhandledrejection', onUnhandled)
+
     const bridge: SlideProtocolBridge = {
       publishSlide: async () => ID,
       revokeSlide: async () => {
@@ -138,7 +147,12 @@ describe('the slide:// transport', () => {
     expect(() => {
       createProtocolSlideUrls(bridge).revoke(`slide://${ID}/`)
     }).not.toThrow()
-    await Promise.resolve()
+
+    // Let the rejected revoke settle and any unhandled-rejection microtask fire.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    window.removeEventListener('unhandledrejection', onUnhandled)
+
+    expect(unhandled).toEqual([])
   })
 
   it('propagates a refused publish so the hook can keep the previous document', async () => {

@@ -61,10 +61,30 @@ export const SLIDE_SCHEME = 'slide'
  * you trust. Here the author is the untrusted party: every byte of the document is model-generated,
  * so script the model wrote and script an attacker smuggled into the model's output are the same
  * bytes and a nonce cannot tell them apart. The containment that actually matters is elsewhere —
- * `default-src 'none'` plus `connect-src 'none'` (the slide cannot phone home, exfiltrate the deck,
- * or pull remote code) and the opaque origin from `sandbox="allow-scripts"` with no
- * `allow-same-origin` (the slide cannot reach the app). Inside those two walls, running arbitrary
- * inline script is the feature, not the vulnerability.
+ * `default-src 'none'` plus `connect-src 'none'` deny the network reads CSP *does* govern (fetch,
+ * XHR, WebSocket, EventSource, beacon, subresources), and the opaque origin from
+ * `sandbox="allow-scripts"` with no `allow-same-origin` keeps the slide out of the app. Inside those
+ * walls, running arbitrary inline script is the feature, not the vulnerability.
+ *
+ * ## What CSP does *not* cover — WebRTC
+ *
+ * "The slide cannot phone home" is **not** something this policy delivers on its own, and an earlier
+ * version of this comment overclaimed it. No CSP directive governs WebRTC (`webrtc-src` was never
+ * shipped), so `connect-src 'none'` does nothing to a `new RTCPeerConnection({iceServers:[…]})` —
+ * measured, real STUN packets left a running slide to an arbitrary host. That channel is closed
+ * instead by the socket-API guard in `wrapSlideHtml`'s injected bootstrap (`SLIDE_RUNTIME_GUARD`),
+ * which removes the RTC constructors (and `WebTransport`) before author script runs. The "no network"
+ * guarantee is therefore CSP **plus** that guard, not CSP alone.
+ *
+ * ## What `bypassCSP`/`supportFetchAPI` do *not* do
+ *
+ * The scheme is registered with both `false` (see `protocol.ts`), which is correct hygiene, but they
+ * are defence in depth, not the operative mechanism — flipping both to `true` was measured to leave
+ * containment intact, because a slide document's outbound requests are governed by the slide's *own*
+ * policy regardless of how its scheme is registered. `bypassCSP` governs whether *other* pages may
+ * load `slide://` resources despite their CSP; `supportFetchAPI` governs whether the scheme answers
+ * `fetch`, but `connect-src 'none'` already blocks a slide from fetching a sibling. The real
+ * boundaries are this policy, the guard above, and the opaque origin.
  */
 export const SLIDE_CSP = [
   "default-src 'none'",

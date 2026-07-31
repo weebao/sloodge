@@ -50,8 +50,68 @@ import { SLIDE_CSP } from '../../../../shared/slide-protocol'
 
 export { SLIDE_CSP }
 
-/** The exact markup inserted, including its leading newline. Its length *is* the offset shift. */
-export const SLIDE_CSP_INJECTION = `\n<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`
+/**
+ * The APIs the injected guard neutralizes: the ones that open a network socket **outside CSP's
+ * reach**.
+ *
+ * CSP has no directive for WebRTC — `webrtc-src` was proposed and never shipped in Chromium — so a
+ * running slide's `new RTCPeerConnection({iceServers:[{urls:'stun:attacker'}]})` reaches an
+ * arbitrary host regardless of `connect-src 'none'`. Measured: five real STUN Binding Requests left
+ * a `slide://` frame onto a loopback UDP socket. That falsifies the "a slide cannot phone home"
+ * guarantee this milestone rests on, and M2.0 is what opened it — inline slide JS never ran before.
+ *
+ * `WebTransport` *is* nominally covered by `connect-src`, but it opens a UDP/QUIC socket and the
+ * cost of neutralizing it alongside the RTC family is one array entry, so it is included rather than
+ * trusted to a directive whose coverage of a socket primitive is worth not depending on.
+ *
+ * The IANA/WHATWG spelling variants (`webkit`/`moz` prefixes) are included because a slide runs in
+ * Chromium today but the guard should not silently lapse if the engine ever exposes a prefixed
+ * alias. `RTCDataChannel` cannot be constructed without a peer connection, so removing the
+ * constructors is sufficient; it is listed for defence in depth and costs nothing.
+ */
+export const SLIDE_BLOCKED_SOCKET_APIS = [
+  'RTCPeerConnection',
+  'webkitRTCPeerConnection',
+  'mozRTCPeerConnection',
+  'RTCDataChannel',
+  'WebTransport',
+] as const
+
+/**
+ * The neutralizing bootstrap, injected ahead of every slide's own script.
+ *
+ * It defines each blocked global as a **non-configurable, non-writable `undefined`**, so
+ * `new RTCPeerConnection()` throws "not a constructor", `if (window.RTCPeerConnection)` reads false
+ * (a legitimate feature-detect degrades rather than crashes), and neither `delete` nor reassignment
+ * can bring it back. The usual escape — resurrecting the constructor from a fresh `about:blank`
+ * child frame's `contentWindow` — fails in this sandbox for two independent reasons already in
+ * place: `frame-src 'none'` forbids the child frame, and the slide's opaque origin means any frame
+ * it did create would get its own opaque origin and throw `SecurityError` on cross-frame access.
+ * `default-src 'none'` closes the Worker variant the same way. Verified end-to-end (packet count
+ * zero with the guard, non-zero with it reverted) by `experiments/init/harness/slide-protocol-smoke.mjs`.
+ *
+ * Applied to **every** slide, not gated on `capabilities: ["interactive-js"]`. The gate lives in
+ * the validator (SL-H01 rejects an undeclared `<script>`), but delivery must not depend on the
+ * validator having run — a slide that declares `static` and ships a script anyway still gets the
+ * guard. The cost to a script-free slide is one inert IIFE.
+ *
+ * It runs before author script because it is part of the prefix inserted at the doctype offset:
+ * the parser places it, like the meta, as an early child of the implied `<head>`, and scripts
+ * execute in document order. `script-src 'unsafe-inline'` (declared by the meta just before it)
+ * permits it.
+ */
+export const SLIDE_RUNTIME_GUARD =
+  '<script>(function(){var a=' +
+  JSON.stringify(SLIDE_BLOCKED_SOCKET_APIS) +
+  ';for(var i=0;i<a.length;i++){try{Object.defineProperty(window,a[i],{configurable:false,writable:false,value:undefined})}catch(e){}}})();</script>'
+
+/**
+ * The exact markup inserted, including its leading newline. Its length *is* the offset shift, and it
+ * is a compile-time constant — the meta (layer 3) followed by the socket-API guard — so the
+ * insertion stays a single fixed-length prefix and Design Mode's byte-span map keeps working by
+ * adding one constant. The meta comes first so its `script-src 'unsafe-inline'` governs the guard.
+ */
+export const SLIDE_CSP_INJECTION = `\n<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">${SLIDE_RUNTIME_GUARD}`
 
 /** A byte-order mark is only stripped by the parser when it is the very first thing in the stream. */
 const BOM = '﻿'

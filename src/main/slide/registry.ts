@@ -178,11 +178,19 @@ export class SlideRegistry {
     return isSlideDocumentId(id) ? this.#documents.get(id)?.html : undefined
   }
 
-  /** Drop a document. `false` when the id was not live — a double-revoke, not an error. */
-  revoke(id: unknown): boolean {
+  /**
+   * Drop a document. `false` when the id was not live — a double-revoke, not an error.
+   *
+   * `owner`, when given, must match the document's publisher or the revoke is refused. The IPC
+   * handler passes `event.sender.id` so a renderer can only revoke what it published; this mirrors
+   * `publish`, which already scopes by sender, and closes the asymmetry where any window could
+   * revoke another window's slide. Direct callers (tests, teardown) omit it to revoke unconditionally.
+   */
+  revoke(id: unknown, owner?: number): boolean {
     if (!isSlideDocumentId(id)) return false
     const document = this.#documents.get(id)
     if (document === undefined) return false
+    if (owner !== undefined && document.owner !== owner) return false
     this.#documents.delete(id)
     this.#totalBytes -= document.bytes
     return true

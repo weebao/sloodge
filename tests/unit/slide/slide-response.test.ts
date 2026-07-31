@@ -73,11 +73,16 @@ describe('resolveSlideRequest', () => {
   /**
    * A refusal must never look like a document. If it carried `text/html` an error string would be
    * parsed as markup in the frame, and if it carried the slide CSP a reader could mistake a 404 for
-   * a policy-bearing response.
+   * a policy-bearing response. Asserted over **all three** refusal statuses, not just the 404: they
+   * share a private `refusal()` helper today, but a future divergence in one branch would otherwise
+   * fail nothing.
    */
-  it('answers a refusal as inert text with no policy of its own', () => {
-    const registry = new SlideRegistry()
-    const response = resolveSlideRequest(registry, { url: slideDocumentUrl('a'.repeat(32)) })
+  it.each<[string, { url: string; method?: string }]>([
+    ['404 unknown id', { url: slideDocumentUrl('a'.repeat(32)) }],
+    ['405 wrong method', { url: slideDocumentUrl('a'.repeat(32)), method: 'POST' }],
+    ['400 unparseable url', { url: 'not a url' }],
+  ])('answers %s as inert text with no policy of its own', (_label, request) => {
+    const response = resolveSlideRequest(new SlideRegistry(), request)
 
     expect(response.headers['Content-Type']).toBe('text/plain; charset=utf-8')
     expect(response.headers['Content-Security-Policy']).toBeUndefined()
