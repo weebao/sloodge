@@ -1,9 +1,11 @@
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
 import { installAppMenu } from './menu/appMenu'
+import { isAllowedNavigation, toSafeExternalUrl } from './security/externalUrls'
 
 const preloadPath = fileURLToPath(new URL('../preload/index.cjs', import.meta.url))
-const rendererDistIndex = fileURLToPath(new URL('../renderer/index.html', import.meta.url))
+const rendererDistIndexUrl = new URL('../renderer/index.html', import.meta.url)
+const rendererDistIndex = fileURLToPath(rendererDistIndexUrl)
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -27,13 +29,28 @@ function createMainWindow(): BrowserWindow {
     window.show()
   })
 
-  // Never let the shell navigate away or spawn windows; open externals in the OS browser.
+  // Never let the shell navigate away or spawn windows; web/mail links open in
+  // the OS browser, anything else (file:, custom schemes, …) is dropped.
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    const safeUrl = toSafeExternalUrl(url)
+    if (safeUrl !== null) {
+      shell.openExternal(safeUrl).catch(() => {
+        // The OS refused (no handler, user policy, …); nothing to clean up.
+      })
+    }
     return { action: 'deny' }
   })
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL']
+  const appUrl =
+    devServerUrl !== undefined && devServerUrl !== '' ? devServerUrl : rendererDistIndexUrl.href
+
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigation(url, appUrl)) {
+      event.preventDefault()
+    }
+  })
+
   if (devServerUrl !== undefined && devServerUrl !== '') {
     void window.loadURL(devServerUrl)
   } else {
