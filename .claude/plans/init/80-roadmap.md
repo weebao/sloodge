@@ -21,6 +21,7 @@ Principles: every PR is incremental and digestible; titles prefixed `feat/fix/do
 ## Milestone 2 — Agent (stack; parallel with M3)
 | PR | Title |
 |---|---|
+| M2.0 | `feat: slide:// protocol delivery for interactive slides` — **prerequisite.** blob *and* `srcdoc` both inherit the host page's CSP (verified in Chromium 2026-07-31, `experiments/init/harness/csp-blob-inheritance.mjs`), so a slide's inline `<script>` is blocked by `script-src 'self'` and `capabilities: ["interactive-js"]` does not work. Serve slides from a non-local scheme registered with `protocol.handle` in main, which escapes policy-container inheritance and gives each slide a real per-document CSP. Gates M2.2's `interactive-graph` skill and any interactive slide the agent generates. See the correction note in [10-architecture.md §7](10-architecture.md). |
 | M2.1 | `feat: agent service in main (Agent SDK, streaming, key storage)` |
 | M2.2 | `feat: mcp__slides tool server (create/update/read/reorder/screenshot)` |
 | M2.3 | `feat: chat panel with streaming + live slide updates` |
@@ -79,7 +80,7 @@ PowerPoint's ribbon behavior: the top tab strip gains **Insert** next to Home(Ed
 Dependency graph (arrows = "must land first"):
 ```
 M0.1 ─┬─ M0.2
-      └─ M0.3 ── M0.4 ── M1.1 ── M1.2 ── M1.3 ── M1.4 ─┬─ M2.1..M2.5 (stack)
+      └─ M0.3 ── M0.4 ── M1.1 ── M1.2 ── M1.3 ── M1.4 ─┬─ M2.0..M2.5 (stack)
                                                         ├─ M3.1..M3.5 ── M3.6..M3.10 (stack)
                                                         └─ M4.1
                                   M1.3 ─────────────────┬─ M4.2, M4.3, M4.4
