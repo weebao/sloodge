@@ -24,10 +24,10 @@ jobs:
         run: |
           if [ -f package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
 
+      # No explicit version: pnpm/action-setup reads it from package.json's
+      # packageManager field; pinning both makes the action error out.
       - uses: pnpm/action-setup@v4
         if: steps.scaffold.outputs.present == 'true'
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         if: steps.scaffold.outputs.present == 'true'
