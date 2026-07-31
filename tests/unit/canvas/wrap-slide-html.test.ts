@@ -194,6 +194,55 @@ describe('wrapSlideHtml anchor is markup-aware', () => {
     expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<!--'))
   })
 
+  // The tokenizer has several states in which `<head>` is character data rather than a tag. Each
+  // of these anchors the meta into a text node, where the policy is inert — the same silent
+  // failure class as the comment case, reached with adversarial rather than ordinary input.
+  it('ignores a <head> inside RCDATA (<title>)', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html><title>a<head>b</title>')
+
+    assertLivePolicy(wrapped)
+    // Anchored at the <html> fallback, before the decoy — not between `a` and `b`.
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
+  })
+
+  it('ignores a <head> inside RCDATA (<textarea>)', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html><textarea><head></textarea>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<textarea>'))
+  })
+
+  // Slide frames are `allow-scripts`, i.e. scripting-enabled, so <noscript> content is raw text.
+  it('ignores a <head> inside <noscript>', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html><noscript><head></noscript>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<noscript>'))
+  })
+
+  // Inside a script, `<!--` followed by `<script` enters the double-escaped state, where the next
+  // `</script>` does NOT close the element — so the `<head>` after it is still script text.
+  it('ignores a <head> after a script-data-double-escaped false close', () => {
+    const wrapped = wrapSlideHtml(
+      '<!doctype html>\n<html><script>/*<!--<script>*/</script><head><title>t</title>',
+    )
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<script>'))
+  })
+
+  // Fail-safe, not fail-open: `<!-->` is a complete comment, and mishandling it used to blind the
+  // walk to EOF and skip a perfectly good <head>.
+  it('handles the abrupt-closing comment forms and still finds the real head', () => {
+    for (const abrupt of ['<!-->', '<!--->']) {
+      const wrapped = wrapSlideHtml(`<!doctype html>\n<html>${abrupt}<head><title>t</title>`)
+
+      assertLivePolicy(wrapped)
+      expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+      expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
+    }
+  })
+
   it('treats a bare `<` in text as text, not as a tag', () => {
     const wrapped = wrapSlideHtml('<!doctype html>\n<html><head><p>a < b</p>')
     assertLivePolicy(wrapped)

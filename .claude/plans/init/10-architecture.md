@@ -399,6 +399,31 @@ Content is delivered as a **blob URL** rather than `srcdoc` (blob keeps the fram
 origin cleanly, gives DevTools a real document URL for Design Mode debugging, and avoids
 HTML-escaping the whole document into an attribute). Blob URLs are revoked when a slide unmounts.
 
+> **Correction (M1.3, 2026-07-31) — blob does not escape CSP inheritance.**
+> This section was written on the assumption that a blob-loaded frame, unlike `srcdoc`, is governed
+> only by the CSP that layer 3 injects. **Tested in Chromium and false.** With the host page
+> carrying `script-src 'self'` (as `src/renderer/index.html` does), a `sandbox="allow-scripts"`
+> iframe pointed at a `text/html` blob URL has its inline `<script>` **blocked** — *"Executing
+> inline script violates the following Content Security Policy directive 'script-src 'self''"* —
+> identically to a `srcdoc` control. Reproduce with
+> [`experiments/init/harness/csp-blob-inheritance.mjs`](../../../experiments/init/harness/csp-blob-inheritance.mjs).
+> The cause is HTML's *determine navigation params policy container*: a navigation whose response
+> URL uses a **local scheme** — Fetch defines those as `about`, `blob` and `data` — inherits a clone
+> of the initiator's policy container, CSP list included.
+>
+> Consequences:
+> - The three reasons above still stand, so **blob delivery stays** for now; it is measurably no
+>   worse than `srcdoc`.
+> - A slide document is governed by the *intersection* of the host policy and layer 3, so layer 3 is
+>   currently a second line of defence rather than the only one.
+> - **`capabilities: ["interactive-js"]` does not work today** — inline slide JS is blocked whatever
+>   the local-scheme delivery. Static, CSS-animated and SMIL-animated slides are unaffected.
+> - Unblocking it requires a **non-local scheme**: register `slide://` with `protocol.handle` in the
+>   main process and serve slide documents from it. A non-local scheme does not inherit the policy
+>   container, so each slide gets a real per-document CSP — layer 3 becomes the only policy on the
+>   frame, which also raises the stakes on `wrapSlideHtml`'s anchor being exactly right. Tracked as
+>   an M2 prerequisite in [80-roadmap.md](80-roadmap.md).
+
 **Layer 3 — the slide document's own CSP.** `src/renderer/features/canvas/wrapSlideHtml.ts`
 injects, as the first child of `<head>`, before any author content:
 

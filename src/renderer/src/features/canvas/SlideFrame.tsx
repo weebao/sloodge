@@ -15,8 +15,11 @@ import { useSlideUrl, type SlideUrlFactory } from './useSlideUrl'
  * reason, which is also why the contract forbids `alert`/`confirm`/`prompt` (§3.2 SL-S05 of
  * 30-slide-format.md): they are silent no-ops here.
  *
- * Content arrives as a **blob URL**, not `srcdoc` — see `useSlideUrl` for why the plan specifies
- * that, and for the lifecycle that keeps the URLs from leaking.
+ * Content arrives as a **blob URL**, not `srcdoc` — see `useSlideUrl` for the plan's reasons and
+ * for the lifecycle that keeps the URLs from leaking. Note what blob delivery does *not* buy:
+ * measured in Chromium, a blob frame inherits the embedder's CSP exactly as `srcdoc` does, so a
+ * slide's inline `<script>` is blocked today by the host page's `script-src 'self'`. Static and
+ * CSS/SMIL-animated slides are unaffected; `interactive-js` awaits `slide://` delivery (M2).
  *
  * The frame keeps its intrinsic 1280x720 size and is CSS-transform-scaled by the caller. Scaling
  * the *frame* rather than resizing it is what makes a thumbnail a faithful miniature of the canvas:

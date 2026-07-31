@@ -17,14 +17,23 @@
  * widen ours — it can only narrow its own document further. That is why nothing here strips or
  * rewrites an existing meta: there is no bypass to close, and rewriting would mutate author bytes.
  *
- * ## This is the only policy on the frame
+ * ## This is *not* the only policy on the frame — today
  *
- * Slides are delivered as blob URLs (`useSlideUrl`), per §7. A blob-loaded frame is a real
- * navigation to its own document, so — unlike `srcdoc`, which inherits the embedder's CSP — nothing
- * else constrains it. That is what makes inline `<script>` work at all (the `interactive-js`
- * capability of the slide contract), and it is also why the injection below must be markup-aware:
- * an anchor swallowed by a comment used to be masked by the host page's inherited policy, and no
- * longer is.
+ * Slides are delivered as blob URLs (`useSlideUrl`), per §7. An earlier revision of this file
+ * claimed that a blob-loaded frame therefore escapes the embedder's CSP. **That was measured and
+ * is false**: `experiments/init/harness/csp-blob-inheritance.mjs` (Chromium, 2026-07-31) shows a
+ * sandboxed blob frame's inline `<script>` blocked by the host page's `script-src 'self'`, exactly
+ * like the `srcdoc` control. Local schemes — `about`, `blob`, `data` — inherit a clone of the
+ * initiator's policy container, CSP list included.
+ *
+ * So a slide document is governed by the intersection of the host policy and this one, and this
+ * one is currently the *stricter* of the two on everything that matters. Two consequences:
+ *
+ *  - An anchor that misses (see below) does not currently open a hole — the inherited host policy
+ *    still denies remote fetches. That is a safety net, not a design.
+ *  - `slide://` delivery, which the roadmap tracks as an M2 prerequisite for interactive slides,
+ *    removes the net: a non-local scheme escapes inheritance, so this becomes the only policy on
+ *    the frame. **The walk below has to be right before that lands, not after.**
  */
 
 /**
@@ -66,15 +75,23 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CS
  * same happens for `<script>var s = "<head>"</script>` and for an attribute value such as
  * `<html data-note="<head>">`.
  *
- * Today that is masked by the host page's own CSP, which a `srcdoc` frame inherits. Blob delivery
- * (now live in `SlideFrame`) removes that accident, which makes this policy the only thing
- * enforcing `connect-src 'none'` — i.e. the only thing standing between a hostile slide and
- * exfiltrating the deck.
+ * Today the inherited host policy (see above) still denies the fetch a swallowed policy would
+ * permit, so a missed anchor is not currently exploitable. Under `slide://` delivery it would be —
+ * this is the policy that carries `connect-src 'none'`, i.e. the only thing standing between a
+ * hostile slide and exfiltrating the deck.
  *
- * So the anchor is located by walking the markup, skipping comments, `<script>`/`<style>` interiors
- * and quoted attribute values, and stopping at `<body>`. The walk yields a byte *offset* and the
- * caller slices the original string at it — author bytes are never rewritten, which is what keeps
- * Design Mode's byte-span patcher (§3.3 of 30-slide-format.md) valid.
+ * So the anchor is located by walking the markup: comments (including the abrupt `<!-->` forms),
+ * quoted attribute values, and the interiors of every element whose content model is text rather
+ * than markup — RAWTEXT, RCDATA, script data including the double-escaped state, and `plaintext`.
+ * The walk stops at `<body>`. It yields a byte *offset* and the caller slices the original string
+ * at it — author bytes are never rewritten, which is what keeps Design Mode's byte-span patcher
+ * (§3.3 of 30-slide-format.md) valid.
+ *
+ * This is a hand-rolled tokenizer, and hand-rolled tokenizers diverge from the spec at the edges.
+ * It is bounded by being *fail-safe by construction*: every state it does not recognise makes it
+ * fall back to the `<html>`/doctype anchor or to a prepend, all three of which land the meta where
+ * the parser's "before head" insertion mode hoists it into the implied `<head>`. It can inject the
+ * policy in a less pretty place; it cannot fail to inject it.
  */
 
 /**
@@ -100,7 +117,69 @@ function tagEnd(html: string, from: number): number | null {
 }
 
 const TAG_START = /^<(\/?)([a-zA-Z][^\s/>]*)/
-const RAW_TEXT_ELEMENTS = new Set(['script', 'style'])
+
+/**
+ * Elements whose content the HTML tokenizer treats as text rather than markup — RAWTEXT
+ * (`style`, `noscript` with scripting enabled, `xmp`, `iframe`), RCDATA (`title`, `textarea`),
+ * script data (`script`), and `plaintext`, which swallows the rest of the document.
+ *
+ * A `<head>` inside any of them is character data, so anchoring there injects the policy into a
+ * text node where it does nothing. `noscript` is on the list precisely because slide frames are
+ * `allow-scripts`: with scripting enabled its content is raw text, which is the parse a decoy
+ * would be written against.
+ *
+ * Skipping these is a no-op for a well-formed slide — a real `<head>` always precedes all of them.
+ */
+const TEXT_CONTENT_ELEMENTS = new Set([
+  'script',
+  'style',
+  'title',
+  'textarea',
+  'noscript',
+  'iframe',
+  'xmp',
+  'plaintext',
+])
+
+/** Start and end offsets of the next `</name …>` end tag at or after `from`. */
+function findEndTag(
+  html: string,
+  name: string,
+  from: number,
+): { start: number; end: number } | null {
+  const pattern = new RegExp(`</${name}(?=[\\s/>])`, 'gi')
+  pattern.lastIndex = from
+  const match = pattern.exec(html)
+  if (match === null) return null
+  return { start: match.index, end: tagEnd(html, match.index) ?? html.length }
+}
+
+/**
+ * The script-data-double-escaped state. Inside a `<script>`, once the tokenizer has seen `<!--`
+ * followed by `<script`, the *next* `</script>` does not close the element — it returns the
+ * tokenizer to the singly-escaped state, and the element runs to the one after that. So in
+ * `<script>"<!--<script>"</script><head>` that `<head>` is still script text, where a scanner
+ * stopping at the first `</script>` would happily anchor.
+ */
+function isDoubleEscaped(interior: string): boolean {
+  const comment = interior.indexOf('<!--')
+  if (comment === -1) return false
+  return /<script(?=[\s/>])/i.test(interior.slice(comment))
+}
+
+/** Offset just past the text content of `name`, whose content starts at `contentStart`. */
+function skipTextContent(html: string, name: string, contentStart: number): number {
+  // `plaintext` has no end tag at all: everything after it is text, forever.
+  if (name === 'plaintext') return html.length
+
+  const first = findEndTag(html, name, contentStart)
+  if (first === null) return html.length
+  if (name !== 'script') return first.end
+
+  if (!isDoubleEscaped(html.slice(contentStart, first.start))) return first.end
+  const second = findEndTag(html, name, first.end)
+  return second === null ? html.length : second.end
+}
 
 /** Offset at which to insert, or `null` for "no anchor — prepend". */
 function findAnchorOffset(html: string): number | null {
@@ -113,6 +192,17 @@ function findAnchorOffset(html: string): number | null {
     if (open === -1) break
 
     if (html.startsWith('<!--', open)) {
+      // Abrupt-closing comments: `<!-->` and `<!--->` are complete comments, not the start of one.
+      // Handled explicitly because searching for `-->` from `open + 4` cannot match either, and
+      // the walk would blind itself to EOF and silently fall back past a perfectly good `<head>`.
+      if (html.startsWith('<!-->', open)) {
+        index = open + 5
+        continue
+      }
+      if (html.startsWith('<!--->', open)) {
+        index = open + 6
+        continue
+      }
       const close = html.indexOf('-->', open + 4)
       index = close === -1 ? html.length : close + 3
       continue
@@ -144,10 +234,9 @@ function findAnchorOffset(html: string): number | null {
     // <html>/doctype fallbacks below, which are still inside the document's prologue.
     if (name === 'body') break
 
-    if (!closing && RAW_TEXT_ELEMENTS.has(name)) {
-      // Raw-text content is not markup: a `<head>` in a JS string or a CSS selector is data.
-      const close = new RegExp(`</${name}\\s*>`, 'i').exec(html.slice(end))
-      index = close === null ? html.length : end + close.index + close[0].length
+    if (!closing && TEXT_CONTENT_ELEMENTS.has(name)) {
+      // Text content is not markup: a `<head>` in a JS string, a CSS selector or a <title> is data.
+      index = skipTextContent(html, name, end)
       continue
     }
 
