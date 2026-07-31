@@ -44,6 +44,8 @@ Principles: every PR is incremental and digestible; titles prefixed `feat/fix/do
 | M4.2 | `feat: PDF export (printToPDF + pdf-lib merge)` |
 | M4.3 | `feat: PPTX export (structured + raster fallback)` |
 | M4.4 | `feat: HTML export (zip + presenter shell)` |
+| M4.5 | `feat: PPTX import (open .pptx files & templates, not just .sloodge)` — File ▸ Open accepts `.pptx`/`.potx`; slides convert to contract HTML best-effort (text boxes, images, shapes, theme colors/fonts → theme tokens); **the original archive is retained verbatim inside the deck** (`import/original.pptx` + per-part edit ledger) so unedited content never suffers conversion loss; template import extracts masters/layouts into the sloodge theme |
+| M4.6 | `test: PPTX round-trip identity` — imports then exports back to PPTX must reproduce **the exact same file**: a no-edit round-trip re-emits the retained original archive byte-for-byte (asserted by hash in CI-runnable unit tests over fixture decks); an edited round-trip rewrites only the OPC parts the edit touched, with every untouched part asserted byte-identical (part-level passthrough). This gate makes M4.5's retention strategy load-bearing rather than decorative |
 
 ## Milestone 3b — Fine-grained control (stack on M3.1–M3.5)
 Direct-manipulation depth so Design Mode reaches parity with a real slide editor.
@@ -68,6 +70,8 @@ PowerPoint's ribbon behavior: the top tab strip gains **Insert** next to Home(Ed
 |---|---|---|
 | M7.1 | `feat: insert image from file` | Insert ▸ Image file picker; image copied into the deck zip's `assets/`, referenced by relative path in-editor and inlined as data URI at export/present time (slide contract stays self-contained); auto-fit to slide with aspect preserved |
 | M7.2 | `feat: paste & drag-drop images` | Clipboard paste (Ctrl/⌘+V with image data via `clipboard.readImage` / renderer paste events) and OS drag-drop onto the canvas; same asset pipeline as M7.1; pasted image lands centered, selected, ready to transform |
+| M7.3 | `feat: video insert & canvas render` | Insert/drag-drop video → `ffprobe` gate → deck `assets/` + manifest metadata (duration/dimensions/codec) + generated poster frame; canvas/rail show the **poster placeholder** (never N live decoders), playback on explicit selection; iframe gains `allow="autoplay; fullscreen"`; soft caps warn ~200 MB/video, ~500 MB/deck. Research: [research/video-in-slides.md](research/video-in-slides.md) — native `<video>` (Electron ships H.264/AAC), libvlc ecosystem dead, ffmpeg.wasm rejected |
+| M7.4 | `feat: present-mode video playback + import normalization` | Bundled `ffmpeg-static`/`ffprobe-static` (spawned from main, `asarUnpack`, GPL-aggregation posture with license notice): pass-through natively-playable → remux `-c copy` for wrong-container → transcode HEVC/AVI/WMV to H.264/AAC MP4 (1080p cap, progress UI, cancelable; **HEVC always transcodes** — hardware-decode-only in Chromium). Present mode: native `<video>` with sloodge-styled controls, per-video autoplay-on-enter/loop/mute/trim, pause-on-exit, `autoplayPolicy: 'no-user-gesture-required'` (+ CLI-switch fallback). Self-containment exception (documented): the deck ZIP, not the slide HTML, is the unit of self-containment for media ≥ ~2 MB; exports get poster frames (PDF) or media parts if the writer supports them (PPTX) |
 
 ## Milestone 5 — Polish & packaging
 | PR | Title |
@@ -84,8 +88,9 @@ M0.1 ─┬─ M0.2
                                                         ├─ M3.1..M3.5 ── M3.6..M3.10 (stack)
                                                         └─ M4.1
                                   M1.3 ─────────────────┬─ M4.2, M4.3, M4.4
+                                  M4.3 ── M4.5 ── M4.6 (import + round-trip identity gate)
                                   M0.4 ── M6.1 ── M6.2 ── M6.3 (needs M3.1 ids + M3.8 colors)
-                                  M6.3 ─┬─ M7.1 ── M7.2
+                                  M6.3 ─┬─ M7.1 ── M7.2 ── M7.3 ── M7.4 (video)
                                   M2.x + M3.x + M4.x + M6.x + M7.x ── M5.x
                                   M1.4 ── M8.1 ── M8.2..M8.6 (each gated on M8.1 metrics) ── M8.7
 ```
