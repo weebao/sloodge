@@ -102,5 +102,14 @@ Budgets (enforced, not aspirational): cold start < 3s to interactive shell; slid
 | M8.7 | `ci: perf regression check (local-runner report diffing)` | Perf suite runs locally (not on GitHub minutes); committed baseline JSON diffed by a fast CI job that only compares numbers — fails if median RAM ≥ 200 MB, startup or switch budgets regress >10% |
 Every `perf:` PR must include the harness's before/after logs and metric tables in its description, per the PR conventions.
 
+## Milestone 9 — v0.0.1 release (gated on every other milestone reaching 100%)
+When all milestones above are complete (every PR merged at review confidence 100, CI green), cut the first release:
+| PR / step | What | Notes |
+|---|---|---|
+| M9.1 | `chore: electron-builder release config for v0.0.1` | Version bump to 0.0.1; NSIS `.exe` installer + portable `.zip` for Windows; `.dmg` (plus `.zip` for auto-update) for macOS — dmg is the standard macOS distribution format |
+| M9.2 | Local builds | Build locally, NOT in CI (GitHub minutes are limited): `electron-builder --win` and `--mac`. macOS artifacts cross-build unsigned from the dev machine; signing/notarization is deferred past 0.0.1 |
+| M9.3 | Smoke-test runnability | The dev machine is Windows (WSL2): install and run the `.exe` on the Windows host and walk the v1 success path (new deck → generate → Design-Mode tweak → Present → export PDF/PPTX). macOS artifact is best-effort untested until a mac is available — state that plainly in the release notes |
+| M9.4 | GitHub release `v0.0.1` | `gh release create v0.0.1` with the `.exe`, Windows `.zip`, `.dmg`, macOS `.zip`; release notes summarize milestones and known limitations (unsigned mac build, untested on macOS) |
+
 ## Review gate (applies to every code PR)
 Every code change is reviewed by a **fresh-memory subagent on the strongest available model (Opus/Fable)** loaded with the repo-local [`ship-ready-review`](../../skills/ship-ready-review/SKILL.md) skill, given only the changeset. The change is fixed and re-reviewed until the verdict reaches **confidence 100 (zero blockers, zero majors, lint/typecheck/tests independently verified green)** before merge.
