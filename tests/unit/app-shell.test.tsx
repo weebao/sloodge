@@ -123,12 +123,16 @@ describe('AppShell', () => {
     expect(current[0]?.textContent).toContain('Second slide')
   })
 
-  it('keeps every formatting control inert', () => {
+  it('keeps every formatting control inert except the live Design Mode toggle', () => {
     render(<AppShell />)
 
     const toolbar = screen.getByRole('toolbar', { name: 'Formatting' })
-    const buttons = within(toolbar).getAllByRole('button')
-    expect(buttons).toHaveLength(11)
+    const design = within(toolbar).getByRole('button', { name: /design mode/i })
+    const buttons = within(toolbar)
+      .getAllByRole('button')
+      .filter((button) => button !== design)
+    // Ten cosmetic buttons plus the one live toggle.
+    expect(buttons).toHaveLength(10)
     for (const button of buttons) {
       expect(button.getAttribute('aria-disabled')).toBe('true')
     }
@@ -140,7 +144,9 @@ describe('AppShell', () => {
       expect(select.getAttribute('aria-disabled')).toBeNull()
     }
 
-    expect(within(toolbar).getByRole('button', { name: /design mode/i })).toBeTruthy()
+    // The Design Mode button is live as of M3.2: a pressed-state toggle, not an inert stub.
+    expect(design.getAttribute('aria-disabled')).toBeNull()
+    expect(design.getAttribute('aria-pressed')).toBe('false')
   })
 })
 

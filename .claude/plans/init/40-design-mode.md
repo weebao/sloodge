@@ -249,10 +249,53 @@ It holds **no state that matters** — the renderer is the source of truth. If t
 the renderer re-sends selection by `data-sl-id`.
 
 Everything it can be asked to do is enumerated by the protocol below; there is no `eval`-style
-escape hatch. The frame is sandboxed and hostile-input-tolerant by construction: a slide's own
-JS could try to spoof bridge messages, so the renderer **validates `event.source === iframe.contentWindow`**
-and ignores anything whose shape doesn't match the schema. (It cannot validate `event.origin`,
-which is `"null"` for sandboxed frames — source-identity is the real check.)
+escape hatch. The frame is sandboxed and hostile-input-tolerant by construction. The renderer
+**validates `event.source === iframe.contentWindow`** (it cannot validate `event.origin`, which is
+`"null"` for sandboxed frames) and rejects anything whose shape doesn't match the schema.
+
+**The precise trust boundary — do not overstate it.** Source-identity proves a message came from
+*this frame's window* rather than from some other window. It does **not**, and cannot, distinguish
+the injected bridge script from the slide's own untrusted author JS: both run in the same realm
+(`iframe.contentWindow`), so their messages carry the identical `event.source`. Shape validation
+only rejects *malformed* messages. Therefore a **well-formed** bridge response forged by co-resident
+author code — which knows its own slide id, can read request ids via its own `message` listener, and
+can pre-empt the real bridge — passes both checks and reaches the parent. An earlier draft of this
+section claimed the source check stops a slide spoofing bridge messages; that is false and was
+corrected here (M3.2 review). A frame → parent response is an **untrusted hint about the slide's own
+view state**, not an authenticated fact.
+
+This is safe in M3.2 only because of *what the parent does with a hit*: it drives ephemeral,
+re-validatable selection state (`setHover`/`setSelection`), renders the payload as escaped text with
+finite-validated geometry, and sends nothing frame-ward but `x`/`y`/`mode`/`alt` — no escalation, no
+exfiltration.
+
+**Normative rule for any feature that acts authoritatively on a bridge message** (edit-on-select,
+apply-patch — M3.5+): it MUST NOT trust the message payload. It re-derives from **parent-held state**
+— the `sl-id → span` map the renderer already owns — treating the message as at most "the user
+gestured near sl-id X", and routes any resulting change to saved source through the accept/reject
+diff gate (§6.5), which requires a human keystroke. These two together bound a co-resident
+confused-deputy to, at worst, redirecting a *human-confirmed* edit onto a neighbouring element,
+which the diff preview then shows and the user can reject.
+
+**If a *silent, trusted* frame → parent signal is ever genuinely required** (one the parent must act
+on without a human in the loop and cannot re-derive itself — e.g. a geometry fact only
+`elementFromPoint` inside the frame can produce, feeding an automatic action), the enforceable
+design is a **MessageChannel-capture handshake**, and it has one hard prerequisite:
+
+- The bridge must be **the first script to run in the frame's realm**, so it captures native
+  `MessageChannel`/`postMessage`/`addEventListener` before author code can monkeypatch or race them.
+  It then creates a `MessageChannel`, keeps `port1` in a closure author code cannot reach, and
+  transfers `port2` out to the parent inside its first `postMessage` (an *outgoing* transfer author
+  code cannot intercept). The parent thereafter sends and receives bridge traffic only on that port
+  and ignores `window` `message` events for the bridge, so an author `window.parent.postMessage`
+  reaches nothing the parent listens on, and author code never obtains a port reference.
+- **M3.2 does not meet the prerequisite:** the bridge is injected immediately before `</body>`, and
+  the slide contract puts the author's single `<script>` as the last body element, so *author runs
+  first*. Building the channel therefore also requires moving the bridge to run first (into `<head>`
+  or as the first body child) and re-verifying that the move preserves M3.1 byte-span integrity and
+  `wrapSlideHtml`'s constant-length prefix. That is a focused change belonging to the milestone that
+  first needs a trusted silent signal; it is deliberately **not** half-built in M3.2, where the
+  untrusted-hint model above is sufficient and the diff-gate is the real backstop.
 
 ---
 

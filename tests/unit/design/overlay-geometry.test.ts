@@ -1,0 +1,84 @@
+/**
+ * The overlay coordinate transforms (§3.4) and the clone-safe rect union. Pure arithmetic, tested
+ * without a layout engine — happy-dom reports every box as 0×0, so geometry can only be trusted if
+ * it is provable this way.
+ */
+
+import { describe, expect, it } from 'vitest'
+import {
+  clientPointToFrame,
+  frameRectToOverlay,
+  unionRects,
+} from '../../../src/shared/design/overlay-geometry'
+
+describe('clientPointToFrame', () => {
+  it('subtracts the box origin and divides by scale', () => {
+    // Frame painted at 0.5x, its box top-left at (100, 50). A client point at (300, 250) is
+    // (200,200) inside the painted box, which is (400,400) in the 1280×720 frame.
+    expect(clientPointToFrame({ x: 300, y: 250 }, { left: 100, top: 50 }, 0.5)).toEqual({
+      x: 400,
+      y: 400,
+    })
+  })
+
+  it('is identity at scale 1 with a zero origin', () => {
+    expect(clientPointToFrame({ x: 640, y: 360 }, { left: 0, top: 0 }, 1)).toEqual({
+      x: 640,
+      y: 360,
+    })
+  })
+
+  it('collapses a non-usable scale to the frame origin rather than NaN/Infinity', () => {
+    expect(clientPointToFrame({ x: 5, y: 5 }, { left: 0, top: 0 }, 0)).toEqual({ x: 0, y: 0 })
+    expect(clientPointToFrame({ x: 5, y: 5 }, { left: 0, top: 0 }, Number.NaN)).toEqual({
+      x: 0,
+      y: 0,
+    })
+  })
+})
+
+describe('frameRectToOverlay', () => {
+  it('multiplies a frame rect by scale', () => {
+    expect(frameRectToOverlay({ x: 100, y: 200, width: 300, height: 80 }, 0.5)).toEqual({
+      x: 50,
+      y: 100,
+      width: 150,
+      height: 40,
+    })
+  })
+
+  it('round-trips with clientPointToFrame at the same scale', () => {
+    const scale = 0.375
+    const framePoint = clientPointToFrame({ x: 500, y: 300 }, { left: 0, top: 0 }, scale)
+    const back = frameRectToOverlay({ ...framePoint, width: 0, height: 0 }, scale)
+    expect(back.x).toBeCloseTo(500)
+    expect(back.y).toBeCloseTo(300)
+  })
+
+  it('collapses a non-usable scale to a zero box', () => {
+    expect(frameRectToOverlay({ x: 1, y: 2, width: 3, height: 4 }, 0)).toEqual({
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+    })
+  })
+})
+
+describe('unionRects', () => {
+  it('returns null for an empty list', () => {
+    expect(unionRects([])).toBeNull()
+  })
+
+  it('returns a single rect unchanged', () => {
+    const only = { x: 10, y: 20, width: 30, height: 40 }
+    expect(unionRects([only])).toEqual(only)
+  })
+
+  it('spans every rect — the adoption-agency clone case', () => {
+    // Two nodes of one source element, side by side; the union must cover both.
+    const a = { x: 0, y: 0, width: 100, height: 50 }
+    const b = { x: 200, y: 20, width: 100, height: 80 }
+    expect(unionRects([a, b])).toEqual({ x: 0, y: 0, width: 300, height: 100 })
+  })
+})

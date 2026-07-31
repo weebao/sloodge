@@ -1,4 +1,4 @@
-import { memo, useMemo, type JSX } from 'react'
+import { memo, useMemo, type JSX, type RefObject } from 'react'
 import { SLIDE_SIZE } from './slideFit'
 import { useSlideUrl, type SlideUrlFactory } from './useSlideUrl'
 
@@ -59,6 +59,12 @@ export type SlideFrameProps = {
    * URL, and a seam whose name asserts the implementation is a seam nobody swaps.
    */
   slideUrls?: SlideUrlFactory
+  /**
+   * Handle to the underlying iframe, so Design Mode's overlay can reach `contentWindow` for the
+   * postMessage bridge and validate message source identity against it. Only the canvas passes one;
+   * rail thumbnails do not participate in the bridge.
+   */
+  frameRef?: RefObject<HTMLIFrameElement | null>
 }
 
 function SlideFrameInner({
@@ -68,6 +74,7 @@ function SlideFrameInner({
   interactive = true,
   className,
   slideUrls,
+  frameRef,
 }: SlideFrameProps): JSX.Element {
   // Keyed on the document text alone, so a scale change never mints a new URL and never reloads
   // the frame — a reload loses animation phase and any interactive state, on every window resize.
@@ -104,6 +111,7 @@ function SlideFrameInner({
   return (
     <div className={className} style={boxStyle}>
       <iframe
+        ref={frameRef}
         title={title}
         sandbox={SLIDE_SANDBOX}
         referrerPolicy="no-referrer"

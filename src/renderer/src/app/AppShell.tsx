@@ -5,6 +5,8 @@ import { ThumbnailRail } from '../features/deck/ThumbnailRail'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { StatusBar } from '../features/statusbar/StatusBar'
+import { useDesignStore } from '../features/design/designStore'
+import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
 import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
 import { useUndoRedoKeys } from './useUndoRedoKeys'
@@ -38,6 +40,9 @@ export function AppShell(): JSX.Element {
   const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
   useMenuActions(editHandlers)
   useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
+
+  const toggleDesign = useDesignStore((state) => state.toggle)
+  useDesignModeKey(toggleDesign)
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
