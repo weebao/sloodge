@@ -79,7 +79,7 @@ but only the unzipped `dist/` actually matters — you can equally unzip into a 
 cd /mnt/c/sloodge-smoke && ./node_modules/electron/dist/electron.exe .
 ```
 
-**Gotcha:** this returns exit 0 *immediately* with no output. That is normal — electron.exe is a
+**Gotcha:** this returns exit 0 _immediately_ with no output. That is normal — electron.exe is a
 GUI-subsystem binary, so WSL interop does not wait on it and no stdout comes back. The app is
 running; do not conclude failure from the instant exit. Give it ~10s, then:
 
@@ -137,7 +137,7 @@ to draft your first slide", CHAT panel with empty-state + "Ask Claude…" box, s
 Electron/Chromium has **no child HWND** (`Chrome_RenderWidgetHostHWND` does not exist here —
 `EnumChildWindows` returns nothing); it composites into the top-level window. Post synthetic mouse
 messages to the **top-level HWND**, converting screen→client with `ScreenToClient` (client origin
-sits below the title bar *and* the native menu bar; do not hardcode the offset).
+sits below the title bar _and_ the native menu bar; do not hardcode the offset).
 
 ```powershell
 $pt.X = $wr.L + 111; $pt.Y = $wr.T + 300      # slide-2 thumbnail, window-relative from screenshot
