@@ -105,6 +105,12 @@ export class AgentService {
 
   /** Tear down one renderer's session — call on `destroyed` / `render-process-gone`. */
   async dispose(senderId: number): Promise<void> {
+    // Mirror of the send-side race: `createSession` only stores the session *after*
+    // `await loadApiKey()`, so a dispose that arrives mid-creation would read no session, no-op, and
+    // let the creation install a live session/subprocess for an already-gone renderer (§9's worst
+    // case). Wait for the in-flight creation to settle, then close whatever it produced.
+    const inFlight = this.creating.get(senderId)
+    if (inFlight !== undefined) await inFlight
     const session = this.sessions.get(senderId)
     if (session === undefined) return
     this.sessions.delete(senderId)
@@ -113,6 +119,10 @@ export class AgentService {
 
   /** Tear down every session — call on `app.before-quit`. No orphaned subprocess (§9). */
   async disposeAll(): Promise<void> {
+    // In-flight creations aren't in `sessions` yet; wait for them so their subprocesses are closed
+    // here, not orphaned past quit. `Promise.all` drains the iterator synchronously, before any
+    // creation's `finally` deletes its `creating` entry, so passing it directly is safe.
+    await Promise.all(this.creating.values())
     const all = [...this.sessions.values()]
     this.sessions.clear()
     await Promise.all(all.map((session) => session.close()))

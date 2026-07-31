@@ -83,6 +83,54 @@ describe('AgentService', () => {
     expect(rec.returns).toHaveBeenCalledTimes(1) // that one session was closed — nothing orphaned
   })
 
+  it('closes — never orphans — a session created while a dispose was in flight', async () => {
+    const rec = recordingQueryFn()
+    let resolveKey: (key: string | null) => void = NOOP
+    const loadApiKey = vi.fn(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveKey = resolve
+        }),
+    )
+    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+
+    const sendP = service.send(5, 'a', () => {}) // creation goes in flight
+    const disposeP = service.dispose(5) // races the creation, before the key resolves
+    resolveKey('sk-ant-live')
+    await Promise.all([sendP, disposeP])
+
+    // The invariant that matters: every subprocess that started was also closed — none orphaned.
+    expect(rec.returns).toHaveBeenCalledTimes(rec.starts())
+    expect(rec.starts()).toBe(1)
+    expect(rec.returns).toHaveBeenCalledTimes(1)
+
+    // And the sender is not permanently poisoned — a later send builds a fresh session.
+    const send2 = service.send(5, 'b', () => {})
+    resolveKey('sk-ant-live')
+    await send2
+    expect(rec.starts()).toBe(2)
+  })
+
+  it('disposeAll waits for in-flight creations and closes them too', async () => {
+    const rec = recordingQueryFn()
+    let resolveKey: (key: string | null) => void = NOOP
+    const loadApiKey = vi.fn(
+      () =>
+        new Promise<string | null>((resolve) => {
+          resolveKey = resolve
+        }),
+    )
+    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+
+    const sendP = service.send(8, 'a', () => {}) // creation in flight
+    const allP = service.disposeAll() // quit races the creation
+    resolveKey('sk-ant-live')
+    await Promise.all([sendP, allP])
+
+    expect(rec.returns).toHaveBeenCalledTimes(rec.starts())
+    expect(rec.returns).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps sessions per sender distinct', async () => {
     const rec = recordingQueryFn()
     const service = new AgentService({
