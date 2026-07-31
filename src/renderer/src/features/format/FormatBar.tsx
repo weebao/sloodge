@@ -1,9 +1,15 @@
 import type { JSX, ReactNode } from 'react'
+import { useDesignStore } from '../design/designStore'
 
 /**
- * The formatting toolbar. Nothing is wired up in M0.4: buttons carry
+ * The formatting toolbar. Most buttons are still cosmetic (M0.4): they carry
  * `aria-disabled` so they still hover and focus, selects are plainly
  * `disabled` because a focusable-but-unusable select is a trap.
+ *
+ * The Design Mode toggle is live as of M3.2 — it drives `useDesignStore`, the view-only store the
+ * canvas overlay reads. It talks to that store directly rather than through props because Design
+ * Mode is ephemeral view state, not the document (see `designStore.ts`); the shell-owns-all-state
+ * rule is about `deckStore`, the undoable document.
  */
 
 const BUTTON_BASE =
@@ -55,6 +61,9 @@ function AlignIcon({ align }: { align: 'left' | 'center' | 'right' }): JSX.Eleme
 }
 
 export function FormatBar(): JSX.Element {
+  const designEnabled = useDesignStore((state) => state.enabled)
+  const toggleDesign = useDesignStore((state) => state.toggle)
+
   return (
     <div
       role="toolbar"
@@ -126,10 +135,14 @@ export function FormatBar(): JSX.Element {
       <div className="ml-auto flex items-center">
         <button
           type="button"
-          aria-disabled="true"
-          aria-pressed="false"
-          title="Design Mode (not wired up yet)"
-          className="inline-flex h-7 items-center gap-1.5 rounded border border-accent/30 bg-accent-soft px-2.5 text-[13px] font-medium text-accent transition-colors hover:bg-accent hover:text-white dark:border-accent/50 dark:bg-transparent"
+          aria-pressed={designEnabled}
+          onClick={toggleDesign}
+          title="Design Mode (Ctrl/⌘+D)"
+          className={`inline-flex h-7 items-center gap-1.5 rounded border px-2.5 text-[13px] font-medium transition-colors ${
+            designEnabled
+              ? 'border-accent bg-accent text-white'
+              : 'border-accent/30 bg-accent-soft text-accent hover:bg-accent hover:text-white dark:border-accent/50 dark:bg-transparent'
+          }`}
         >
           <span aria-hidden="true">✦</span> Design Mode
         </button>
