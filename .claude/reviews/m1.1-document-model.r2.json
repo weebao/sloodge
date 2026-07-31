@@ -1,0 +1,89 @@
+{
+  "round": 2,
+  "changeset": "M1.1 .sloodge document model (git diff app-shell doc-model)",
+  "confidence": 30,
+  "verdict": "request-changes",
+  "blockers": [
+    {
+      "file": "src/main/document/store.ts",
+      "line": 407,
+      "what": "The archive resource caps bound only `entry.originalSize`. For a STORED member (compression method 0) fflate ignores `originalSize` entirely and returns a copy of `compressedSize` bytes (`slc(data, b, b + sc)`, fflate/lib/index.cjs:2618). `compressedSize` is read by the scanner at store.ts:311 and then never compared against any limit, and nothing requires distinct central-directory entries to point at distinct local headers.",
+      "why": "PoC (built and run against the shipped defaults): a 20 MB file whose central directory holds 40 STORED entries, every one pointing at the same local header with compressedSize=20 MB and originalSize=0, declares a total inflated size of 0 bytes, passes every cap, and drove RSS up 820 MB; readDeck ran to completion and returned `manifest-missing`, i.e. all 40 members were materialized. Scaled to the shipped defaults (maxCompressedBytes 200 MB, maxEntries 10 000) a ~190 MB file yields ~1.9 TB of allocation and OOM-kills the Electron main process. That is precisely the outcome the module's own docblock (store.ts:31-33) promises it prevents, and the M2 cap suite (tests/unit/document/store.test.ts:494-557) asserts the guarantee holds while only ever exercising DEFLATE members — so the test suite gives false assurance. This is graded a blocker rather than a major, despite readDeck having no production caller yet, because the module documents the guarantee as upheld and ships green tests asserting it: the next person to wire it into an IPC handler has every reason to trust a control that does not exist.",
+      "fix": "Carry `compressionMethod` out of the central-directory scan alongside the sizes. Cap `compressedSize` against `maxEntryBytes` as well, accumulate compressed sizes into a separate running total capped at `maxCompressedBytes`, and when `compressionMethod === 0` use `compressedSize` as the effective inflated size for both the per-entry and total checks. Add a regression test that crafts a STORED member (fflate accepts `{ level: 0 }`) with a lying `originalSize`."
+    }
+  ],
+  "majors": [
+    {
+      "file": "src/shared/document/deck.ts",
+      "line": 120,
+      "what": "`getSlide` (line 120), `slidesInOrder` (line 135) and `requireSlide` (line 146) index `deck.slides[id]` on a plain object, so lookups resolve through `Object.prototype`. `hasSlide` (line 124) already uses `Object.hasOwn`, so the two disagree about what the deck contains.",
+      "why": "Confirmed by execution: `getSlide(createEmptyDeck(), 'constructor')` returns `function Object() { [native code] }`; `slidesInOrder` on a manifest whose `slideOrder` is `['toString']` returns one bogus entry instead of zero; `updateSlide(deck, 'toString', { title: 'x' })` fabricates `{\"toString\":{\"title\":\"x\"}}` out of `Object.prototype.toString`. The r1 fix installed null-prototype maps and `Object.hasOwn` throughout store.ts and documented that discipline at store.ts:21-25, but it stops at the module boundary — deck.ts is the module that M1.2's command/undo layer will call with ids that originate in the renderer. Only the `s_<ULID>` schema regex keeps this unreachable today.",
+      "fix": "Give deck.ts the same `get(map, key)` helper store.ts:190 uses, and route all three call sites plus `withSlides`'s object spreads through it."
+    },
+    {
+      "file": "src/shared/document/starter-slide.ts",
+      "line": 57,
+      "what": "`renderThemeBlock` interpolates both the token name and the token value raw into a `<style>` element with no escaping or validation.",
+      "why": "Confirmed by execution: a token value of `x; } </style><script>alert(1)</script><style> :root {` closes the style element and injects a `<script>` into the generated slide document. This is not hypothetical input — `types.ts:383-386` declares `tokens.font.sans`/`mono` as bare `z.string().min(1)`, and every theme object is a `z.looseObject`, so a `.sloodge`-supplied `theme/theme.json` carries arbitrary strings through `parseTheme` into a shape that maps directly onto this function's `tokens` parameter. The only reason this is a major rather than a blocker is that M1.1 ships no theme-to-token mapper, so `DEFAULT_THEME_TOKENS` is the sole caller today; the public signature invites exactly the wiring that makes it live. Checklist item 13 treats unescaped interpolation into a slide `<style>` context as a blocker once reachable.",
+      "fix": "Validate each name against `/^--[a-z0-9-]+$/` and reject any value containing `<`, `>`, `{`, `}`, `;` or `*/`, throwing rather than emitting a malformed block. Add a test asserting a hostile token value cannot escape the `<style>` element."
+    },
+    {
+      "file": "src/shared/document/deck.ts",
+      "line": 76,
+      "what": "`createEmptyDeck` unconditionally sets `theme: DEFAULT_THEME_PATH`, but nothing in this changeset ever writes `theme/theme.json`, and `packDeck` (store.ts:567) skips the theme file when `bundle.theme` is null.",
+      "why": "Confirmed by execution: `createEmptyDeck` -> `addSlide` -> `writeDeck` -> `readDeck` returns `warnings: [\"missing theme file theme/theme.json\"]`. Every brand-new deck therefore emits a spurious integrity warning on every subsequent open — the default happy path produces a document that this module's own reader considers damaged. Whatever surfaces warnings in M1.2 will show it to the user on their first deck, and the natural fix at that point is to suppress the warning, which would blind the reader to genuinely missing themes.",
+      "fix": "Either omit `theme` from `createEmptyDeck` until a theme is actually written, or add a bundle-level `createEmptyDeckBundle` that emits a default `theme/theme.json` alongside the manifest. Assert `warnings` is empty in a create-save-reopen round-trip test."
+    }
+  ],
+  "minors": [
+    {
+      "file": "src/main/document/store.ts",
+      "line": 360,
+      "what": "Nit: the entire file is read into memory with `readFile` before it is compared against `maxCompressedBytes` at line 366.",
+      "why": "The cap documents itself as bounding resources, but the allocation it is meant to prevent has already happened by the time it runs.",
+      "fix": "`stat(path)` and reject on `size` before `readFile`."
+    },
+    {
+      "file": "src/main/document/store.ts",
+      "line": 169,
+      "what": "Nit: `isTmpFor` matches any sibling named `<deck>.<anything>.tmp`.",
+      "why": "An unrelated user file such as `deck.sloodge.backup.tmp` reports a false stale-save, which will drive a recovery prompt.",
+      "fix": "Match the generated shape: `<base>.<digits>.<8 base36 chars>.tmp`."
+    },
+    {
+      "file": "src/shared/document/deck.ts",
+      "line": 212,
+      "what": "Nit: `duplicateSlide` (line 212) and `moveSlide` (line 218) consume `indexOfSlide` without checking for -1.",
+      "why": "If invariant 1 is ever violated (a slide present in `slides` but absent from `slideOrder`), `splice(-1, 1)` silently drops the last slide and the duplicate lands at index 0. Schema validation prevents it today.",
+      "fix": "Throw `DeckError('slide-not-found')` when `indexOfSlide` returns -1."
+    },
+    {
+      "file": "package.json",
+      "line": 26,
+      "what": "Nit: `fflate` and `zod` are added as direct carets rather than through the pnpm catalog.",
+      "why": ".claude/plans/init/11-tech-stack.md:93-102 declares the catalog the single source of truth for versions and lists `zod: ^4.4.3` in it; `pnpm-workspace.yaml` has no entry for either, and fflate does not appear in the doc's dependency table at all. The library choice itself is well justified in store.ts:4-9 (dependency-free, non-native, per-entry level control) and does not violate the no-native-modules rule.",
+      "fix": "Add both to the `catalog:` block, reference them as `catalog:`, and add a fflate row to the 11-tech-stack.md dependency table."
+    }
+  ],
+  "notes": {
+    "verification": {
+      "lint": "pnpm lint — exit 0",
+      "typecheck": "pnpm typecheck — exit 0",
+      "test": "pnpm test — exit 0, 7 files / 120 tests passed"
+    },
+    "hypotheses_tested": [
+      "H1: fflate's async worker inflate path is not bounded by the declared originalSize, so the pre-inflate caps are advisory. REJECTED for DEFLATE — `gopt` (fflate/lib/index.cjs:901) turns `{size: su}` into `{out: new u8(su)}`, and `inflt` sets `resize = noBuf || st.i != 2`, which is false when `out` is supplied, so both the sync and worker paths truncate to exactly the central-directory size. The r1 claim at store.ts:423-425 is accurate as written.",
+      "H1b: the caps only look at originalSize, so a STORED member escapes them entirely. CONFIRMED and exploited — see the blocker. 20 MB file declaring 0 inflated bytes, 820 MB RSS, readDeck ran to completion.",
+      "H2: the hand-parsed central-directory scanner and fflate disagree about which directory is authoritative. PARTIALLY CONFIRMED, not exploited. The scanner requires `zip64Eocd + 56 <= bytes.length` (store.ts:281) before honouring a ZIP64 EOCD; fflate (index.cjs:2589-2596) performs no such bounds check, so a locator whose target sits in the last 52-56 bytes makes the scanner fall back to the 16-bit EOCD while fflate reads ZIP64 count/offset from bytes the scanner never validated. Names are still gated by the `wanted` filter built from the validated scan, so this is not a zip-slip or symlink bypass; the exposure is that fflate can allocate using sizes from a directory the caps never saw — the same OOM class as the blocker, via a second route. Recorded here rather than as a separate finding because the blocker's fix does not close it: the structural point is that two independent parsers of the same format will keep disagreeing.",
+      "H3: `deck.ts` did not receive the prototype-key hardening applied to `store.ts`. CONFIRMED — getSlide returns `function Object()` for id 'constructor', slidesInOrder returns a phantom entry, updateSlide fabricates a slide from Object.prototype.toString. Recorded as major 1.",
+      "H4: `renderThemeBlock` interpolates untrusted token values into a `<style>` block unescaped. CONFIRMED — `</style><script>alert(1)</script>` escapes the style context. Recorded as major 2.",
+      "H5: the default new-deck path produces a manifest referencing a theme file nobody writes. CONFIRMED — create/save/reopen yields `[\"missing theme file theme/theme.json\"]`. Recorded as major 3.",
+      "H6: the r1 zip-slip and directory-marker fixes regress on directory entries. REJECTED — store.ts:397-405 strips the trailing slash and validates before skipping, and tests/unit/document/store.test.ts:560-579 pins both directions.",
+      "H7: `__proto__` survives into a name-keyed map. REJECTED — `isSafeArchivePath` (types.ts:71) rejects it as a path segment, `findProtoKey` (types.ts:294) rejects it anywhere in a parsed manifest or theme including inside arrays, and the iterative walk with a `seen` set cannot be stack-overflowed or cycled. `constructor` and `toString` correctly round-trip as ordinary entries via the null-prototype maps.",
+      "H8: unique tmp names still collide or leak. REJECTED — tmpPathFor (store.ts:164) mixes pid and 8 base36 chars, and every failure path rms the tmp file (store.ts:628)."
+    ],
+    "not_reviewed": [],
+    "confidence_derivation": "Cap <=40 for one blocker; cap <=85 for majors; lint+typecheck+test all run green so no unverified cap; 8 hypotheses tested so no <90 cap; nothing unreadable. Landed at 30 rather than 40 because three majors accompany the blocker, two of them (deck.ts prototype reads, renderThemeBlock) in the same hardening area r1 was supposed to have closed.",
+    "summary": "The r1 fixes are real and most of them hold: the worker-backed inflate genuinely truncates to the declared size, __proto__ is rejected at every entry point, directory markers are validated before being skipped, symlinks are caught, tmp names are unique, and the theme schema is wired in with correct round-trip semantics for an invalid theme. The r1 hardening did not extend past store.ts, though, and one control is defeated outright: the archive caps measure `originalSize` while fflate, for STORED members, allocates `compressedSize` — a 20 MB crafted file declaring zero inflated bytes allocates 820 MB, and the cap tests pass only because they exercise DEFLATE. Fix the cap math, extend the prototype discipline to deck.ts, and validate theme tokens before they reach a <style> block."
+  }
+}

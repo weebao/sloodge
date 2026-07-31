@@ -35,6 +35,7 @@ local only). Lint is **oxlint 1**, format is **Prettier 3**.
 | `@modelcontextprotocol/sdk` | `^1.30` | main | Required peer of the Agent SDK; underlies `createSdkMcpServer()` for our in-process slide tools. |
 | `pptxgenjs` | `^4.0` | main | Only maintained JS library that emits standards-compliant OOXML `.pptx`; gives us both the structured (text/shape/table/chart) path and the raster fallback via `addImage`. |
 | `pdf-lib` | `^1.17` | main | Merges the per-slide single-page PDFs produced by `printToPDF` into one deck PDF. Pure JS, no native deps, no Cairo/Ghostscript in the installer. |
+| `fflate` | `^0.8.3` | main | Zip codec for the `.sloodge` container. Dependency-free, ~8 kB, ships its own types, and lets a single entry be STORED (`level: 0`) so `mimetype` can lead the archive OPC-style. Its *asynchronous* whole-archive API fans every member out concurrently — one `worker_threads` Worker per entry, no queue, no limit, in **both** `unzip` (peak = sum of inflated members) and `zip` (~11 MB RSS per entry deflated) — which no resource cap can bound, so we use neither: read drives its *streaming* `Inflate` from our own validated central-directory scan, write uses `zipSync`. |
 | `parse5` | `^8.0` | main | Location-aware HTML parser: gives byte-offset spans per element, which is what makes Design Mode's `data-sl-id → source span` patching (Onlook's lesson) possible without re-serializing and destroying formatting. |
 | `electron-updater` | `^6.8` | main | electron-builder's companion auto-updater; NSIS delta updates on Windows, Squirrel.Mac on macOS, GitHub Releases feed with zero server. |
 | `electron-store` | `^11.0` | main | Small JSON-file store for app prefs (recent decks, theme, window bounds). API key does **not** go here — that goes through `safeStorage`. |
@@ -99,6 +100,7 @@ catalog:
   typescript: 7.0.2
   vite: 7.3.6
   vitest: ^4.1.10
+  fflate: ^0.8.3
   zod: ^4.4.3
   tailwindcss: ^4.3.3
   "@tailwindcss/vite": ^4.3.3

@@ -1,0 +1,85 @@
+{
+  "confidence": 75,
+  "verdict": "request-changes",
+  "blockers": [],
+  "majors": [
+    {
+      "file": "src/main/menu/appMenuTemplate.ts",
+      "line": 74,
+      "what": "The Edit submenu is `undo, redo, sep, cut, copy, paste` and stops there — no `{ role: 'selectAll' }` (nor `pasteAndMatchStyle` / `delete`). Because `installAppMenu()` calls `Menu.setApplicationMenu(...)` (src/main/menu/appMenu.ts:20), it *replaces* Electron's default menu, which did contain those items (`pasteAndMatchStyle` and the `editMenu` role are both present in the shipped Electron 43.2.0 binary; before this PR no application menu was set, so the default was in effect).",
+      "why": "This is the surviving half of the r1 blocker. On macOS the standard editing accelerators are delivered through the application menu — that is the entire reason r1's Cut/Copy/Paste fix was needed — so removing Select All plausibly takes Cmd+A away from `#chat-composer` (src/renderer/src/features/chat/ChatPanel.tsx:36), the only text input this PR ships, on a v1-supported platform (11-tech-stack.md:215, macOS 12+). Even in the benign case where Chromium handles Cmd/Ctrl+A internally, the app's Edit menu now visibly lacks Select All, which every editor has. I could NOT verify the macOS keystroke behaviour here (headless WSL, no display, no Mac) — this is stated as a major rather than a blocker for exactly that reason. Note the wireframe spec (20-ui-wireframes.md:44-49) also omits Select All, so the PR is spec-conformant; the spec is the thing that is wrong.",
+      "fix": "Add `{ type: 'separator' }, { role: 'selectAll' }` after `paste` (or replace the hand-rolled list with `{ role: 'editMenu' }`, which is what r1's fix note offered as the one-liner), extend tests/unit/app-menu.test.ts:32's expected role list to match, and add the row to the 20-ui-wireframes.md menu tree so code and spec stay in step."
+    }
+  ],
+  "minors": [
+    {
+      "file": "docs/media/m04-app-shell.png",
+      "line": 1,
+      "what": "Nit: the committed screenshot and screencast are byte-identical to round 1 (`git ls-tree 8fc5f82 docs/media` and `a4b5f36 docs/media` both resolve to tree cf466e0), so they still depict the pre-review Toolbar: three near-identical `≡` align glyphs and Font/Font-size selects that look operable. The shipped FormatBar now draws distinct SVG align icons and marks the selects `disabled`.",
+      "why": "The PR's own evidence artifact documents a UI that no longer exists; anyone reading it later will believe the r1 minors were never fixed.",
+      "fix": "Re-run `node experiments/init/harness/record-shell.mjs` against the rebuilt renderer (it still works — every selector it uses survived the restructure), or drop the binaries from the commit and attach them to the PR as 70-testing-ci.md §7.3 actually asks."
+    },
+    {
+      "file": ".claude/plans/init/10-architecture.md",
+      "line": 128,
+      "what": "Nit: the contract line still reads `'app:menu': MenuAction; // native menu -> renderer (e.g. 'edit.undo')`, but `MenuAction` (src/shared/ipc-contract.ts:26) is now the five `file.*` ids only, so the doc's own example no longer type-checks.",
+      "why": "Doc/code drift on the file the repo calls the source of truth. The substantive decision is right — §5 'Menu wiring' (10-architecture.md:324) says Edit's Undo/Redo call main-side handlers with no renderer round-trip, which is exactly what dropping `edit.*` encodes, and ipc-contract.ts:14-16 documents the reasoning inline — so this is a stale illustration, not a contradiction.",
+      "fix": "Change the example comment to `(e.g. 'file.open')`."
+    },
+    {
+      "file": "src/main/menu/appMenuTemplate.ts",
+      "line": 65,
+      "what": "Nit: the comment says \"A custom `click` here would silently break typing\" as an unqualified rule, but 10-architecture.md:324 requires Edit's Undo/Redo to become main-side handlers driven by `history.canUndo/canRedo` at M1.2, and M5.1 owns the full menu.",
+      "why": "As written the comment forbids the very change the architecture doc schedules four PRs out; the next author either obeys a stale rule or ignores a comment that is still correct for cut/copy/paste.",
+      "fix": "Scope it: \"clipboard items must stay roles; Undo/Redo move to main-side handlers at M1.2 (10-architecture.md §5) and must then drop their accelerators inside text inputs.\""
+    },
+    {
+      "file": "src/renderer/src/features/format/MenuTabStrip.tsx",
+      "line": 16,
+      "what": "Nit: `role=\"tab\"` / `aria-selected=\"true\"` with no `aria-controls` and no `role=\"tabpanel\"` anywhere in the shell (FormatBar is `role=\"toolbar\"`). Carried over unaddressed from r1.",
+      "why": "Screen readers announce a tab that controls nothing.",
+      "fix": "Give FormatBar an id + `role=\"tabpanel\"` and point `aria-controls` at it, or drop the tablist roles until a second tab exists."
+    },
+    {
+      "file": "tests/unit/app-menu.test.ts",
+      "line": 19,
+      "what": "Nit: `(item.click as unknown as (() => void) | undefined)?.()` double-casts away Electron's real `click(menuItem, window, event)` signature. Also the commit subject is 90 chars against 70-testing-ci.md:312's ≤72 cap (carried over from r1).",
+      "why": "Both are small honesty gaps in an otherwise strong test file and an otherwise convention-abiding PR; the cast will hide a signature change if the handler ever needs its arguments.",
+      "fix": "Declare a local `type ClickHandler = NonNullable<MenuItemConstructorOptions['click']>` and invoke through a narrowed optional call with the three args stubbed; retitle the commit to the roadmap's own `feat: app shell layout (menu bar, thumbnail rail, canvas, status bar)` (62 chars)."
+    }
+  ],
+  "notes": {
+    "verification": {
+      "lint": "pnpm lint — exit 0 (oxlint clean, prettier --check clean).",
+      "typecheck": "pnpm typecheck — exit 0 (tsconfig.node.json + tsconfig.web.json, --composite false). CI does not run this.",
+      "test": "pnpm test — exit 0, 7 files / 120 tests passed. Isolated app-shell run: `pnpm vitest run tests/unit/app-shell.test.tsx tests/unit/app-menu.test.ts tests/unit/smoke.test.ts` — exit 0, 3 files / 16 tests passed.",
+      "stacked_change_caveat": "Working tree is the M1.1 document-model child stacked on app-shell (a4b5f36). All three commands are green on the superset, so no failure needed attribution; the isolated 16-test run is app-shell's own. package.json/pnpm-lock.yaml in the tree also carry M1.1 edits — the dependency review below is against `git diff main app-shell -- package.json pnpm-lock.yaml` only.",
+      "not_run": "Electron was never launched (headless WSL, no display, no macOS host). The menu template was evaluated directly (`node --input-type=module` importing src/main/menu/appMenuTemplate.ts via native type-stripping); the macOS accelerator claim in the major rests on documented Electron semantics, not an observed run. That is the single largest residual uncertainty."
+    },
+    "hypotheses_tested": [
+      "H1 (r1 blocker regression): do the Edit items still carry `click`/`accelerator`? REJECTED — dumped the real template for darwin and win32 in node: Edit is exactly `[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'}]`, every entry role-only, zero `click`, zero `accelerator`. File items carry clicks and CmdOrCtrl+N/O as intended; last File item is `close` on darwin, `quit` elsewhere; `{role:'appMenu'}` is prepended on darwin only.",
+      "H2 (does the new test actually pin the fix?): CONFIRMED it does — copied appMenuTemplate.ts and app-menu.test.ts into a scratch dir, reintroduced the r1 blocker verbatim (custom Undo/Redo/Cut/Copy/Paste with CmdOrCtrl+Z/X/C/V clicks) and ran vitest against the scratch config: 1 failed | 3 passed, `['undo','redo','cut','copy','paste']` vs five `undefined` at app-menu.test.ts:32. The test is a genuine regression guard, not a restatement.",
+      "H3 (the other half of the same class): does replacing the default menu drop editing items that used to work? CONFIRMED as the major — Select All / Paste and Match Style / Delete were in Electron's default menu (`grep -a pasteAndMatchStyle node_modules/electron/dist/electron` → 12 hits, `editMenu` → 2) and are absent from the new template. macOS impact unverified.",
+      "H4 (contract shape change): `IpcEvents['app:menu']` went from `{action: string}` to the bare `MenuAction` union — does any consumer still destructure `.action`? REJECTED — grep over src/ and tests/ finds no reader at all; src/preload/index.ts exposes only `{version}`, and `IPC_EVENT_CHANNELS`/`isIpcEventChannel` are unaffected (smoke.test.ts:19 still green). Zero call sites to update.",
+      "H5 (dependency direction): does the restructure or the shared MENU_ACTIONS violate .oxlintrc.json's no-restricted-imports overrides? REJECTED — src/shared/ipc-contract.ts gained only a `const` string tuple and a derived union (no imports at all); src/main/menu/* import from src/shared with type-only imports for the electron and MenuAction types; no renderer file imports src/main or electron; no new oxlint-disable anywhere in the diff. oxlint exits 0.",
+      "H6 (typecheck coverage hole): does the tsconfig include split (`tests/unit/**/*.ts` in node, `**/*.tsx` in web) drop a test file from typechecking? REJECTED — the four test paths (smoke.test.ts, app-menu.test.ts, document/*.test.ts, app-shell.test.tsx) each match exactly one project, and both projects exit 0. The .tsx test needs web's `jsx: react-jsx` + DOM lib, which node lacks; the split is the correct fix.",
+      "H7 (trust boundaries): does the change add an IPC handler, iframe, innerHTML, fs path, or unvalidated cast? REJECTED — no `ipcMain.handle`, no `webContents.send`, no `<iframe>`, no `dangerouslySetInnerHTML`, no `fs`, no new `any` / `as unknown as` / `!` in src/. `webPreferences` (sandbox/contextIsolation/nodeIntegration/webviewTag) is byte-identical to main; the only src/main/index.ts changes are the appMenu import, `autoHideMenuBar: true -> false`, and `installAppMenu()` in whenReady.",
+      "H8 (dependency policy): are the two new devDeps native or unjustified? REJECTED — @testing-library/react ^16.3.2 is sanctioned by 11-tech-stack.md and @testing-library/dom ^10.4.1 is its required peer; the lockfile delta is @babel/runtime, ansi-regex, ansi-styles, aria-query, dequal, dom-accessibility-api, lz-string, pretty-format, react-is — all pure JS, no node-gyp/prebuild/.node entries. happy-dom and @vitejs/plugin-react were already declared.",
+      "H9 (React identity churn): does AppShell defeat ThumbnailCard's memo? REJECTED — `handleSelectSlide` is a `useCallback([])`, `number`/`selected` are primitives, so a selection change re-renders only the two cards whose `selected` flips."
+    ],
+    "r1_followups": {
+      "blocker_edit_menu": "FIXED and guarded. Pure `role:` entries plus tests/unit/app-menu.test.ts:32-45 asserting the role list and `click === undefined` / `accelerator === undefined` on every Edit item; verified red on revert (H2). Only Select All was left behind — see the major.",
+      "major_menuaction_location": "RESOLVED, and the call to drop `edit.*` from the union is correct: 10-architecture.md:324 states Edit's Undo/Redo call main-side handlers with no renderer round-trip, so those ids would have been dead wire API. MENU_ACTIONS now lives in src/shared/ipc-contract.ts, `IpcEvents['app:menu']` is the narrowed union, and app-menu.test.ts:58 asserts the File menu emits exactly `[...MENU_ACTIONS]` — so an id added to the union without a menu item, or vice versa, fails CI. Only the doc's example comment is stale (minor).",
+      "major_renderer_layout": "RESOLVED — app/App.tsx + app/AppShell.tsx and features/{deck,canvas,chat,format,statusbar}/ match 10-architecture.md §1.3 name-for-name (Canvas -> SlideCanvas, Toolbar -> FormatBar), and components/ui/ is now an empty .gitkeep reserved for shadcn as the doc requires. MenuTabStrip landing in features/format/ is the one name the doc does not list; reasonable, not raised.",
+      "major_untestable_menu": "RESOLVED — appMenuTemplate.ts imports only `import type { MenuItemConstructorOptions } from 'electron'` and takes `{platform, appName}` as parameters, so it runs in plain node; appMenu.ts keeps the electron value imports. Four tests cover win32/darwin/linux.",
+      "minors": "Align glyphs -> distinct SVG AlignIcon (FormatBar.tsx:44). Selects -> real `disabled` with the reasoning in the component docblock and an assertion at app-shell.test.tsx:68-70. Test tightened: the `as HTMLButtonElement` cast is gone (now `getByRole('button', {name: /Slide 3 thumbnail/})`) and the inert loop covers comboboxes. Unaddressed: the tab-pattern nit, the committed media, and the commit-title length — all re-listed as minors."
+    },
+    "openExternal_note": "OUT OF SCOPE per instruction, recorded not raised. src/main/index.ts:31-34 still hands an arbitrary URL to `shell.openExternal` from `setWindowOpenHandler` with no scheme allow-list, and there is still no `will-navigate` cancel. Pre-existing from the M0.3 scaffold; this PR's three hunks against the file (appMenu import, autoHideMenuBar, installAppMenu) do not touch the handler and add no path that reaches it — the shell renders no anchors and no iframe. A separate fix PR is planned.",
+    "not_reviewed": [
+      "docs/media/m04-app-shell.webm — binary, not decodable here. The .png was viewed and is what the stale-media minor is based on.",
+      "pnpm-lock.yaml — generated; the added entries were enumerated and checked for native build hooks (none).",
+      "experiments/init/harness/record-shell.mjs — unchanged since r1, excluded from oxlint/prettier by ignorePatterns; read in full and its selectors still resolve against the restructured components."
+    ],
+    "summary": "Round 2 fixes every r1 finding it set out to fix, and fixes them properly: the Edit menu is now pure Electron roles, the restructure matches 10-architecture.md §1.3 name-for-name, MenuAction lives in the shared contract with a test that keeps the union and the menu in sync, and the new app-menu test is a real regression guard (I reintroduced the r1 blocker in a scratch copy and watched it go red). What survives is the other half of the same bug: replacing Electron's default menu also deleted Select All, which on macOS is the platform where menu-driven editing accelerators matter. One line to add, one row to add to the wireframe, and this ships."
+  }
+}
