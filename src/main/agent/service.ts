@@ -26,6 +26,14 @@ export class AgentService {
   private readonly deps: AgentServiceDeps
   private readonly model: AgentModelId
   private readonly sessions = new Map<number, AgentSession>()
+  /**
+   * In-flight session creations, keyed by senderId. Session creation spans an `await loadApiKey()`,
+   * so two concurrent sends for one sender would otherwise both see no session and both spawn a
+   * `query()` subprocess — orphaning one (§9's worst case) the moment the M2.3 chat UI can fire a
+   * double send. Caching the creation promise makes the second send await the first's result instead
+   * of racing it, so a sender ends up with exactly one session and one subprocess.
+   */
+  private readonly creating = new Map<number, Promise<AgentSession | null>>()
 
   constructor(deps: AgentServiceDeps) {
     this.deps = deps
@@ -42,20 +50,50 @@ export class AgentService {
     text: string,
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSendResponse> {
-    let session = this.sessions.get(senderId)
-    if (session === undefined) {
+    const session = await this.ensureSession(senderId, emit)
+    if (session === null) return { accepted: false }
+    session.send(text)
+    return { accepted: true }
+  }
+
+  /**
+   * Resolve the sender's session, creating exactly one even under concurrent sends. The creation
+   * promise is shared between racing callers and cleared once it settles; a `null` result (no key
+   * configured) is not cached, so a later send retries after the key is added.
+   */
+  private ensureSession(
+    senderId: number,
+    emit: (event: AgentEvent) => void,
+  ): Promise<AgentSession | null> {
+    const existing = this.sessions.get(senderId)
+    if (existing !== undefined) return Promise.resolve(existing)
+
+    const inFlight = this.creating.get(senderId)
+    if (inFlight !== undefined) return inFlight
+
+    const creation = this.createSession(senderId, emit)
+    this.creating.set(senderId, creation)
+    return creation
+  }
+
+  private async createSession(
+    senderId: number,
+    emit: (event: AgentEvent) => void,
+  ): Promise<AgentSession | null> {
+    try {
       const apiKey = await this.deps.loadApiKey()
-      if (apiKey === null) return { accepted: false }
+      if (apiKey === null) return null
       const { cwd, configDir } = this.deps.resolvePaths()
-      session = new AgentSession({
+      const session = new AgentSession({
         queryFn: this.deps.queryFn,
         options: { apiKey, model: this.model, cwd, configDir },
         emit,
       })
       this.sessions.set(senderId, session)
+      return session
+    } finally {
+      this.creating.delete(senderId)
     }
-    session.send(text)
-    return { accepted: true }
   }
 
   /** Interrupt the in-flight turn for one renderer (the Stop button). */

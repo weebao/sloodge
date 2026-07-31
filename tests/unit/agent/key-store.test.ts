@@ -48,6 +48,10 @@ describe('last4', () => {
 
   it('returns empty string when shorter than four characters', () => {
     expect(last4('ab')).toBe('')
+    // Pins the `length >= 4` boundary: a 3-char value must mask fully (kills a `>= 3` mutant that
+    // would leak the whole short string as its own "last four").
+    expect(last4('abc')).toBe('')
+    expect(last4('')).toBe('')
   })
 })
 
@@ -61,5 +65,11 @@ describe('keyStatus', () => {
     const status = keyStatus('sk-ant-secretW3z9')
     expect(status).toEqual({ configured: true, last4: 'W3z9' })
     expect(JSON.stringify(status)).not.toContain('secret')
+  })
+
+  it('masks a configured-but-short value fully rather than echoing it as last4', () => {
+    // A 3-char value is not a real key, but the contract is that last4 never returns more than the
+    // final four characters — for a short value that means empty, not the whole string.
+    expect(keyStatus('abc')).toEqual({ configured: true, last4: '' })
   })
 })
