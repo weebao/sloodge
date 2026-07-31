@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "fflate": "catalog:",
+    "parse5": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "zod": "catalog:"
