@@ -10,29 +10,33 @@
  *
  * This measures both halves against real Chromium, using the **real** `wrapSlideHtml`:
  *
- *   PLACEMENT   `--dump-dom` and check the meta is a child of `<head>`.
+ *   PLACEMENT   `document.head.querySelector('meta[http-equiv="Content-Security-Policy"]')` — a
+ *               *structural* question asked of the parsed tree.
  *   ENFORCEMENT re-point the injected policy at `script-src 'none'`, give the probe an inline
  *               script that stamps `data-inline="RAN"`, and check the stamp is absent — i.e. the
- *               policy was really applied, not merely present in the markup.
+ *               policy was really applied, not merely present in the tree.
+ *
+ * The placement oracle used to slice the serialized DOM between `<head>` and `</head>` and look for
+ * the string `Content-Security-Policy`. That reported a **false pass** for the `noframes` probe,
+ * where the policy was raw *text* inside `<noframes>` rather than an element — only the enforcement
+ * canary caught it. A substring cannot tell an element from text that looks like one, so the
+ * question is now asked of the DOM. Evaluation runs over CDP, which is not subject to the page's
+ * own CSP, so the enforcing variant can still be interrogated.
  *
  * Run (needs the playwright browsers this harness already downloads):
  *
  *     node experiments/init/harness/csp-meta-placement.mjs
  *
- * Measured 2026-07-31, chrome-headless-shell 1234: all 13 probes PASS both halves. Before the
- * implied-body fix, probes 1-3 failed both (empty `<head>`, and `data-inline="RAN"`).
+ * Measured 2026-07-31, Chromium via Playwright: all 15 probes PASS both halves. Each fix in this
+ * file's history was proven by the corresponding probe going red first: before the implied-body
+ * fix, probes 1-3 failed both halves; before the `noframes`/`template` fixes, those two did.
  */
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { chromium } from 'playwright'
 import { wrapSlideHtml } from '../../../src/renderer/src/features/canvas/wrapSlideHtml.ts'
-
-const SHELL = join(
-  process.env.HOME,
-  '.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell',
-)
 
 /** An inline script that marks the document if the CSP failed to stop it. */
 const CANARY = `<script>document.documentElement.setAttribute('data-inline','RAN')</script>`
@@ -49,36 +53,40 @@ const PROBES = [
   ['decoy: head in noscript', `<!doctype html><html><noscript><head></noscript><body>${CANARY}`],
   ['decoy: double-escaped', `<!doctype html><html><script>/*<!--<script>*/</script><head></head><body>${CANARY}`],
   ['decoy: head in attribute', `<!doctype html><html data-n="<head>"><head></head><body>${CANARY}`],
+  // RAWTEXT *and* head content: it must be skipped as text without implying a body.
+  ['decoy: head in noframes', `<!doctype html><html><noframes><head></noframes><body>${CANARY}`],
+  // Template children parse into a separate DocumentFragment, so a meta there is not in the head.
+  ['decoy: head in template', `<!doctype html><html><template><head></head></template><body>${CANARY}`],
   ['fallback: no head', `<!doctype html><html><body>${CANARY}`],
   ['fallback: bare fragment', `<p>hi</p>${CANARY}`],
 ]
 
 const dir = mkdtempSync(join(tmpdir(), 'sloodge-csp-'))
+const browser = await chromium.launch()
+const page = await browser.newPage()
 
-function dumpDom(html, name) {
+async function load(html, name) {
   const file = join(dir, `${name}.html`)
   writeFileSync(file, html)
-  return execFileSync(SHELL, ['--headless', '--disable-gpu', '--dump-dom', pathToFileURL(file).href], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  })
-}
-
-/** The meta is only honoured as a child of <head>. */
-function metaIsInHead(dom) {
-  const head = /<head\b[^>]*>([\s\S]*?)<\/head>/i.exec(dom)
-  return head !== null && head[1].includes('Content-Security-Policy')
+  await page.goto(pathToFileURL(file).href)
 }
 
 let failures = 0
 for (const [label, source] of PROBES) {
+  const slug = label.replaceAll(/\W+/g, '_')
   const wrapped = wrapSlideHtml(source)
-  const placement = metaIsInHead(dumpDom(wrapped, label.replaceAll(/\W+/g, '_')))
 
-  // Same placement, a policy that must visibly bite.
-  const enforcing = wrapped.replace(/content="[^"]*"/, `content="script-src 'none'"`)
-  const enforced = !dumpDom(enforcing, `${label.replaceAll(/\W+/g, '_')}_enf`).includes(
-    'data-inline="RAN"',
+  // Structural: is the policy a real <meta> element whose parent is the head?
+  await load(wrapped, slug)
+  const placement = await page.evaluate(
+    () => document.head.querySelector('meta[http-equiv="Content-Security-Policy"]') !== null,
+  )
+
+  // Same placement, a policy that must visibly bite. Ground truth: markup that merely *contains*
+  // a policy proves nothing; a policy that blocks the canary proves it was applied.
+  await load(wrapped.replace(/content="[^"]*"/, `content="script-src 'none'"`), `${slug}_enf`)
+  const enforced = await page.evaluate(
+    () => document.documentElement.getAttribute('data-inline') !== 'RAN',
   )
 
   const ok = placement && enforced
@@ -88,5 +96,6 @@ for (const [label, source] of PROBES) {
   )
 }
 
+await browser.close()
 console.log(failures === 0 ? '\nAll probes pass.' : `\n${String(failures)} probe(s) FAILED.`)
 process.exit(failures === 0 ? 0 : 1)

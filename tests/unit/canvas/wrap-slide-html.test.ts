@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { SLIDE_CSP, wrapSlideHtml } from '../../../src/renderer/src/features/canvas/wrapSlideHtml'
+import {
+  ANCHOR_TABLES,
+  SLIDE_CSP,
+  wrapSlideHtml,
+} from '../../../src/renderer/src/features/canvas/wrapSlideHtml'
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
 
 const SLIDE_ID = 's_01H8XQZ4P7K2M9NB3VYRTC6FDA'
@@ -94,6 +98,70 @@ describe('wrapSlideHtml', () => {
     expect(wrapSlideHtml(createStarterSlideHtml({ id: SLIDE_ID }))).not.toContain(
       'allow-same-origin',
     )
+  })
+})
+
+/**
+ * The enumeration guard.
+ *
+ * Rounds 1, 3 and 4 of review each found one more missed member of the element tables — a
+ * `<head>` inside `<style>`, then inside RCDATA, then inside `<noframes>`, each silently dropping
+ * the whole layer-3 policy. The tables are now derived from one source, and these tests are what
+ * make that source *closed*: the head-content set must be exactly the HTML spec's "in head" list,
+ * and every member of it must carry a content model. Adding an element without classifying it, or
+ * classifying one that is not head content, fails here rather than in a future review round.
+ */
+describe('anchor element tables are spec-complete', () => {
+  // https://html.spec.whatwg.org/multipage/parsing.html — "in head" insertion mode.
+  const SPEC_HEAD_CONTENT = [
+    'base',
+    'basefont',
+    'bgsound',
+    'link',
+    'meta',
+    'noframes',
+    'noscript',
+    'script',
+    'style',
+    'template',
+    'title',
+  ]
+
+  it('head content is exactly the spec list — no more, no less', () => {
+    expect([...ANCHOR_TABLES.HEAD_CONTENT].toSorted()).toEqual(SPEC_HEAD_CONTENT.toSorted())
+  })
+
+  it('classifies every head-content element', () => {
+    for (const name of SPEC_HEAD_CONTENT) {
+      expect(ANCHOR_TABLES.CONTENT_MODEL.get(name), `${name} is unclassified`).toBeDefined()
+    }
+  })
+
+  // The classification has to be right, not merely present. These are the four that are not
+  // ordinary markup, and each one is a policy-dropping bug if it is recorded as `normal`.
+  it('records the non-markup content models correctly', () => {
+    const expected: Record<string, string> = {
+      noframes: 'rawtext',
+      noscript: 'rawtext',
+      style: 'rawtext',
+      script: 'script',
+      title: 'rcdata',
+      template: 'fragment',
+      textarea: 'rcdata',
+      xmp: 'rawtext',
+      iframe: 'rawtext',
+      plaintext: 'plaintext',
+    }
+    for (const [name, model] of Object.entries(expected)) {
+      expect(ANCHOR_TABLES.CONTENT_MODEL.get(name), name).toBe(model)
+    }
+  })
+
+  it('reads element names as data, not through the prototype chain', () => {
+    // A `Map`, so a hostile `<constructor>` tag cannot resolve to a truthy classification.
+    expect(ANCHOR_TABLES.CONTENT_MODEL.get('constructor')).toBeUndefined()
+    expect(ANCHOR_TABLES.CONTENT_MODEL.get('toString')).toBeUndefined()
+    expect(ANCHOR_TABLES.HEAD_CONTENT.has('constructor')).toBe(false)
   })
 })
 
@@ -287,6 +355,34 @@ describe('wrapSlideHtml anchor is markup-aware', () => {
 
     assertLivePolicy(wrapped)
     expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+  })
+
+  // `noframes` is RAWTEXT, like `style` — but it is also head content, so it does not imply a
+  // body either. Both facts have to be recorded, which is why they now come from one table.
+  it('ignores a <head> inside RAWTEXT <noframes>', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html><noframes><head></noframes>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<noframes>'))
+  })
+
+  // A template's children are parsed into a separate DocumentFragment, so a meta injected there is
+  // not a child of the head and CSP pragma processing ignores it.
+  it('ignores a <head> inside a <template>', () => {
+    const wrapped = wrapSlideHtml(
+      '<!doctype html>\n<html><template><head></head></template><title>t</title>',
+    )
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<template>'))
+  })
+
+  it('still anchors on a real <head> that precedes a <template>', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html><head><template><p>x</p></template>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<template>'))
   })
 
   it('treats a bare `<` in text as text, not as a tag', () => {

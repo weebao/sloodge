@@ -111,6 +111,16 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CS
  * state it recognised and got wrong, and there the policy landed nowhere the document honoured.
  * The guarantee is: unknown input degrades to a worse-looking but correct placement. A *wrong*
  * rule still produces a wrong answer, so each rule is pinned by a mutation-verified test.
+ *
+ * ## The element enumeration is closed
+ *
+ * Review rounds 1, 3 and 4 each found one more missed element — `<style>`, then RCDATA, then
+ * `<noframes>` — because head-content and text-content were two independent hand-maintained lists
+ * with nothing forcing them to agree or forcing a member to be classified. There is now **one**
+ * table (`CONTENT_MODEL`), both predicates are derived from it, and `HEAD_CONTENT` is the HTML
+ * spec's "in head" element list *in full*. Unit tests assert that set equality, that every member
+ * carries a content model, and that the non-markup models are the right ones — so a future element
+ * cannot be added unclassified, and the two facts about an element cannot drift apart.
  */
 
 /**
@@ -138,37 +148,61 @@ function tagEnd(html: string, from: number): number | null {
 const TAG_START = /^<(\/?)([a-zA-Z][^\s/>]*)/
 
 /**
- * Elements whose content the HTML tokenizer treats as text rather than markup — RAWTEXT
- * (`style`, `noscript` with scripting enabled, `xmp`, `iframe`), RCDATA (`title`, `textarea`),
- * script data (`script`), and `plaintext`, which swallows the rest of the document.
+ * How an element's children are parsed, for anchor purposes.
  *
- * A `<head>` inside any of them is character data, so anchoring there injects the policy into a
- * text node where it does nothing. `noscript` is on the list precisely because slide frames are
- * `allow-scripts`: with scripting enabled its content is raw text, which is the parse a decoy
- * would be written against.
+ *  - `normal`     — ordinary markup; keep walking into it.
+ *  - `rawtext`    — RAWTEXT: children are character data (`style`, `noframes`, `xmp`, `iframe`,
+ *                   and `noscript` because slide frames are `allow-scripts`, i.e. scripting-enabled).
+ *  - `rcdata`     — RCDATA: character data with entities (`title`, `textarea`).
+ *  - `script`     — script data, including the double-escaped state.
+ *  - `plaintext`  — swallows the rest of the document; there is no end tag.
+ *  - `fragment`   — children are parsed into a *separate* `DocumentFragment` (`template`), so
+ *                   nothing inside is a child of the head no matter how it looks in the source.
  *
- * Skipping these is a no-op for a well-formed slide — a real `<head>` always precedes all of them.
+ * Everything except `normal` means a `<head>` found inside is not a head element, so the walk must
+ * not anchor there.
  */
-const TEXT_CONTENT_ELEMENTS = new Set([
-  'script',
-  'style',
-  'title',
-  'textarea',
-  'noscript',
-  'iframe',
-  'xmp',
-  'plaintext',
-])
+type ContentModel = 'normal' | 'rawtext' | 'rcdata' | 'script' | 'plaintext' | 'fragment'
 
 /**
- * Elements the parser accepts while the implied `<head>` is still open (HTML's "in head" insertion
- * mode), plus `html`/`head` themselves. A start tag outside this set closes the implied head and
- * opens the body — after which a literal `<head>` token is a parse error and is discarded, so it
- * must stop being treated as an anchor.
+ * **The single source of truth, and it is spec-complete for head content.**
+ *
+ * Four review rounds each found one more missed member of what used to be two independent
+ * hand-maintained sets — an element could be listed as head content but not as text content
+ * (`noframes`), and nothing forced the two to agree or forced a member to be classified at all.
+ * So there is now one table, both sets are *derived* from it, and `HEAD_CONTENT` below is the
+ * complete "in head" element list from the HTML spec — base, basefont, bgsound, link, meta,
+ * noframes, noscript, script, style, template, title — every member carrying a content model.
+ * A test asserts that set equality and that classification is total, so a future member cannot be
+ * added unclassified, and a classification cannot silently disagree with itself.
+ *
+ * A `Map`, not an object literal: element names come from untrusted markup, and `model['constructor']`
+ * on a plain object resolves up the prototype chain to a function — truthy, and a misclassification.
  */
-const HEAD_CONTENT_ELEMENTS = new Set([
-  'html',
-  'head',
+const CONTENT_MODEL = new Map<string, ContentModel>([
+  // The HTML spec's head-content elements, in full.
+  ['base', 'normal'],
+  ['basefont', 'normal'],
+  ['bgsound', 'normal'],
+  ['link', 'normal'],
+  ['meta', 'normal'],
+  ['noframes', 'rawtext'],
+  ['noscript', 'rawtext'],
+  ['script', 'script'],
+  ['style', 'rawtext'],
+  ['template', 'fragment'],
+  ['title', 'rcdata'],
+  // Elements outside head content whose children are still not markup. They imply a body (they
+  // are not head content), but their interiors must be skipped so a `<head>` in a textarea's
+  // text cannot be mistaken for a tag.
+  ['textarea', 'rcdata'],
+  ['xmp', 'rawtext'],
+  ['iframe', 'rawtext'],
+  ['plaintext', 'plaintext'],
+])
+
+/** The spec's "in head" element list. Pinned exactly by a test; `html`/`head` are not members. */
+const HEAD_CONTENT = new Set([
   'base',
   'basefont',
   'bgsound',
@@ -181,6 +215,33 @@ const HEAD_CONTENT_ELEMENTS = new Set([
   'template',
   'title',
 ])
+
+/**
+ * Exposed for the completeness test — the guard that makes this enumeration closed rather than
+ * merely long. Not part of the module's API.
+ */
+export const ANCHOR_TABLES = { CONTENT_MODEL, HEAD_CONTENT } as const
+
+/**
+ * Does a start tag keep the implied `<head>` open?
+ *
+ * `html` and `head` are not head *content* but obviously do not close it. `template` is head
+ * content and genuinely does not open a body — but its children land in a separate tree, so a
+ * later `<head>` token cannot be trusted to be a head we can inject into. Treating it as
+ * body-implying is deliberately conservative: it costs a fallback placement (verified correct in
+ * Chromium) and buys immunity from the whole fragment-scoping question.
+ */
+function keepsHeadOpen(name: string): boolean {
+  if (name === 'html' || name === 'head') return true
+  return HEAD_CONTENT.has(name) && CONTENT_MODEL.get(name) !== 'fragment'
+}
+
+/** Elements whose interior is character data and must be skipped wholesale. */
+function textModelOf(name: string): ContentModel | null {
+  const model = CONTENT_MODEL.get(name)
+  if (model === undefined || model === 'normal' || model === 'fragment') return null
+  return model
+}
 
 /** Start and end offsets of the next `</name …>` end tag at or after `from`. */
 function findEndTag(
@@ -286,10 +347,10 @@ function findAnchorOffset(html: string): number | null {
     // Past the head, whatever we thought we saw. Injecting into <body> is worse than the
     // <html>/doctype fallbacks below, which are still inside the document's prologue.
     if (name === 'body' || (closing && name === 'head')) break
-    // Any start tag that is not head content opens the body implicitly, exactly as text does.
-    if (!closing && !HEAD_CONTENT_ELEMENTS.has(name)) bodyImplied = true
+    // Any start tag that does not keep the implied head open opens the body, exactly as text does.
+    if (!closing && !keepsHeadOpen(name)) bodyImplied = true
 
-    if (!closing && TEXT_CONTENT_ELEMENTS.has(name)) {
+    if (!closing && textModelOf(name) !== null) {
       // Text content is not markup: a `<head>` in a JS string, a CSS selector or a <title> is data.
       index = skipTextContent(html, name, end)
       continue
