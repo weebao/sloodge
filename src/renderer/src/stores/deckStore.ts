@@ -73,17 +73,24 @@ export function getSlideHtml(slideHtml: SlideHtmlMap, id: SlideId): string | und
 
 /**
  * Slides in presentation order — `slideOrder` is authoritative, never `Object.keys(slides)`.
- * A slide whose bytes are not loaded renders as an empty document rather than vanishing from the
- * rail: the deck says it exists, and a silently shorter rail would be a worse lie than a blank card.
+ *
+ * **Index-for-index with `slideOrder`, always.** Callers pair this with `selectCurrentIndex`, which
+ * is a position in `slideOrder`; skipping an element here would silently shift every later slide,
+ * so the canvas would show one slide while the rail highlighted another and the status bar counted
+ * a third. The manifest schema already guarantees the two agree (invariant 1, types.ts: `slideOrder`
+ * is a strict permutation of the slide keys), but that guarantee is enforced at the zod boundary and
+ * this function is called on in-memory decks. Emitting a placeholder rather than skipping makes the
+ * correspondence structural instead of merely true.
+ *
+ * A slide whose *bytes* are not loaded likewise renders as an empty document rather than vanishing
+ * from the rail: the deck says it exists, and a silently shorter rail is a worse lie than a blank card.
  */
 export function selectSlideViews(deck: DeckManifest, slideHtml: SlideHtmlMap): SlideView[] {
-  const views: SlideView[] = []
-  for (const id of deck.slideOrder) {
-    const entry = getSlide(deck, id)
-    if (!entry) continue
-    views.push({ id, title: entry.title, html: getSlideHtml(slideHtml, id) ?? '' })
-  }
-  return views
+  return deck.slideOrder.map((id) => ({
+    id,
+    title: getSlide(deck, id)?.title ?? 'Untitled slide',
+    html: getSlideHtml(slideHtml, id) ?? '',
+  }))
 }
 
 /** 0-based position of the selection in `slideOrder`, or `-1` when there is none. */

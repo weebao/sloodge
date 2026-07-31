@@ -6,7 +6,7 @@ import {
   selectSlideViews,
   useDeckStore,
   type SlideHtmlMap,
-} from '../../../src/renderer/src/state/deckStore'
+} from '../../../src/renderer/src/stores/deckStore'
 import { moveSlide, removeSlide } from '../../../src/shared/document/deck'
 import { parseManifest, type SlideId } from '../../../src/shared/document/types'
 

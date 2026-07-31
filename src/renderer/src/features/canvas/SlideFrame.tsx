@@ -1,6 +1,6 @@
 import { memo, useMemo, type JSX } from 'react'
 import { SLIDE_SIZE } from './slideFit'
-import { wrapSlideHtml } from './wrapSlideHtml'
+import { useSlideUrl, type SlideUrlFactory } from './useSlideUrl'
 
 /**
  * Layer 2 of the slide sandbox (§7 of 10-architecture.md): one slide document in an iframe that
@@ -14,6 +14,9 @@ import { wrapSlideHtml } from './wrapSlideHtml'
  * `allow-popups`, `allow-top-navigation`, `allow-forms` and `allow-modals` are omitted for the same
  * reason, which is also why the contract forbids `alert`/`confirm`/`prompt` (§3.2 SL-S05 of
  * 30-slide-format.md): they are silent no-ops here.
+ *
+ * Content arrives as a **blob URL**, not `srcdoc` — see `useSlideUrl` for why the plan specifies
+ * that, and for the lifecycle that keeps the URLs from leaking.
  *
  * The frame keeps its intrinsic 1280x720 size and is CSS-transform-scaled by the caller. Scaling
  * the *frame* rather than resizing it is what makes a thumbnail a faithful miniature of the canvas:
@@ -39,6 +42,12 @@ export type SlideFrameProps = {
    */
   interactive?: boolean
   className?: string
+  /**
+   * Object-URL seam, defaulted to the DOM implementation. Injected only by tests, which is what
+   * makes "the previous URL was revoked before the next one was used" an assertion rather than a
+   * hope — happy-dom has no real blob store to observe.
+   */
+  objectUrls?: SlideUrlFactory
 }
 
 function SlideFrameInner({
@@ -47,12 +56,16 @@ function SlideFrameInner({
   scale,
   interactive = true,
   className,
+  objectUrls,
 }: SlideFrameProps): JSX.Element {
-  // Recomputed only when the document text changes: CSP injection is a string concat, but the
-  // result is the `srcdoc` attribute, and handing React a fresh string on a scale change would
-  // reload the frame — losing animation phase and any interactive state on every window resize.
-  const srcDoc = useMemo(() => wrapSlideHtml(html), [html])
-  const painted = Math.max(scale, 0)
+  // Keyed on the document text alone, so a scale change never mints a new URL and never reloads
+  // the frame — a reload loses animation phase and any interactive state, on every window resize.
+  const src = useSlideUrl(html, objectUrls)
+
+  // `Math.max(NaN, 0)` is NaN, which yields `width: "NaNpx"` and `transform: scale(NaN)` — both
+  // invalid declarations that CSS drops, leaving a full-size 1280px frame bursting out of its
+  // container. `scale` is a public prop, so it is guarded here rather than trusted from callers.
+  const painted = Number.isFinite(scale) ? Math.max(scale, 0) : 0
 
   // Memoized because a new style object every render is a new prop for the host elements; the
   // iframe's especially, since React diffing a fresh object against the old one is the only thing
@@ -84,7 +97,9 @@ function SlideFrameInner({
         sandbox={SLIDE_SANDBOX}
         referrerPolicy="no-referrer"
         allow=""
-        srcDoc={srcDoc}
+        // `undefined` for the one render before the effect mints the URL: an iframe with no src
+        // shows about:blank, which is the right empty state.
+        src={src ?? undefined}
         tabIndex={interactive ? undefined : -1}
         aria-hidden={interactive ? undefined : 'true'}
         className="block border-0"
@@ -97,10 +112,10 @@ function SlideFrameInner({
 /**
  * Memoized on shallow prop equality, which is the whole re-render policy for the rail: props are
  * primitives, so a slide whose `html` did not change never re-renders and its iframe is never
- * touched. That matters more than usual here — writing `srcdoc` reloads the document, so an
- * unguarded re-render of a 60-slide rail would restart 60 documents on every keystroke. The
- * canvas gets the same guarantee for free while resizing: only `scale` changes, so React updates
- * one style property and leaves `srcdoc` alone.
+ * touched. That matters more than usual here — a new `src` reloads the document and mints a blob
+ * URL, so an unguarded re-render of a 60-slide rail would restart 60 documents on every keystroke.
+ * The canvas gets the same guarantee for free while resizing: only `scale` changes, so React
+ * updates one style property and `useSlideUrl`'s effect never re-runs.
  *
  * Naive-but-correct is the M1.3 target: every slide in the deck is a live frame. Virtualization
  * (mount only the visible window) is M8.3.

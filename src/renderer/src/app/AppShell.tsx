@@ -5,7 +5,7 @@ import { ThumbnailRail } from '../features/deck/ThumbnailRail'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { StatusBar } from '../features/statusbar/StatusBar'
-import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../state/deckStore'
+import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
 
 /**
  * The PowerPoint-like frame (20-ui-wireframes.md): tab strip + format bar on top, thumbnail rail /
@@ -16,7 +16,7 @@ import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../state/dec
  * state) without standing up a store, and it puts every subscription in one reviewable place.
  *
  * Each `useDeckStore` call selects a *stable slice*, never a derived value — see the selector
- * contract in `state/createStore.ts`. The derivations happen in `useMemo` below.
+ * contract in `stores/createStore.ts`. The derivations happen in `useMemo` below.
  */
 export function AppShell(): JSX.Element {
   const deck = useDeckStore((state) => state.deck)

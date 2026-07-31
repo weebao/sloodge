@@ -17,16 +17,14 @@
  * widen ours — it can only narrow its own document further. That is why nothing here strips or
  * rewrites an existing meta: there is no bypass to close, and rewriting would mutate author bytes.
  *
- * ## Known gap under `srcdoc` delivery
+ * ## This is the only policy on the frame
  *
- * A `srcdoc` frame **inherits the embedder's CSP** on top of its own. The host page ships
- * `script-src 'self'` (see `src/renderer/index.html`), so today a slide's inline `<script>` — legal
- * under the contract, and required by `capabilities: ["interactive-js"]` — is blocked no matter what
- * this function injects. Static and CSS/SMIL-animated slides are unaffected. §7 of the architecture
- * anticipates this and specifies **blob URLs** as the delivery mechanism for exactly this reason: a
- * blob-loaded frame gets a fresh policy rather than an inherited one. `slideFrameSource` in
- * `SlideFrame.tsx` is the single seam that swap goes through; this policy is already the one the
- * blob path needs, so the migration is a delivery change and not a security change.
+ * Slides are delivered as blob URLs (`useSlideUrl`), per §7. A blob-loaded frame is a real
+ * navigation to its own document, so — unlike `srcdoc`, which inherits the embedder's CSP — nothing
+ * else constrains it. That is what makes inline `<script>` work at all (the `interactive-js`
+ * capability of the slide contract), and it is also why the injection below must be markup-aware:
+ * an anchor swallowed by a comment used to be masked by the host page's inherited policy, and no
+ * longer is.
  */
 
 /**
@@ -52,27 +50,116 @@ export const SLIDE_CSP = [
 const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`
 
 /**
- * Anchors are tried in order and the meta goes immediately *after* the first one that matches.
+ * Where the meta goes: immediately after `<head>` if there is one, else after `<html>`, else after
+ * the doctype, else at the very front.
  *
- * The ordering is what keeps the document in standards mode: a meta prepended ahead of a
- * `<!doctype html>` would push Chromium into quirks mode, where the slide's box model no longer
- * matches the 1280x720 the contract measured. So `<head>` first (the contract guarantees one),
- * then `<html>`, then the doctype, and only a document with none of the three gets a prepend.
+ * That ordering is what keeps the document in standards mode — a meta prepended ahead of
+ * `<!doctype html>` pushes Chromium into quirks mode, where the slide's box model no longer matches
+ * the 1280x720 the contract measured.
+ *
+ * ## Why this is a scanner and not a regex
+ *
+ * A regex for `<head>` matches the first *textual* occurrence, which need not be a tag at all. For
+ * model-authored HTML — and models emit comments freely — `<!-- <head> is below --> <head>…` puts
+ * the anchor inside the comment, so the entire injected meta is swallowed by `<!-- … -->` and the
+ * slide runs with **no layer-3 policy**, silently: the document still renders, nothing logs. The
+ * same happens for `<script>var s = "<head>"</script>` and for an attribute value such as
+ * `<html data-note="<head>">`.
+ *
+ * Today that is masked by the host page's own CSP, which a `srcdoc` frame inherits. Blob delivery
+ * (now live in `SlideFrame`) removes that accident, which makes this policy the only thing
+ * enforcing `connect-src 'none'` — i.e. the only thing standing between a hostile slide and
+ * exfiltrating the deck.
+ *
+ * So the anchor is located by walking the markup, skipping comments, `<script>`/`<style>` interiors
+ * and quoted attribute values, and stopping at `<body>`. The walk yields a byte *offset* and the
+ * caller slices the original string at it — author bytes are never rewritten, which is what keeps
+ * Design Mode's byte-span patcher (§3.3 of 30-slide-format.md) valid.
  */
-const ANCHORS: readonly RegExp[] = [
-  /<head(?:\s[^>]*)?>/i,
-  /<html(?:\s[^>]*)?>/i,
-  /<!doctype[^>]*>/i,
-]
 
-/** Inject the slide CSP into a complete slide document. Idempotent-safe, allocation-cheap. */
-export function wrapSlideHtml(html: string): string {
-  for (const anchor of ANCHORS) {
-    const match = anchor.exec(html)
-    if (match) {
-      const at = match.index + match[0].length
-      return `${html.slice(0, at)}\n${CSP_META}${html.slice(at)}`
+/**
+ * End offset (exclusive) of the tag that starts at `from`, honouring quoted attribute values —
+ * `<html data-note="a>b">` ends at the second `>`, not the first.
+ *
+ * `null` for an unterminated tag. A truncated document must not yield an anchor *inside* an open
+ * tag, where the injected meta would be parsed as a pile of stray attributes rather than a policy.
+ */
+function tagEnd(html: string, from: number): number | null {
+  let quote = ''
+  for (let index = from; index < html.length; index += 1) {
+    const char = html[index]!
+    if (quote !== '') {
+      if (char === quote) quote = ''
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (char === '>') {
+      return index + 1
     }
   }
-  return `${CSP_META}\n${html}`
+  return null
+}
+
+const TAG_START = /^<(\/?)([a-zA-Z][^\s/>]*)/
+const RAW_TEXT_ELEMENTS = new Set(['script', 'style'])
+
+/** Offset at which to insert, or `null` for "no anchor — prepend". */
+function findAnchorOffset(html: string): number | null {
+  let htmlEnd: number | null = null
+  let doctypeEnd: number | null = null
+  let index = 0
+
+  while (index < html.length) {
+    const open = html.indexOf('<', index)
+    if (open === -1) break
+
+    if (html.startsWith('<!--', open)) {
+      const close = html.indexOf('-->', open + 4)
+      index = close === -1 ? html.length : close + 3
+      continue
+    }
+
+    if (html.startsWith('<!', open)) {
+      const end = tagEnd(html, open)
+      if (end === null) break
+      if (doctypeEnd === null && /^<!doctype\b/i.test(html.slice(open, end))) doctypeEnd = end
+      index = end
+      continue
+    }
+
+    const match = TAG_START.exec(html.slice(open, open + 32))
+    if (!match) {
+      // A bare `<` in text (`a < b`). Not markup; keep scanning past it.
+      index = open + 1
+      continue
+    }
+
+    const closing = match[1] === '/'
+    const name = match[2]!.toLowerCase()
+    const end = tagEnd(html, open)
+    if (end === null) break
+
+    if (!closing && name === 'head') return end
+    if (!closing && name === 'html' && htmlEnd === null) htmlEnd = end
+    // Past the head, whatever we thought we saw. Injecting into <body> is worse than the
+    // <html>/doctype fallbacks below, which are still inside the document's prologue.
+    if (name === 'body') break
+
+    if (!closing && RAW_TEXT_ELEMENTS.has(name)) {
+      // Raw-text content is not markup: a `<head>` in a JS string or a CSS selector is data.
+      const close = new RegExp(`</${name}\\s*>`, 'i').exec(html.slice(end))
+      index = close === null ? html.length : end + close.index + close[0].length
+      continue
+    }
+
+    index = end
+  }
+
+  return htmlEnd ?? doctypeEnd
+}
+
+/** Inject the slide CSP into a complete slide document. Pure; author bytes are never rewritten. */
+export function wrapSlideHtml(html: string): string {
+  const at = findAnchorOffset(html)
+  if (at === null) return `${CSP_META}\n${html}`
+  return `${html.slice(0, at)}\n${CSP_META}${html.slice(at)}`
 }

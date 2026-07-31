@@ -1,5 +1,5 @@
 import { useMemo, type JSX } from 'react'
-import type { SlideView } from '../../state/deckStore'
+import type { SlideView } from '../../stores/deckStore'
 import { SlideFrame } from './SlideFrame'
 import { fitSlide } from './slideFit'
 import { useElementSize } from './useElementSize'

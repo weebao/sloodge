@@ -2,19 +2,28 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../src/renderer/src/app/AppShell'
-import { createStarterDeck, useDeckStore } from '../../src/renderer/src/state/deckStore'
+import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
 
 const NOW = 1_770_000_000_000
+
+let createObjectUrl = vi.fn<(obj: Blob | MediaSource) => string>()
 
 beforeEach(() => {
   // The deck store is a module singleton; reset it so selection does not leak between tests.
   useDeckStore.setState(createStarterDeck(NOW))
+  // happy-dom cannot fetch a `blob:` URL, so the frames are pointed at about:blank. The spy is
+  // still the real production path — AppShell has no seam of its own — so what it records is
+  // genuine evidence about what the shell delivers to its frames.
+  createObjectUrl = vi.fn<(obj: Blob | MediaSource) => string>(() => 'about:blank')
+  vi.spyOn(URL, 'createObjectURL').mockImplementation(createObjectUrl)
+  vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined)
 })
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 describe('AppShell', () => {
@@ -56,7 +65,19 @@ describe('AppShell', () => {
     expect(frames).toHaveLength(4)
     for (const frame of frames) {
       expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
-      expect(frame.getAttribute('srcdoc')).toContain('data-sl-contract="1"')
+      // Blob delivery, never srcdoc — the frames are fed by `src` alone.
+      expect(frame.getAttribute('srcdoc')).toBeNull()
+      expect(frame.getAttribute('src')).toBeTruthy()
+    }
+
+    // Four documents, each delivered through the object-URL API as a text/html blob.
+    expect(createObjectUrl).toHaveBeenCalledTimes(4)
+    for (const [source] of createObjectUrl.mock.calls) {
+      // The DOM signature admits MediaSource; a slide is always a Blob.
+      expect(source).toBeInstanceOf(Blob)
+      const blob = source as Blob
+      expect(blob.type).toBe('text/html')
+      expect(blob.size).toBeGreaterThan(0)
     }
   })
 
@@ -64,9 +85,7 @@ describe('AppShell', () => {
     render(<AppShell />)
 
     const canvas = screen.getByRole('main', { name: 'Slide canvas' })
-    const frame = canvas.querySelector('iframe')
-    expect(frame?.getAttribute('title')).toBe('Slide: Untitled deck')
-    expect(frame?.getAttribute('srcdoc')).toContain('Ask Claude to draft your first slide')
+    expect(canvas.querySelector('iframe')?.getAttribute('title')).toBe('Slide: Untitled deck')
   })
 
   it('moves the canvas and status bar when a thumbnail is clicked', () => {

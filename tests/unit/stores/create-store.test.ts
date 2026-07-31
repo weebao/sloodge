@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createStore } from '../../../src/renderer/src/state/createStore'
+import { createStore } from '../../../src/renderer/src/stores/createStore'
 
 type Counter = { count: number; label: string; bump: () => void }
 

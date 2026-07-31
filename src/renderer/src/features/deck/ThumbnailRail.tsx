@@ -2,7 +2,7 @@ import { memo, useCallback, type JSX } from 'react'
 import { SlideFrame } from '../canvas/SlideFrame'
 import { fitSlide, SLIDE_SIZE } from '../canvas/slideFit'
 import type { SlideId } from '../../../../shared/document/types'
-import type { SlideView } from '../../state/deckStore'
+import type { SlideView } from '../../stores/deckStore'
 
 /**
  * Thumbnail width in CSS px, and with it the mini-frame's scale.
