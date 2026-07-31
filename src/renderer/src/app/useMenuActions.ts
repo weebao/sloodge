@@ -21,24 +21,16 @@
  */
 
 import { useEffect } from 'react'
-import type { MenuAction } from '../../../shared/ipc-contract'
+import { getBridge, type SloodgeBridge } from '../host/bridge'
 import { documentEditHost, runEditAction, type EditActionHandlers } from './editActions'
 
-/** The preload surface, as much of it as the renderer needs to know about. */
-export type SloodgeBridge = {
-  onMenuAction: (listener: (action: MenuAction) => void) => () => void
-}
-
-declare global {
-  interface Window {
-    sloodge?: SloodgeBridge
-  }
-}
-
-/** The bridge, or `undefined` when this renderer is not running inside Electron. */
-export function getBridge(): SloodgeBridge | undefined {
-  return typeof window === 'undefined' ? undefined : window.sloodge
-}
+/**
+ * The preload surface and its accessor moved to `../host/bridge` in M2.0, when a second feature
+ * (`slide://` delivery) needed to augment the same `Window` property — two `declare global` blocks
+ * for one name do not merge, they collide. Re-exported here so this module stays the obvious entry
+ * point for the menu half.
+ */
+export { getBridge, type SloodgeBridge }
 
 /**
  * True when a native menu owns the Edit accelerators, i.e. the renderer must

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
 import { createMenuActionHandler } from './menuActionHandler'
+import { createSlideBridge } from './slideBridge'
 
 /**
  * The entire renderer-visible surface. Every future capability (doc, agent,
@@ -28,9 +29,20 @@ function onMenuAction(listener: (action: MenuAction) => void): () => void {
   }
 }
 
+/**
+ * M2.0's channels: slide documents are served from `slide://` by main, so the renderer must hand
+ * main the HTML and get an id back. The presence of these two functions on `window.sloodge` is also
+ * the renderer's host gate — see `slideUrlFactory.ts` — so they are exposed as one unit.
+ */
+const { publishSlide, revokeSlide } = createSlideBridge(async (channel, payload) =>
+  ipcRenderer.invoke(channel, payload),
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
+  publishSlide,
+  revokeSlide,
 } as const
 
 export type SloodgeApi = typeof api

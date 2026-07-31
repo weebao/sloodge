@@ -17,23 +17,22 @@
  * widen ours — it can only narrow its own document further. That is why nothing here strips or
  * rewrites an existing meta: there is no bypass to close, and rewriting would mutate author bytes.
  *
- * ## This is *not* the only policy on the frame — today
+ * ## The safety net is gone as of M2.0
  *
- * Slides are delivered as blob URLs (`useSlideUrl`), per §7. An earlier revision of this file
- * claimed that a blob-loaded frame therefore escapes the embedder's CSP. **That was measured and
- * is false**: `experiments/init/harness/csp-blob-inheritance.mjs` (Chromium, 2026-07-31) shows a
- * sandboxed blob frame's inline `<script>` blocked by the host page's `script-src 'self'`, exactly
- * like the `srcdoc` control. Local schemes — `about`, `blob`, `data` — inherit a clone of the
- * initiator's policy container, CSP list included.
+ * Through M1.x slides were delivered as blob URLs, and a blob frame **inherits** the embedder's
+ * CSP: `experiments/init/harness/csp-blob-inheritance.mjs` (Chromium, 2026-07-31) shows a sandboxed
+ * blob frame's inline `<script>` blocked by the host page's `script-src 'self'`, exactly like the
+ * `srcdoc` control. Local schemes — `about`, `blob`, `data` — inherit a clone of the initiator's
+ * policy container, CSP list included. So an injection that missed still could not open a hole: the
+ * inherited host policy denied remote fetches anyway. That was a safety net, not a design, and the
+ * previous revision of this comment said so.
  *
- * So a slide document is governed by the intersection of the host policy and this one, and this
- * one is currently the *stricter* of the two on everything that matters. Two consequences:
- *
- *  - An injection that misses does not currently open a hole — the inherited host policy still
- *    denies remote fetches. That is a safety net, not a design.
- *  - `slide://` delivery, which the roadmap tracks as an M2 prerequisite for interactive slides,
- *    removes the net: a non-local scheme escapes inheritance, so this becomes the only policy on
- *    the frame. **This injection has to be right before that lands, not after.**
+ * M2.0 removes it. Slides are now served from `slide://` (`slideUrlFactory.ts`), a non-local scheme
+ * that escapes policy-container inheritance — which is the entire point, because it is what lets a
+ * slide's inline `<script>` run. **There is no longer a host policy underneath to catch a miss.**
+ * What remains is this injection plus the identical `Content-Security-Policy` response header main
+ * sends (`src/main/slide/slideResponse.ts`), and the header is the reason a missed injection is
+ * survivable rather than fatal. Belt and braces, both load-bearing, neither sufficient alone.
  */
 
 /**
@@ -41,20 +40,15 @@
  * home, exfiltrate deck content, or pull remote code. `'unsafe-inline'` for script and style is
  * unavoidable — inline model-authored `<style>`/`<script>` *is* the format — but with
  * `default-src 'none'` and an opaque origin it buys an attacker nothing outside their own document.
+ *
+ * The definition moved to `src/shared/slide-protocol.ts` in M2.0, because main now sends the same
+ * policy as a response header on `slide://` and a lint rule forbids main from importing renderer
+ * code. Re-exported here so that this module — where the policy is *injected* — remains the obvious
+ * place to find it. The full rationale for `'unsafe-inline'` over a nonce lives with the definition.
  */
-export const SLIDE_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
-  'img-src data: blob:',
-  'font-src data:',
-  'media-src data: blob:',
-  "connect-src 'none'",
-  "frame-src 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join('; ')
+import { SLIDE_CSP } from '../../../../shared/slide-protocol'
+
+export { SLIDE_CSP }
 
 /** The exact markup inserted, including its leading newline. Its length *is* the offset shift. */
 export const SLIDE_CSP_INJECTION = `\n<meta http-equiv="Content-Security-Policy" content="${SLIDE_CSP}">`

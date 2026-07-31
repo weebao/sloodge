@@ -15,9 +15,10 @@ import { createStarterSlideHtml } from '../../../src/shared/document/starter-sli
  *
  * That is a limitation of the test host, not a gap in coverage: what the frame does with the URL
  * it is given is pinned here, the create/revoke lifecycle is pinned in `use-slide-url.test.tsx`,
- * and that production really mints a `text/html` blob URL is pinned by the `domSlideUrls` test
- * there. What no test here can show is the browser behaviour the choice is *for* — that a
- * blob-loaded frame does not inherit the host CSP. That needs a real Chromium.
+ * and which transport a given host selects is pinned in `slide-url-factory.test.tsx`. What no test
+ * here can show is the browser behaviour the whole design is *for* — that a `slide://` document
+ * does not inherit the host CSP and a `blob:` one does. That needs a real Chromium in a real
+ * Electron, which is `experiments/init/harness/slide-protocol-smoke.mjs`.
  */
 beforeEach(() => {
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('about:blank')
@@ -55,12 +56,12 @@ function frame(): HTMLIFrameElement {
 }
 
 describe('SlideFrame sandbox invariants', () => {
-  // §7 of 10-architecture.md specifies blob-URL delivery *rather than* srcdoc: a blob-loaded frame
-  // is a real navigation to its own document, so it does not inherit the host page's CSP — which
-  // is what lets a slide's inline <script> run at all under `script-src 'self'` on the host.
-  it('renders the slide through a blob url, not srcdoc', () => {
+  // §7 of 10-architecture.md specifies URL delivery *rather than* srcdoc, and M2.0 makes that URL
+  // a `slide://` one under Electron. Either way the document arrives as a real navigation with a
+  // real document URL, never HTML-escaped into an attribute.
+  it('renders the slide through a url, not srcdoc', () => {
     const urls = stubUrls()
-    render(<SlideFrame html={HTML} title="slide" scale={0.5} objectUrls={urls} />)
+    render(<SlideFrame html={HTML} title="slide" scale={0.5} slideUrls={urls} />)
 
     expect(frame().getAttribute('src')).toBe('about:blank#0')
     expect(frame().getAttribute('srcdoc')).toBeNull()
@@ -156,11 +157,11 @@ describe('SlideFrame document stability', () => {
   it('does not reload the document when only the scale changes', () => {
     const urls = stubUrls()
     const { rerender } = render(
-      <SlideFrame html={HTML} title="slide" scale={0.25} objectUrls={urls} />,
+      <SlideFrame html={HTML} title="slide" scale={0.25} slideUrls={urls} />,
     )
     const before = frame()
 
-    rerender(<SlideFrame html={HTML} title="slide" scale={0.75} objectUrls={urls} />)
+    rerender(<SlideFrame html={HTML} title="slide" scale={0.75} slideUrls={urls} />)
 
     // Same DOM node (no remount), same url (no reload), and no second document was ever minted.
     expect(frame()).toBe(before)
@@ -172,12 +173,10 @@ describe('SlideFrame document stability', () => {
 
   it('reloads, and revokes the old url, when the html changes', () => {
     const urls = stubUrls()
-    const { rerender } = render(
-      <SlideFrame html={HTML} title="slide" scale={1} objectUrls={urls} />,
-    )
+    const { rerender } = render(<SlideFrame html={HTML} title="slide" scale={1} slideUrls={urls} />)
     const before = frame()
 
-    rerender(<SlideFrame html={OTHER_HTML} title="slide" scale={1} objectUrls={urls} />)
+    rerender(<SlideFrame html={OTHER_HTML} title="slide" scale={1} slideUrls={urls} />)
 
     expect(frame().getAttribute('src')).toBe('about:blank#1')
     expect(urls.created[1]).toContain('>Second<')
@@ -189,7 +188,7 @@ describe('SlideFrame document stability', () => {
 
   it('revokes its url on unmount', () => {
     const urls = stubUrls()
-    const { unmount } = render(<SlideFrame html={HTML} title="slide" scale={1} objectUrls={urls} />)
+    const { unmount } = render(<SlideFrame html={HTML} title="slide" scale={1} slideUrls={urls} />)
 
     unmount()
 
