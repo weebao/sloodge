@@ -15,11 +15,16 @@ import { useSlideUrl, type SlideUrlFactory } from './useSlideUrl'
  * reason, which is also why the contract forbids `alert`/`confirm`/`prompt` (§3.2 SL-S05 of
  * 30-slide-format.md): they are silent no-ops here.
  *
- * Content arrives as a **blob URL**, not `srcdoc` — see `useSlideUrl` for the plan's reasons and
- * for the lifecycle that keeps the URLs from leaking. Note what blob delivery does *not* buy:
- * measured in Chromium, a blob frame inherits the embedder's CSP exactly as `srcdoc` does, so a
- * slide's inline `<script>` is blocked today by the host page's `script-src 'self'`. Static and
- * CSS/SMIL-animated slides are unaffected; `interactive-js` awaits `slide://` delivery (M2).
+ * Content arrives over a **URL**, never `srcdoc` — `slide://` under Electron, a blob URL in a plain
+ * browser. See `slideUrlFactory` for that choice and `useSlideUrl` for the lifecycle that keeps
+ * neither transport leaking. The difference between them is the whole of M2.0: `blob:` is a *local*
+ * scheme and inherits the embedder's CSP exactly as `srcdoc` does, so a slide's inline `<script>`
+ * is blocked by the host page's `script-src 'self'`; `slide://` is not local, does not inherit, and
+ * is governed only by the policy main sends and `wrapSlideHtml` injects — so its script runs.
+ *
+ * That makes the sandbox attribute below the *only* thing standing between model-authored JS and
+ * the app. It was always meant to be; until M2.0 there was an inherited host CSP behind it that
+ * happened to be blocking the script anyway.
  *
  * The frame keeps its intrinsic 1280x720 size and is CSS-transform-scaled by the caller. Scaling
  * the *frame* rather than resizing it is what makes a thumbnail a faithful miniature of the canvas:
@@ -46,11 +51,14 @@ export type SlideFrameProps = {
   interactive?: boolean
   className?: string
   /**
-   * Object-URL seam, defaulted to the DOM implementation. Injected only by tests, which is what
-   * makes "the previous URL was revoked before the next one was used" an assertion rather than a
-   * hope — happy-dom has no real blob store to observe.
+   * Delivery seam, defaulted to whichever transport this host supports. Injected only by tests,
+   * which is what makes "the previous URL was released before the next one was used" an assertion
+   * rather than a hope — happy-dom has neither a real blob store nor a main process to observe.
+   *
+   * Named `slideUrls` rather than M1.3's `objectUrls` because a `slide://` URL is not an object
+   * URL, and a seam whose name asserts the implementation is a seam nobody swaps.
    */
-  objectUrls?: SlideUrlFactory
+  slideUrls?: SlideUrlFactory
 }
 
 function SlideFrameInner({
@@ -59,11 +67,11 @@ function SlideFrameInner({
   scale,
   interactive = true,
   className,
-  objectUrls,
+  slideUrls,
 }: SlideFrameProps): JSX.Element {
   // Keyed on the document text alone, so a scale change never mints a new URL and never reloads
   // the frame — a reload loses animation phase and any interactive state, on every window resize.
-  const src = useSlideUrl(html, objectUrls)
+  const src = useSlideUrl(html, slideUrls)
 
   // `Math.max(NaN, 0)` is NaN, which yields `width: "NaNpx"` and `transform: scale(NaN)` — both
   // invalid declarations that CSS drops, leaving a full-size 1280px frame bursting out of its
@@ -115,8 +123,9 @@ function SlideFrameInner({
 /**
  * Memoized on shallow prop equality, which is the whole re-render policy for the rail: props are
  * primitives, so a slide whose `html` did not change never re-renders and its iframe is never
- * touched. That matters more than usual here — a new `src` reloads the document and mints a blob
- * URL, so an unguarded re-render of a 60-slide rail would restart 60 documents on every keystroke.
+ * touched. That matters more than usual here — a new `src` reloads the document and publishes
+ * another copy of it, so an unguarded re-render of a 60-slide rail would restart 60 documents on
+ * every keystroke, and on the `slide://` path would churn 60 entries through main's registry.
  * The canvas gets the same guarantee for free while resizing: only `scale` changes, so React
  * updates one style property and `useSlideUrl`'s effect never re-runs.
  *

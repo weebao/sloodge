@@ -1,47 +1,34 @@
 import { useEffect, useState } from 'react'
+import { defaultSlideUrls } from './slideUrlFactory'
 import { wrapSlideHtml } from './wrapSlideHtml'
 
 /**
- * Blob-URL delivery for slide documents — layer 2's transport, per §7 of 10-architecture.md:
- * `<iframe sandbox="allow-scripts" … src={blobUrl}>`, explicitly *rather than* `srcdoc`.
+ * The URL lifecycle behind a slide frame — layer 2's transport, per §7 of 10-architecture.md:
+ * `<iframe sandbox="allow-scripts" … src={url}>`, explicitly *rather than* `srcdoc`.
  *
- * ## Correction: blob does NOT escape the host CSP
+ * ## Two transports, one lifecycle
  *
- * An earlier revision of this file claimed that a blob-loaded frame, being a real navigation to
- * its own document, is governed only by the policy `wrapSlideHtml` injects — and therefore that
- * the switch unblocked the slide contract's `interactive-js` capability. **That was never executed
- * against a browser, and it is false.**
+ * *Which* URL a slide gets is `slideUrlFactory.ts`'s decision and depends on the host: `slide://`
+ * under Electron, `blob:` in a plain browser. This module owns what is identical either way — that
+ * exactly one URL is live per mounted frame, and that it is released when the html changes and when
+ * the component unmounts.
  *
- * Measured 2026-07-31 in Chromium via Playwright
- * (`experiments/init/harness/csp-blob-inheritance.mjs`, rerunnable): a host page carrying
- * `script-src 'self'` embeds a `sandbox="allow-scripts"` iframe pointed at a `text/html` blob URL
- * whose body holds an inline `<script>`. The script does **not** run —
- * *"Executing inline script violates the following Content Security Policy directive
- * 'script-src 'self''. … The action has been blocked."* — identically to the `srcdoc` control.
- * Per HTML's "determine navigation params policy container", a navigation whose response URL uses
- * a *local* scheme (Fetch defines those as `about`, `blob` and `data`) inherits a clone of the
- * initiator's policy container, CSP list included.
+ * The delivery choice is not cosmetic. `blob:` is one of Fetch's three *local* schemes, so a
+ * blob-loaded frame inherits a clone of the embedder's policy container (HTML, *determine
+ * navigation params policy container*) — measured in Chromium on 2026-07-31 via
+ * `experiments/init/harness/csp-blob-inheritance.mjs`, where the host page's `script-src 'self'`
+ * blocks a blob frame's inline `<script>` exactly as it does a `srcdoc` control's. `slide://` is
+ * not local, so it does not inherit, and its slides' inline script runs. That difference *is* M2.0.
  *
- * **Therefore, today: inline slide JS is blocked, whatever the delivery.** Static, CSS-animated and
- * SMIL-animated slides — everything M1.3 renders — are unaffected, because the host policy allows
- * inline `<style>` and the slide format inlines all of its assets as `data:` URIs. Unblocking
- * `interactive-js` needs a **non-local** scheme: `slide://` registered with `protocol.handle` in
- * the main process, which escapes policy-container inheritance and gives each slide a real
- * per-document CSP. Tracked in 80-roadmap.md as an M2 prerequisite.
+ * ## Why the URL is minted in an effect
  *
- * ## Why blob delivery stays anyway
- *
- * It is empirically no worse than `srcdoc`, and the plan's own three reasons (§7) never depended on
- * the false claim: a cleanly opaque origin, a real document URL for Design Mode's DevTools work,
- * and not HTML-escaping an entire document into an attribute. It is also the right shape for the
- * `slide://` migration — that swap replaces what `create` returns and touches nothing else.
- *
- * ## Lifecycle
- *
- * A blob URL is a document-lifetime resource: created explicitly, and leaked until revoked. This
- * hook owns exactly that — one live URL per mounted frame, revoked when the html changes and when
- * the component unmounts. The effect's cleanup is what makes it correct under StrictMode's
- * double-invoke, where the first URL would otherwise leak.
+ * Both transports hand out a resource that leaks until it is released: a blob URL is a
+ * document-lifetime entry in the browser's blob store, and a `slide://` id is an entry in the main
+ * process's registry — the second one being the more expensive to lose, since it holds the whole
+ * document in another process's heap. A URL minted in a render body (or in `useMemo`, which React
+ * may discard and recompute) has no reliable cleanup partner, and every discarded one is leaked.
+ * The cost is that the frame paints `about:blank` for one frame; the benefit is that every URL this
+ * hook creates is released exactly once, including under StrictMode's double-invoke.
  *
  * Ordering note: React runs the previous effect's cleanup *before* the next effect, so an edit is
  * revoke-old-then-create-new, not create-swap-revoke. That is safe because the replacement `src`
@@ -51,40 +38,79 @@ import { wrapSlideHtml } from './wrapSlideHtml'
  */
 
 /**
- * The seam. The DOM implementation is one line, and injecting it is what makes revocation
- * *provable* in a test: happy-dom's `URL.createObjectURL` is not a real browser blob store, so
- * asserting on the strings a stub hands out is the only way to pin "the previous URL was revoked,
- * exactly once, before the new one was used".
+ * The transport seam — the one thing `blobSlideUrls` and the `slide://` factory have in common.
+ *
+ * Injecting it is also what makes release *provable* in a test. Neither real implementation can be
+ * observed from happy-dom: `URL.createObjectURL` there is not a real blob store, and there is no
+ * main process to hold a registry. Asserting on the strings a stub hands out is the only way to pin
+ * "the previous URL was released, exactly once, before the new one was used".
  */
 export type SlideUrlFactory = {
-  /** Returns an object URL for a complete HTML document. */
-  create: (html: string) => string
+  /**
+   * Returns a URL for a complete HTML document — synchronously for the blob factory, as a promise
+   * for the `slide://` factory, whose id has to come back from the main process.
+   *
+   * The union is not laziness about picking one. Forcing the blob path to be async would make the
+   * fallback host paint an extra `about:blank` frame for no reason and would make every existing
+   * lifecycle test a microtask dance; forcing the protocol path to be sync would mean minting the
+   * id in the renderer, which loses both unguessability-by-construction and the guarantee that main
+   * has the document before the frame asks for it. The hook handles both shapes and revokes exactly
+   * once either way, which is the property that actually matters.
+   */
+  create: (html: string) => string | Promise<string>
   revoke: (url: string) => void
 }
 
-export const domSlideUrls: SlideUrlFactory = {
-  create: (html) => URL.createObjectURL(new Blob([html], { type: 'text/html' })),
-  revoke: (url) => {
-    URL.revokeObjectURL(url)
-  },
-}
-
 /**
- * The object URL for `html`, or `null` on the very first render before the effect has run.
- *
- * Created in an effect rather than during render on purpose: a URL minted in render bodies (or in
- * `useMemo`, which React may discard and recompute) has no reliable cleanup partner, and every
- * discarded one is a leaked document. The cost is that the frame paints `about:blank` for one
- * frame; the benefit is that every URL this hook creates is revoked exactly once.
+ * The URL for `html`, or `null` on the very first render before the effect has run — and, on the
+ * `slide://` path, until the publish round trip resolves.
  */
-export function useSlideUrl(html: string, urls: SlideUrlFactory = domSlideUrls): string | null {
+export function useSlideUrl(
+  html: string,
+  urls: SlideUrlFactory = defaultSlideUrls(),
+): string | null {
   const [url, setUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    const created = urls.create(wrapSlideHtml(html))
-    setUrl(created)
+    // `live` and `created` together cover all three orderings a URL and its cleanup can arrive in.
+    // Sync create: `created` is set before the cleanup can possibly run, so the cleanup revokes it.
+    // Async create resolving *before* cleanup: same. Async create resolving *after* cleanup: the
+    // cleanup saw `created === null` and revoked nothing, so `settle` revokes it instead. Every
+    // path revokes exactly once, and none of them can hand a stale URL to a frame that has moved on
+    // — which for `slide://` is not a leaked blob but a document left sitting in main's registry.
+    let live = true
+    let created: string | null = null
+
+    const settle = (value: string): void => {
+      created = value
+      if (live) setUrl(value)
+      else urls.revoke(value)
+    }
+
+    const pending = urls.create(wrapSlideHtml(html))
+    if (typeof pending === 'string') {
+      settle(pending)
+    } else {
+      void pending.then(settle, (error: unknown) => {
+        // Delivery was refused — main rejects a publish that is oversized or that would overflow
+        // the registry. Nothing was created, so there is nothing to release, and the frame keeps
+        // whatever it was already showing rather than flashing to blank. A slide this size is
+        // outside the document model's own per-member limit, so a refusal is the terminal state,
+        // not a transient one worth retrying.
+        //
+        // It is logged rather than swallowed because this rejection is the *only* signal a failed
+        // delivery ever produces: the frame simply stays blank, with nothing in either console and
+        // no error state in the UI. A registry that has filled up (which a leak in main would
+        // cause) presents identically to a slide that is genuinely too large, and neither is
+        // diagnosable without this line.
+        // oxlint-disable-next-line no-console -- the sole diagnostic for an undeliverable slide.
+        console.error('slide delivery failed; the frame will keep its previous document', error)
+      })
+    }
+
     return () => {
-      urls.revoke(created)
+      live = false
+      if (created !== null) urls.revoke(created)
       // Deliberately *not* clearing the state here. Revoking only invalidates future loads; the
       // document already painted in the frame stays put, so leaving the old `src` in place until
       // the next effect writes the new one avoids a blank flash on every edit.

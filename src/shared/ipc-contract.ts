@@ -50,9 +50,28 @@ export function isMenuAction(value: unknown): value is MenuAction {
   return typeof value === 'string' && (MENU_ACTIONS as readonly string[]).includes(value)
 }
 
+/**
+ * Publish a slide document into main's `slide://` registry. The renderer sends the assembled,
+ * CSP-wrapped HTML and gets back an opaque id; `slideDocumentUrl(id)` is the frame's `src`.
+ *
+ * Deliberately not "here is an id, store this under it": minting the id in main is what makes it
+ * unguessable-by-construction rather than unguessable-if-the-renderer-remembers-to.
+ */
+export type SlidePublishRequest = { html: string }
+export type SlidePublishResponse = { id: string }
+
+/**
+ * Drop a published document. Idempotent — `revoked: false` means the id was already gone (a
+ * double-revoke, or a registry that was cleared when its window closed), which is not an error.
+ */
+export type SlideRevokeRequest = { id: string }
+export type SlideRevokeResponse = { revoked: boolean }
+
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
   'app:ping': { req: Record<string, never>; res: { pong: true } }
+  'slide:publish': { req: SlidePublishRequest; res: SlidePublishResponse }
+  'slide:revoke': { req: SlideRevokeRequest; res: SlideRevokeResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
@@ -81,6 +100,15 @@ export type IpcEventPayload<C extends IpcEventChannel> = IpcEvents[C]
 export const MENU_EVENT_CHANNEL = 'app:menu' satisfies IpcEventChannel
 
 /**
+ * The slide-delivery channels, constants for the same reason `MENU_EVENT_CHANNEL` is one: main
+ * registers the handler, preload invokes it, and nothing links the two literals at runtime. A typo
+ * here compiles and ships, and the symptom would be every slide rendering blank in the packaged app
+ * while every unit test — which never crosses a real IPC boundary — stays green.
+ */
+export const SLIDE_PUBLISH_CHANNEL = 'slide:publish' satisfies IpcRequestChannel
+export const SLIDE_REVOKE_CHANNEL = 'slide:revoke' satisfies IpcRequestChannel
+
+/**
  * Runtime allow-lists: the declaration of every channel that may cross, which
  * call sites are expected to honour.
  *
@@ -92,7 +120,11 @@ export const MENU_EVENT_CHANNEL = 'app:menu' satisfies IpcEventChannel
  * preload helper that funnels every channel through `isIpcEventChannel` would
  * make these load-bearing, and is the right shape once there is more than one.
  */
-export const IPC_REQUEST_CHANNELS = ['app:ping'] as const satisfies readonly IpcRequestChannel[]
+export const IPC_REQUEST_CHANNELS = [
+  'app:ping',
+  SLIDE_PUBLISH_CHANNEL,
+  SLIDE_REVOKE_CHANNEL,
+] as const satisfies readonly IpcRequestChannel[]
 
 export const IPC_EVENT_CHANNELS = [MENU_EVENT_CHANNEL] as const satisfies readonly IpcEventChannel[]
 

