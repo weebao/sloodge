@@ -1,25 +1,32 @@
-import { useCallback, useState, type JSX } from 'react'
+import { useMemo, type JSX } from 'react'
 import { SlideCanvas } from '../features/canvas/SlideCanvas'
 import { ChatPanel } from '../features/chat/ChatPanel'
 import { ThumbnailRail } from '../features/deck/ThumbnailRail'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { StatusBar } from '../features/statusbar/StatusBar'
-
-/** Placeholder deck size until the document milestone provides a real one. */
-const PLACEHOLDER_SLIDE_COUNT = 3
+import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../state/deckStore'
 
 /**
- * The PowerPoint-like frame (20-ui-wireframes.md): tab strip + format bar on
- * top, thumbnail rail / canvas / chat in the middle, status bar at the bottom.
- * M0.4 is static chrome; the only live state is the selected thumbnail.
+ * The PowerPoint-like frame (20-ui-wireframes.md): tab strip + format bar on top, thumbnail rail /
+ * canvas / chat in the middle, status bar at the bottom.
+ *
+ * The shell is the only component that talks to the store; the rail and the canvas take plain
+ * props. That keeps them renderable in a test (and later in a Present window, which has its own
+ * state) without standing up a store, and it puts every subscription in one reviewable place.
+ *
+ * Each `useDeckStore` call selects a *stable slice*, never a derived value — see the selector
+ * contract in `state/createStore.ts`. The derivations happen in `useMemo` below.
  */
 export function AppShell(): JSX.Element {
-  const [currentSlide, setCurrentSlide] = useState(1)
+  const deck = useDeckStore((state) => state.deck)
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const currentSlideId = useDeckStore((state) => state.currentSlideId)
+  const selectSlide = useDeckStore((state) => state.selectSlide)
 
-  const handleSelectSlide = useCallback((index: number) => {
-    setCurrentSlide(index)
-  }, [])
+  const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
+  const currentIndex = selectCurrentIndex(deck, currentSlideId)
+  const currentSlide = currentIndex === -1 ? null : (slides[currentIndex] ?? null)
 
   return (
     <div
@@ -30,16 +37,16 @@ export function AppShell(): JSX.Element {
       <FormatBar />
       <div className="flex min-h-0 flex-1">
         <ThumbnailRail
-          slideCount={PLACEHOLDER_SLIDE_COUNT}
-          currentSlide={currentSlide}
-          onSelectSlide={handleSelectSlide}
+          slides={slides}
+          currentSlideId={currentSlideId}
+          onSelectSlide={selectSlide}
         />
-        <SlideCanvas currentSlide={currentSlide} />
+        <SlideCanvas slide={currentSlide} />
         <ChatPanel />
       </div>
       <StatusBar
-        currentSlide={currentSlide}
-        slideCount={PLACEHOLDER_SLIDE_COUNT}
+        currentSlide={currentIndex + 1}
+        slideCount={slides.length}
         themeName="Ocean"
         issueCount={0}
         sessionCost="$0.00"
