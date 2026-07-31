@@ -1,0 +1,52 @@
+{
+  "confidence": 83,
+  "verdict": "request-changes",
+  "blockers": [],
+  "majors": [
+    {
+      "file": "src/main/security/externalUrls.ts",
+      "line": 64,
+      "what": "The `file:` branch compares `pathname` only and ignores the URL's host, so a remote-host file URL with the same path passes the guard. Verified with Node's WHATWG parser: `new URL('file://evil.example/opt/sloodge/resources/renderer/index.html').pathname` is `/opt/sloodge/resources/renderer/index.html`, identical to the packaged document's pathname, so `isAllowedNavigation('file://evil.example/opt/sloodge/resources/renderer/index.html', prod)` returns true. (`file://localhost/...` also normalises to an empty host, which is correctly equivalent — only non-localhost hosts are the problem.)",
+      "why": "The stated contract of this branch, in the module's own doc comment (lines 55-57), is 'the pathname of the exact shipped document'. A host-bearing file URL is not that document: on Windows — a v1 target platform per 11-tech-stack.md:217 (`Windows 10/11 x64 + arm64 (NSIS)`) — `file://host/share/path` is a UNC path, so the guard would permit the top-level window to navigate to attacker-controlled HTML fetched over SMB, in the one window that carries the preload IPC bridge. That is the precise failure the will-navigate guard exists to prevent (10-architecture.md:387-389). It is not reachable today (triggering will-navigate requires script in the top frame, and slide content is confined to opaque-origin `sandbox=\"allow-scripts\"` iframes that cannot top-navigate), which is why this is a major and not a blocker — but it is a fail-open in a defence-in-depth check, and the whole premise of the check is that the top frame may one day be compromised. Note the asymmetry with r1's finding: r1 caught this same function failing closed in production; this is the same function failing open on a neighbouring input.",
+      "fix": "Compare the host as well: `return target.pathname === app.pathname && target.host === app.host` (host, not hostname, so a port could never be smuggled; both sides are `''` for the packaged document). I applied exactly this mutation and re-ran `tests/unit/external-urls.test.ts` — 24/24 still pass, confirming both that the fix is behaviour-preserving for every case the suite covers and that no test currently pins the host dimension. Add the missing case to the `blocks every other file: target` block: `expect(isAllowedNavigation('file://evil.example/opt/sloodge/resources/renderer/index.html', prod)).toBe(false)`."
+    }
+  ],
+  "minors": [
+    {
+      "file": "src/main/security/externalUrls.ts",
+      "line": 61,
+      "what": "Nit: `&& target.origin !== 'null'` is now dead code. The new scheme-equality check at line 58 already guarantees `target.protocol === app.protocol`, and this branch only runs when that protocol is `http:`/`https:` — and an http(s) URL always has a real origin, never the string `'null'`.",
+      "why": "Verified by deletion: removing the clause leaves all 24 tests in tests/unit/external-urls.test.ts green, whereas in r1 (before the scheme check existed) deleting it turned a test red. It was load-bearing then; the scheme check subsumed it. Harmless, but an unexercised defensive clause in a security predicate invites the next reader to assume it is protecting something and to reason about the function's guarantees through it.",
+      "fix": "Drop the clause, or keep it and add the comment that it is now redundant-by-construction with the scheme check above. Dropping is cleaner — the opaque-origin case is already covered by the dedicated file: branch and by the `never matches two file: documents through their opaque \"null\" origins` test."
+    }
+  ],
+  "notes": {
+    "verification": {
+      "lint": "pnpm exec oxlint src tests — exit 0; pnpm exec prettier --check src tests — exit 0 ('All matched files use Prettier code style'). Scoped to src tests per instruction; plain `pnpm lint` walks the concurrent agent's .claude/worktrees/ checkout and reports that agent's files, unrelated to this changeset.",
+      "typecheck": "pnpm typecheck — exit 0 (tsconfig.node.json and tsconfig.web.json)",
+      "test": "pnpm test — exit 0, 9 files / 208 passed, matching the expected 202 + 6 new."
+    },
+    "r1_findings_reverified": [
+      "r1 MAJOR (production blocked all navigation incl. same-origin reload) — GENUINELY FIXED. `appUrl` (index.ts:45-46) is now the loaded document's URL in both modes: the dev-server URL when ELECTRON_RENDERER_URL is set, otherwise `rendererDistIndexUrl.href`, which is the same URL object that `fileURLToPath` feeds to `loadFile` at index.ts:57 — so the compared href cannot drift from the document actually loaded. Production reload of the shipped index.html now returns true. 10-architecture.md:388's 'blocks any navigation away from the app origin' is satisfied in both configurations.",
+      "r1 MINOR (raw string reached openExternal — check-then-use across two parsers) — GENUINELY FIXED. `toSafeExternalUrl` returns `parsed.href`, and index.ts:35-37 forwards that value. Revert-proof: mutating the return to `rawUrl` reds the `returns the parsed href, not the raw string it validated` test.",
+      "r1 MINOR (floated void promise) — GENUINELY FIXED. index.ts:37 attaches `.catch`. I considered whether the empty catch swallows something that should surface: `shell.openExternal` rejects only when the OS declines to open the URL (no registered handler / user policy), there is no logger anywhere in src/main yet, and the comment states the reasoning. Not raised as a finding.",
+      "r1 MINOR (blob: passing origin equality) — GENUINELY FIXED, and revert-proof. The scheme-equality check at line 58 rejects `blob:` before the origin comparison; deleting that check reds the `blocks blob: URLs even though their origin getter matches the minting origin` test."
+    ],
+    "hypotheses_tested": [
+      "H1 — the NEW scheme-equality check is not revert-proof. REJECTED. Deleted the `if (target.protocol !== app.protocol) return false` block; 1 test failed (the blob: case). Restored.",
+      "H2 — the NEW file:-pathname branch is not revert-proof. REJECTED. Replaced `return target.pathname === app.pathname` with `return true`; 2 tests failed. Restored.",
+      "H3 — the NEW href-normalisation return is not revert-proof. REJECTED. Replaced `parsed.href` with `rawUrl`; 1 test failed. Restored.",
+      "H4 — percent-encoding or dot segments let a *different* file satisfy pathname equality. REJECTED. `%2e%2e` and `..` are both normalised by the WHATWG parser to the same resolved pathname — i.e. they denote the same real file, so allowing them is correct, not a bypass. `%2f` and `%2e` in the filename are NOT decoded (`index%2ehtml` stays distinct), so they fail closed. A trailing backslash yields `/index.html/`, also closed. No input produced a pathname match for a different on-disk file — except via the host, which is the major above.",
+      "H5 — `${prod}?x=1#top` is not a realistic location.reload() target on a file: document, so the test is fiction. REJECTED. `location.reload()` re-navigates to the document's *current* URL including query and fragment, and a file:-hosted SPA that uses history.replaceState for routing produces exactly that shape; keying on pathname (which is invariant under both) is the right comparison, and the test documents it honestly.",
+      "H6 — Windows drive-letter or separator differences make the file: comparison fail open. REJECTED. `file:///C:/App/index.html` and `file:///c:/app/index.html` yield distinct pathnames (`/C:/App/index.html` vs `/c:/app/index.html`), and a backslash-bearing file URL normalises to forward slashes on the same path. Case divergence therefore fails *closed* — at worst a blocked legitimate reload, and in practice both sides derive from the same `import.meta.url`, so the case is identical by construction. No fail-open.",
+      "H7 — `target.origin !== 'null'` is still load-bearing after the scheme check was added. REJECTED (it is now dead). Deleted the clause; all 24 tests still pass, in contrast to r1 where the same deletion went red. Recorded as the minor.",
+      "H8 — the file: branch ignores the URL host, letting a remote/UNC host with a matching path through. CONFIRMED. Recorded as the major; the one-line fix passes all 24 existing tests unchanged, which also proves the gap is untested."
+    ],
+    "not_reviewed": [
+      "Runtime behaviour inside a real Electron process. As in r1, this environment cannot launch Electron, so the will-navigate and setWindowOpenHandler wiring in src/main/index.ts is reasoned from Chromium navigation-throttle semantics and Electron docs, not observed. Whether Chromium itself would additionally refuse a non-local file: host before the will-navigate handler ever fires is platform-dependent (it generally does on Linux/macOS; Windows UNC paths are ordinary loadable paths) — which is why the major is framed as a guard that must not rely on the platform to enforce its own stated contract.",
+      ".claude/reviews/*.json and .claude/worktrees/ — excluded from scope by instruction; .claude/worktrees is owned by a concurrent builder agent.",
+      "Coverage of the wiring in src/main/index.ts itself. As in r1, removing the guards from index.ts leaves the suite green; this matches the repo's established pure-module seam (70-testing-ci.md §0, mirrored by appMenu.ts/appMenuTemplate.ts). Not re-litigated as a finding."
+    ],
+    "summary": "All four r1 findings are genuinely fixed, and the three new mechanisms are revert-proof — I mutated each one (scheme equality, file: pathname branch, href normalisation) and each turned a test red. The remaining issue is in the newest code: the file: branch keys only on pathname and ignores the host, so `file://evil.example/<same path>/index.html` satisfies the 'exact shipped document' check. Not reachable today (top-frame script is required, and slide content is confined to opaque-origin sandboxed iframes), but it is a fail-open in the guard whose entire premise is that the top frame might be compromised, and Windows UNC makes the consequence concrete on a v1 target platform. One line to fix plus one test. Also note `target.origin !== 'null'` became dead once the scheme check landed."
+  }
+}
