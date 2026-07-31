@@ -1,0 +1,21 @@
+{
+  "confidence": 58,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "All four x-axis category labels render as 'O1 O2 O3 O4' — the descender tail of every 'Q' is clipped off. The <svg> is viewBox=\"0 0 920 460\" and the category <text> baseline is set to baseline+30 = y=460, exactly the bottom edge of the SVG, so the glyph tail falls outside the canvas and is cut. Visible in t0.png, hover.png and click.png at y~588-600 (zoomed crop confirms a clean 'O' with no tail on all four labels).",
+      "required": "The chart must be legible and labelled correctly: the four quarters must read Q1, Q2, Q3, Q4."
+    },
+    {
+      "severity": "minor",
+      "observed": "In hover.png the tooltip card is drawn directly on top of the hovered bar: it covers the Q1 bar's top edge and completely hides that bar's own '$4.2M' value label (which is visible in t0.png). The tooltip overlaps the plotted mark rather than sitting clear of it.",
+      "required": "No overlapping elements; hovering should reveal a tooltip without occluding the data mark it describes."
+    },
+    {
+      "severity": "minor",
+      "observed": "Chart typography is small for a 1280x720 presentation slide: y-axis tick labels 16px, category labels 17px, value labels 17px, tooltip sub-line smaller still.",
+      "required": "Reasonable font sizes for a presentation (body >= ~20px equivalent)."
+    }
+  ],
+  "summary": "Core interactivity is correct: bar heights are proportional to 4.2/5.1/4.8/6.3 (measured pixel heights 230/279/261/343 vs expected ratios, within 1%), hover.png shows a tooltip reading '$4.2M / Q1 2025 revenue' (exact value), click.png shows the Q1 bar highlighted in amber with the other three dimmed and the summary line updated to 'Selected: Q1 2025 revenue was $4.2M.', console.log is clean, and report.json confirms no 1280x720 overflow. However, a real visible defect exists: the SVG clips the descender of every 'Q' so the axis reads O1-O4, and the hover tooltip occludes the bar it annotates."
+}

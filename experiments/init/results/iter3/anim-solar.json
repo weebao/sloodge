@@ -1,0 +1,39 @@
+{
+  "confidence": 38,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "The three planet labels (Terraxa, Aquara, Mercuria) are STATIC chips pinned to the top point of each orbit ring (rect/text at x=596, y=126/196/266 in anim-solar.html) and never move with the planets. At t5 all three chips sit alone in empty space while the grey planet is at ~(537,461), blue at ~(760,547), red at ~(749,636) - no label is adjacent to any planet. The chips are visually identical (same dark chip, same white text, no color swatch, no leader line), so nothing ties 'Aquara' to the blue dot rather than the red or grey one. At t2 the 'Aquara' chip happens to sit next to the blue planet while 'Terraxa' sits nowhere near the red planet, which actively invites mis-assignment.",
+      "required": "Labels must unambiguously identify their subject at every frame of the animation."
+    },
+    {
+      "severity": "major",
+      "observed": "Each planet is fully occluded by its own label chip once per revolution. The planet <circle> elements are painted before the opaque label <rect> (fill #0b0e1a) in document order, and each planet's orbit passes exactly through the top point where its chip sits (e.g. Mercuria's r=120 orbit passes through (640,280), directly under the chip spanning x 596-684, y 266-294). Each planet therefore vanishes for roughly 0.5s per cycle (4s / 7s / 11s periods).",
+      "required": "SVG renders correctly with no broken shapes or artifacts; planets should remain visible on their orbit paths throughout a smooth, looping animation."
+    },
+    {
+      "severity": "minor",
+      "observed": "The Sun is centered at (640,400) in a 1280x720 viewport whose true center is (640,360) - it is 40px below vertical center. Horizontally it is centered.",
+      "required": "Prompt asked for the sun at center."
+    },
+    {
+      "severity": "minor",
+      "observed": "The three opaque label chips are drawn on top of the dotted orbit rings, cutting a visible ~88px gap out of the top of each orbit path so the circles read as broken.",
+      "required": "Orbit paths should be visible and unbroken; no stray artifacts."
+    },
+    {
+      "severity": "minor",
+      "observed": "Label text and the subtitle are both 18px, at the floor of the acceptable range and below the ~20px body-text guidance for presentation slides. Labels are legible (white on dark chips, not over bright artwork) and the Sun label is correctly placed on a dark chip below the bright sun.",
+      "required": "Reasonable font sizes for a presentation (body >= ~20px equivalent)."
+    }
+  ],
+  "summary": "Animation itself is correct - all three planets move to distinct positions across t0/t2/t5, each sits exactly on its orbit path (measured radii 120/190/260 from the sun at (640,400)), three dotted orbit rings are visible, speeds differ (4s/7s/11s), SMIL repeatCount=indefinite gives a seamless forever loop, nothing is clipped (scrollW/scrollH 1280x720, overflows=false) and the console log is clean. The failure is in labeling: the planet name chips are static markers parked at the top of each ring, never tracking their planets and carrying no color or connector to disambiguate them, so at most frames no label identifies any planet; worse, each planet passes behind its own opaque chip once per orbit and disappears.",
+  "reviewed_files": [
+    "/home/baoro/stuff/random/sloodge/experiments/init/artifacts/iter3/anim-solar.html",
+    "/home/baoro/stuff/random/sloodge/experiments/init/evidence/iter3/anim-solar/t0.png",
+    "/home/baoro/stuff/random/sloodge/experiments/init/evidence/iter3/anim-solar/t2.png",
+    "/home/baoro/stuff/random/sloodge/experiments/init/evidence/iter3/anim-solar/t5.png",
+    "/home/baoro/stuff/random/sloodge/experiments/init/evidence/iter3/anim-solar/console.log",
+    "/home/baoro/stuff/random/sloodge/experiments/init/evidence/iter3/anim-solar/report.json"
+  ]
+}

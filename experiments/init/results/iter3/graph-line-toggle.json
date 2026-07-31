@@ -1,0 +1,31 @@
+{
+  "confidence": 62,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "In hover.png the white tooltip (\"TRAIN — EPOCH 1 / 55%\") is drawn over the y-axis gutter: it completely occludes the \"60%\" y-tick label (clearly present in t0.png, absent in hover.png), covers the vertical axis line, and overlaps both the train and validation series segments between E1 and E2. Cause: showTooltip() clamps only to the SVG edge (minLeft = ttW/2 + 6, i.e. x>=6) instead of the plot area (plotX0 = 96), so a tooltip on the leftmost point spills into the tick-label column.",
+      "required": "Hover marker/tooltip must be visible with a value while overlapping no ticks, labels, or series."
+    },
+    {
+      "severity": "minor",
+      "observed": "Tooltip series/epoch caption (.tt-series) is font-size: 13px — visibly the smallest text on the slide and well under the floor. (.value-label is also 14px.)",
+      "required": "All chart text >= 16px."
+    },
+    {
+      "severity": "minor",
+      "observed": "The hovered point gets no visual emphasis: the circle stays r=5.5 with identical fill/stroke in t0.png and hover.png; only the detached tooltip changes. There is also no crosshair or highlighted marker ring identifying which point is active.",
+      "required": "\"Include hover markers showing values\" — the hovered data point should read as marked."
+    },
+    {
+      "severity": "minor",
+      "observed": "Hover is only live within r=14 halos around the 20 data points; the ~115px gaps along each line and the rest of the plot area are inert, so most of the chart surface produces no hover response.",
+      "required": "No dead zones in the interactive chart area."
+    },
+    {
+      "severity": "minor",
+      "observed": "The chart bottom (x-axis title \"Epoch\") ends near y=620 of the 720px canvas, leaving a ~100px empty band across the slide bottom; the composition is top-weighted with the plot squeezed into the upper two-thirds.",
+      "required": "Layout should fill the 1280x720 viewport in a balanced way."
+    }
+  ],
+  "summary": "Core requirements are met — 2 series x 10 epochs, both axis labels present, y-axis title placed clear of the ticks, y-domain 45-100 reasonably fitted to 50-95 data, legend click cleanly toggles Train off (dimmed + strikethrough) while Validation stays, tick/legend text at 17-19px, no console errors, no overflow. The blocking-quality issue is the hover tooltip's placement: at the leftmost point it is clamped to the SVG edge rather than the plot edge and swallows the 60% tick label, the y-axis line, and part of both series, directly violating the no-overlap requirement. Secondary: 13px tooltip caption, no marker emphasis on hover, hover limited to small point halos, and an unused ~100px band at the slide bottom."
+}

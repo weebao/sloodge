@@ -1,0 +1,5 @@
+{
+  "confidence": 100,
+  "defects": [],
+  "summary": "Title, 4 labeled bars (Q1 4.2M / Q2 5.1M / Q3 4.8M / Q4 6.3M) render exactly proportional at a uniform 40 px per million on a shared baseline, no overflow (1280x720, scrollW/H = 1280/720). Hover shows a '$4.2M' tooltip that overlaps no visible text (the static bar label is hidden while the tooltip is up). Click highlights Q1 with a darker fill plus outline, de-emphasizes the other bars, and updates the summary line to the exact clicked value. De-emphasized value labels measure 7.73:1 contrast, tick labels 7.73:1, summary accent 7.88:1 — all above 4.5:1. Q1-Q4 descender tails and summary descenders are complete and unclipped. Console log is empty. Zero concrete defects found."
+}

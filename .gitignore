@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+*.local
+.DS_Store
+experiments/init/harness/node_modules/
+experiments/init/harness/package-lock.json

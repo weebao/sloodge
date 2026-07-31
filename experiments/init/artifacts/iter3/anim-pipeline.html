@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CI/CD Pipeline</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b1220; }
+  .slide {
+    width: 1280px;
+    height: 720px;
+    position: relative;
+    overflow: hidden;
+    background: radial-gradient(1200px 700px at 50% -10%, #16223d 0%, #0b1220 60%, #090e1a 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<div class="slide">
+<svg width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/>
+    </marker>
+    <linearGradient id="buildGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e3a5f"/>
+      <stop offset="100%" stop-color="#122036"/>
+    </linearGradient>
+    <filter id="pulseGlow" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="640" y="86" text-anchor="middle" font-size="44" font-weight="700" fill="#f8fafc">CI/CD Pipeline</text>
+  <text x="640" y="118" text-anchor="middle" font-size="19" fill="#93a4c3">Automated flow from commit to production visibility</text>
+
+  <!-- Connectors (drawn first, under boxes' borders area but boxes drawn after so connectors sit behind boxes at endpoints) -->
+  <g stroke="#5b7aa6" stroke-width="4" fill="none">
+    <line x1="310" y1="420" x2="366" y2="420" marker-end="url(#arrowhead)"/>
+    <line x1="610" y1="420" x2="666" y2="420" marker-end="url(#arrowhead)"/>
+    <line x1="910" y1="420" x2="966" y2="420" marker-end="url(#arrowhead)"/>
+  </g>
+
+  <!-- Stage boxes -->
+  <g font-family="inherit">
+    <!-- Build -->
+    <rect x="70" y="340" width="240" height="160" rx="16" fill="url(#buildGrad)" stroke="#38bdf8" stroke-width="2.5"/>
+    <circle cx="190" cy="392" r="20" fill="none" stroke="#38bdf8" stroke-width="3"/>
+    <path d="M182,392 l6,6 l12,-14" stroke="#38bdf8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="190" y="440" text-anchor="middle" font-size="24" font-weight="700" fill="#f0f6ff">Build</text>
+    <text x="190" y="466" text-anchor="middle" font-size="16" fill="#a9bbdc">compile &amp; package</text>
+
+    <!-- Test -->
+    <rect x="370" y="340" width="240" height="160" rx="16" fill="url(#buildGrad)" stroke="#a78bfa" stroke-width="2.5"/>
+    <circle cx="490" cy="392" r="20" fill="none" stroke="#a78bfa" stroke-width="3"/>
+    <path d="M480,392 h20 M490,382 v20" stroke="#a78bfa" stroke-width="3" stroke-linecap="round"/>
+    <text x="490" y="440" text-anchor="middle" font-size="24" font-weight="700" fill="#f0f6ff">Test</text>
+    <text x="490" y="466" text-anchor="middle" font-size="16" fill="#a9bbdc">unit &amp; integration</text>
+
+    <!-- Deploy -->
+    <rect x="670" y="340" width="240" height="160" rx="16" fill="url(#buildGrad)" stroke="#4ade80" stroke-width="2.5"/>
+    <path d="M790,378 l16,20 h-11 v16 h-10 v-16 h-11 z" fill="#4ade80"/>
+    <text x="790" y="440" text-anchor="middle" font-size="24" font-weight="700" fill="#f0f6ff">Deploy</text>
+    <text x="790" y="466" text-anchor="middle" font-size="16" fill="#a9bbdc">ship to production</text>
+
+    <!-- Monitor -->
+    <rect x="970" y="340" width="240" height="160" rx="16" fill="url(#buildGrad)" stroke="#fb923c" stroke-width="2.5"/>
+    <polyline points="1070,398 1080,382 1090,402 1100,388 1110,398" fill="none" stroke="#fb923c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1090" y="440" text-anchor="middle" font-size="24" font-weight="700" fill="#f0f6ff">Monitor</text>
+    <text x="1090" y="466" text-anchor="middle" font-size="16" fill="#a9bbdc">alerts &amp; dashboards</text>
+  </g>
+
+  <!-- Hidden motion path: traces only the connector segments between box edges,
+       jumping (zero path-length, so zero-time under uniform distribution) across
+       each box's interior. keyPoints/keyTimes add dwell pauses at arrival points. -->
+  <path id="pulsePath" d="M310,420 L369.5,420 M610.5,420 L669.5,420 M910.5,420 L969.5,420" fill="none" stroke="none"/>
+
+  <!-- Pulse dot -->
+  <circle r="9" fill="#facc15" filter="url(#pulseGlow)">
+    <animateMotion dur="8s" repeatCount="indefinite"
+      keyPoints="0; 0.33055; 0.33055; 0.33638; 0.66388; 0.66388; 0.66972; 0.99722; 1"
+      keyTimes="0; 0.20; 0.28; 0.2801; 0.48; 0.56; 0.5601; 0.76; 1"
+      calcMode="linear">
+      <mpath href="#pulsePath"/>
+    </animateMotion>
+    <animate attributeName="r" values="8;11;8" dur="1s" repeatCount="indefinite"/>
+  </circle>
+</svg>
+</div>
+</body>
+</html>

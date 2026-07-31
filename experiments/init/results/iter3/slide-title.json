@@ -1,0 +1,26 @@
+{
+  "confidence": 82,
+  "defects": [
+    {
+      "severity": "minor",
+      "observed": "The topmost wave path ends with 'C1120,40 1280,140 1280,90', whose final control point (1280,140) lies below the endpoint (1280,90). This creates a vertical-tangent cusp: the crest dips and then hooks sharply back up at the right border, producing a small wedge/notch at x~1265-1280 that breaks the otherwise smooth periodic rhythm. The second path likewise switches from a 180px-period sine rhythm to a short flattened segment ('C1180,95 1240,105 1280,115'), so the wave frequency visibly changes in the right ~15% of the band. Subtle at native contrast but visible when the band is examined.",
+      "required": "Prompt asked for a subtle SVG wave motif; rubric item 6 requires the SVG to render correctly with no broken shapes or stray artifacts. A wave motif should terminate cleanly at the slide edge with consistent rhythm."
+    },
+    {
+      "severity": "minor",
+      "observed": ".content is a fixed 540px-tall box centered at y=270, but the visible top of the wave band measured from the render is y~617-644 (mean ~630), not 540 -- the top 80-90px of the 180px SVG is transparent. The text block (y=110 to y=432) therefore sits ~45px above the true center of the clear area, leaving 110px above the title and ~185px of empty space between 'Marine Biology Dept.' and the first wave crest. The asymmetry reads as a slightly top-heavy composition with a dead gap above the waves.",
+      "required": "Text block optically centered in the space above the wave band."
+    }
+  ],
+  "summary": "All three requested strings render verbatim ('The Deep Ocean: Earth's Last Frontier', 'Dr. Maya Chen', 'Marine Biology Dept.') with zero invented text -- no fabricated date, venue, affiliation logo, or tagline. Dark aesthetic honored via a #0a1220->#0f2038 vertical gradient; a three-layer SVG wave motif occupies the bottom band and never overlaps type. Contrast is strong throughout (title 15.96:1, speaker 13.62:1, dept 8.01:1, divider accent 6.48:1) and all font sizes clear the presentation floor (76px / 30px / 24px). Report confirms scrollW/scrollH exactly 1280x720 with no overflow, no clipping, and console.log is empty; t0 and t2 are byte-equivalent, correct for a static slide. Two minor defects hold this below a clean pass: a cusp artifact where the top wave path hooks back at the right border and a frequency break in the second path, plus a vertical-centering mismatch where the content box assumes a 540px wave line while the waves actually begin near y=630, pushing the text block ~45px high and leaving a noticeable dead gap.",
+  "checks": {
+    "verbatim_strings": "pass",
+    "invented_text": "none found",
+    "optical_centering": "minor deviation (~45px high)",
+    "contrast": "pass",
+    "legibility": "pass",
+    "overflow_1280x720": "pass",
+    "console_errors": "none",
+    "svg_integrity": "minor cusp artifact at right edge"
+  }
+}

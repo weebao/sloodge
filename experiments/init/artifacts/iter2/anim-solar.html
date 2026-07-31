@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Solar System Orbits</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0b0f1a;
+  }
+  .slide {
+    width: 1280px;
+    height: 720px;
+    background: radial-gradient(ellipse at 50% 40%, #131a2b 0%, #0b0f1a 70%);
+    overflow: hidden;
+    position: relative;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #f2f5fa;
+    box-sizing: border-box;
+    padding: 48px;
+  }
+  .title {
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    margin: 0 0 4px 0;
+  }
+  .subtitle {
+    font-size: 18px;
+    color: #9aa7c2;
+    margin: 0;
+    font-weight: 400;
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    height: 588px;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Orbit rotation groups: transform-origin at sun center (640,392 in svg coords) */
+  #mercuryGroup {
+    transform-origin: 640px 300px;
+    animation: spin 4s linear infinite;
+  }
+  #venusGroup {
+    transform-origin: 640px 300px;
+    animation: spin 7s linear infinite;
+  }
+  #earthGroup {
+    transform-origin: 640px 300px;
+    animation: spin 11s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+
+  /* Sun pulse glow */
+  .sun-glow {
+    transform-origin: 640px 300px;
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.55; }
+    50%      { transform: scale(1.18); opacity: 0.85; }
+  }
+
+  .label {
+    font-size: 16px;
+    font-weight: 600;
+    fill: #dfe6f5;
+  }
+  .label-sub {
+    font-size: 12px;
+    fill: #8b98b8;
+    font-weight: 400;
+  }
+</style>
+</head>
+<body>
+<div class="slide">
+  <h1 class="title">The Solar System</h1>
+  <p class="subtitle">Three planets orbiting the Sun at different speeds</p>
+
+  <div class="stage">
+    <svg viewBox="0 0 1280 588" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="sunGradient" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#fff6d8"/>
+          <stop offset="45%" stop-color="#ffd35c"/>
+          <stop offset="100%" stop-color="#ff9d1f"/>
+        </radialGradient>
+        <radialGradient id="mercuryGradient" cx="35%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#e8d9c8"/>
+          <stop offset="100%" stop-color="#a8907a"/>
+        </radialGradient>
+        <radialGradient id="venusGradient" cx="35%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#ffe9b8"/>
+          <stop offset="100%" stop-color="#e0a758"/>
+        </radialGradient>
+        <radialGradient id="earthGradient" cx="35%" cy="35%" r="65%">
+          <stop offset="0%" stop-color="#8fd3ff"/>
+          <stop offset="100%" stop-color="#2e7bd6"/>
+        </radialGradient>
+        <radialGradient id="sunGlowGradient" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#ffcf6b" stop-opacity="0.9"/>
+          <stop offset="100%" stop-color="#ffcf6b" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <!-- Orbit paths (drawn first, static). Center (640,300); radii 90 / 160 / 230 all fit within the 588-tall viewBox -->
+      <circle cx="640" cy="300" r="90" fill="none" stroke="rgba(150,170,220,0.3)" stroke-width="1.5"/>
+      <circle cx="640" cy="300" r="160" fill="none" stroke="rgba(150,170,220,0.26)" stroke-width="1.5"/>
+      <circle cx="640" cy="300" r="230" fill="none" stroke="rgba(150,170,220,0.22)" stroke-width="1.5"/>
+
+      <!-- Static orbit labels, placed just outside each orbit path at a fixed point (top / right / bottom) so none overlap -->
+      <g>
+        <!-- Mercury orbit apex is (640,210); label sits just above it -->
+        <text class="label" x="640" y="192" text-anchor="middle">Mercury</text>
+        <text class="label-sub" x="640" y="208" text-anchor="middle">4s orbit</text>
+
+        <!-- Venus orbit rightmost point is (800,300); label sits just to its right -->
+        <text class="label" x="814" y="294">Venus</text>
+        <text class="label-sub" x="814" y="311">7s orbit</text>
+
+        <!-- Earth orbit bottom point is (640,530); label sits just below it -->
+        <text class="label" x="640" y="556" text-anchor="middle">Earth</text>
+        <text class="label-sub" x="640" y="572" text-anchor="middle">11s orbit</text>
+      </g>
+
+      <!-- Sun glow -->
+      <circle class="sun-glow" cx="640" cy="300" r="60" fill="url(#sunGlowGradient)"/>
+      <!-- Sun -->
+      <circle cx="640" cy="300" r="42" fill="url(#sunGradient)"/>
+      <text class="label" x="640" y="304" text-anchor="middle" font-size="15" fill="#3a2400">Sun</text>
+
+      <!-- Mercury: fastest, innermost orbit -->
+      <g id="mercuryGroup">
+        <circle cx="730" cy="300" r="10" fill="url(#mercuryGradient)"/>
+      </g>
+
+      <!-- Venus: medium orbit -->
+      <g id="venusGroup">
+        <circle cx="800" cy="300" r="14" fill="url(#venusGradient)"/>
+      </g>
+
+      <!-- Earth: slowest, outermost orbit -->
+      <g id="earthGroup">
+        <circle cx="870" cy="300" r="15" fill="url(#earthGradient)"/>
+      </g>
+    </svg>
+  </div>
+</div>
+</body>
+</html>

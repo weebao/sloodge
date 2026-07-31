@@ -1,0 +1,5 @@
+{
+  "confidence": 100,
+  "defects": [],
+  "summary": "Slide titled 'CI/CD Pipeline' renders exactly 4 stage boxes (Build, Test, Deploy, Monitor) in a single left-to-right row, each connected by a visible shaft plus a light-blue arrowhead triangle; all three arrowheads are fully drawn and unobstructed in every frame. The yellow pulse dot is visible in all three frames at three distinct, strictly advancing positions (center x=323 at t0, x=623 at t2, x=923 at t5, all at connector centerline y=420), i.e. on connector 1, then 2, then 3 in sequence. In each frame the dot's 18-20px extent lies wholly inside the 60px inter-box gap, clear of the stage rect borders (Build/Test/Deploy right edges at x=310/610/910) and clear of the arrowhead triangles, and it never overlaps any label. Motion is continuous along the connectors with dwell pauses at arrival points, driven by an 8s animateMotion with repeatCount=indefinite, so it loops with no frozen end state (t5 differs from both t0 and t2). No overflow (scrollW/scrollH 1280x720, overflows=false), no console output/errors. Contrast is strong throughout and no text sits on busy graphics."
+}

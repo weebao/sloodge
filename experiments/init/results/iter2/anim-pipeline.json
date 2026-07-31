@@ -1,0 +1,36 @@
+{
+  "confidence": 32,
+  "defects": [
+    {
+      "severity": "blocker",
+      "observed": "At t=5s the pulse dot is completely absent from the slide. Pixel scan of the connector band (y 362-378) finds teal pulse pixels at x~360-376 in t0 and x~1033-1048 in t2, but ZERO teal pixels anywhere in t5. The frame shows a static diagram with no motion state at all. Cause in the HTML: the pulse's chained SMIL (moveA begin=\"0s;moveC.end\", moveB begin=\"moveA.end\", moveC begin=\"moveB.end\", all fill=\"freeze\") plus a separate opacity <animate> with repeatCount=\"1\" and values ending at 0 does not re-sync on the second cycle, leaving the dot at opacity 0.",
+      "required": "Rubric 8 and the prompt require the pulse to loop forever; a screenshot at a later time must still show a motion state with the dot ON a connector, never a frozen/blank end-state."
+    },
+    {
+      "severity": "major",
+      "observed": "The stage-highlight glow sequence effectively never runs past the first stage. Perimeter scan for teal border/glow pixels around each card top edge: t0 -> Build 435 glow px, Test/Deploy/Monitor 0; t2 -> all four 0; t5 -> all four 0. Per the CSS (.box-glow-2/3/4 with animation-delay 1s/2s/3s on a 3s loop) Deploy should be at the 0% bright keyframe at both t=2s and t=5s, and Test at t=1s/4s, but no glow is ever observed on stages 2-4. Additionally .box-glow-4 uses animation-delay: 3s on a 3s-period animation, which is phase-identical to delay 0s, so stage 4 can only ever light up simultaneously with stage 1 rather than in sequence.",
+      "required": "Rubric 9 / prompt: motion must progress from stage to stage in sequence; the per-stage highlight must advance Build -> Test -> Deploy -> Monitor in step with the pulse."
+    },
+    {
+      "severity": "major",
+      "observed": "The 4th stage card (Monitor) is clipped by the right edge of the 1280x720 viewport. Pixel scan at y=370 shows card fill running continuously to x=1277 with the 2px border at x=1277-1279 and background only at x=1279 - i.e. the card's right stroke and its 16px rounded corner are cut in half by the viewport edge, and stage 4's drop-shadow glow would be clipped entirely. Layout is badly asymmetric: 96px of margin left of the Build card vs ~0px right of Monitor. Root cause: <svg width=\"1280\"> is placed inside .diagram-wrap which is only 1184px wide (left:48px; right:48px), so the SVG overflows its container and is only saved from worse clipping by .slide overflow:hidden. report.json's overflows:false is a false negative because both html/body and .slide set overflow:hidden.",
+      "required": "Rubric 3: nothing may overflow or be clipped by the 1280x720 viewport; all four stage boxes must be fully visible with balanced margins."
+    },
+    {
+      "severity": "minor",
+      "observed": "Stage description text (\"Compile & package\", \"Run automated suite\", \"Ship to production\", \"Track health & alerts\") is set at font-size: 15px (.stage-sub), rendering as small grey #8fa2c4 text on the #131f38 card fill - well under presentation-legible size and low contrast.",
+      "required": "Rubric 4: body text must be legible for a presentation, roughly >= 20px equivalent, with sufficient contrast."
+    },
+    {
+      "severity": "minor",
+      "observed": "At t=2 the pulse dot (centre x~1040, r=8 plus glow) sits directly on top of the third connector's arrowhead (x~1032-1057), obscuring it in that frame. Arrowheads are otherwise visible at the end of all three connectors in t0/t5 (x~390-415, 711-737, 1032-1057) and are not hidden under any box.",
+      "required": "Arrowheads must remain visible at each connector's end; the pulse should not occlude them."
+    },
+    {
+      "severity": "minor",
+      "observed": "Vertical composition is top-heavy: the diagram row occupies y=290-450 and the entire lower band y=450-720 (270px, ~37% of the slide) is empty background, while the pipeline is jammed against the right edge.",
+      "required": "Rubric 2: layout should be a balanced arrangement within the viewport."
+    }
+  ],
+  "summary": "Four correctly labelled stages, three connectors with visible arrowheads, and a pulse that does move along the connector lines between t0 and t2 - but the animation dies: at t=5s the pulse has vanished entirely (broken SMIL loop) and the per-stage glow sequence never fires beyond stage 1 (stage 4 also has a phase-degenerate 3s delay on a 3s loop). Compounded by the Monitor card being clipped flush against the right viewport edge because a 1280px SVG sits in an 1184px container, plus 15px stage subtext. No console errors."
+}

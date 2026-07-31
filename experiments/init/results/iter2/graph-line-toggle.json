@@ -1,0 +1,26 @@
+{
+  "confidence": 62,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "The rotated y-axis title 'Accuracy' collides with the y tick labels: in t0.png, hover.png and click.png the word 'Accuracy' is drawn on top of the '67%' tick label (and grazes '78%'/'56%'), producing overlapping, hard-to-read text. Cause: tick labels are right-anchored at x0-14 = x=62 (17px text, so they extend back to ~x=17) while the axis title is centered at x=24 with a 19px font, so the two occupy the same horizontal band.",
+      "required": "Rubric 3/4: no overlapping elements, all text legible. Axis labels must be readable and not collide with tick labels."
+    },
+    {
+      "severity": "minor",
+      "observed": "Tooltip series/context line ('Train — Epoch 1') is rendered at font-size: 14px (.tooltip .tt-series), below the 16px minimum for chart text. Only the value line (18px) meets the bar.",
+      "required": "All chart text >= 16px."
+    },
+    {
+      "severity": "minor",
+      "observed": "The chart is top-heavy: the plot bottom / 'Epoch' axis title ends near y=640 leaving ~80px of empty band at the bottom of the 1280x720 slide, while the plot is squeezed against the legend above. Unbalanced vertical composition (no clipping or overflow).",
+      "required": "Rubric 2: layout should make sensible use of the 1280x720 slide."
+    },
+    {
+      "severity": "minor",
+      "observed": "The hover tooltip is offset up-and-right of the Epoch 1 marker and lands directly on top of the Validation series line, partially covering the orange curve between epochs 1 and 2.",
+      "required": "Hover marker/tooltip should be visible without occluding chart content."
+    }
+  ],
+  "summary": "Functionally complete and correct: 2 series x 10 epochs, both axis labels present, fitted y-range (45%-100%, not a wasteful 0-1), legend outside the plot area, hover tooltip shows an exact value (55.0%) with proper viewport-edge clamping logic, click toggles Train off with the legend item visibly dimmed and struck through, and no console errors. Held back by one clearly visible rendering defect: the rotated 'Accuracy' y-axis title overlaps the '67%' tick label in every screenshot, plus a sub-16px tooltip label, a tooltip that covers the validation line, and ~80px of dead space at the bottom of the slide."
+}

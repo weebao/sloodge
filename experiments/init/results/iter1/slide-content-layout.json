@@ -1,0 +1,21 @@
+{
+  "confidence": 80,
+  "defects": [
+    {
+      "severity": "minor",
+      "observed": "Footer text is 16px in #8a92a3 on a #fafbfc background (~2.9:1 contrast), below both the rubric's ~20px presentation body-text floor and WCAG AA 4.5:1. The slide number '7' (#5a6478, ~5.4:1) is legible but still only 16px.",
+      "required": "Text must be legible with sufficient contrast and reasonable presentation font sizes (body >= ~20px equivalent)."
+    },
+    {
+      "severity": "minor",
+      "observed": "The 'Outcompeted' card uses an upward trending-arrow / growth icon (polyline rising to top-right with an arrow corner), a conventionally positive success glyph, on a slide enumerating failure causes; it reads as growth rather than being beaten by rivals.",
+      "required": "SVG icons should be semantically attached to the right content (icon matching its reason)."
+    },
+    {
+      "severity": "minor",
+      "observed": "The footer left slot repeats the slide title verbatim ('Why Startups Fail'), duplicating the H1 already visible at the top of the same slide.",
+      "required": "Footer was specified only as containing slide number 7; the duplicate title is unrequested redundant chrome."
+    }
+  ],
+  "summary": "Structurally correct: exactly 4 reason cards in a true 2x2 CSS grid, each with an inline <svg> icon, a bold 26px heading, and exactly one 20px supporting sentence; title 'Why Startups Fail' present, footer present with slide number 7. No overflow (scrollW/scrollH = 1280x720, overflows:false), no clipping, no overlap, no console output, and t0/t2/t5 are byte-identical (correct for a static slide). All four SVGs have valid, in-viewBox geometry with no stray artifacts, and headings align across columns. Defects are cosmetic: an under-sized/low-contrast 16px footer, a positive-growth arrow icon on the 'Outcompeted' failure card, and a redundant title repeat in the footer."
+}

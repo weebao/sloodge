@@ -1,0 +1,385 @@
+<title>Model Accuracy Over Epochs</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: linear-gradient(180deg, #0f1420 0%, #151b2b 100%);
+    color: #eef1f8;
+  }
+  .slide {
+    width: 1280px;
+    height: 720px;
+    padding: 36px 60px 30px 60px;
+    position: relative;
+    overflow: hidden;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: #ffffff;
+  }
+  .subtitle {
+    font-size: 18px;
+    color: #9aa4bb;
+    margin-top: 6px;
+  }
+  .readout {
+    margin-top: 14px;
+    width: 1160px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px;
+    font-size: 20px;
+    font-weight: 600;
+    color: #6b7285;
+    letter-spacing: 0.1px;
+  }
+  .readout.filled {
+    color: #ffffff;
+  }
+  .readout .ro-series {
+    font-weight: 700;
+    margin-right: 6px;
+  }
+  .readout .ro-sep {
+    color: #6b7285;
+    margin: 0 8px;
+    font-weight: 400;
+  }
+  .readout.filled .ro-sep {
+    color: #9aa4bb;
+  }
+  .chart-wrap {
+    position: relative;
+    margin-top: 12px;
+    width: 1160px;
+    height: 504px;
+  }
+  .legend {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    gap: 24px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 6px;
+    user-select: none;
+    transition: background 0.15s ease;
+  }
+  .legend-item:hover {
+    background: rgba(255,255,255,0.08);
+  }
+  .legend-swatch {
+    width: 22px;
+    height: 5px;
+    border-radius: 3px;
+  }
+  .legend-item.dimmed {
+    color: #6b7285;
+    text-decoration: line-through;
+  }
+  .legend-item.dimmed .legend-swatch {
+    opacity: 0.35;
+  }
+  svg {
+    display: block;
+    overflow: visible;
+  }
+  .gridline {
+    stroke: rgba(255,255,255,0.09);
+    stroke-width: 1;
+  }
+  .axis-line {
+    stroke: rgba(255,255,255,0.35);
+    stroke-width: 1.5;
+  }
+  .tick-label {
+    font-size: 17px;
+    fill: #b7bfd4;
+  }
+  .axis-title {
+    font-size: 19px;
+    font-weight: 600;
+    fill: #d9deec;
+  }
+  .series-line {
+    fill: none;
+    stroke-width: 3;
+  }
+  .point {
+    cursor: pointer;
+  }
+  .point-halo {
+    fill: transparent;
+    cursor: pointer;
+  }
+  .value-label {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .point.hovered {
+    stroke: #ffffff;
+    stroke-width: 3;
+  }
+  .hover-ring {
+    fill: none;
+    stroke-width: 3;
+    pointer-events: none;
+    filter: drop-shadow(0 0 6px rgba(255,255,255,0.7));
+  }
+</style>
+
+<div class="slide">
+  <h1>Model Accuracy Over Epochs</h1>
+  <div class="subtitle">Training vs. validation accuracy across 10 training epochs</div>
+
+  <div class="readout" id="readout">Hover a point for details</div>
+
+  <div class="chart-wrap" id="chartWrap">
+    <div class="legend" id="legend">
+      <div class="legend-item" id="legend-train" data-click-target data-series="train">
+        <span class="legend-swatch" style="background:#4C9AFF"></span>
+        <span>Train</span>
+      </div>
+      <div class="legend-item" id="legend-val" data-series="val">
+        <span class="legend-swatch" style="background:#FFAB2E"></span>
+        <span>Validation</span>
+      </div>
+    </div>
+
+    <svg id="chartSvg" viewBox="0 0 1160 504" width="1160" height="504">
+      <g id="gridGroup"></g>
+      <g id="axisGroup"></g>
+      <g id="seriesGroup"></g>
+      <circle id="hoverRing" class="hover-ring" cx="0" cy="0" r="10" style="display:none"></circle>
+    </svg>
+  </div>
+</div>
+
+<script>
+  var epochs = [1,2,3,4,5,6,7,8,9,10];
+  var trainData = [55, 64, 71, 77, 82, 86, 89, 91, 93, 95];
+  var valData   = [50, 58, 64, 69, 73, 76, 78, 79, 80, 81];
+
+  var domainMin = 45;
+  var domainMax = 100;
+
+  var plotX0 = 96, plotX1 = 1130, plotY0 = 60, plotY1 = 414;
+  var plotW = plotX1 - plotX0;
+  var plotH = plotY1 - plotY0;
+
+  function xScale(epoch) {
+    return plotX0 + ((epoch - 1) / (epochs.length - 1)) * plotW;
+  }
+  function yScale(v) {
+    return plotY0 + (1 - (v - domainMin) / (domainMax - domainMin)) * plotH;
+  }
+
+  var svgNS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs) {
+    var e = document.createElementNS(svgNS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  var gridGroup = document.getElementById("gridGroup");
+  var axisGroup = document.getElementById("axisGroup");
+  var seriesGroup = document.getElementById("seriesGroup");
+
+  // Gridlines + y ticks
+  var yTicks = [50, 60, 70, 80, 90, 100];
+  yTicks.forEach(function(t) {
+    var y = yScale(t);
+    gridGroup.appendChild(el("line", {
+      class: "gridline", x1: plotX0, x2: plotX1, y1: y, y2: y
+    }));
+    var label = el("text", {
+      class: "tick-label", x: plotX0 - 16, y: y + 6, "text-anchor": "end"
+    });
+    label.textContent = t + "%";
+    axisGroup.appendChild(label);
+  });
+
+  // Axis lines
+  axisGroup.appendChild(el("line", {
+    class: "axis-line", x1: plotX0, x2: plotX1, y1: plotY1, y2: plotY1
+  }));
+  axisGroup.appendChild(el("line", {
+    class: "axis-line", x1: plotX0, x2: plotX0, y1: plotY0, y2: plotY1
+  }));
+
+  // Y axis title - horizontal, above the axis, top-left of plot
+  var yTitle = el("text", {
+    class: "axis-title", x: plotX0 - 70, y: 40, "text-anchor": "start"
+  });
+  yTitle.textContent = "Accuracy (%)";
+  axisGroup.appendChild(yTitle);
+
+  // X ticks + title
+  epochs.forEach(function(e) {
+    var x = xScale(e);
+    var label = el("text", {
+      class: "tick-label", x: x, y: plotY1 + 30, "text-anchor": "middle"
+    });
+    label.textContent = "E" + e;
+    axisGroup.appendChild(label);
+  });
+  var xTitle = el("text", {
+    class: "axis-title", x: (plotX0 + plotX1) / 2, y: plotY1 + 64, "text-anchor": "middle"
+  });
+  xTitle.textContent = "Epoch";
+  axisGroup.appendChild(xTitle);
+
+  function buildSeries(data, color, dashed, seriesKey, seriesName) {
+    var g = el("g", { id: "series-" + seriesKey });
+
+    var pathD = data.map(function(v, i) {
+      var x = xScale(epochs[i]);
+      var y = yScale(v);
+      return (i === 0 ? "M" : "L") + x + "," + y;
+    }).join(" ");
+
+    var pathAttrs = { class: "series-line", d: pathD, stroke: color };
+    if (dashed) pathAttrs["stroke-dasharray"] = "8,6";
+    g.appendChild(el("path", pathAttrs));
+
+    data.forEach(function(v, i) {
+      var x = xScale(epochs[i]);
+      var y = yScale(v);
+
+      var halo = el("circle", {
+        class: "point-halo", cx: x, cy: y, r: 14,
+        "data-series": seriesKey, "data-epoch": epochs[i], "data-value": v
+      });
+      var point = el("circle", {
+        class: "point", cx: x, cy: y, r: 5.5, fill: color,
+        stroke: "#0f1420", "stroke-width": 2,
+        "data-series": seriesKey, "data-epoch": epochs[i], "data-value": v
+      });
+
+      if (seriesKey === "train" && i === 0) {
+        point.setAttribute("data-hover-target", "");
+      }
+
+      g.appendChild(halo);
+      g.appendChild(point);
+    });
+
+    return g;
+  }
+
+  var trainGroup = buildSeries(trainData, "#4C9AFF", false, "train", "Train");
+  var valGroup = buildSeries(valData, "#FFAB2E", true, "val", "Validation");
+  seriesGroup.appendChild(valGroup);
+  seriesGroup.appendChild(trainGroup);
+
+  // Readout strip logic (reserved row above the plot; never overlaps chart content)
+  var readout = document.getElementById("readout");
+  var READOUT_PLACEHOLDER = "Hover a point for details";
+
+  function seriesLabel(key) {
+    return key === "train" ? "Train" : "Validation";
+  }
+
+  var hoverRing = document.getElementById("hoverRing");
+  var hoveredPoint = null;
+
+  function findPointEl(node) {
+    if (node.classList.contains("point")) return node;
+    var series = node.getAttribute("data-series");
+    var epoch = node.getAttribute("data-epoch");
+    return node.parentNode.querySelector('.point[data-series="' + series + '"][data-epoch="' + epoch + '"]');
+  }
+
+  function clearMarkerEmphasis() {
+    if (hoveredPoint) {
+      hoveredPoint.setAttribute("r", 5.5);
+      hoveredPoint.classList.remove("hovered");
+      hoveredPoint = null;
+    }
+    hoverRing.style.display = "none";
+  }
+
+  function showTooltip(target) {
+    var series = target.getAttribute("data-series");
+    var epoch = target.getAttribute("data-epoch");
+    var value = target.getAttribute("data-value");
+
+    // Fill the reserved readout strip above the plot — this never overlaps
+    // any marker, gridline, or axis label because it lives outside the plot area.
+    readout.innerHTML = '<span class="ro-series">' + seriesLabel(series) + '</span>' +
+      '<span class="ro-sep">&middot;</span>Epoch ' + epoch +
+      '<span class="ro-sep">&middot;</span>' + value + '%';
+    readout.classList.add("filled");
+
+    var cx = parseFloat(target.getAttribute("cx"));
+    var cy = parseFloat(target.getAttribute("cy"));
+    var color = target.getAttribute("fill") || (series === "train" ? "#4C9AFF" : "#FFAB2E");
+
+    // Marker emphasis: enlarge the hovered point + draw a ring around it.
+    var pointEl = findPointEl(target);
+    if (hoveredPoint && hoveredPoint !== pointEl) clearMarkerEmphasis();
+    if (pointEl) {
+      hoveredPoint = pointEl;
+      pointEl.setAttribute("r", 9);
+      pointEl.classList.add("hovered");
+    }
+    hoverRing.setAttribute("cx", cx);
+    hoverRing.setAttribute("cy", cy);
+    hoverRing.setAttribute("r", 13);
+    hoverRing.setAttribute("stroke", color);
+    hoverRing.style.display = "block";
+  }
+
+  function hideTooltip() {
+    readout.classList.remove("filled");
+    readout.textContent = READOUT_PLACEHOLDER;
+    clearMarkerEmphasis();
+  }
+
+  function attachHover(node) {
+    node.addEventListener("mouseenter", function() { showTooltip(node); });
+    node.addEventListener("mouseover", function() { showTooltip(node); });
+    node.addEventListener("mouseleave", hideTooltip);
+  }
+
+  var hoverables = seriesGroup.querySelectorAll(".point, .point-halo");
+  hoverables.forEach(attachHover);
+
+  // Legend toggle logic
+  var seriesVisible = { train: true, val: true };
+  var legendTrain = document.getElementById("legend-train");
+  var legendVal = document.getElementById("legend-val");
+
+  function toggleSeries(key) {
+    seriesVisible[key] = !seriesVisible[key];
+    var group = document.getElementById("series-" + key);
+    var legendItem = key === "train" ? legendTrain : legendVal;
+
+    if (seriesVisible[key]) {
+      group.style.display = "";
+      legendItem.classList.remove("dimmed");
+    } else {
+      group.style.display = "none";
+      legendItem.classList.add("dimmed");
+      hideTooltip();
+    }
+  }
+
+  legendTrain.addEventListener("click", function() { toggleSeries("train"); });
+  legendVal.addEventListener("click", function() { toggleSeries("val"); });
+</script>

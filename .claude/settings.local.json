@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash ~/.claude/statusline-command.sh)",
+      "Bash(command -v jq)",
+      "Bash(apt list *)",
+      "Bash(sudo -n apt-get install -y jq)",
+      "Skill(update-config)",
+      "Bash(jj --version)",
+      "Bash(neofetch)",
+      "Bash(gh api *)"
+    ]
+  }
+}

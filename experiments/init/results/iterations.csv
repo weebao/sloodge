@@ -1,0 +1,36 @@
+iteration,case,confidence,blockers,majors,minors,top_defect
+1,slide-title,82,0,0,3,invented kicker line; 'Dept.' expanded; centered on full canvas not above wave band
+1,slide-content-layout,80,0,0,3,footer 16px at 2.9:1 contrast; growth arrow icon on failure card; title repeated in footer
+1,slide-comparison,80,0,0,4,19px cell text; 14px badge; unrequested near-invisible page number; banner gradient contrast
+1,anim-solar,8,1,0,0,labels rotate -360deg about sun (backwards) — orbit away from planets and render upside-down
+1,anim-pipeline,20,1,1,0,no visible arrowheads (markers under opaque rects); pulse path cuts through card interiors
+1,graph-bar-interactive,58,0,2,0,Q descenders clipped ('O1-O4'); tooltip covers bar top and value label
+1,graph-line-toggle,78,0,0,4,tooltip occludes 0.8 tick; legend overlaps gridline; 14-15px chart text; fixed 0-1 y-axis wastes 55% of plot
+2,slide-title,38,0,1,1,invented kicker AGAIN ('A Talk On Marine Exploration'); content ~50px above optical center
+2,slide-content-layout,47,0,1,2,mangled hand-drawn icons: upside-down '?'; X colliding with head circle; stray strokes
+2,slide-comparison,62,0,0,3,translucent VERDICT badge 4.14:1; row4 only ~4px from banner; team icon stray artifacts
+2,anim-solar,62,0,1,2,labels too small; 'Sun' illegible on bright core; mid-gap labels nearest wrong planet
+2,anim-pipeline,32,1,1,1,pulse vanishes by t5 (broken SMIL begin-chain); glow stuck at stage 1; Monitor card clipped at edge
+2,graph-bar-interactive,58,0,1,0,tooltip clips hovered bar's value label and paints over adjacent bar (by construction)
+2,graph-line-toggle,62,0,1,2,rotated y-axis title overlaps '67%' tick; 14px tooltip label; tooltip covers validation line; dead space
+3,slide-title,82,0,0,2,wave cusp artifact at right edge; text block ~45px high vs optical center
+3,slide-content-layout,82,0,0,3,~120px dead space in cards; bullseye icon contradicts 'No Market Need'; glyph strokes flush to viewBox edge
+3,slide-comparison,93,0,0,0,zero defects found (reviewer hedged below 100 — rubric calibration fixed for iter4)
+3,anim-solar,38,1,0,0,static orbit-top chips: planets pass behind opaque labels once per revolution
+3,anim-pipeline,62,0,1,1,pulse dwells ON arrowheads (t5 occludes 3rd arrowhead ~1.9s of 8s); t2 overlaps Test box border
+3,graph-bar-interactive,79,0,1,1,selected-state dimmed labels ~1.95:1; hover handler un-dims labels corrupting click state
+3,graph-line-toggle,62,0,1,2,tooltip clamped to SVG edge occludes 60% tick + axis + series; 13px caption; ~100px dead band
+4,slide-title,100,0,0,0,zero defects
+4,slide-content-layout,100,0,0,0,zero defects
+4,slide-comparison,100,0,0,0,zero defects
+4,anim-solar,100,0,0,0,zero defects
+4,anim-pipeline,100,0,0,0,zero defects
+4,graph-bar-interactive,100,0,0,0,zero defects
+4,graph-line-toggle,72,0,1,0,in-plot tooltip occludes E2 markers + adjacent segments + gridline (occlusion unavoidable in dense plot)
+5,graph-line-toggle,100,0,0,0,zero defects (readout strip pattern)
+5,slide-title,100,0,0,0,carried from iter4 (unchanged artifact)
+5,slide-content-layout,100,0,0,0,carried from iter4 (unchanged artifact)
+5,slide-comparison,100,0,0,0,carried from iter4 (unchanged artifact)
+5,anim-solar,100,0,0,0,carried from iter4 (unchanged artifact)
+5,anim-pipeline,100,0,0,0,carried from iter4 (unchanged artifact)
+5,graph-bar-interactive,100,0,0,0,carried from iter4 (unchanged artifact)

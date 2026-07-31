@@ -1,0 +1,26 @@
+{
+  "confidence": 58,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "On hover, the tooltip overlaps and clips the hovered bar's own value label. Measured in hover.png: the Q1 value label '$4.2M' occupies x=349-407, y=275-290, while the tooltip's rounded black box occupies x=401-618, y=251-289 — the trailing 'M' glyph is cut off by the tooltip's left edge. This is deterministic for every bar, not a Q1 artifact: showTooltip() sets left = barRect.right + 12 (graph-bar-interactive.html:286), but the centered .value-label is ~58px wide against a 24px bar, so it always extends ~17px past the bar's right edge — i.e. 5-7px under the tooltip. Q4 was confirmed by the same arithmetic (label 934-992 vs tooltip left 986).",
+      "required": "Hovering a bar must show a tooltip with the exact value WITHOUT covering the hovered bar, its value label, or the axis ticks."
+    },
+    {
+      "severity": "major",
+      "observed": "The tooltip occludes the top of the adjacent bar. In hover.png the Q2 bar (x=562-584, top y=252) is painted over by the tooltip for y=252-289 — pixel at (573,270) is tooltip black (11,11,11) in hover.png versus bar blue (42,120,214) in t0.png — hiding the top ~38px of Q2 including its tip, so the viewer cannot see where Q2 actually ends. Structural, not incidental: the tooltip is ~217px wide and starts 12px right of the hovered bar, so it reaches 229px past the bar edge while the band pitch is only 195px, guaranteeing it crosses the next bar's center. By the same geometry, hovering Q3 places the tooltip at y=219-257 across x=791-1008, occluding part of the Q4 bar (x=952-974, top y=187). Q2's tooltip clears Q3's label by only 2px.",
+      "required": "A tooltip must reveal the hovered value without hiding other chart data; bars and their tips must stay readable during interaction."
+    },
+    {
+      "severity": "minor",
+      "observed": "Hovering Q4 places the tooltip at left=986 with width ~218, so it extends to x~1204 — roughly 114px beyond the chart card's right edge (card spans x=190-1090), floating detached over the bare page background. The right-edge clamp at line 294 only triggers past x=1270, so it never fires.",
+      "required": "Chart chrome should stay visually anchored within the chart container."
+    },
+    {
+      "severity": "minor",
+      "observed": "Bars are 24px wide within a 195px band (~12% fill), producing thin, spindly columns separated by large empty gaps at 1280x720 presentation scale; the plot area reads as mostly whitespace.",
+      "required": "A presentation bar chart should carry enough visual weight to read from a distance."
+    }
+  ],
+  "summary": "Data and core interactivity are correct: bar heights are proportional to within 0.3% (measured 228/277/260/342px against 4.2/5.1/4.8/6.3 at ~54.3px per M, on a true zero baseline), the Q axis labels render with full descenders, the hover tooltip shows the exact value 'Q1 revenue: $4.2M', the click produces a genuine highlight (selected bar outlined, others dimmed) plus a real computed summary ('Q1 2025: $4.2M revenue - 20.6% of the full year's $20.4M total', arithmetic verified), there are no console errors, and nothing overflows 1280x720. The blocker-adjacent problem is tooltip placement: at left = barRect.right + 12 it both clips the trailing character of the hovered bar's own value label and paints over the top of the adjacent bar, violating the explicit no-occlusion requirement, and it does so for every bar by construction rather than in one captured frame."
+}

@@ -1,0 +1,26 @@
+{
+  "confidence": 80,
+  "defects": [
+    {
+      "severity": "minor",
+      "observed": "Comparison-cell body text renders at font-size:19px (.cell{font-size:19px}), below the presentation legibility floor; on a 1280x720 slide the rows read as dense body copy rather than slide text.",
+      "required": "Rubric item 4: body text >= ~20px equivalent for a presentation slide."
+    },
+    {
+      "severity": "minor",
+      "observed": "An unrequested page-number '2' sits bottom-right in #8a90a6 on a #fafbfc background (~2.6:1 contrast), effectively illegible and an element the prompt never asked for.",
+      "required": "Only the requested elements (title, two columns, 4 rows, verdict banner), and any visible text must have sufficient contrast."
+    },
+    {
+      "severity": "minor",
+      "observed": "The 'VERDICT' badge label is 14px uppercase on a translucent white pill inside the green banner — well under presentation-readable size and the smallest text on the slide.",
+      "required": "Rubric item 4: legible text sizes throughout; banner content should be readable at presentation distance."
+    },
+    {
+      "severity": "minor",
+      "observed": "Verdict banner text (#f2fff8) runs across a left-to-right gradient ending at #1fa06a; at the right end of the sentence contrast falls to ~3.3:1, only passing because the text is bold/large.",
+      "required": "Rubric item 4: sufficient contrast for text; a flat or darker banner fill would keep the whole sentence comfortably legible."
+    }
+  ],
+  "summary": "The slide delivers everything the prompt asked for: title 'Monolith vs Microservices', a true two-column table with distinct Monolith/Microservices headers (each with a clean, correctly-rendered SVG icon), exactly 4 equal-height comparison rows (verified by literal count in both the render and the markup), and a full-width green verdict banner at the bottom explicitly recommending microservices for orgs 'with over 20 engineers'. No overflow (scrollW/scrollH = 1280x720, overflows:false), no clipping, no overlap, no console output, and t0/t2/t5 are byte-identical as expected for a static slide. Remaining issues are cosmetic legibility items only: 19px cell text just under the presentation floor, a 14px badge, a near-invisible unrequested page number, and borderline banner contrast at the light end of the gradient. No blocker or major defects found; score capped below 85 by the concrete minor defects."
+}

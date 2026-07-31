@@ -1,0 +1,36 @@
+{
+  "confidence": 47,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "Card 1 icon: the question mark inside the magnifying glass is malformed/inverted. The SVG draws the dot (line x1=11 y1=8 x2=11 y2=8.5) ABOVE the curve (path at y~9.5) and the stem (line 11,12 -> 11,13.5) below it. At 36px it renders as a hook with a floating dot on top and a detached dash beneath - it does not read as a '?'.",
+      "required": "Rubric 6: SVG must render correctly, no broken shapes, no stray artifacts. Icon semantics must match the failure content ('No Market Need')."
+    },
+    {
+      "severity": "major",
+      "observed": "Card 3 icon ('Wrong Team'): the X cross (lines 18,3.5-21,6.5 and 21,3.5-18,6.5) sits directly on top of the second person's head circle (cx=17.5 cy=9 r=2.3, top edge y=6.7) with only 0.2 user units of clearance. At the rendered 36px size the stroked X and the head merge into a single unreadable red knot, and the second figure's torso is a detached floating arc. Shapes overlap and read as broken.",
+      "required": "Rubric 3/6: no overlapping elements; SVG renders correctly with no broken shapes."
+    },
+    {
+      "severity": "minor",
+      "observed": "Card 4 icon ('Poor Product') crams three unrelated glyphs into one 24x24 box: a star, a small X, and a right-pointing arrowhead. The X and arrow render as stray disconnected artifacts at the bottom of the icon and convey no coherent meaning for 'Poor Product'.",
+      "required": "Rubric 6: no stray artifacts; icon semantics must match the reason it labels."
+    },
+    {
+      "severity": "minor",
+      "observed": "Card 2 icon ('Running Out of Cash') is a generic briefcase/case with a horizontal band and a small dot - it carries no money, currency, declining-trend, or emptying semantics. It reads as 'work/portfolio', not 'running out of cash'.",
+      "required": "Icon semantics must match the failure content."
+    },
+    {
+      "severity": "minor",
+      "observed": "Each grid card is ~248px tall but the icon + heading + one sentence occupy only the top ~110px, leaving roughly half of every card as empty white space below the text (visible as large blank lower halves in all four cards). The 2x2 grid looks unbalanced and unfinished.",
+      "required": "Rubric 2/4: layout should present the 2x2 grid as a deliberate, balanced arrangement for a presentation slide."
+    },
+    {
+      "severity": "minor",
+      "observed": "Footer slide number '7' is set at font-size:18px, below the >= ~20px presentation body-text guidance (it is the smallest text on the slide and the only text under 20px). Contrast measured at 5.75:1 (#5a6478 on #fafbfc) does pass WCAG AA for normal text.",
+      "required": "Rubric 4: reasonable font sizes for a presentation, body >= ~20px equivalent."
+    }
+  ],
+  "summary": "All literal requirements are met: title 'Why Startups Fail', exactly 4 reason cards in a true 2x2 CSS grid, each with an inline SVG icon, a 26px bold heading and one 20px supporting sentence, plus a footer containing only '7' (no unrequested footer text). No overflow (scrollW/H = 1280x720), no console errors, and t0/t2/t5 are byte-identical as expected for a static slide. All text passes WCAG AA: headings/title #1a2035 on #ffffff (~15:1), body #3f4757 on #ffffff (9.3:1), footer #5a6478 on #fafbfc (5.75:1). Defects are concentrated in the SVG icons: the 'No Market Need' question mark is drawn upside down (dot above the curve, stem below), the 'Wrong Team' X collides with and merges into the second figure's head at render size while its torso floats detached, the 'Poor Product' icon is a star plus stray X and arrowhead artifacts with muddled semantics, and the 'Running Out of Cash' briefcase carries no cash/decline meaning. Layout-wise, roughly half of every card is empty space below the text, and the footer is the only sub-20px text on the slide."
+}

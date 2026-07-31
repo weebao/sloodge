@@ -1,0 +1,26 @@
+{
+  "confidence": 62,
+  "defects": [
+    {
+      "severity": "major",
+      "observed": "The 'VERDICT' badge in the bottom banner is white 18px/800 text on a translucent chip (rgba(255,255,255,0.18) over #1f6e5c). Sampled composite background at (200,604) is rgb(71,136,121), giving a white-on-chip contrast ratio of 4.14:1. At 18px (13.5pt) bold it does not qualify as WCAG large text (needs 18.66px/14pt bold), so the 3:1 large-text allowance does not apply.",
+      "required": "All small text must meet WCAG AA contrast (4.5:1 at 18px). Banner text contrast was an explicit check."
+    },
+    {
+      "severity": "minor",
+      "observed": "The row-4 cards ('One failure can bring down the entire system' / 'A single service failure stays contained') end at y=572 and the verdict banner starts at y=576 - a ~4px clearance, versus the 10px row-gap used between every other row. The banner's box-shadow (0 6px 18px) bleeds upward onto the card bottoms; pixels sampled just above the banner darken from 254 to 236 inside the micro-cell. Reads as a near-collision between the grid and the banner.",
+      "required": "No overlapping or crowded elements; the banner should sit cleanly below the comparison grid with consistent spacing."
+    },
+    {
+      "severity": "minor",
+      "observed": "The Monolith-column 'Team Coordination' icon renders as a small ring with two detached dashes floating above and below it. It reads as a stray artifact rather than a legible glyph, and it occupies visibly less area than the other seven icons, breaking the icon set's visual weight.",
+      "required": "SVG renders correctly - no broken shapes or stray artifacts; icons should be legible and consistent."
+    },
+    {
+      "severity": "minor",
+      "observed": "The verdict sentence wraps so that 'architecture.' sits alone on a second line, left-aligned under the VERDICT badge (x=143) rather than under the first line's text (x=263), producing a ragged, misaligned two-line banner.",
+      "required": "Clean, well-set banner typography for a presentation slide."
+    }
+  ],
+  "summary": "Structurally correct: title, 3-column grid (label + Monolith + Microservices), exactly 4 comparison rows, verdict banner pinned at the bottom with the correct '20 engineers' recommendation, no overflow (1280x720 scrollW/scrollH), no console output, no unrequested page numbers or footers. Cell and label text are 20px and header text 24px, all meeting the size floor. The defect that matters is the translucent VERDICT badge failing AA at 4.14:1; secondary issues are the ~4px clearance (plus shadow bleed) between row 4 and the banner, the malformed Team Coordination icon, and the ragged banner line wrap."
+}

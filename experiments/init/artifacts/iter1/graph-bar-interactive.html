@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Quarterly Revenue 2025</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 1280px; height: 720px;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: #0f1420;
+  }
+  .slide {
+    position: relative;
+    width: 1280px; height: 720px;
+    overflow: hidden;
+    background: #0f1420;
+    color: #eef1f7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 36px 40px 28px;
+  }
+  .title {
+    font-size: 44px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin: 0 0 4px 0;
+    color: #ffffff;
+    align-self: flex-start;
+  }
+  .subtitle {
+    font-size: 18px;
+    color: #9aa4bd;
+    margin: 0 0 18px 0;
+    align-self: flex-start;
+  }
+  .chart-wrap {
+    position: relative;
+    width: 940px;
+    height: 470px;
+    background: #161d2e;
+    border: 1px solid #262f45;
+    border-radius: 12px;
+    padding: 10px 10px 0 10px;
+  }
+  svg { display: block; }
+  .gridline {
+    stroke: rgba(255,255,255,0.10);
+    stroke-width: 1;
+  }
+  .axis-line {
+    stroke: rgba(255,255,255,0.35);
+    stroke-width: 1.5;
+  }
+  .tick-label {
+    fill: #9aa4bd;
+    font-size: 16px;
+  }
+  .cat-label {
+    fill: #d7dcea;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .bar {
+    fill: #5b8cff;
+    cursor: pointer;
+    transition: fill 0.15s ease, opacity 0.15s ease, filter 0.15s ease;
+  }
+  .bar:hover {
+    fill: #7fa4ff;
+    filter: brightness(1.08);
+  }
+  .bar.selected {
+    fill: #ffb648;
+  }
+  .bar.dimmed {
+    opacity: 0.35;
+  }
+  .value-label {
+    fill: #ffffff;
+    font-size: 17px;
+    font-weight: 700;
+    text-anchor: middle;
+    pointer-events: none;
+  }
+  .tooltip {
+    position: absolute;
+    display: none;
+    background: #ffffff;
+    color: #10131c;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 8px 12px;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
+  }
+  .tooltip .tt-sub {
+    font-size: 13px;
+    font-weight: 500;
+    color: #4a5470;
+    margin-top: 2px;
+  }
+  .summary-line {
+    margin-top: 20px;
+    width: 940px;
+    font-size: 20px;
+    font-weight: 600;
+    color: #eef1f7;
+    background: #161d2e;
+    border: 1px solid #262f45;
+    border-radius: 10px;
+    padding: 14px 20px;
+    text-align: left;
+  }
+  .summary-line .accent {
+    color: #ffb648;
+  }
+</style>
+</head>
+<body>
+<div class="slide">
+  <h1 class="title">Quarterly Revenue 2025</h1>
+  <p class="subtitle">Revenue by quarter, in millions USD</p>
+
+  <div class="chart-wrap" id="chartWrap">
+    <svg id="chartSvg" width="920" height="460" viewBox="0 0 920 460">
+      <!-- gridlines + y ticks -->
+      <g id="gridGroup"></g>
+
+      <!-- axes -->
+      <line class="axis-line" x1="80" y1="20" x2="80" y2="430"></line>
+      <line class="axis-line" x1="80" y1="430" x2="880" y2="430"></line>
+
+      <!-- bars -->
+      <g id="barsGroup"></g>
+
+      <!-- category labels -->
+      <g id="catLabels"></g>
+    </svg>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+
+  <div class="summary-line" id="summaryLine">Click a bar to see details.</div>
+</div>
+
+<script>
+(function () {
+  var data = [
+    { label: "Q1", value: 4.2, display: "$4.2M" },
+    { label: "Q2", value: 5.1, display: "$5.1M" },
+    { label: "Q3", value: 4.8, display: "$4.8M" },
+    { label: "Q4", value: 6.3, display: "$6.3M" }
+  ];
+
+  var svgNS = "http://www.w3.org/2000/svg";
+  var marginLeft = 80, marginTop = 20, marginBottom = 50;
+  var plotWidth = 800, plotHeight = 410;
+  var domainMax = 7.5; // clean headroom above the 6.3M max
+  var scale = plotHeight / domainMax; // px per million
+
+  var gridGroup = document.getElementById("gridGroup");
+  var barsGroup = document.getElementById("barsGroup");
+  var catLabels = document.getElementById("catLabels");
+  var tooltip = document.getElementById("tooltip");
+  var chartWrap = document.getElementById("chartWrap");
+  var summaryLine = document.getElementById("summaryLine");
+
+  // Gridlines + y-axis tick labels
+  var ticks = [0, 1.5, 3, 4.5, 6, 7.5];
+  ticks.forEach(function (t) {
+    var y = marginTop + (plotHeight - t * scale);
+    var line = document.createElementNS(svgNS, "line");
+    line.setAttribute("class", "gridline");
+    line.setAttribute("x1", marginLeft);
+    line.setAttribute("x2", marginLeft + plotWidth);
+    line.setAttribute("y1", y);
+    line.setAttribute("y2", y);
+    gridGroup.appendChild(line);
+
+    var text = document.createElementNS(svgNS, "text");
+    text.setAttribute("class", "tick-label");
+    text.setAttribute("x", marginLeft - 12);
+    text.setAttribute("y", y + 5);
+    text.setAttribute("text-anchor", "end");
+    text.textContent = "$" + t + "M";
+    gridGroup.appendChild(text);
+  });
+
+  // Bars
+  var barWidth = 120;
+  var gap = (plotWidth - data.length * barWidth) / (data.length + 1);
+
+  data.forEach(function (d, i) {
+    var barHeight = d.value * scale;
+    var x = marginLeft + gap * (i + 1) + barWidth * i;
+    var y = marginTop + (plotHeight - barHeight);
+    var baseline = marginTop + plotHeight;
+
+    var rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("class", "bar");
+    rect.setAttribute("x", x);
+    rect.setAttribute("y", y);
+    rect.setAttribute("width", barWidth);
+    rect.setAttribute("height", barHeight);
+    rect.setAttribute("rx", 6);
+    rect.setAttribute("data-index", i);
+    rect.setAttribute("data-label", d.label);
+    rect.setAttribute("data-value", d.display);
+
+    if (i === 0) {
+      rect.setAttribute("data-hover-target", "");
+      rect.setAttribute("data-click-target", "");
+    }
+
+    barsGroup.appendChild(rect);
+
+    var valueLabel = document.createElementNS(svgNS, "text");
+    valueLabel.setAttribute("class", "value-label");
+    valueLabel.setAttribute("x", x + barWidth / 2);
+    valueLabel.setAttribute("y", y - 10);
+    valueLabel.textContent = d.display;
+    barsGroup.appendChild(valueLabel);
+
+    var catLabel = document.createElementNS(svgNS, "text");
+    catLabel.setAttribute("class", "cat-label");
+    catLabel.setAttribute("x", x + barWidth / 2);
+    catLabel.setAttribute("y", baseline + 30);
+    catLabel.setAttribute("text-anchor", "middle");
+    catLabel.textContent = d.label;
+    catLabels.appendChild(catLabel);
+  });
+
+  var bars = barsGroup.querySelectorAll(".bar");
+  var selectedIndex = null;
+
+  function showTooltip(evt, bar) {
+    var label = bar.getAttribute("data-label");
+    var value = bar.getAttribute("data-value");
+    tooltip.innerHTML = value + '<div class="tt-sub">' + label + ' 2025 revenue</div>';
+    tooltip.style.display = "block";
+
+    var wrapRect = chartWrap.getBoundingClientRect();
+    var barRect = bar.getBoundingClientRect();
+
+    var left = (barRect.left - wrapRect.left) + (barRect.width / 2);
+    var top = (barRect.top - wrapRect.top) - 54;
+
+    // Measure after making visible to keep it inside the viewport.
+    var ttWidth = tooltip.offsetWidth;
+    var ttHeight = tooltip.offsetHeight;
+    left = left - ttWidth / 2;
+
+    if (left < 4) left = 4;
+    if (left + ttWidth > wrapRect.width - 4) left = wrapRect.width - 4 - ttWidth;
+    if (top < 4) top = (barRect.top - wrapRect.top) + barRect.height + 12;
+
+    tooltip.style.left = left + "px";
+    tooltip.style.top = top + "px";
+  }
+
+  function hideTooltip() {
+    tooltip.style.display = "none";
+  }
+
+  function selectBar(bar) {
+    var idx = parseInt(bar.getAttribute("data-index"), 10);
+    selectedIndex = idx;
+
+    bars.forEach(function (b) {
+      var bIdx = parseInt(b.getAttribute("data-index"), 10);
+      if (bIdx === idx) {
+        b.classList.add("selected");
+        b.classList.remove("dimmed");
+      } else {
+        b.classList.remove("selected");
+        b.classList.add("dimmed");
+      }
+    });
+
+    var d = data[idx];
+    summaryLine.innerHTML = "Selected: <span class=\"accent\">" + d.label +
+      " 2025</span> revenue was <span class=\"accent\">" + d.display + "</span>.";
+  }
+
+  bars.forEach(function (bar) {
+    bar.addEventListener("mouseenter", function (evt) { showTooltip(evt, bar); });
+    bar.addEventListener("mouseover", function (evt) { showTooltip(evt, bar); });
+    bar.addEventListener("mouseleave", hideTooltip);
+    bar.addEventListener("mouseout", hideTooltip);
+    bar.addEventListener("click", function () { selectBar(bar); });
+  });
+})();
+</script>
+</body>
+</html>
