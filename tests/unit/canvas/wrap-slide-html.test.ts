@@ -102,10 +102,14 @@ describe('wrapSlideHtml', () => {
  *
  * A `<head>` inside a comment, a script string or an attribute value captures a naive regex, and
  * the injected meta is then swallowed by whatever it landed inside — the policy vanishes with the
- * document still rendering perfectly and nothing logged. Under blob delivery this policy is the
- * only thing enforcing `connect-src 'none'`, so each of these is a silent exfiltration path.
+ * document still rendering perfectly and nothing logged. Today the host policy the frame inherits
+ * still denies the fetch that would need (see `useSlideUrl`), but `slide://` delivery removes that
+ * net and makes this policy the only thing enforcing `connect-src 'none'` — at which point each of
+ * these is a silent exfiltration path.
  *
- * Every case asserts the meta is really *outside* the decoy and inside the real head.
+ * Every case asserts the meta is really *outside* the decoy and inside the real head. Placement in
+ * the *parsed tree* — the half a string assertion cannot see — is measured against Chromium by
+ * `experiments/init/harness/csp-meta-placement.mjs`.
  */
 describe('wrapSlideHtml anchor is markup-aware', () => {
   function assertLivePolicy(wrapped: string): void {
@@ -241,6 +245,48 @@ describe('wrapSlideHtml anchor is markup-aware', () => {
       expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
       expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
     }
+  })
+
+  /**
+   * A `<head>` *tag* is not enough — the tree builder has to keep it. Non-whitespace text or a
+   * non-head start tag closes the implied head and opens the body, and the `<head>` token after
+   * that is discarded. A meta injected there is a child of `<body>`, where CSP pragma processing
+   * drops the policy outright (verified in Chromium: `--dump-dom` shows an empty `<head>`, and
+   * under `script-src 'none'` the inline script runs). The fallback placement is what saves it.
+   *
+   * See `experiments/init/harness/csp-meta-placement.mjs`.
+   */
+  it.each([
+    ['text', '<!doctype html>\n<html>hello<head><title>t</title>'],
+    ['a <div>', '<!doctype html>\n<html><div></div><head><title>t</title>'],
+    ['a <p> with text', '<!doctype html>\n<html><p>x<head><title>t</title>'],
+  ])('ignores a <head> that %s has already pushed into the body', (_label, source) => {
+    const wrapped = wrapSlideHtml(source)
+
+    assertLivePolicy(wrapped)
+    // Anchored at the <html> fallback — before the body-implying content, where the parser is
+    // still in "before head" and hoists the meta into the implied head.
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<head>'))
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<html>'))
+  })
+
+  // Negative control: `<style>` IS head content, so the implied head is still open and the literal
+  // `<head>` after it remains a valid anchor. The implied-body rule must not overreach.
+  it('still anchors on a <head> preceded only by head content', () => {
+    const wrapped = wrapSlideHtml(
+      '<!doctype html>\n<html><style>.a{}</style><head><title>t</title>',
+    )
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
+    expect(wrapped.indexOf(CSP_META)).toBeLessThan(wrapped.indexOf('<title>'))
+  })
+
+  it('is not tripped by whitespace before the head', () => {
+    const wrapped = wrapSlideHtml('<!doctype html>\n<html>\n\t  \n<head><title>t</title>')
+
+    assertLivePolicy(wrapped)
+    expect(wrapped.indexOf(CSP_META)).toBeGreaterThan(wrapped.indexOf('<head>'))
   })
 
   it('treats a bare `<` in text as text, not as a tag', () => {

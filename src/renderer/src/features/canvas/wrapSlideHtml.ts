@@ -83,15 +83,34 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${SLIDE_CS
  * So the anchor is located by walking the markup: comments (including the abrupt `<!-->` forms),
  * quoted attribute values, and the interiors of every element whose content model is text rather
  * than markup — RAWTEXT, RCDATA, script data including the double-escaped state, and `plaintext`.
- * The walk stops at `<body>`. It yields a byte *offset* and the caller slices the original string
- * at it — author bytes are never rewritten, which is what keeps Design Mode's byte-span patcher
- * (§3.3 of 30-slide-format.md) valid.
+ * It yields a byte *offset* and the caller slices the original string at it — author bytes are
+ * never rewritten, which is what keeps Design Mode's byte-span patcher (§3.3 of 30-slide-format.md)
+ * valid.
+ *
+ * ## Tag position is not enough: the implied body
+ *
+ * Finding a real `<head>` *tag* is necessary but not sufficient, because the tree builder may
+ * discard it. Non-whitespace text, or any start tag that is not head content, closes the implied
+ * head and opens the body; a `<head>` token after that is a parse error and is dropped. A meta
+ * injected there is a child of `<body>`, and HTML's CSP pragma processing returns early for a meta
+ * whose parent is not the head — so the policy is dropped in full, silently. Measured, not
+ * reasoned: for `<!doctype html><html>hello<head>`, Chromium's `--dump-dom` showed an *empty*
+ * `<head>` with the meta in the body, and an enforcement probe under `script-src 'none'` let the
+ * inline script run. So the walk tracks whether the body has been implied, and stops seeking a
+ * literal `<head>` once it has. See `experiments/init/harness/csp-meta-placement.mjs`.
+ *
+ * ## Fail-safe for *unrecognised* states — not unconditionally
  *
  * This is a hand-rolled tokenizer, and hand-rolled tokenizers diverge from the spec at the edges.
- * It is bounded by being *fail-safe by construction*: every state it does not recognise makes it
- * fall back to the `<html>`/doctype anchor or to a prepend, all three of which land the meta where
- * the parser's "before head" insertion mode hoists it into the implied `<head>`. It can inject the
- * policy in a less pretty place; it cannot fail to inject it.
+ * The bound is that every state it does not recognise sends it to the `<html>`/doctype fallback or
+ * to a prepend, all three of which sit in "before head", where the parser hoists the meta into the
+ * implied `<head>` — verified in Chromium for every probe input, including the fallbacks.
+ *
+ * That is a statement about *unknown* states only. An earlier revision of this comment claimed the
+ * walk "cannot fail to inject" the policy, full stop; the implied-body case above is precisely a
+ * state it recognised and got wrong, and there the policy landed nowhere the document honoured.
+ * The guarantee is: unknown input degrades to a worse-looking but correct placement. A *wrong*
+ * rule still produces a wrong answer, so each rule is pinned by a mutation-verified test.
  */
 
 /**
@@ -141,6 +160,28 @@ const TEXT_CONTENT_ELEMENTS = new Set([
   'plaintext',
 ])
 
+/**
+ * Elements the parser accepts while the implied `<head>` is still open (HTML's "in head" insertion
+ * mode), plus `html`/`head` themselves. A start tag outside this set closes the implied head and
+ * opens the body — after which a literal `<head>` token is a parse error and is discarded, so it
+ * must stop being treated as an anchor.
+ */
+const HEAD_CONTENT_ELEMENTS = new Set([
+  'html',
+  'head',
+  'base',
+  'basefont',
+  'bgsound',
+  'link',
+  'meta',
+  'noframes',
+  'noscript',
+  'script',
+  'style',
+  'template',
+  'title',
+])
+
 /** Start and end offsets of the next `</name …>` end tag at or after `from`. */
 function findEndTag(
   html: string,
@@ -185,11 +226,17 @@ function skipTextContent(html: string, name: string, contentStart: number): numb
 function findAnchorOffset(html: string): number | null {
   let htmlEnd: number | null = null
   let doctypeEnd: number | null = null
+  let bodyImplied = false
   let index = 0
 
   while (index < html.length) {
     const open = html.indexOf('<', index)
     if (open === -1) break
+
+    // Character data between tokens. Anything non-whitespace ends the "before head" insertion
+    // mode: the parser closes the implied head and opens the body, so a `<head>` start tag after
+    // this point is a parse error the tree builder discards. Whitespace alone is ignored.
+    if (!bodyImplied && html.slice(index, open).trim() !== '') bodyImplied = true
 
     if (html.startsWith('<!--', open)) {
       // Abrupt-closing comments: `<!-->` and `<!--->` are complete comments, not the start of one.
@@ -228,11 +275,19 @@ function findAnchorOffset(html: string): number | null {
     const end = tagEnd(html, open)
     if (end === null) break
 
-    if (!closing && name === 'head') return end
+    // A literal `<head>` is only an anchor while the implied head is still open. Past that point
+    // the tree builder ignores the token, and a meta injected after it is a child of `<body>`,
+    // where CSP pragma processing drops the policy entirely. Falling back is what saves it.
+    if (!closing && name === 'head') {
+      if (bodyImplied) break
+      return end
+    }
     if (!closing && name === 'html' && htmlEnd === null) htmlEnd = end
     // Past the head, whatever we thought we saw. Injecting into <body> is worse than the
     // <html>/doctype fallbacks below, which are still inside the document's prologue.
-    if (name === 'body') break
+    if (name === 'body' || (closing && name === 'head')) break
+    // Any start tag that is not head content opens the body implicitly, exactly as text does.
+    if (!closing && !HEAD_CONTENT_ELEMENTS.has(name)) bodyImplied = true
 
     if (!closing && TEXT_CONTENT_ELEMENTS.has(name)) {
       // Text content is not markup: a `<head>` in a JS string, a CSS selector or a <title> is data.
