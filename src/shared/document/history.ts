@@ -226,17 +226,27 @@ export class DocumentHistory<D extends DeckDoc> {
    * command against a document that diverged from the one it was computed for.
    */
   apply(commands: readonly DocCommand[], origin: CommandOrigin, label?: string): HistoryResult<D> {
-    const applied = applyBatch(this.#doc, commands)
+    // Deep-copied first, and `[...commands]` would not do: a shallow array copy still holds the
+    // caller's command objects, so an `html` — or a nested `SlideEntry` — mutated after `apply`
+    // returned would change what `redo()` replays. The stack has to describe what happened, not
+    // what the caller is holding now. Copying *before* applying also keeps the one failure mode
+    // (a non-cloneable payload) in front of any state change.
+    const forward: DocCommand[] = []
+    for (const command of commands) {
+      const cloned = cloneCommand(command)
+      if (!cloned.ok) {
+        return this.#fail('not-cloneable', `command ${command.t} ${cloned.message}`)
+      }
+      forward.push(cloned.value)
+    }
+
+    const applied = applyBatch(this.#doc, forward)
     if (!applied.ok) return { ok: false, error: applied.error }
 
     this.#doc = applied.doc
     this.#rev += 1
     this.#redo = []
 
-    // Deep-copied, not `[...commands]`: a shallow array copy still holds the caller's command
-    // objects, so an `html` mutated after `apply` returned would change what `redo()` replays.
-    // The stack has to describe what happened, not what the caller is holding now.
-    const forward = commands.map(cloneCommand)
     const bytes = batchBytes(forward) + batchBytes(applied.inverse)
     const open = this.#open
     if (open) {

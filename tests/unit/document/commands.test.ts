@@ -10,7 +10,12 @@ import {
   type DocCommand,
 } from '../../../src/shared/document/commands'
 import { createSlideEntry, getSlide, newSlideId } from '../../../src/shared/document/deck'
-import { parseManifest, slideFilePath, type SlideId } from '../../../src/shared/document/types'
+import {
+  parseManifest,
+  slideFilePath,
+  type SlideId,
+  type Theme,
+} from '../../../src/shared/document/types'
 import { makeDoc, makeTheme, T0 } from './deck-doc-fixture'
 
 function expectOk<D>(result: CommandResult<D>): D {
@@ -515,6 +520,24 @@ describe('immutability and prototype discipline', () => {
     expect(after.theme?.name).toBe('Fixture theme')
   })
 
+  it('returns an error, not a DOMException, for a payload it cannot copy', () => {
+    // `structuredClone` throws on a function; this layer promises error values, and the clone runs
+    // before validation (validating the caller's object and copying it afterwards would leave a
+    // window for a getter to return something else the second time).
+    const { doc } = makeDoc(1)
+    const entry = createSlideEntry({ now: T0 + 61 })
+    const command = {
+      t: 'slide.insert',
+      at: 0,
+      slide: { ...entry, onClick: () => undefined },
+      html: 'h',
+    } as unknown as DocCommand
+    expect(expectErr(applyCommand(doc, command)).code).toBe('invalid-slide-entry')
+
+    const theme = { ...makeTheme(), render: () => undefined } as unknown as Theme
+    expect(expectErr(applyCommand(doc, { t: 'deck.setTheme', theme })).code).toBe('invalid-theme')
+  })
+
   it('rejects a `__proto__` token name loudly instead of quietly doing nothing', () => {
     // Revert-proof guard for the null-prototype token maps: on an ordinary object the assignment
     // hits the prototype setter and vanishes, so the command would report success having changed
@@ -548,5 +571,12 @@ describe('commandBytes', () => {
     expect(commandBytes({ t: 'slide.setHtml', id: 's', html })).toBeGreaterThan(10_000)
     expect(commandBytes({ t: 'slide.move', id: 's', to: 1 })).toBeLessThan(1000)
     expect(commandBytes({ t: 'slide.setNotes', id: 's', notes: null })).toBeLessThan(1000)
+  })
+
+  it('counts the slide entry an insert carries — which is every delete’s inverse', () => {
+    const entry = createSlideEntry({ now: T0 + 80, title: 'Counted', withNotes: true })
+    const html = 'x'.repeat(1000)
+    const bytes = commandBytes({ t: 'slide.insert', at: 0, slide: entry, html, notes: 'n' })
+    expect(bytes).toBeGreaterThan(html.length + JSON.stringify(entry).length)
   })
 })

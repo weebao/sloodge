@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DeckDoc, DocCommand } from '../../../src/shared/document/commands'
-import { createSlideEntry, newSlideId } from '../../../src/shared/document/deck'
+import { createSlideEntry, getSlide, newSlideId } from '../../../src/shared/document/deck'
 import {
   DEFAULT_MAX_HISTORY_BYTES,
   DEFAULT_MAX_HISTORY_ENTRIES,
@@ -171,6 +171,39 @@ describe('undo and redo', () => {
     expectOk(history.redo())
     expect(history.doc.slides[ids[0]!]).toBe('recorded')
     expect(history.undoStack()[0]?.forward[0]).toMatchObject({ html: 'recorded' })
+  })
+
+  it('replays the nested payload it recorded, not the caller’s object', () => {
+    // Revert-proof guard for the *depth* of the copy, which the string-only test above cannot
+    // reach: a shallow `{ ...command }` protects `html` but leaves the caller's `SlideEntry` on
+    // the redo stack, so a post-apply edit to it reappears in the document on the next redo.
+    const { history } = makeHistory()
+    const entry = createSlideEntry({ now: T0 + 70, title: 'Original' })
+    const command: DocCommand = { t: 'slide.insert', at: 0, slide: entry, html: 'body' }
+    expectOk(history.apply([command], USER))
+    expectOk(history.undo())
+
+    entry.title = 'HIJACKED-VIA-REDO'
+    expectOk(history.redo())
+    expect(getSlide(history.doc.manifest, entry.id)?.title).toBe('Original')
+    expect(history.undoStack()[0]?.forward[0]).toMatchObject({ slide: { title: 'Original' } })
+  })
+
+  it('rejects a payload it cannot copy instead of throwing through the caller', () => {
+    // The copy boundary must fail as a value: a DOMException escaping into an IPC handler would
+    // arrive with no error code. Unreachable from a real producer — every command is JSON.
+    const { history } = makeHistory()
+    const entry = createSlideEntry({ now: T0 + 71 })
+    const command = {
+      t: 'slide.insert',
+      at: 0,
+      slide: { ...entry, onClick: () => undefined },
+      html: 'body',
+    } as unknown as DocCommand
+
+    expect(expectErr(history.apply([command], USER)).code).toBe('not-cloneable')
+    expect(history.rev).toBe(0)
+    expect(history.canUndo).toBe(false)
   })
 
   it('does not touch the document or the stacks when an undo cannot be applied', () => {
