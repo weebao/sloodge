@@ -63,6 +63,37 @@ export const SLIDE_CSP_INJECTION = `\n<meta http-equiv="Content-Security-Policy"
 const BOM = '﻿'
 
 /**
+ * HTML whitespace: TAB, LF, FF, CR, SPACE. Exactly five characters, and **not** JavaScript's `\s`.
+ *
+ * `\s` also matches U+000B VERTICAL TAB, U+00A0 NO-BREAK SPACE, U+1680, U+2000-U+200A, U+2028,
+ * U+2029, U+202F, U+205F, U+3000 and U+FEFF. None of those is HTML whitespace: the tokenizer emits
+ * each as an ordinary character token, which in "initial" is "anything else" — set the quirks flag,
+ * switch to "before html", reprocess. A doctype after one of them is therefore *discarded*, and a
+ * scan that skipped it as whitespace would inject past a doctype that no longer exists, putting the
+ * meta inside `<body>` where CSP pragma processing drops the policy entirely.
+ *
+ * That is the r1-r5 policy-drop class reappearing through a JS-native shorthand that did not match
+ * the spec set the docstring cited. The correct handling is to stop: these characters are content,
+ * so the injection belongs in front of them.
+ */
+const HTML_WHITESPACE = new Set(['\t', '\n', '\f', '\r', ' '])
+
+/**
+ * Offset just past a comment's closing delimiter, or `null` if it never closes.
+ *
+ * HTML closes a comment on `-->` **or** `--!>` (the comment-end-bang state), whichever comes first.
+ * Only recognising `-->` makes `<!-- c --!><!doctype html>` look unterminated, so the scan bails to
+ * the front and injects ahead of a doctype the parser honours — a silent quirks-mode flip.
+ */
+function commentEnd(html: string, from: number): number | null {
+  const plain = html.indexOf('-->', from)
+  const bang = html.indexOf('--!>', from)
+  if (plain === -1 && bang === -1) return null
+  if (bang === -1 || (plain !== -1 && plain < bang)) return plain + 3
+  return bang + 4
+}
+
+/**
  * Where the injection goes: just past the doctype, or the front of the document.
  *
  * ## The closed set of tokens that may precede a doctype
@@ -73,9 +104,12 @@ const BOM = '﻿'
  * whitespace or to a comment, and stop at everything else. From the tokenizer's tag-open,
  * markup-declaration-open, end-tag-open and bogus-comment states, that set is closed and complete:
  *
- *  1. **Whitespace** characters.
- *  2. `<!-- … -->` — a comment. Including the abrupt-closing `<!-->` and `<!--->` forms, which are
- *     complete comments and contain no `-->` to search for.
+ *  1. **HTML whitespace** — TAB, LF, FF, CR, SPACE, and *only* those five. See `HTML_WHITESPACE`:
+ *     JavaScript's `\s` is a strictly larger set, and every extra character in it is content that
+ *     takes the parser out of "initial".
+ *  2. `<!-- … -->` — a comment. Closed by `-->` **or** `--!>` (the comment-end-bang state),
+ *     whichever comes first; and including the abrupt-closing `<!-->` and `<!--->` forms, which are
+ *     complete comments with no closer to search for.
  *  3. `<!` + anything that is not `--` and not `DOCTYPE` — *markup declaration open* falls through
  *     to **bogus comment**, e.g. `<!foo>`, `<![CDATA[…]]>` outside foreign content. Ends at `>`.
  *  4. `<?` … `>` — *tag open* sees `?`, which is a parse error
@@ -93,10 +127,17 @@ const BOM = '﻿'
  * discards. The document is already quirks at that point, so the front is the right place and
  * injecting there changes nothing.
  *
- * Forms 4-6 were missed in the first version of this scan: the injection landed ahead of a doctype
- * the parser would have honoured, silently dropping the document into quirks mode, where the slide's
- * box model stops matching the 1280x720 the format contract measured. Each is pinned by a unit test
- * and by a Chromium probe that compares compat mode with and without injection.
+ * Forms 4-6, and the `--!>` comment closer, were each missed by an earlier version of this scan: the
+ * injection landed ahead of a doctype the parser would have honoured, silently dropping the document
+ * into quirks mode, where the slide's box model stops matching the 1280x720 the format contract
+ * measured. Each is pinned by a unit test and by a Chromium probe.
+ *
+ * **The primitives have to match the citation.** This list is only worth having if the code
+ * implements the sets it names — the whitespace rule cited HTML's five characters while the code
+ * tested JavaScript's `\s`, and that gap was a full policy drop (a doctype after a U+00A0 is
+ * discarded, so injecting past it put the meta in `<body>`). Where a spec set is named here, the
+ * implementation uses an explicit set or an ASCII-restricted pattern, never a JS-native shorthand
+ * that happens to look similar.
  *
  * The BOM is skipped rather than injected before: displacing it would stop it being a BOM and turn
  * it into a zero-width character in the rendered document.
@@ -108,13 +149,13 @@ export function cspInjectionOffset(html: string): number {
   while (index < html.length) {
     const char = html[index]!
 
-    if (/\s/.test(char)) {
+    if (HTML_WHITESPACE.has(char)) {
       index += 1
       continue
     }
 
     if (html.startsWith('<!--', index)) {
-      // Abrupt-closing forms are complete comments; searching for `-->` would run past them.
+      // Abrupt-closing forms are complete comments; searching for a closer would run past them.
       if (html.startsWith('<!-->', index)) {
         index += 5
         continue
@@ -123,9 +164,9 @@ export function cspInjectionOffset(html: string): number {
         index += 6
         continue
       }
-      const close = html.indexOf('-->', index + 4)
-      if (close === -1) break // unterminated: nothing after it can be a doctype
-      index = close + 3
+      const close = commentEnd(html, index + 4)
+      if (close === null) break // unterminated: nothing after it can be a doctype
+      index = close
       continue
     }
 
@@ -192,7 +233,7 @@ export function cspInjectionOffset(html: string): number {
  * All of them are handled by construction now, because nothing looks for `<head>` any more. The walk
  * was never load-bearing for correctness: it only made the meta land *inside* the author's literal
  * head rather than just before it. It was cosmetics, and all five defects lived in it. The Chromium
- * corpus that found them is kept as the regression net — 26 probes in
+ * corpus that found them is kept as the regression net — 32 probes in
  * `experiments/init/harness/csp-meta-placement.mjs`, each asserting the policy is a head child, that
  * it is actually enforced, and that compat mode is unchanged.
  *

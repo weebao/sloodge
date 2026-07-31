@@ -160,6 +160,11 @@ describe('cspInjectionOffset', () => {
     ['a bogus end tag with a digit', '</1><!doctype html><html>'],
     // `</>` is missing-end-tag-name: it emits no token at all.
     ['an empty end tag', '</><!doctype html><html>'],
+    // HTML closes a comment on `--!>` as well as `-->` (the comment-end-bang state).
+    ['a comment closed with --!>', '<!-- c --!><!doctype html><html>'],
+    ['a comment closed with --!> among others', '<!--a--><!-- b --!> <!doctype html><html>'],
+    // All five HTML whitespace characters, and only these five.
+    ['every HTML whitespace character', '\t\n\f\r <!doctype html><html>'],
   ])('steps over %s to keep the doctype first', (_label, source) => {
     const wrapped = wrapSlideHtml(source)
 
@@ -200,5 +205,33 @@ describe('cspInjectionOffset', () => {
   it('stops at a real end tag or a bare `</` at EOF', () => {
     expect(cspInjectionOffset('</p><!doctype html>')).toBe(0)
     expect(cspInjectionOffset('</')).toBe(0)
+  })
+
+  /**
+   * The boundary of form 1, and the sharpest one in the file.
+   *
+   * These characters are matched by JavaScript's `\s` but are *not* HTML whitespace: the tokenizer
+   * emits each as an ordinary character token, which takes the parser out of "initial" and makes
+   * the doctype after it a discarded parse error. Stepping over them would inject past a doctype
+   * that no longer exists — the meta lands in `<body>` and the whole policy is dropped, which
+   * Chromium confirmed for U+00A0. Injecting in *front* of them is the correct answer.
+   */
+  it.each([
+    ['U+00A0 NO-BREAK SPACE', ' '],
+    ['U+000B VERTICAL TAB', ''],
+    ['U+3000 IDEOGRAPHIC SPACE', '　'],
+    ['U+2028 LINE SEPARATOR', ' '],
+    ['U+FEFF as a second BOM', `${BOM}﻿`],
+    // Negative control: U+0085 is not in JS `\s` either, so it stopped the scan even before the
+    // fix. It is here so the test states the rule, not just the characters that used to slip.
+    ['U+0085 NEXT LINE', ''],
+  ])('does not treat %s as whitespace', (_label, prefix) => {
+    const source = `${prefix}<!doctype html><html>`
+
+    // In front of the character, never after the (discarded) doctype.
+    expect(cspInjectionOffset(source)).toBe(prefix.startsWith(BOM) ? 1 : 0)
+    expect(wrapSlideHtml(source).indexOf(CSP_META)).toBeLessThan(
+      wrapSlideHtml(source).indexOf('<!doctype'),
+    )
   })
 })

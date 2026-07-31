@@ -21,6 +21,12 @@
  *               the *unwrapped* document is what makes this an assertion about the injector rather
  *               than about the probe input: a document with no doctype is quirks either way.
  *
+ * **All three run on every probe, unconditionally, and that is load-bearing.** The whitespace defect
+ * (a doctype after U+00A0 is discarded, so the meta landed in `<body>`) was *invisible* to the
+ * compat-mode signal: the bare document is quirks too, so wrapped and unwrapped compared equal and
+ * the check passed. Only placement and enforcement caught it. A probe that carried fewer signals
+ * would be a place for the next defect to hide.
+ *
  * The placement oracle used to slice the serialized DOM between `<head>` and `</head>` and look for
  * the string `Content-Security-Policy`. That reported a **false pass** for the `noframes` probe,
  * where the policy was raw *text* inside `<noframes>` rather than an element — only the enforcement
@@ -54,7 +60,7 @@
  * proves the simpler implementation is not a regression, and what will catch the next person who
  * decides the injection point should be cleverer.
  *
- * Measured 2026-07-31, Chromium via Playwright: all 26 probes PASS all three checks.
+ * Measured 2026-07-31, Chromium via Playwright: all 32 probes PASS all three checks.
  */
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -102,6 +108,18 @@ const PROBES = [
   ['prologue: empty end tag', `</><!doctype html><html><body>${CANARY}`],
   ['prologue: bogus end tag (space)', `</ x><!doctype html><html><body>${CANARY}`],
   ['prologue: bogus end tag (digit)', `</1><!doctype html><html><body>${CANARY}`],
+  // HTML closes a comment on `--!>` too; missing that made this look unterminated.
+  ['prologue: --!> comment close', `<!-- c --!><!doctype html><html><body>${CANARY}`],
+  // Matched by JS `\s` but NOT HTML whitespace: each is a character token that takes the parser out
+  // of "initial", so the doctype after it is DISCARDED. Stepping over them injects past a doctype
+  // that no longer exists and the meta lands in <body> — the full policy drop. Note the compat-mode
+  // signal cannot see this (the bare document is quirks too); placement and enforcement catch it.
+  ['ws: U+00A0 before doctype', ` <!doctype html><html><body>${CANARY}`],
+  ['ws: U+000B before doctype', `<!doctype html><html><body>${CANARY}`],
+  ['ws: U+3000 before doctype', `　<!doctype html><html><body>${CANARY}`],
+  ['ws: second BOM before doctype', `﻿﻿<!doctype html><html><body>${CANARY}`],
+  // Control: U+0085 is not in JS `\s` either, so it always stopped the scan.
+  ['ws control: U+0085', `<!doctype html><html><body>${CANARY}`],
 ]
 
 const dir = mkdtempSync(join(tmpdir(), 'sloodge-csp-'))
