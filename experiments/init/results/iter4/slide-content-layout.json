@@ -1,5 +1,0 @@
-{
-  "confidence": 100,
-  "defects": [],
-  "summary": "Exactly 4 reason cards in a true 2x2 CSS grid, each with an inline SVG icon (magnifier, dollar, people, clock — all rendering cleanly, no clipping against the -2 -2 28 28 viewBox, red #c0392b reads as failure-appropriate), a bold 30px heading, and exactly one supporting sentence. Title 'Why Startups Fail' at 44px and footer slide number '7' bottom-right are present with no invented copy. Report confirms scrollW/scrollH 1280x720 with overflows:false; no clipping, overlap, or scrollbars. Body 22px / footer 18px are legible; #3a4258 on white and #5a6478 on #fafbfc (~5.8:1) both pass contrast. Card interiors are vertically centered with only modest, evenly distributed slack — no dead-space violation. Console log is empty. t0/t2/t5 are byte-identical, which is correct for a static slide. No concrete defects found."
-}
