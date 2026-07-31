@@ -6,6 +6,7 @@ import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
+import { useUndoRedoKeys } from './useUndoRedoKeys'
 
 /**
  * The PowerPoint-like frame (20-ui-wireframes.md): tab strip + format bar on top, thumbnail rail /
@@ -23,6 +24,15 @@ export function AppShell(): JSX.Element {
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const currentSlideId = useDeckStore((state) => state.currentSlideId)
   const selectSlide = useDeckStore((state) => state.selectSlide)
+  const addSlide = useDeckStore((state) => state.addSlide)
+  const deleteSlide = useDeckStore((state) => state.deleteSlide)
+  const duplicateSlide = useDeckStore((state) => state.duplicateSlide)
+  const moveSlide = useDeckStore((state) => state.moveSlide)
+  const undo = useDeckStore((state) => state.undo)
+  const redo = useDeckStore((state) => state.redo)
+
+  // Ctrl/⌘+Z / Ctrl+Y / Shift+⌘+Z, minus anything an editable element owns — see the hook.
+  useUndoRedoKeys(undo, redo)
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
@@ -40,6 +50,10 @@ export function AppShell(): JSX.Element {
           slides={slides}
           currentSlideId={currentSlideId}
           onSelectSlide={selectSlide}
+          onAddSlide={addSlide}
+          onDuplicateSlide={duplicateSlide}
+          onDeleteSlide={deleteSlide}
+          onMoveSlide={moveSlide}
         />
         <SlideCanvas slide={currentSlide} />
         <ChatPanel />

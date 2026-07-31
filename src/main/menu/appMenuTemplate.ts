@@ -66,6 +66,9 @@ export function buildAppMenuTemplate({
   // undo/clipboard keeps working in text inputs. When M1.2 adds document-level
   // undo, main-side handlers must forward to the document only when no editable
   // element owns focus — never by replacing these roles wholesale.
+  // M1.4 bound the same chords in the renderer under exactly that rule
+  // (`renderer/src/app/useUndoRedoKeys.ts`); a main-side Edit-menu handler (M5.1)
+  // has to make the same check, and must not double-fire with it.
   const editMenu: MenuItemConstructorOptions = {
     label: '&Edit',
     submenu: [

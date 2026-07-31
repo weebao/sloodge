@@ -10,6 +10,11 @@
  * middleware, `subscribeWithSelector`, devtools, persistence, vanilla/React split — is what M1.4's
  * command and undo layer should be evaluated against, with a real workload to judge it by.
  *
+ * M1.4 ran that evaluation and this stayed. Undo did not turn out to be a store problem:
+ * `DocumentHistory` owns the document and both stacks, and `deckStore` only republishes
+ * `history.doc` after each command, so none of the middleware has anything to do here. See the
+ * `zustand` row in 11-tech-stack.md for the full verdict and the next time to revisit it (M2.3).
+ *
  * ## Selector contract
  *
  * A selector must return a value that is `Object.is`-stable while the state it reads is unchanged:

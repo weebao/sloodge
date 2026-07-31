@@ -134,3 +134,59 @@ describe('AppShell', () => {
     expect(within(toolbar).getByRole('button', { name: /design mode/i })).toBeTruthy()
   })
 })
+
+const railRegion = (): HTMLElement => screen.getByRole('navigation', { name: 'Slides' })
+const statusText = (): string =>
+  screen.getByRole('contentinfo', { name: 'Status bar' }).textContent ?? ''
+
+/**
+ * M1.4 end to end: the rail's gestures reach the store's command layer and come back out as a
+ * changed canvas, rail and status bar — and the undo chord is bound at the shell, where the focus
+ * guard has to survive contact with a real text field (the chat composer).
+ */
+describe('AppShell slide CRUD', () => {
+  it('appends and selects a slide from [+ New]', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+
+    expect(statusText()).toContain('Slide 4 of 4')
+    expect(useDeckStore.getState().deck.slideOrder).toHaveLength(4)
+  })
+
+  it('duplicates and deletes through the context menu', () => {
+    render(<AppShell />)
+
+    fireEvent.contextMenu(within(railRegion()).getByRole('button', { name: /Slide 2 thumbnail/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate' }))
+    expect(statusText()).toContain('Slide 3 of 4')
+
+    fireEvent.contextMenu(within(railRegion()).getByRole('button', { name: /Slide 3 thumbnail/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(statusText()).toContain('Slide 3 of 3')
+  })
+
+  it('undoes and redoes with the keyboard', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+    expect(statusText()).toContain('of 4')
+
+    fireEvent.keyDown(document.body, { key: 'z', ctrlKey: true })
+    expect(statusText()).toContain('Slide 3 of 3')
+
+    // Redo brings the fourth slide back. The selection stays on the slide the user is looking at,
+    // which survived the round trip — see `reselect` in the store.
+    fireEvent.keyDown(document.body, { key: 'y', ctrlKey: true })
+    expect(statusText()).toContain('Slide 3 of 4')
+  })
+
+  it('does not rewind the deck when the chord is typed in the chat composer', () => {
+    render(<AppShell />)
+
+    fireEvent.click(within(railRegion()).getByRole('button', { name: '+ New' }))
+    fireEvent.keyDown(screen.getByPlaceholderText('Ask Claude…'), { key: 'z', ctrlKey: true })
+
+    expect(statusText()).toContain('Slide 4 of 4')
+  })
+})
