@@ -16,15 +16,44 @@
  *
  * ## Why `event.source`, never `event.origin`
  *
- * A message's authenticity is decided by **who sent it**, not by what origin it claims. For a
- * sandboxed opaque-origin frame `event.origin` is the string `"null"` — shared by every opaque
- * frame and by any attacker who can get a message onto the channel — so validating it proves
- * nothing. The real check is reference identity: the renderer holds `iframe.contentWindow` and
- * accepts a message only when `event.source` **is** that exact window object; the frame holds
- * `window.parent` and accepts only messages whose source is that. See `isMessageFromFrame` and the
- * frame script (`frame-script.ts`). 40-design-mode.md §2.2 is explicit about this and it is the
- * single most load-bearing line in the bridge, so it is a named, unit-tested, mutation-covered
- * function rather than an inline `===`.
+ * For a sandboxed opaque-origin frame `event.origin` is the string `"null"` — shared by every
+ * opaque frame and by anything that can get a message onto the channel — so validating it proves
+ * nothing. The check that means something is reference identity: the renderer holds
+ * `iframe.contentWindow` and accepts a frame message only when `event.source` **is** that exact
+ * window object; the frame holds `window.parent` and accepts only messages whose source is that.
+ * See `isMessageFromFrame`. It is unit-tested and mutation-covered because it is load-bearing — but
+ * read the next section for the precise, and narrower, guarantee it actually delivers.
+ *
+ * ## What source identity does and does NOT distinguish — the real trust boundary
+ *
+ * `isMessageFromFrame` proves a message came from **this frame's window** rather than from some
+ * other window (the parent, a sibling frame, an unrelated context). It does **not** — and *cannot*
+ * — distinguish the injected bridge script from the slide's own untrusted, model-authored JavaScript:
+ * both run in the *same realm* (`iframe.contentWindow`), so for a message either one posts,
+ * `event.source` is the identical window object. The slide's author knows its own slide id (readable
+ * from the injected `data-sl-id` prefix or `data-sl-slide`), can observe request ids by adding its
+ * own `message` listener, and can even pre-empt the real bridge via the `__slDesignBridge`
+ * install-once flag. A **well-formed** `SL_HITTEST` response forged by author code therefore passes
+ * both the source check and `parseFrameMessage`, and the parent acts on it. This is proven, not
+ * hypothetical — see `bridge-protocol.test.ts` ("a co-resident forged message is accepted").
+ *
+ * So a frame → parent response is an **untrusted hint about the slide's own view state**, not an
+ * authenticated fact. In M3.2 that is safe *because of what the parent does with it, not because of
+ * this check*: the only actions are ephemeral, re-validatable selection state (`setHover` /
+ * `setSelection`), the payload is rendered as escaped React text with finite-validated geometry, and
+ * no parent secret ever flows frame-ward (requests carry only `x`/`y`/`mode`/`alt`). There is no
+ * escalation and no exfiltration channel.
+ *
+ * **The rule this establishes for later milestones (40-design-mode.md §2.2):** any feature that acts
+ * *authoritatively* on a bridge message — edit-on-select, apply-patch, anything that mutates saved
+ * source — MUST NOT trust the message payload. It must re-derive from **parent-held state** (the
+ * `sl-id → span` map the renderer already owns) and treat the message as at most "the user gestured
+ * near sl-id X", and it must route any resulting source change through the accept/reject diff gate
+ * (§6.5), which requires a human keystroke. If a *silent* trusted frame → parent signal is ever
+ * genuinely needed, the enforceable design is the MessageChannel-capture handshake specified in
+ * §2.2 — which is viable only once the bridge is injected *before* author script, a prerequisite
+ * this milestone does not meet (the bridge is appended before `</body>`, after the author's
+ * last-body `<script>`).
  */
 
 /** Magic marker on every envelope; a message without it is not ours and is ignored silently. */
@@ -129,18 +158,22 @@ export interface SourcedMessage {
 }
 
 /**
- * Whether `event` genuinely came from `frameWindow`.
+ * Whether `event` came from the window `frameWindow` — **not** whether it came from the bridge.
  *
- * This is the opaque-origin validation of §2.2: **source identity, not origin string**. `event.source`
- * is a live reference to the sending browsing context; comparing it to the `iframe.contentWindow`
- * (parent side) or to `window.parent` (frame side) the caller is willing to trust is the only sound
- * authentication on this channel. `event.origin` is `"null"` for a sandboxed frame and is never
- * consulted.
+ * This is the opaque-origin check of §2.2: source identity, not origin string. `event.source` is a
+ * live reference to the sending browsing context; comparing it to `iframe.contentWindow` proves the
+ * message originated in that frame rather than in some *other* window. `event.origin` is `"null"`
+ * for a sandboxed frame and is never consulted.
+ *
+ * **It does not authenticate the bridge.** The slide's untrusted author JS shares the frame's realm,
+ * so a message it posts has the identical `event.source`; this returns `true` for it too. See the
+ * "real trust boundary" section in this file's header — a passing result means "from this frame",
+ * which is only a trustworthy fact when the receiver treats the payload as an untrusted hint.
  *
  * A nullish `frameWindow` — the iframe not yet mounted, or torn down — makes this `false`: there is
- * no trusted peer to match, so nothing is trusted. Guarding it here rather than at every call site
- * is what keeps the check impossible to forget. `frameWindow` is `unknown` for the same
- * cross-config reason as `SourcedMessage`; the renderer passes a `Window`.
+ * no frame to match, so nothing matches. Guarding it here rather than at every call site is what
+ * keeps the check impossible to forget. `frameWindow` is `unknown` for the same cross-config reason
+ * as `SourcedMessage`; the renderer passes a `Window`.
  */
 export function isMessageFromFrame(event: SourcedMessage, frameWindow: unknown): boolean {
   return frameWindow !== null && frameWindow !== undefined && event.source === frameWindow
@@ -251,8 +284,11 @@ function envelopeBase(data: unknown, expectedSlide: string): EnvelopeBase | null
  *
  * Only the two shapes the frame is allowed to send survive: a `SL_READY` event and a `SL_HITTEST`
  * response (whose payload may be `null`). Anything else — a request direction, an unknown type, a
- * malformed payload, a mismatched slide — is rejected, so a slide's own script cannot spoof a
- * response the parent will act on even if it defeats the source check.
+ * malformed payload, a mismatched slide — is rejected. This is *shape* validation, not
+ * *authentication*: it stops a malformed message, but a **well-formed** message forged by the
+ * slide's own co-resident author script passes here exactly as the real bridge's does (both share
+ * the frame realm; see this file's header). The parent must therefore treat a valid response as an
+ * untrusted hint about the slide's own view state, never as an authenticated fact.
  */
 export function parseFrameMessage(data: unknown, expectedSlide: string): FromFrame | null {
   const base = envelopeBase(data, expectedSlide)
@@ -292,9 +328,10 @@ export function parseFrameMessage(data: unknown, expectedSlide: string): FromFra
  *
  * The mirror of `parseFrameMessage`: the frame accepts only `SL_HITTEST` requests for its own
  * slide, so a message with any other type or direction — including one the frame itself might see
- * echoed — is ignored. Combined with the source check in the frame script, this is what makes the
- * agent script have no `eval`-style escape hatch: the only thing it will ever do is what this
- * enumerates.
+ * echoed — is ignored. Combined with the source check in the frame script (which, on the frame side,
+ * *does* buy a real boundary: the parent is a genuinely different realm, so a message whose source
+ * is `window.parent` cannot have come from co-resident author code), this is what makes the agent
+ * script have no `eval`-style escape hatch: the only thing it will ever do is what this enumerates.
  */
 export function parseParentMessage(data: unknown, expectedSlide: string): BridgeRequest | null {
   const base = envelopeBase(data, expectedSlide)

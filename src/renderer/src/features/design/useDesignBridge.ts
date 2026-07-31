@@ -10,8 +10,13 @@
  *  - **Source identity** — `isMessageFromFrame(event, contentWindow)`, never `event.origin`.
  *  - **Shape** — `parseFrameMessage(event.data, slideId)`, which also enforces the slide guard.
  *
- * A message that fails either is dropped silently, exactly as a slide's own hostile script trying to
- * spoof a response deserves.
+ * A message that fails either is dropped silently. But note precisely what surviving both buys: the
+ * message came from *this frame* and is well-formed — **not** that it came from the injected bridge
+ * rather than the slide's co-resident author JS (same realm, identical `event.source`; see
+ * `bridge-protocol.ts`'s "real trust boundary"). So `onHit` payloads are untrusted hints, which is
+ * why this milestone routes them only into ephemeral, re-validatable selection state. Any future
+ * feature that acts authoritatively on a hit (edit-on-select) must re-derive from the parent-owned
+ * `sl-id → span` map and gate on the diff gate, not trust what arrives here.
  */
 
 import { useCallback, useEffect, useRef, type RefObject } from 'react'

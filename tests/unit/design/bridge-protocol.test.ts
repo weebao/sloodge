@@ -74,6 +74,36 @@ describe('isMessageFromFrame — the opaque-origin source check', () => {
   })
 })
 
+describe('the real trust boundary — a co-resident forged message is accepted', () => {
+  // This suite PINS A LIMITATION, not a feature. The slide's untrusted author JS shares the frame's
+  // realm with the injected bridge, so a message it posts carries the identical `event.source` — the
+  // very `iframe.contentWindow` the parent trusts. Source identity distinguishes THIS frame from
+  // other windows; it cannot distinguish the bridge from author code inside it. If either assertion
+  // below ever flips, someone has changed the boundary — do not "fix" the test by re-asserting the
+  // false guarantee that source+shape validation stops a same-realm spoof. See bridge-protocol.ts.
+
+  it('isMessageFromFrame accepts an author message because it shares the frame window', () => {
+    const frameWindow = { name: 'contentWindow' }
+    // Author code runs in `frameWindow` too, so `event.source` IS the trusted window.
+    const authorMessage = { source: frameWindow }
+    expect(isMessageFromFrame(authorMessage, frameWindow)).toBe(true)
+  })
+
+  it('parseFrameMessage accepts a well-formed forged response (shape != authentication)', () => {
+    // A forgery the author can trivially build: correct slide id, plausible echoed request id, and a
+    // hit that points wherever the author likes. It is well-formed, so it survives validation.
+    const forged = makeHittestResponse(99, SLIDE, {
+      slId: `${SLIDE}:0`,
+      tag: 'div',
+      id: null,
+      classes: [],
+      rect: { x: 0, y: 0, width: 10, height: 10 },
+      ancestors: [],
+    })
+    expect(parseFrameMessage(forged, SLIDE)).not.toBeNull()
+  })
+})
+
 describe('parseFrameMessage — what the parent will accept from the frame', () => {
   it('accepts a well-formed hit-test response', () => {
     const message = parseFrameMessage(envelope(), SLIDE)
