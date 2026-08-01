@@ -12,15 +12,21 @@
  *
  * ## Drag-to-move and resize (M3.5)
  *
- * The selection body and its eight handles are now interactive. A drag translates or resizes the box
- * with a **live preview** (the overlay follows the pointer at the correct scale — the pure `applyDrag`
- * geometry fed a scale-divided frame delta); on `pointerup` the gesture commits as **one** undoable
- * `setSlideHtml`, patching the slide source through the same M3.3 byte-span layer the property panel
- * uses (`buildDragPatch`). The element itself moves on the subsequent hot-reload — the bridge has no
- * optimistic `SL_PREVIEW` message, so the box previews and the element catches up on commit — and the
- * selection rect is updated to the committed geometry so the box stays glued across the reload. §7.2
- * coalescing is structural: intermediate pointer frames only paint the preview; only `pointerup`
- * touches the store, and a zero-distance click commits nothing (`buildDragPatch` no-ops it).
+ * The selection body and its eight handles are interactive. A drag translates or resizes the box with
+ * a **live preview**; on `pointerup` the gesture commits as **one** undoable `setSlideHtml`, patching
+ * the slide source through the M3.3 byte-span layer. §7.2 coalescing is structural: only `pointerup`
+ * touches the store, and a zero-distance click commits nothing.
+ *
+ * ## Multi-select, align/distribute, smart guides (M3.7)
+ *
+ * Selection is an **ordered set** (`designStore.selections`); a plain click selects one element,
+ * shift-click toggles one in/out, and a drag on empty canvas marquees every grabbable element the
+ * rectangle overlaps (`useMarqueeGesture`). With two or more selected the overlay draws a light
+ * outline per element plus a combined bounding box that drags them all as one command
+ * (`buildMultiElementPatch`); align/distribute live in the floating `ArrangeBar`. While a single
+ * element (or the group) is dragged, `snapRectToGuides` snaps its edges/centre to the other elements
+ * and the slide centre, drawing PowerPoint-style guide lines — all re-derived from parent-held state,
+ * never a bridge payload (§2.2).
  */
 
 import {
@@ -40,15 +46,21 @@ import {
   frameRectCentreClient,
   frameRectToOverlay,
   rotatedOverlayStyle,
+  unionRects,
 } from '../../../../shared/design/overlay-geometry'
 import { buildDragPatch } from '../../../../shared/design/drag-commit'
+import { boxOf, shiftHit } from '../../../../shared/design/hit-geometry'
+import { buildMultiElementPatch, type ElementMove } from '../../../../shared/design/multi-commit'
+import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smart-guides'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { readStyleProp } from '../../../../shared/design/patch'
 import { readRotation } from '../../../../shared/design/transform'
+import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 import { useDesignBridge, type HitMode } from './useDesignBridge'
-import { useDragGesture } from './useDragGesture'
+import { useDragGesture, type ResolvedDrag } from './useDragGesture'
+import { useMarqueeGesture } from './useMarqueeGesture'
 import { useRotateGesture } from './useRotateGesture'
 import { useElementActions } from './useElementActions'
 import { useDuplicateKey } from './useDuplicateKey'
@@ -67,11 +79,6 @@ const NO_POINTER: CSSProperties = { pointerEvents: 'none' }
 /** The root swallows all pointer events in Design Mode, freezing the slide's own handlers (§2.1). */
 const CAPTURE_POINTER: CSSProperties = { pointerEvents: 'auto' }
 
-/**
- * The eight resize grips. Each carries its `data-handle` (read back in the pointerdown handler) and
- * a direction cursor. Positions and cursors are static, so each style object is built once at module
- * load rather than per render (react-perf: no fresh object as a JSX prop).
- */
 const HANDLE_CURSOR: Readonly<Record<string, string>> = {
   nw: 'nwse-resize',
   n: 'ns-resize',
@@ -112,6 +119,8 @@ const ROTATE_HANDLE: CSSProperties = {
   cursor: 'grab',
 }
 
+const SLIDE_SIZE = { width: CANVAS_WIDTH, height: CANVAS_HEIGHT }
+
 function label(hit: Pick<SlCrumb, 'tag' | 'id' | 'classes'>): string {
   const id = hit.id ? `#${hit.id}` : ''
   const cls = hit.classes.length > 0 ? `.${hit.classes[0]}` : ''
@@ -130,26 +139,36 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const rootRef = useRef<HTMLDivElement>(null)
   const hover = useDesignStore((state) => state.hover)
   const selection = useDesignStore((state) => state.selection)
+  const selections = useDesignStore((state) => state.selections)
   const setHover = useDesignStore((state) => state.setHover)
   const setSelection = useDesignStore((state) => state.setSelection)
+  const toggleSelection = useDesignStore((state) => state.toggleSelection)
+  const setSelections = useDesignStore((state) => state.setSelections)
   const clearTransient = useDesignStore((state) => state.clearTransient)
+
+  const isMulti = selections.length >= 2
+  const selectedIds = useMemo(() => new Set(selections.map((hit) => hit.slId)), [selections])
 
   const onHit = useCallback(
     (hit: SlHit | null, mode: HitMode): void => {
       if (mode === 'hover') setHover(hit)
+      else if (mode === 'toggle') toggleSelection(hit)
       else setSelection(hit)
     },
-    [setHover, setSelection],
+    [setHover, setSelection, toggleSelection],
   )
 
-  const { requestHit } = useDesignBridge({ frameRef, slideId, enabled: true, onHit })
+  const { requestHit, requestElements } = useDesignBridge({
+    frameRef,
+    slideId,
+    enabled: true,
+    onHit,
+  })
 
-  // Commit a completed drag as one undoable command: re-derive the element from the *current* store
-  // bytes and the parent-tracked sl-id (§2.2 — never a bridge payload), patch the source through the
-  // M3.3 byte-span layer, and push a single `setSlideHtml`. The committed geometry is written back
-  // onto the selection so the box stays on the element across the hot-reload (there is no measurement
-  // round-trip yet). `buildDragPatch` returns the source unchanged for a zero-move gesture, so the
-  // guard below commits nothing on a click that did not move.
+  // Cache of every grabbable element (rects) for smart-guide snapping, refreshed on each drag start.
+  const elementsRef = useRef<readonly SlHit[]>([])
+
+  // Commit a completed single-element drag as one undoable command (M3.5).
   const onCommitGeometry = useCallback(
     (startRect: SlRect, nextRect: SlRect): void => {
       if (selection === null) return
@@ -168,32 +187,89 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     [selection, slideId, setSelection],
   )
 
-  // The move/resize gesture starts from the element's UNROTATED box (its `box`, falling back to the
-  // axis-aligned `rect`) so a translate/resize is expressed in the element's own frame.
-  const selectionBox = selection?.box ?? selection?.rect ?? null
-  const { startDrag, previewRect, isDragging } = useDragGesture({
+  // Commit a completed group move as one undoable command: shift every selected element by the same
+  // delta, patch them all into one source, push a single `setSlideHtml` (M3.7).
+  const onCommitGroupMove = useCallback(
+    (startRect: SlRect, nextRect: SlRect): void => {
+      const dx = Math.round(nextRect.x) - Math.round(startRect.x)
+      const dy = Math.round(nextRect.y) - Math.round(startRect.y)
+      if (dx === 0 && dy === 0) return
+      const anchor = selections.at(-1)
+      if (anchor === undefined) return
+      const current = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
+      if (current === undefined) return
+      const edits: ElementMove[] = selections.map((hit) => {
+        const start = boxOf(hit)
+        return {
+          slId: hit.slId,
+          startRect: start,
+          nextRect: { ...start, x: start.x + dx, y: start.y + dy },
+        }
+      })
+      const patched = buildMultiElementPatch(slideId, current, edits)
+      if (patched === current) return
+      if (useDeckStore.getState().setSlideHtml(slideId, patched, anchor.slId, 'Move elements')) {
+        setSelections(selections.map((hit) => shiftHit(hit, dx, dy)))
+      }
+    },
+    [selections, slideId, setSelections],
+  )
+
+  const onCommitGesture = useCallback(
+    (startRect: SlRect, nextRect: SlRect): void => {
+      if (isMulti) onCommitGroupMove(startRect, nextRect)
+      else onCommitGeometry(startRect, nextRect)
+    },
+    [isMulti, onCommitGroupMove, onCommitGeometry],
+  )
+
+  // The box a gesture starts from: the group bounding box when multi-selected, else the anchor's own
+  // unrotated box.
+  const groupBox = useMemo<SlRect | null>(() => {
+    if (!isMulti) return null
+    return unionRects(selections.map(boxOf))
+  }, [isMulti, selections])
+  const selectionBox = isMulti ? groupBox : (selection?.box ?? selection?.rect ?? null)
+
+  // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
+  // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
+  const resolveRect = useCallback(
+    (raw: SlRect, handle: DragHandle): ResolvedDrag => {
+      if (handle !== 'move') return { rect: raw, guides: [] }
+      const targets = elementsRef.current.filter((hit) => !selectedIds.has(hit.slId)).map(boxOf)
+      return snapRectToGuides(raw, targets, SLIDE_SIZE)
+    },
+    [selectedIds],
+  )
+
+  const { startDrag, previewRect, guides, isDragging } = useDragGesture({
     scale,
     selectionRect: selectionBox,
-    onCommit: onCommitGeometry,
+    onCommit: onCommitGesture,
+    resolveRect,
   })
 
-  // The element's rotation, read from the **source** (§2.2 — never a bridge payload), rebuilt from
-  // the store's current bytes so it reflects the last committed rotate. Memoized on (source, slId).
+  const { startMarquee, marqueeRect, isMarqueeing } = useMarqueeGesture({
+    scale,
+    rootRef,
+    requestElements,
+    onSelect: setSelections,
+  })
+
+  // The single-element rotation (M3.6), read from source bytes (never a bridge payload). Group
+  // selections are not rotated as a unit, so this is 0 while multi-selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
   const sourceAngle = useMemo<number>(() => {
-    if (selection === null || source === undefined) return 0
+    if (isMulti || selection === null || source === undefined) return 0
     const element = buildSlideMap(slideId, source).byId.get(selection.slId)
     if (element === undefined) return 0
     return readRotation(readStyleProp(source, element, 'transform'))
-  }, [source, slideId, selection])
+  }, [source, slideId, selection, isMulti])
 
   const actions = useElementActions(slideId)
   useDuplicateKey(actions.duplicate, actions.hasSelection)
 
-  // The rotated box the overlay currently paints: the live move/resize preview if any, else the
-  // element's unrotated box. Rotation about centre keeps this box's centre fixed, so the pivot is its
-  // centre in client px.
   const boxRect = previewRect ?? selectionBox
   const getCentre = useCallback((): Point | null => {
     if (boxRect === null) return null
@@ -215,11 +291,14 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     onCommit: onCommitRotation,
   })
 
-  // The angle the overlay paints: the live preview while rotating, else the committed source angle.
   const angle = isRotating && previewAngle !== null ? previewAngle : sourceAngle
 
-  // rAF-throttle and coalesce pointer moves: at most one hover hit-test in flight, newest position
-  // wins (§3.3). The queued point is kept in a ref so a burst of moves collapses to one request.
+  // While the group is dragged, the per-element outlines follow the same delta as the group box.
+  const previewDelta = useMemo<Point>(() => {
+    if (previewRect === null || selectionBox === null) return { x: 0, y: 0 }
+    return { x: previewRect.x - selectionBox.x, y: previewRect.y - selectionBox.y }
+  }, [previewRect, selectionBox])
+
   const queued = useRef<{ x: number; y: number; alt: boolean } | null>(null)
   const raf = useRef(0)
   useEffect(
@@ -239,8 +318,8 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   const onMouseMove = useCallback(
     (event: React.MouseEvent): void => {
-      // No hover hit-tests while a drag or rotation is live — the pointer is committed to the gesture.
-      if (isDragging || isRotating) return
+      // No hover hit-tests while a drag, rotation, or marquee is live.
+      if (isDragging || isRotating || isMarqueeing) return
       const point = framePoint(event)
       queued.current = { ...point, alt: event.altKey }
       if (raf.current !== 0) return
@@ -251,29 +330,44 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         if (next) requestHit(next.x, next.y, 'hover', next.alt)
       })
     },
-    [framePoint, requestHit, isDragging, isRotating],
+    [framePoint, requestHit, isDragging, isRotating, isMarqueeing],
   )
 
   const onClick = useCallback(
     (event: React.MouseEvent): void => {
+      // A marquee that passed the click threshold ends with a synthetic click the browser fires on
+      // pointerup; swallow it so a sweep does not also run a point hit-test that collapses the set.
+      if (isMarqueeing) return
       const point = framePoint(event)
-      requestHit(point.x, point.y, 'select', event.altKey)
+      requestHit(point.x, point.y, event.shiftKey ? 'toggle' : 'select', event.altKey)
     },
-    [framePoint, requestHit],
+    [framePoint, requestHit, isMarqueeing],
   )
 
   const onMouseLeave = useCallback((): void => {
     setHover(null)
   }, [setHover])
 
-  // Pointerdown on the selection body → move; on a handle → resize. One hoisted handler reads which
-  // grip fired from its `data-handle`, so the eight handles share a stable prop (no per-render
-  // closures, react-perf clean).
+  // A pointerdown on empty canvas may begin a marquee (a click below the threshold falls through to
+  // the hit-test in `onClick`). Only the root itself — not a selection box or handle — starts one.
+  const onRootPointerDown = useCallback(
+    (event: React.PointerEvent): void => {
+      if (event.target !== event.currentTarget) return
+      startMarquee(event)
+    },
+    [startMarquee],
+  )
+
+  // Pointerdown on the selection body → move; on a handle → resize. The move path first fetches every
+  // element's geometry so smart guides have targets to snap against.
   const onBodyPointerDown = useCallback(
     (event: React.PointerEvent): void => {
+      requestElements((hits) => {
+        elementsRef.current = hits
+      })
       startDrag('move', event)
     },
-    [startDrag],
+    [startDrag, requestElements],
   )
   const onHandlePointerDown = useCallback(
     (event: React.PointerEvent): void => {
@@ -288,22 +382,16 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     },
     [startRotate],
   )
-  // A click on the selection box must not bubble to the root's select hit-test — the element is
-  // already selected, and a post-drag click would fire a redundant round-trip.
   const stop = useCallback((event: React.MouseEvent): void => {
     event.stopPropagation()
   }, [])
 
-  // Full style objects (position + no-pointer), memoized so a JSX prop is never a fresh object.
   const hoverStyle = useMemo<CSSProperties | null>(() => {
     if (!hover) return null
     const box = frameRectToOverlay(hover.rect, scale)
     return { left: box.x, top: box.y, width: box.width, height: box.height, pointerEvents: 'none' }
   }, [hover, scale])
 
-  // The box tracks the live preview while dragging, else the committed selection, and is turned by
-  // the element's rotation about its own centre (M3.6) so the outline hugs a rotated element. The
-  // body captures pointer events so it is grabbable; a `move` cursor advertises the affordance.
   const selectionStyle = useMemo<CSSProperties | null>(() => {
     if (!boxRect) return null
     const box = rotatedOverlayStyle(boxRect, scale, angle)
@@ -319,12 +407,60 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     }
   }, [boxRect, scale, angle])
 
-  // Root-first for the breadcrumb: the response gives ancestors nearest-first, and the selection is
-  // the final crumb. `toReversed` leaves the source array untouched.
+  // The light per-element outlines shown while multi-selected, each following the live group delta.
+  const memberStyles = useMemo<readonly CSSProperties[]>(() => {
+    if (!isMulti) return []
+    return selections.map((hit) => {
+      const rect = boxOf(hit)
+      const box = frameRectToOverlay(
+        { ...rect, x: rect.x + previewDelta.x, y: rect.y + previewDelta.y },
+        scale,
+      )
+      return {
+        left: box.x,
+        top: box.y,
+        width: box.width,
+        height: box.height,
+        pointerEvents: 'none',
+      }
+    })
+  }, [isMulti, selections, previewDelta, scale])
+
+  const marqueeStyle = useMemo<CSSProperties | null>(() => {
+    if (marqueeRect === null) return null
+    const box = frameRectToOverlay(marqueeRect, scale)
+    return { left: box.x, top: box.y, width: box.width, height: box.height, pointerEvents: 'none' }
+  }, [marqueeRect, scale])
+
+  const guideStyles = useMemo<readonly CSSProperties[]>(() => {
+    return guides.map((guide: GuideLine) => {
+      if (guide.orientation === 'vertical') {
+        return {
+          left: guide.position * scale,
+          top: guide.start * scale,
+          height: (guide.end - guide.start) * scale,
+          width: 1,
+          pointerEvents: 'none',
+        }
+      }
+      return {
+        top: guide.position * scale,
+        left: guide.start * scale,
+        width: (guide.end - guide.start) * scale,
+        height: 1,
+        pointerEvents: 'none',
+      }
+    })
+  }, [guides, scale])
+
+  // Breadcrumb only for a single selection; a group has no one chain to show.
   const crumbs = useMemo<readonly Pick<SlCrumb, 'slId' | 'tag' | 'id' | 'classes'>[]>(() => {
-    if (!selection) return []
+    if (isMulti || !selection) return []
     return [...selection.ancestors.toReversed(), selection]
-  }, [selection])
+  }, [selection, isMulti])
+
+  const showHover =
+    hoverStyle && !isDragging && !isRotating && !isMarqueeing && !selectedIds.has(hover?.slId ?? '')
 
   return (
     <div
@@ -332,14 +468,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       role="presentation"
       className="absolute inset-0 cursor-crosshair"
       style={CAPTURE_POINTER}
+      onPointerDown={onRootPointerDown}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
       onClick={onClick}
     >
-      {hoverStyle &&
-      !isDragging &&
-      !isRotating &&
-      (!selection || selection.slId !== hover?.slId) ? (
+      {showHover ? (
         <div
           data-testid="design-hover"
           className="absolute border border-dashed border-accent"
@@ -353,44 +487,84 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         </div>
       ) : null}
 
-      {selectionStyle && selection && boxRect ? (
+      {/* Smart-guide lines (M3.7), drawn while a drag is snapping. */}
+      {guides.map((guide, index) => (
         <div
-          data-testid="design-selection"
-          className="absolute border-2 border-accent"
+          key={`${guide.orientation}-${String(guide.position)}`}
+          data-testid="design-guide"
+          className="absolute bg-fuchsia-500"
+          style={guideStyles[index]}
+        />
+      ))}
+
+      {/* Per-element outlines while multi-selected. */}
+      {memberStyles.map((style, index) => (
+        <div
+          key={selections[index]?.slId ?? index}
+          data-testid="design-member"
+          className="absolute border border-accent/70"
+          style={style}
+        />
+      ))}
+
+      {selectionStyle && boxRect ? (
+        <div
+          data-testid={isMulti ? 'design-group' : 'design-selection'}
+          className={
+            isMulti
+              ? 'absolute border-2 border-dashed border-accent'
+              : 'absolute border-2 border-accent'
+          }
           style={selectionStyle}
           onPointerDown={onBodyPointerDown}
           onClick={stop}
         >
           <span className="absolute -top-5 right-0 whitespace-nowrap rounded bg-accent px-1 text-[11px] leading-4 text-white">
-            {Math.round(boxRect.width)} × {Math.round(boxRect.height)}
+            {isMulti
+              ? `${String(selections.length)} selected`
+              : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
-          {HANDLES.map((handle) => (
-            <span
-              key={handle.key}
-              data-testid={`design-handle-${handle.key}`}
-              data-handle={handle.key}
-              aria-hidden="true"
-              className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
-              style={handle.style}
-              onPointerDown={onHandlePointerDown}
-            />
-          ))}
-          {/* Rotation handle above top-centre, on a short stalk — a child of the box, so it turns
-              with it (PowerPoint convention). Grabbing it starts the rotate gesture. */}
-          <span
-            aria-hidden="true"
-            className="absolute left-1/2 top-0 -translate-x-1/2 border-l border-accent"
-            style={ROTATE_STALK}
-          />
-          <span
-            data-testid="design-handle-rotate"
-            data-handle="rotate"
-            aria-hidden="true"
-            className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-white"
-            style={ROTATE_HANDLE}
-            onPointerDown={onRotatePointerDown}
-          />
+          {/* Resize + rotate handles only for a single element; a group only moves. */}
+          {isMulti
+            ? null
+            : HANDLES.map((handle) => (
+                <span
+                  key={handle.key}
+                  data-testid={`design-handle-${handle.key}`}
+                  data-handle={handle.key}
+                  aria-hidden="true"
+                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
+                  style={handle.style}
+                  onPointerDown={onHandlePointerDown}
+                />
+              ))}
+          {isMulti ? null : (
+            <>
+              <span
+                aria-hidden="true"
+                className="absolute left-1/2 top-0 -translate-x-1/2 border-l border-accent"
+                style={ROTATE_STALK}
+              />
+              <span
+                data-testid="design-handle-rotate"
+                data-handle="rotate"
+                aria-hidden="true"
+                className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-white"
+                style={ROTATE_HANDLE}
+                onPointerDown={onRotatePointerDown}
+              />
+            </>
+          )}
         </div>
+      ) : null}
+
+      {/* The marquee rectangle while sweeping. */}
+      {marqueeStyle ? (
+        <div
+          data-testid="design-marquee"
+          className="absolute border border-accent bg-accent/10"
+          style={marqueeStyle}
+        />
       ) : null}
 
       {crumbs.length > 0 ? (
@@ -410,7 +584,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         </nav>
       ) : null}
 
-      {/* Deselect on background click is handled by the frame returning a null hit. */}
       <button type="button" className="sr-only" onClick={clearTransient}>
         Clear selection
       </button>

@@ -27,6 +27,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SlRect } from '../../../../shared/design/bridge-protocol'
 import { clientDeltaToFrame } from '../../../../shared/design/overlay-geometry'
 import { applyDrag, type DragHandle, type DragModifiers } from '../../../../shared/design/drag'
+import type { GuideLine } from '../../../../shared/design/smart-guides'
+
+/** What a `resolveRect` hook returns: the (possibly snapped) rect to preview, and any guides to draw. */
+export interface ResolvedDrag {
+  readonly rect: SlRect
+  readonly guides: readonly GuideLine[]
+}
 
 /** A live drag in progress: what is being dragged, from where, and the box it started on. */
 interface ActiveDrag {
@@ -43,6 +50,14 @@ export interface DragGestureOptions {
   readonly selectionRect: SlRect | null
   /** Called once per gesture on `pointerup`, with the start and committed frame rects. */
   readonly onCommit: (startRect: SlRect, nextRect: SlRect) => void
+  /**
+   * Optional post-processor for each raw drag rect (M3.7 smart guides): given the rect `applyDrag`
+   * produced and the handle in play, it returns the rect to actually preview/commit (e.g. snapped to
+   * a nearby element) plus any guide lines to draw. Defaults to identity with no guides, so a caller
+   * that does not pass it behaves exactly as before. Applied to both the live preview and the
+   * committed rect, so what the user sees snapped is what commits.
+   */
+  readonly resolveRect?: (rect: SlRect, handle: DragHandle) => ResolvedDrag
 }
 
 export interface DragGestureApi {
@@ -50,6 +65,8 @@ export interface DragGestureApi {
   readonly startDrag: (handle: DragHandle, event: React.PointerEvent) => void
   /** The live preview rect while dragging, or `null` when idle — the overlay renders this instead. */
   readonly previewRect: SlRect | null
+  /** The guide lines to draw for the current preview (M3.7); empty when idle or none are in range. */
+  readonly guides: readonly GuideLine[]
   /** Whether a drag is in progress (the overlay suppresses hover hit-tests while it is). */
   readonly isDragging: boolean
 }
@@ -59,10 +76,11 @@ function modsOf(event: PointerEvent | React.PointerEvent): DragModifiers {
 }
 
 export function useDragGesture(options: DragGestureOptions): DragGestureApi {
-  const { scale, selectionRect, onCommit } = options
+  const { scale, selectionRect, onCommit, resolveRect } = options
 
   const active = useRef<ActiveDrag | null>(null)
   const [previewRect, setPreviewRect] = useState<SlRect | null>(null)
+  const [guides, setGuides] = useState<readonly GuideLine[]>([])
   const [dragging, setDragging] = useState(false)
 
   // Refs so the lifetime-scoped window listeners always read the latest values without ever being
@@ -71,19 +89,29 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
   scaleRef.current = scale
   const onCommitRef = useRef(onCommit)
   onCommitRef.current = onCommit
+  const resolveRectRef = useRef(resolveRect)
+  resolveRectRef.current = resolveRect
 
   useEffect(() => {
     const raf = { id: 0 }
     const queued = { point: null as { x: number; y: number; mods: DragModifiers } | null }
 
-    const nextRectFor = (clientX: number, clientY: number, mods: DragModifiers): SlRect | null => {
+    // The raw rect from `applyDrag`, plus the resolved (snapped) rect and its guides. Returns `null`
+    // only when there is no active drag.
+    const resolveFor = (
+      clientX: number,
+      clientY: number,
+      mods: DragModifiers,
+    ): ResolvedDrag | null => {
       const drag = active.current
       if (drag === null) return null
       const frameDelta = clientDeltaToFrame(
         { x: clientX - drag.startClientX, y: clientY - drag.startClientY },
         scaleRef.current,
       )
-      return applyDrag(drag.startRect, drag.handle, frameDelta, mods)
+      const raw = applyDrag(drag.startRect, drag.handle, frameDelta, mods)
+      const resolver = resolveRectRef.current
+      return resolver ? resolver(raw, drag.handle) : { rect: raw, guides: [] }
     }
 
     const endGesture = (): void => {
@@ -94,6 +122,7 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
       active.current = null
       queued.point = null
       setPreviewRect(null)
+      setGuides([])
       setDragging(false)
     }
 
@@ -105,20 +134,23 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
         raf.id = 0
         const point = queued.point
         if (point === null) return
-        const rect = nextRectFor(point.x, point.y, point.mods)
-        if (rect !== null) setPreviewRect(rect)
+        const resolved = resolveFor(point.x, point.y, point.mods)
+        if (resolved !== null) {
+          setPreviewRect(resolved.rect)
+          setGuides(resolved.guides)
+        }
       })
     }
 
     const onUp = (event: PointerEvent): void => {
       const drag = active.current
       if (drag === null) return
-      const rect = nextRectFor(event.clientX, event.clientY, modsOf(event))
+      const resolved = resolveFor(event.clientX, event.clientY, modsOf(event))
       const start = drag.startRect
       endGesture()
-      // Commit the final geometry once. `buildDragPatch` no-ops a zero-distance gesture, so a click
-      // that did not move commits nothing — this hook does not need to special-case it.
-      if (rect !== null) onCommitRef.current(start, rect)
+      // Commit the final (snapped) geometry once. `buildDragPatch` no-ops a zero-distance gesture, so
+      // a click that did not move commits nothing — this hook does not need to special-case it.
+      if (resolved !== null) onCommitRef.current(start, resolved.rect)
     }
 
     const onKey = (event: KeyboardEvent): void => {
@@ -159,5 +191,5 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
     [selectionRect],
   )
 
-  return { startDrag, previewRect, isDragging: dragging }
+  return { startDrag, previewRect, guides, isDragging: dragging }
 }

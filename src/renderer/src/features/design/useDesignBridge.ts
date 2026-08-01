@@ -23,13 +23,20 @@ import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import {
   createEnvelopeIdSource,
   isMessageFromFrame,
+  makeElementsRequest,
   makeHittestRequest,
   parseFrameMessage,
+  SL_ELEMENTS,
   SL_HITTEST,
   type SlHit,
 } from '../../../../shared/design/bridge-protocol'
 
-export type HitMode = 'hover' | 'select'
+/**
+ * How a hit-test response should be applied. `hover`/`select` are the plain outline/single-select
+ * paths; `toggle` is shift-click multi-select (M3.7) — the wire request is still a `select`, and
+ * only the parent's response handling differs, so the frame protocol is untouched.
+ */
+export type HitMode = 'hover' | 'select' | 'toggle'
 
 export interface DesignBridgeOptions {
   /** The slide iframe. Its `contentWindow` is the only trusted message source. */
@@ -45,6 +52,12 @@ export interface DesignBridgeOptions {
 export interface DesignBridgeApi {
   /** Send a hit-test for a point in **frame (1280×720) coordinates**. No-op if the frame is gone. */
   readonly requestHit: (x: number, y: number, mode: HitMode, alt: boolean) => void
+  /**
+   * Ask the frame for every grabbable element (M3.7 marquee + smart-guide targets). The callback
+   * fires once, with the elements as full hits in document order — or is dropped silently if the
+   * frame is gone or never answers. No-op if the frame is unavailable.
+   */
+  readonly requestElements: (onElements: (hits: readonly SlHit[]) => void) => void
 }
 
 export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
@@ -55,6 +68,8 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
   // mode), and lets stale hover responses be dropped once a newer one has been sent.
   const pending = useRef(new Map<number, HitMode>())
   const latestHover = useRef(0)
+  // Correlates an `SL_ELEMENTS` response to the one-shot callback that asked for it.
+  const pendingElements = useRef(new Map<number, (hits: readonly SlHit[]) => void>())
 
   // A ref so the listener effect never re-subscribes just because the caller passed a fresh closure.
   const onHitRef = useRef(onHit)
@@ -68,12 +83,22 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
     // points at when React runs the cleanup (the ref identity is stable, so the two are the same
     // Map — but capturing states that intent and satisfies the hooks rule).
     const pendingMap = pending.current
+    const pendingElementsMap = pendingElements.current
     const handler = (event: MessageEvent): void => {
       const frameWindow = frameRef.current?.contentWindow ?? null
       if (!isMessageFromFrame(event, frameWindow)) return
       const message = parseFrameMessage(event.data, slideId)
       if (message === null) return
-      if (message.dir !== 'res' || message.type !== SL_HITTEST) return
+      if (message.dir !== 'res') return
+
+      if (message.type === SL_ELEMENTS) {
+        const cb = pendingElementsMap.get(message.id)
+        if (cb === undefined) return
+        pendingElementsMap.delete(message.id)
+        cb(message.payload)
+        return
+      }
+      if (message.type !== SL_HITTEST) return
 
       const mode = pendingMap.get(message.id)
       if (mode === undefined) return
@@ -87,6 +112,7 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
     return () => {
       window.removeEventListener('message', handler)
       pendingMap.clear()
+      pendingElementsMap.clear()
     }
   }, [enabled, slideId, frameRef])
 
@@ -97,10 +123,24 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
       const id = nextId.current()
       pending.current.set(id, mode)
       if (mode === 'hover') latestHover.current = id
-      frameWindow.postMessage(makeHittestRequest(id, slideId, { x, y, mode, alt }), '*')
+      // A shift-click `toggle` asks the frame to hit-test exactly as a `select` does; the toggle
+      // semantics live entirely in the parent's response handling, so the wire mode is `select`.
+      const wireMode = mode === 'hover' ? 'hover' : 'select'
+      frameWindow.postMessage(makeHittestRequest(id, slideId, { x, y, mode: wireMode, alt }), '*')
     },
     [frameRef, slideId],
   )
 
-  return { requestHit }
+  const requestElements = useCallback<DesignBridgeApi['requestElements']>(
+    (onElements) => {
+      const frameWindow = frameRef.current?.contentWindow
+      if (!frameWindow) return
+      const id = nextId.current()
+      pendingElements.current.set(id, onElements)
+      frameWindow.postMessage(makeElementsRequest(id, slideId), '*')
+    },
+    [frameRef, slideId],
+  )
+
+  return { requestHit, requestElements }
 }

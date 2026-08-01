@@ -86,6 +86,17 @@ export const SL_HITTEST = 'SL_HITTEST'
  */
 export const SL_INSPECT = 'SL_INSPECT'
 
+/**
+ * Parent → frame request / frame → parent response: report **every addressable, grabbable element**
+ * in the slide, each as a full `SlHit` (id, tag, classes, rendered + unrotated rects, ancestry). The
+ * M3.7 marquee needs the rendered geometry of every candidate to test rect intersection, and smart
+ * guides need every other element's rect to snap against; both are DOM facts only the frame can
+ * measure. Like every frame → parent message this is an **untrusted hint** about the slide's view
+ * state — the parent uses it only for ephemeral, re-validatable selection and guide overlays, never
+ * to compute a source edit (which re-derives from the parent-owned map, §2.2).
+ */
+export const SL_ELEMENTS = 'SL_ELEMENTS'
+
 /** Direction tag. Requests carry an id a response echoes; events are fire-and-forget. */
 export type SlDir = 'req' | 'res' | 'evt'
 
@@ -180,12 +191,21 @@ export interface SlInspect {
 }
 export type SlInspectResponse = SlInspect | null
 
+/** `SL_ELEMENTS` request payload — no arguments; the frame reports every grabbable element. */
+export type SlElementsRequest = Record<string, never>
+
+/** `SL_ELEMENTS` response payload: every addressable, grabbable element as a full hit, in doc order. */
+export type SlElementsResponse = readonly SlHit[]
+
 export type BridgeEvent = SlEnvelope<typeof SL_READY, SlReadyPayload>
 export type BridgeRequest =
-  SlEnvelope<typeof SL_HITTEST, SlHittestRequest> | SlEnvelope<typeof SL_INSPECT, SlInspectRequest>
+  | SlEnvelope<typeof SL_HITTEST, SlHittestRequest>
+  | SlEnvelope<typeof SL_INSPECT, SlInspectRequest>
+  | SlEnvelope<typeof SL_ELEMENTS, SlElementsRequest>
 export type BridgeResponse =
   | SlEnvelope<typeof SL_HITTEST, SlHittestResponse>
   | SlEnvelope<typeof SL_INSPECT, SlInspectResponse>
+  | SlEnvelope<typeof SL_ELEMENTS, SlElementsResponse>
 
 /** Everything the parent can legitimately receive from the frame. */
 export type FromFrame = BridgeEvent | BridgeResponse
@@ -316,6 +336,16 @@ function isInspect(value: unknown): value is SlInspect {
   )
 }
 
+/** An `SL_ELEMENTS` request payload: an object with no fields the frame reads (empty by contract). */
+function isElementsRequestPayload(value: unknown): value is SlElementsRequest {
+  return isRecord(value)
+}
+
+/** An `SL_ELEMENTS` response payload: an array of well-formed hits. */
+function isHitArray(value: unknown): value is SlHit[] {
+  return Array.isArray(value) && value.every(isHit)
+}
+
 interface EnvelopeBase {
   readonly id: number
   readonly dir: string
@@ -400,6 +430,19 @@ export function parseFrameMessage(data: unknown, expectedSlide: string): FromFra
     }
   }
 
+  if (base.dir === 'res' && base.type === SL_ELEMENTS) {
+    if (!isHitArray(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'res',
+      type: SL_ELEMENTS,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
   return null
 }
 
@@ -439,6 +482,19 @@ export function parseParentMessage(data: unknown, expectedSlide: string): Bridge
       id: base.id,
       dir: 'req',
       type: SL_INSPECT,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
+  if (base.type === SL_ELEMENTS) {
+    if (!isElementsRequestPayload(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'req',
+      type: SL_ELEMENTS,
       slide: base.slide,
       payload: base.payload,
     }
@@ -532,6 +588,34 @@ export function makeInspectResponse(
     id,
     dir: 'res',
     type: SL_INSPECT,
+    slide,
+    payload,
+  }
+}
+
+export function makeElementsRequest(id: number, slide: string): BridgeRequest {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'req',
+    type: SL_ELEMENTS,
+    slide,
+    payload: {},
+  }
+}
+
+export function makeElementsResponse(
+  id: number,
+  slide: string,
+  payload: SlElementsResponse,
+): BridgeResponse {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'res',
+    type: SL_ELEMENTS,
     slide,
     payload,
   }

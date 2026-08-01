@@ -27,7 +27,18 @@ export type DesignSnapshot = {
   readonly enabled: boolean
   /** The element under the pointer, or `null` when hovering nothing addressable. */
   readonly hover: SlHit | null
-  /** The committed selection, or `null` when nothing is selected. */
+  /**
+   * The ordered multi-selection (M3.7). Empty for nothing selected; a single-element selection is a
+   * one-entry list. The **last** entry is the anchor (`selection` below mirrors it). Order is the
+   * order elements were added, which shift-click preserves and align/distribute read as-is.
+   */
+  readonly selections: readonly SlHit[]
+  /**
+   * The anchor selection — `selections.at(-1) ?? null`, maintained on every mutation. Kept as a
+   * first-class field (not derived in a selector) so the many single-element consumers written before
+   * M3.7 (the property panel, `useElementActions`, the chat context bundler) keep reading exactly the
+   * slice they always did; multi-element features read `selections`.
+   */
   readonly selection: SlHit | null
 }
 
@@ -38,13 +49,34 @@ export type DesignState = DesignSnapshot & {
   setEnabled: (enabled: boolean) => void
   /** Update the hover outline. Ignored while Design Mode is off. */
   setHover: (hit: SlHit | null) => void
-  /** Commit a selection (and clear hover, since the box supersedes the outline). Ignored while off. */
+  /**
+   * Replace the whole selection with a single element (or clear it with `null`) and clear hover.
+   * Ignored while Design Mode is off. This is the plain-click / single-select path.
+   */
   setSelection: (hit: SlHit | null) => void
+  /**
+   * Shift-click: toggle one element in the ordered selection. Re-selecting the same `slId` removes
+   * it (and drops any stale copy); a new element is appended and becomes the anchor. Ignored while
+   * off. A `null` hit is a no-op — shift-clicking empty space changes nothing.
+   */
+  toggleSelection: (hit: SlHit | null) => void
+  /**
+   * Replace the whole selection with an ordered list (marquee result). De-duplicates by `slId`,
+   * keeping the last occurrence's geometry. Clears hover. Ignored while off; an empty list clears.
+   */
+  setSelections: (hits: readonly SlHit[]) => void
   /** Drop hover and selection without leaving Design Mode — e.g. pointer left the stage. */
   clearTransient: () => void
 }
 
-const OFF: DesignSnapshot = { enabled: false, hover: null, selection: null }
+const OFF: DesignSnapshot = { enabled: false, hover: null, selections: [], selection: null }
+
+/** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
+function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
+  const byId = new Map<string, SlHit>()
+  for (const hit of hits) byId.set(hit.slId, hit)
+  return [...byId.values()]
+}
 
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
@@ -67,11 +99,26 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
   setSelection: (hit) => {
     if (!get().enabled) return
     // Selecting supersedes the hover outline — the selection box is the stronger affordance and two
-    // outlines on one element reads as a bug.
-    set({ selection: hit, hover: null })
+    // outlines on one element reads as a bug. A single click always collapses to one element.
+    set({ selections: hit === null ? [] : [hit], selection: hit, hover: null })
+  },
+
+  toggleSelection: (hit) => {
+    if (!get().enabled || hit === null) return
+    const current = get().selections
+    const without = current.filter((entry) => entry.slId !== hit.slId)
+    // Re-clicking a selected element removes it; a new one is appended and becomes the anchor.
+    const next = without.length === current.length ? [...without, hit] : without
+    set({ selections: next, selection: next.at(-1) ?? null, hover: null })
+  },
+
+  setSelections: (hits) => {
+    if (!get().enabled) return
+    const next = dedupeBySlId(hits)
+    set({ selections: next, selection: next.at(-1) ?? null, hover: null })
   },
 
   clearTransient: () => {
-    set({ hover: null, selection: null })
+    set({ hover: null, selections: [], selection: null })
   },
 }))

@@ -3,6 +3,7 @@ import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { instrument } from '../../../../shared/design/instrument'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
+import { ArrangeBar } from '../design/ArrangeBar'
 import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
@@ -91,7 +92,10 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
               className="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
             />
             {designModeActive ? (
-              <SelectionOverlay frameRef={frameRef} slideId={slide.id} scale={fit.scale} />
+              <>
+                <SelectionOverlay frameRef={frameRef} slideId={slide.id} scale={fit.scale} />
+                <ArrangeBar slideId={slide.id} />
+              </>
             ) : null}
           </div>
         ) : (

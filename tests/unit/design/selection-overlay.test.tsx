@@ -310,3 +310,73 @@ describe('SelectionOverlay — rotate & duplicate (M3.6)', () => {
     expect(useDesignStore.getState().selection?.slId).not.toBe(titleSlId)
   })
 })
+
+/**
+ * Multi-select, group move (M3.7). Selection is seeded as an ordered set (as the marquee/shift-click
+ * would leave it); the overlay draws a dashed group box plus a light outline per element, and a drag
+ * on the group box moves every element in one undoable command.
+ */
+describe('SelectionOverlay — multi-select (M3.7)', () => {
+  let slideId: string
+  let originalHtml: string
+  let hits: SlHit[]
+
+  beforeEach(() => {
+    useDeckStore.setState(createStarterDeck(0))
+    const state = useDeckStore.getState()
+    slideId = state.deck.slideOrder[0]!
+    originalHtml = getSlideHtml(state.slideHtml, slideId)!
+    const map = buildSlideMap(slideId, originalHtml)
+    const bySlId = (tag: string): string =>
+      [...map.byId].find(([, span]) => span.tagName === tag)![0]
+    hits = [
+      {
+        slId: bySlId('h1'),
+        tag: 'h1',
+        id: null,
+        classes: ['title'],
+        rect: { x: 48, y: 48, width: 300, height: 60 },
+        ancestors: [],
+      },
+      {
+        slId: bySlId('p'),
+        tag: 'p',
+        id: null,
+        classes: ['subtitle'],
+        rect: { x: 48, y: 132, width: 400, height: 30 },
+        ancestors: [],
+      },
+    ]
+    useDesignStore.setState({ enabled: true, hover: null, selection: hits[1]!, selections: hits })
+  })
+
+  it('draws a group box and a light outline per element (no resize handles)', () => {
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.getByTestId('design-group')).toBeTruthy()
+    expect(screen.getAllByTestId('design-member').length).toBe(2)
+    // A group only moves — no per-corner handles.
+    expect(screen.queryByTestId('design-handle-se')).toBeNull()
+    expect(screen.getByTestId('design-group').textContent).toContain('2 selected')
+  })
+
+  it('dragging the group box moves BOTH elements as one undoable command', () => {
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const group = screen.getByTestId('design-group')
+    drag(group, { x: 48, y: 48 }, { x: 108, y: 88 }, 3) // +60, +40 frame px
+
+    expect(undoDepth()).toBe(1) // mutation guard: per-element commits would be 2
+    const html = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    // Both in-flow elements moved via transform:translate.
+    expect(html.match(/translate\(/g)?.length).toBe(2)
+
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(originalHtml)
+  })
+
+  it('a zero-distance click on the group commits nothing', () => {
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const group = screen.getByTestId('design-group')
+    drag(group, { x: 48, y: 48 }, { x: 48, y: 48 }, 1)
+    expect(undoDepth()).toBe(0)
+  })
+})

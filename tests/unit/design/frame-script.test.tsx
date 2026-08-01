@@ -16,6 +16,7 @@ import {
   injectDesignBridge,
 } from '../../../src/renderer/src/features/design/frameScript'
 import {
+  SL_ELEMENTS,
   SL_HITTEST,
   SL_INSPECT,
   SL_MAGIC,
@@ -240,6 +241,58 @@ describe('designBridgeFrameMain', () => {
   })
 })
 
+describe('designBridgeFrameMain SL_ELEMENTS (M3.7)', () => {
+  it('reports every grabbable element as a hit, excluding the ignored one', () => {
+    const parent = makeParent()
+    designBridgeFrameMain(parent as unknown as Window)
+    parent.postMessage.mockClear() // drop SL_READY
+
+    postToFrame(
+      {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: 9,
+        dir: 'req',
+        type: SL_ELEMENTS,
+        slide: SLIDE,
+        payload: {},
+      },
+      parent,
+    )
+
+    expect(parent.postMessage).toHaveBeenCalledTimes(1)
+    const [envelope] = parent.postMessage.mock.calls[0] as [Record<string, unknown>, string]
+    expect(envelope['type']).toBe(SL_ELEMENTS)
+    expect(envelope['dir']).toBe('res')
+    expect(envelope['id']).toBe(9)
+    const hits = envelope['payload'] as SlHit[]
+    // The section.slide and the div.chart are grabbable; the data-sl-ignore span is not.
+    expect(hits.map((h) => h.slId).toSorted()).toEqual(['s_x:0', 's_x:1'])
+    // Each hit carries the rect + ancestry the marquee/guides need.
+    expect(hits.every((h) => typeof h.rect.width === 'number')).toBe(true)
+  })
+
+  it('ignores an SL_ELEMENTS request from an untrusted source', () => {
+    const parent = makeParent()
+    designBridgeFrameMain(parent as unknown as Window)
+    parent.postMessage.mockClear()
+
+    postToFrame(
+      {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: 1,
+        dir: 'req',
+        type: SL_ELEMENTS,
+        slide: SLIDE,
+        payload: {},
+      },
+      { postMessage: vi.fn() }, // not the trusted parent
+    )
+    expect(parent.postMessage).not.toHaveBeenCalled()
+  })
+})
+
 describe('DESIGN_BRIDGE_SCRIPT / injectDesignBridge', () => {
   it('is a data-sl-ignore script so it is never itself selectable', () => {
     expect(DESIGN_BRIDGE_SCRIPT.startsWith('<script data-sl-ignore>')).toBe(true)
@@ -250,6 +303,7 @@ describe('DESIGN_BRIDGE_SCRIPT / injectDesignBridge', () => {
     expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_READY)
     expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_HITTEST)
     expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_INSPECT)
+    expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_ELEMENTS)
     expect(DESIGN_BRIDGE_SCRIPT).toContain('data-sl-id')
     expect(DESIGN_BRIDGE_SCRIPT).toContain('data-sl-ignore')
   })
