@@ -27,14 +27,18 @@ cd /home/baoro/stuff/random/sloodge
 pnpm build     # typecheck + electron-vite build -> out/{main,preload,renderer}
 ```
 
-The built output is platform-neutral JS. Confirm the main bundle has no external deps:
+The built output is platform-neutral JS. Inspect what the main bundle expects to resolve at runtime:
 
 ```bash
 grep -n "^import\|require(" out/main/index.js
-# expect only: node:url, electron
 ```
 
-If that ever shows real npm deps, they must be installed in the Windows staging dir too.
+> **Stale as of M5.2.** This once printed only `node:url` and `electron`. It now also lists
+> `@anthropic-ai/claude-agent-sdk`, `zod`, `parse5`, `pdf-lib`, `fflate` and `pptxgenjs` —
+> electron-vite keeps `dependencies` external rather than bundling them. So the hand-staged
+> `out/` + bare `package.json` approach in §2–§4 **no longer produces a runnable app**: it has no
+> `node_modules`. Use the packaged build (§8) instead; that is what M5.2 exists for. §2–§4 are kept
+> only as the historical record of how the launch/screenshot mechanics were first established.
 
 ## 2. Stage a Windows-runnable app dir
 
@@ -157,6 +161,97 @@ Full script kept at `C:\sloodge-smoke\click2.ps1`.
 cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA SilentlyContinue | Stop-Process -Force"
 ```
 
+## 8. Packaged build (M5.2) — the supported path
+
+Verified 2026-08-01: NSIS installer built, silently installed to
+`%LOCALAPPDATA%\Programs\Sloodge`, launched, and driven through slide switch → Design Mode →
+Present on the real Windows host. Screenshot: `docs/media/m52-packaged-app.png`.
+
+### 8.1 What builds where
+
+| Artifact                                  | Buildable in WSL?                                | Why                                                                                 |
+| ----------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `win-unpacked/` + `sloodge-*-win-x64.zip` | **Yes** — `pnpm exec electron-builder --win zip` | Pure file copying + 7z, no Windows tooling                                          |
+| `sloodge-*-setup.exe` (NSIS)              | **No**                                           | NSIS **executes the built installer** to generate the uninstaller, which needs Wine |
+| mac `.zip` (arm64 + x64)                  | **Partly** — they build, but see below           | Unsigned, and **CLI-less** on this host (no `darwin` in `supportedArchitectures`)   |
+| `.dmg`                                    | **No**                                           | `electron-builder --mac` dies on `spawn sips ENOENT` — macOS-only image tooling     |
+
+**The macOS artifacts this box can produce are not shippable.** `--mac` does emit
+`sloodge-0.0.0-mac-{arm64,x64}.zip`, then fails at the dmg step on `sips`. Worse, those zips
+contain `@anthropic-ai/claude-agent-sdk` but **no `claude-agent-sdk-darwin-*`** — the CLI is an
+`os`-gated optionalDependency and `supportedArchitectures` here names only `current` + `win32`, so
+the mac app would launch with a dead chat panel. M9.2 must build macOS on real hardware, where
+`current` _is_ darwin. Adding `darwin` to `supportedArchitectures` would fix the payload but not
+the dmg, and costs another ~275 MB per variant on every install.
+
+`build.toolsets.wine: "1.0.1"` is set so electron-builder downloads its own Wine instead of
+needing a system one (no sudo on this box). It does **not** work today: the upstream
+`wine-11.0-linux-x86_64.tar.xz` ships only `lib/wine/x86_64-unix/` and **no `x86_64-windows/`**
+PE directory, so every exe fails with `failed to load ...ntdll.dll error c0000135`. Verified by
+listing the tarball: `tar -tJf ... | grep -c x86_64-windows` → `0`. The key is kept because it is
+inert on a Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`)
+and costs nothing if the bundle is fixed upstream.
+
+### 8.2 Building the NSIS installer on the Windows host
+
+Build the app dir in WSL, then let Windows do the NSIS step from the _prepackaged_ output:
+
+```bash
+# WSL
+pnpm exec electron-builder --win zip           # -> release/win-unpacked + release/*.zip
+cp release/sloodge-0.0.0-win-x64.zip /mnt/c/sloodge-m52/
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Expand-Archive -Path 'C:\sloodge-m52\sloodge-0.0.0-win-x64.zip' -DestinationPath 'C:\sloodge-m52\win-unpacked' -Force"
+```
+
+Copy the **zip** (≈230 MB), not `win-unpacked/` (≈665 MB) — the 9p mount is slow.
+
+`C:\sloodge-m52\builder\` holds a throwaway `package.json` (`name: sloodge`, `version`, and
+`electron-builder` as the only devDependency) plus an `electron-builder.yml` mirroring the repo's
+`build.win`/`build.nsis` block. **`electronVersion: 43.2.0` must be set explicitly** — with
+`--prepackaged` there is no electron in `node_modules` to infer it from.
+
+```bash
+cd /mnt/c && cmd.exe /c "cd /d C:\sloodge-m52\builder && npm install --ignore-scripts --no-audit"
+cd /mnt/c && cmd.exe /c "cd /d C:\sloodge-m52\builder && set NODE_OPTIONS=--experimental-require-module && npx electron-builder --win nsis --prepackaged C:\sloodge-m52\win-unpacked"
+```
+
+`NODE_OPTIONS=--experimental-require-module` is **required** on this machine: Windows node is
+v22.11.0 and electron-builder 26 `require()`s the ESM-only `@noble/hashes` (`ERR_REQUIRE_ESM`).
+`require(esm)` is unflagged only from node 22.12. Upgrading Windows node removes the need.
+
+### 8.3 Install, launch, drive
+
+```bash
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Start-Process -FilePath 'C:\sloodge-m52\builder\release\sloodge-0.0.0-setup.exe' -ArgumentList '/S' -Wait"
+```
+
+`/S` silently installs the assisted (`oneClick: false`) installer to
+`%LOCALAPPDATA%\Programs\Sloodge` (`perMachine: false`, so no UAC prompt). Then:
+
+```bash
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Start-Process \"\$env:LOCALAPPDATA\Programs\Sloodge\Sloodge.exe\"; Start-Sleep -Seconds 15; Get-Process Sloodge | Select Id,MainWindowTitle"
+```
+
+The process is now **`Sloodge`**, not `electron` — the §5/§6 scripts hardcoded `Get-Process electron`
+and silently find nothing against a packaged build. `C:\sloodge-m52\shot.ps1` and `click.ps1` are
+parameterised versions (`-ProcName`, `-X/-Y`, `-Out`) of those.
+
+### 8.4 What the packaged app must contain (M2.4 + M5.2 hazards)
+
+```bash
+D="/mnt/c/Users/baoro/AppData/Local/Programs/Sloodge"
+find "$D/resources/skills" -type f                                  # 3x SKILL.md + icons.md
+ls "$D/resources/app.asar.unpacked/node_modules/@anthropic-ai/"      # sdk + sdk-win32-x64, SIBLINGS
+```
+
+The sibling layout is load-bearing: the SDK finds its CLI via
+`require.resolve('@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe')` anchored at `sdk.mjs`'s
+own realpath, with no PATH fallback. Both packages must be `asarUnpack`ed (a binary cannot be
+spawned from inside an archive) and must stay siblings.
+
 ## Gotchas summary
 
 - `cmd.exe` invoked while cwd is a WSL UNC path warns "UNC paths are not supported" and defaults to
@@ -170,3 +265,11 @@ cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA Silent
 - Renderer DPI/zoom may differ between captures (window was rendered at a larger scale after the
   interaction); this is cosmetic, not a failure.
 - No firewall prompt appeared (the app makes no network listen).
+- A packaged app's process is `Sloodge`, not `electron` — `Get-Process electron` finds nothing.
+- pnpm installs only the host's variant of an `os`-gated optionalDependency. Cross-packing Windows
+  from Linux needs `supportedArchitectures` in `pnpm-workspace.yaml`, or the installer ships with
+  no `claude.exe` and **nothing in the build fails**.
+- electron-builder does _not_ filter those platform packages by their own `os`/`cpu` fields — the
+  275 MB Linux CLI rode along inside the Windows app until `win.files` excluded it explicitly.
+- A platform-specific `files` array **overrides** the top-level `files`; it does not merge. Adding
+  `win.files` silently put `src/`, `tests/` and 24 MB of `docs/media` GIFs back into `app.asar`.
