@@ -1,6 +1,6 @@
 # 80 — Roadmap & PR Breakdown
 
-Principles: every PR is incremental and digestible; titles prefixed `feat/fix/doc/chore/ci`; stacked with jj where dependent. CI = unit tests only. `chore`/config/init PRs auto-merge (`gh pr merge --auto`). Feature PR descriptions are one-liners. Perf/compilation PRs must include before/after logs or metrics. UI PRs include a recording (see 70-testing-ci.md for the WSL/headless caveat — Playwright video is the fallback recorder).
+Principles: every PR is incremental and digestible; titles prefixed `feat/fix/doc/chore/ci`; stacked with jj where dependent. CI = unit tests only. `chore`/config/init PRs auto-merge (`gh pr merge --auto`). Feature PR descriptions are one-liners. Perf/compilation PRs must include before/after logs or metrics. UI PRs include a recording **as an animated GIF** (GitHub renders GIFs inline in a PR body; webm/mp4 attach as unviewable files — do not produce them). See 70-testing-ci.md for the WSL/headless caveat; Playwright records webm, so convert it with ffmpeg and keep only the GIF (plus a PNG still).
 
 ## Milestone 0 — Repo & scaffolding (parallelizable, all auto-merge except M0.4)
 | PR | Title | Contents |

@@ -333,7 +333,7 @@ Auto-merge lands the PR the moment required checks go green. Because the require
 | `fix` | One line: symptom → cause. `Charts exported blank because printToPDF ran before document.fonts.ready.` |
 | `doc` | One line naming the doc. |
 | **Performance PRs** | **Must include before/after logs or metrics.** A claim of "faster" without numbers is not reviewable. Paste the actual measurement: timing output, a profile summary, bundle-size delta, frame timings. State the machine and how many runs. A perf PR without numbers is closed with "please add the numbers", not debated. |
-| **UI PRs** | **Must include a screen recording.** Any PR changing rendered UI — layout, Design Mode overlay, export dialog, present mode, animations — attaches a short screencast (GIF or mp4) showing the interaction. Screenshots are acceptable only for genuinely static changes (a colour, a label). This is the only practical review signal for UI work in a repo whose CI cannot render anything. |
+| **UI PRs** | **Must include a screen recording.** Any PR changing rendered UI — layout, Design Mode overlay, export dialog, present mode, animations — attaches a short screencast **as an animated GIF** showing the interaction (GIF is the only format GitHub renders inline in a PR body — webm/mp4 attach as unviewable files, so do not produce them). Screenshots are acceptable only for genuinely static changes (a colour, a label). This is the only practical review signal for UI work in a repo whose CI cannot render anything. |
 
 Perf and UI requirements compose with the prefix: a UI feature is `feat:` **and** carries a recording; an export speedup is `feat:`/`fix:` **and** carries numbers.
 
