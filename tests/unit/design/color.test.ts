@@ -10,6 +10,7 @@ import {
   applyPickedColor,
   normalizeColor,
   parseColor,
+  sameColor,
   toColorInputValue,
   toHex,
   toHex6,
@@ -149,6 +150,27 @@ describe('applyPickedColor — alpha preservation', () => {
 
   it('passes an unparseable pick through verbatim (caller already validated it)', () => {
     expect(applyPickedColor('red', 'not-a-color')).toBe('not-a-color')
+  })
+})
+
+describe('sameColor', () => {
+  it('recognises the same colour across notations', () => {
+    expect(sameColor('red', '#ff0000')).toBe(true)
+    expect(sameColor('#f00', '#ff0000')).toBe(true)
+    expect(sameColor('#FF0000', 'rgb(255, 0, 0)')).toBe(true)
+    expect(sameColor('rgba(0,0,0,0.5)', '#00000080')).toBe(true)
+  })
+
+  it('distinguishes different colours, including alpha-only differences', () => {
+    expect(sameColor('red', '#ff0001')).toBe(false)
+    expect(sameColor('#00000080', '#000000')).toBe(false)
+  })
+
+  it('is false when either side is absent or not a parseable colour', () => {
+    expect(sameColor(null, '#ff0000')).toBe(false)
+    expect(sameColor('#ff0000', null)).toBe(false)
+    expect(sameColor('var(--sl-accent)', 'var(--sl-accent)')).toBe(false)
+    expect(sameColor('inherit', '#000000')).toBe(false)
   })
 })
 

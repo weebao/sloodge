@@ -97,6 +97,31 @@ describe('themeColorSwatches', () => {
     expect(themeColorSwatches(makeTheme(long))).toHaveLength(4)
   })
 
+  it('drops a key that collides on the same token name (no two swatches, one reference)', () => {
+    // `themeTokenName` lowercases, so these two distinct keys name the identical custom property.
+    // Only the first may become a swatch — two visually different swatches writing the same var()
+    // reference would misrepresent what clicking them does.
+    const colliding: ColorMap = { ...BASE, accentFg: '#111111', accentFG: '#eeeeee' }
+    const swatches = themeColorSwatches(makeTheme(colliding))
+    const references = swatches.map((s) => themeSwatchWriteValue(s))
+    expect(new Set(references).size).toBe(references.length)
+    const accentFgSwatches = swatches.filter((s) => themeTokenName(s.key) === '--sl-accent-fg')
+    expect(accentFgSwatches).toHaveLength(1)
+    // Deterministic: CORE_ORDER runs first, so the core `accentFg` spelling wins.
+    expect(accentFgSwatches[0]!.key).toBe('accentFg')
+    expect(accentFgSwatches[0]!.hex).toBe('#111111')
+  })
+
+  it('every swatch list has unique token names', () => {
+    const theme = makeTheme({ ...BASE, accentFg: '#fff', surface: '#1a2035', brand: '#abcdef' }, [
+      '#111111',
+      '#222222',
+      '#333333',
+    ])
+    const tokens = themeColorSwatches(theme).map((s) => themeTokenName(s.key))
+    expect(new Set(tokens).size).toBe(tokens.length)
+  })
+
   it('drops a non-hex value defensively', () => {
     const bad: ColorMap = { ...BASE, weird: 'not-a-color' }
     expect(themeColorSwatches(makeTheme(bad)).some((s) => s.key === 'weird')).toBe(false)

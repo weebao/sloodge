@@ -316,6 +316,52 @@ describe('PropertyPanel — colour controls (M3.8)', () => {
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
   })
 
+  it('an aborted gesture leaves the swatch showing the SOURCE colour, not the preview', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const swatch = screen.getByTestId('swatch-color') as HTMLInputElement
+    // The source is `color: #111`, which the native input renders as `#111111`.
+    expect(swatch.value).toBe('#111111')
+
+    // Drag to a colour, then dismiss without confirming (no `change`).
+    fireEvent.input(swatch, { target: { value: '#00ff00' } })
+    expect(swatch.value).toBe('#00ff00') // live preview during the gesture
+    fireEvent.blur(swatch)
+
+    // The abandoned preview is gone: the swatch reflects the source again.
+    expect(swatch.value).toBe('#111111')
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a change that merely restates the source colour costs ZERO undo entries', () => {
+    // A non-canonical source colour: some pickers cancel by reverting and firing `change` with the
+    // canonicalized form, which must not rewrite `red` to `#ff0000` for a cancelled gesture.
+    const namedSource = '<h1 style="color: red; font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, namedSource, slideId, 'seed-named')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    expect(undoDepth()).toBe(before)
+    // The source keeps the author's spelling, byte-for-byte.
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(namedSource)
+  })
+
+  it('a genuinely different colour still commits against a non-canonical source', () => {
+    const namedSource = '<h1 style="color: red; font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, namedSource, slideId, 'seed-named')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#00ff00' } })
+
+    expect(undoDepth()).toBe(before + 1)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #00ff00')
+  })
+
   it('a swatch pick preserves the source alpha (does not silently drop it)', () => {
     const alphaSource = '<h1 style="color: rgba(0, 0, 0, 0.5)">Hello</h1>'
     useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-alpha')

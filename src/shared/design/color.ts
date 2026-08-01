@@ -360,6 +360,30 @@ export function toColorInputValue(input: string | null): string {
  * silently substituting a colour keeps this function honest about what it was given; the safety is
  * defence-in-depth at the write, not a precondition on the caller.
  */
+/**
+ * Whether two colour strings denote the *same* colour, comparing parsed channels rather than source
+ * bytes — `red`, `#f00`, `#ff0000` and `rgb(255,0,0)` are all equal here. Returns `false` when either
+ * side is absent or is not a colour this module understands (`var(--sl-accent)`, `inherit`): two things
+ * we cannot compare are not known to be equal, and the caller's safe move is to treat them as different.
+ *
+ * The panel uses this to drop a no-op commit. `PropertyPanel`'s `patched === map.source` check already
+ * absorbs a byte-identical rewrite, but it cannot see that `red` and `#ff0000` are the same colour — so
+ * a picker that cancels by *reverting and firing `change`* against a non-canonical source value would
+ * otherwise spend one undo entry silently rewriting `color: red` to `color: #ff0000`, for a gesture the
+ * user cancelled and with no visible change. Comparing colours, not bytes, is what closes that.
+ */
+export function sameColor(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return false
+  const left = parseColor(a)
+  const right = parseColor(b)
+  if (left === null || right === null) return false
+  // Compare canonical hex rather than raw channels: that is exactly the precision this module *writes*,
+  // so "equal" means "would serialize to the same declaration". Comparing raw floats instead would call
+  // `rgba(0,0,0,0.5)` and `#00000080` different over the 8-bit quantization of alpha (0.5 vs 0.50196…),
+  // and then commit an undo entry whose only effect is to round the alpha.
+  return toHex(left) === toHex(right)
+}
+
 export function applyPickedColor(current: string | null, pickedHex: string): string {
   const picked = parseColor(pickedHex)
   if (picked === null) return pickedHex

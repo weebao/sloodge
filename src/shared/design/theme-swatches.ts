@@ -126,6 +126,13 @@ function isHex(value: unknown): value is string {
  * palette when `theme` is `null`. Core colours come first in a fixed order, then any forward-compat
  * catchall colours (in declaration order), then the categorical `series` palette. Every entry is
  * validated: a non-hex value or an unsafe key is dropped rather than surfaced.
+ *
+ * **Deduped by token name, not by key.** `themeTokenName` is deliberately many-to-one (it lowercases,
+ * so `accentFg` and `accentFG` both name `--sl-accent-fg`), and two swatches that look different but
+ * write the identical `var()` reference would be a lie about what clicking them does. First occurrence
+ * wins, in the fixed order above, so the choice is deterministic rather than dependent on key
+ * enumeration order — and a later colliding key is dropped instead of silently shadowing the earlier
+ * one's swatch with its own colour.
  */
 export function themeColorSwatches(theme: Theme | null): ThemeSwatch[] {
   if (theme === null) return [...DEFAULT_THEME_SWATCHES]
@@ -135,8 +142,10 @@ export function themeColorSwatches(theme: Theme | null): ThemeSwatch[] {
   const seen = new Set<string>()
 
   const push = (key: string, hex: unknown, label: string): void => {
-    if (seen.has(key) || !isSafeKey(key) || !isHex(hex)) return
-    seen.add(key)
+    if (!isSafeKey(key) || !isHex(hex)) return
+    const token = themeTokenName(key)
+    if (seen.has(token)) return
+    seen.add(token)
     out.push({ key, hex, label })
   }
 

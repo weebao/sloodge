@@ -24,6 +24,12 @@
  * untouched. `change` is attached with a ref rather than a prop precisely because React's `onChange`
  * is the wrong event here.
  *
+ * Two corollaries of "the preview is not the document": the preview is an *override* that an aborted
+ * gesture clears (so a dismissed picker snaps the swatch back to the source colour rather than
+ * stranding one the document never had), and a `change` whose value merely *restates* the source
+ * colour commits nothing — some pickers cancel by reverting and firing `change`, and `sameColor`
+ * compares parsed colours rather than bytes so `red` vs `#ff0000` is recognised as no change at all.
+ *
  * ## Why the written values look the way they do
  *
  * - The native input only speaks `#rrggbb`; a swatch/eyedropper pick is merged through
@@ -40,7 +46,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { PropertyField } from '../../../../shared/design/property-model'
-import { applyPickedColor, toColorInputValue } from '../../../../shared/design/color'
+import { applyPickedColor, sameColor, toColorInputValue } from '../../../../shared/design/color'
 import { themeSwatchWriteValue, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import type { ColorPicker } from './eyedropper'
 
@@ -107,13 +113,20 @@ function ColorTargetRow({
   const { field, label, current } = target
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Preview-only state for the drag. Seeded from source; the panel remounts these fields whenever the
-  // source changes (see `PropertyPanel`'s `key`), so this initial-from-props read never goes stale.
-  const [preview, setPreview] = useState(() => toColorInputValue(current))
+  // Preview-only state for the drag, held as an *override*: `null` means "show the source colour".
+  // Keeping it nullable rather than seeding it with a copy of the source is what lets an **aborted**
+  // gesture snap back — a drag that is dismissed without confirming clears the override and the swatch
+  // reads the source again, instead of stranding a colour the document does not have.
+  const [preview, setPreview] = useState<string | null>(null)
+  const shown = preview ?? toColorInputValue(current)
 
   const onPreview = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
     setPreview(event.currentTarget.value)
   }, [])
+
+  // Leaving the control ends any gesture that never confirmed: drop the override so the swatch
+  // re-derives from source.
+  const onAbort = useCallback((): void => setPreview(null), [])
 
   // The commit. `change` fires once, when the OS picker is confirmed — never during the drag, and not
   // at all if the user cancels. Attached imperatively because React's `onChange` is the `input` event.
@@ -121,6 +134,11 @@ function ColorTargetRow({
     const element = inputRef.current
     if (element === null) return
     const onCommit = (): void => {
+      setPreview(null)
+      // Some pickers cancel by *reverting* the value and firing `change` with it. Compare colours, not
+      // bytes: the source may hold `red` while the input reports the canonical `#ff0000`, and rewriting
+      // one to the other would spend an undo entry on a gesture the user cancelled, with nothing to see.
+      if (sameColor(current, element.value)) return
       onApply(field, applyPickedColor(current, element.value))
     }
     element.addEventListener('change', onCommit)
@@ -151,8 +169,9 @@ function ColorTargetRow({
         name={field}
         data-testid={`swatch-${field}`}
         aria-label={`${label} color`}
-        value={preview}
+        value={shown}
         onChange={onPreview}
+        onBlur={onAbort}
         className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 dark:border-ink-line"
       />
       {picker !== null ? (
