@@ -19,7 +19,8 @@ function makeBridge(invokeImpl: (channel: string, payload: unknown) => Promise<u
     handlers.set(channel, handler)
     return () => handlers.delete(channel)
   })
-  return { bridge: createAgentBridge(invoke, subscribe), invoke, subscribe, handlers }
+  const send = vi.fn()
+  return { bridge: createAgentBridge(invoke, subscribe, send), invoke, subscribe, send, handlers }
 }
 
 const STATUS_OK = { status: { configured: true, last4: 'W3z9' } }

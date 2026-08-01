@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { createDeckToolHost } from '../../../src/main/agent/deck-host'
+import { createLocalDeckEditor } from '../../../src/main/agent/deck-editor'
 import {
   runCreateSlide,
   runReadSlide,
@@ -28,7 +29,11 @@ describe('mcp__slides__* end-to-end (fake SDK loop)', () => {
   it('creates, edits, screenshots and reads a slide, then undo restores the deck', async () => {
     const history = new DocumentHistory<DeckDoc>(makeDoc(1).doc)
     const capture = vi.fn(async () => 'PNGBYTES')
-    const host = createDeckToolHost({ history, sessionId: 'as_test', capture })
+    const host = createDeckToolHost({
+      editor: createLocalDeckEditor(history),
+      sessionId: 'as_test',
+      capture,
+    })
     const startCount = slideCount(history.doc.manifest)
 
     // 1. create_slide — untrusted HTML is validated, then a slide.insert command runs.
@@ -59,7 +64,7 @@ describe('mcp__slides__* end-to-end (fake SDK loop)', () => {
 
   it('a rejected create leaves the deck untouched (contract gate is end-to-end)', async () => {
     const history = new DocumentHistory<DeckDoc>(makeDoc(2).doc)
-    const host = createDeckToolHost({ history })
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(history) })
     const before = slideCount(history.doc.manifest)
 
     const result = await runCreateSlide(host, { html: '<div>not a slide</div>', title: 'Bad' })

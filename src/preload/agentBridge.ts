@@ -16,13 +16,22 @@ import {
   AGENT_KEY_STATUS_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_SET_KEY_CHANNEL,
+  DECK_AGENT_EDIT_CHANNEL,
+  DECK_AGENT_EDIT_RESULT_CHANNEL,
   DECK_UPDATED_CHANNEL,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
+import {
+  isAgentEditRequest,
+  type AgentEditRequest,
+  type AgentEditResponse,
+} from '../shared/document/agent-edit'
 
 export type AgentInvoke = (channel: string, payload: unknown) => Promise<unknown>
 export type AgentSubscribe = (channel: string, handler: (payload: unknown) => void) => () => void
+/** Fire-and-forget renderer → main send (for the agent-edit reply, which is not an `invoke`). */
+export type AgentSend = (channel: string, payload: unknown) => void
 
 export type AgentBridge = {
   /** Store an API key. The plaintext travels main-ward only; resolves with the masked status. */
@@ -40,6 +49,13 @@ export type AgentBridge = {
    * `onAgentEvent` so the canvas never waits on the chat stream. Returns an unsubscribe function.
    */
   onDeckUpdated: (listener: (update: DeckUpdate) => void) => () => void
+  /**
+   * Subscribe to agent tool edits pushed for the renderer to apply through its authoritative history
+   * (M2.6). The listener is expected to reply via `sendAgentEditResult`. Returns an unsubscribe fn.
+   */
+  onAgentEditRequest: (listener: (request: AgentEditRequest) => void) => () => void
+  /** Reply to an `onAgentEditRequest`, correlated by `requestId`. Fire-and-forget. */
+  sendAgentEditResult: (response: AgentEditResponse) => void
 }
 
 function readStatus(response: unknown): ApiKeyStatus {
@@ -52,7 +68,11 @@ function readStatus(response: unknown): ApiKeyStatus {
   return { configured: rec.configured, last4 }
 }
 
-export function createAgentBridge(invoke: AgentInvoke, subscribe: AgentSubscribe): AgentBridge {
+export function createAgentBridge(
+  invoke: AgentInvoke,
+  subscribe: AgentSubscribe,
+  send: AgentSend,
+): AgentBridge {
   return {
     setApiKey: async (key) => {
       if (typeof key !== 'string' || key.trim().length === 0) {
@@ -87,5 +107,14 @@ export function createAgentBridge(invoke: AgentInvoke, subscribe: AgentSubscribe
       subscribe(DECK_UPDATED_CHANNEL, (payload) => {
         if (isDeckUpdate(payload)) listener(payload)
       }),
+
+    onAgentEditRequest: (listener) =>
+      subscribe(DECK_AGENT_EDIT_CHANNEL, (payload) => {
+        if (isAgentEditRequest(payload)) listener(payload)
+      }),
+
+    sendAgentEditResult: (response) => {
+      send(DECK_AGENT_EDIT_RESULT_CHANNEL, response)
+    },
   }
 }

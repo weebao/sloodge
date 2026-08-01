@@ -9,6 +9,7 @@
 
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
 import type { DeckUpdate } from './document/deck-update'
+import type { AgentEditRequest } from './document/agent-edit'
 
 /**
  * Native-menu action ids, and the single source of truth for them: the main
@@ -103,6 +104,12 @@ export type IpcEvents = {
    * must never freeze the canvas (10-architecture.md §9 invariant 3).
    */
   'deck:updated': DeckUpdate
+  /**
+   * A single agent tool edit, sent main → renderer for the renderer to apply through its authoritative
+   * `DocumentHistory` (M2.6). The renderer replies on `DECK_AGENT_EDIT_RESULT_CHANNEL`. This is the
+   * agent-edit path that keeps undo-parity; `deck:updated` above is doc:open/full-reload only.
+   */
+  'deck:agentEdit': AgentEditRequest
 }
 
 export type IpcRequestChannel = keyof IpcRequests
@@ -153,6 +160,16 @@ export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
 export const DECK_UPDATED_CHANNEL = 'deck:updated' satisfies IpcEventChannel
 
 /**
+ * The M2.6 agent-edit reconciliation channels. Main sends one tool edit on `DECK_AGENT_EDIT_CHANNEL`
+ * (main → renderer); the renderer applies it through its authoritative history and replies on
+ * `DECK_AGENT_EDIT_RESULT_CHANNEL` (renderer → main, `ipcRenderer.send` / `ipcMain.on`, correlated by
+ * `requestId`). The result channel is a renderer → main *send*, not an `invoke`, so it is not in
+ * `IpcEvents` (which is main → renderer) — it is a bare constant both ends agree on.
+ */
+export const DECK_AGENT_EDIT_CHANNEL = 'deck:agentEdit' satisfies IpcEventChannel
+export const DECK_AGENT_EDIT_RESULT_CHANNEL = 'deck:agentEditResult'
+
+/**
  * Runtime allow-lists: the declaration of every channel that may cross, which
  * call sites are expected to honour.
  *
@@ -179,6 +196,7 @@ export const IPC_EVENT_CHANNELS = [
   MENU_EVENT_CHANNEL,
   AGENT_EVENT_CHANNEL,
   DECK_UPDATED_CHANNEL,
+  DECK_AGENT_EDIT_CHANNEL,
 ] as const satisfies readonly IpcEventChannel[]
 
 export function isIpcRequestChannel(value: string): value is IpcRequestChannel {

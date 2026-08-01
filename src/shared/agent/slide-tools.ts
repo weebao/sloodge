@@ -70,7 +70,13 @@ export type HostOutcome<T> =
   | { readonly ok: false; readonly code: HostErrorCode; readonly message: string }
 
 export type HostErrorCode =
-  'slide-not-found' | 'index-out-of-range' | 'invalid' | 'screenshot-unavailable' | 'internal'
+  | 'slide-not-found'
+  | 'index-out-of-range'
+  | 'invalid'
+  | 'screenshot-unavailable'
+  /** The authoritative deck lives in the renderer (M2.6); it went away mid-call. */
+  | 'renderer-unavailable'
+  | 'internal'
 
 export type CreateSlideRequest = {
   readonly html: string
@@ -91,18 +97,23 @@ export type ReorderRequest = { readonly slideId: string; readonly toPosition: nu
 
 /**
  * The seam every tool handler mutates and reads through. The concrete implementation
- * (`src/main/agent/deck-host.ts`) builds `DocCommand`s and dispatches them through the history;
- * tests supply a fake. Every mutating method is expected to be undoable at the history layer.
+ * (`src/main/agent/deck-host.ts`) builds `DocCommand`s and dispatches them through the authoritative
+ * renderer deck over IPC (M2.6); tests supply a fake. Every mutating method is expected to be
+ * undoable at the history layer.
+ *
+ * **Async since M2.6.** The authoritative deck is renderer-side, so a read or a write is a round-trip
+ * — every method returns a `Promise`. `await`-ing a fake that resolves synchronously is free, so the
+ * pure handler tests read unchanged.
  */
 export type SlideToolHost = {
-  resolve(ref: SlideRef): ResolvedSlide | null
-  list(): ReadonlyArray<{ id: string; index: number; title: string }>
-  count(): number
-  create(request: CreateSlideRequest): HostOutcome<{ slideId: string; index: number }>
+  resolve(ref: SlideRef): Promise<ResolvedSlide | null>
+  list(): Promise<ReadonlyArray<{ id: string; index: number; title: string }>>
+  count(): Promise<number>
+  create(request: CreateSlideRequest): Promise<HostOutcome<{ slideId: string; index: number }>>
   update(
     request: UpdateSlideRequest,
-  ): HostOutcome<{ slideId: string; index: number; revision: number }>
-  reorder(request: ReorderRequest): HostOutcome<{ order: string[] }>
+  ): Promise<HostOutcome<{ slideId: string; index: number; revision: number }>>
+  reorder(request: ReorderRequest): Promise<HostOutcome<{ order: string[] }>>
   /**
    * Render a slide to a PNG. The renderer/offscreen wiring is injected — a host with no capturer
    * returns `screenshot-unavailable`, which is the deferred-render seam (see deck-host.ts).
@@ -230,7 +241,7 @@ export async function runCreateSlide(
     ...(args.notes !== undefined ? { notes: args.notes } : {}),
     ...(args.position !== undefined ? { position: args.position } : {}),
   }
-  const outcome = host.create(request)
+  const outcome = await host.create(request)
   if (!outcome.ok) return errorResult(hostErrorMessage(outcome))
 
   return {
@@ -249,7 +260,7 @@ export async function runUpdateSlide(
     return errorResult('update_slide needs at least one of html or notes')
   }
 
-  const current = host.resolve({ slideId: args.slideId })
+  const current = await host.resolve({ slideId: args.slideId })
   if (current === null) {
     return errorResult(`no slide with id ${args.slideId}`)
   }
@@ -270,7 +281,7 @@ export async function runUpdateSlide(
     ...(args.html !== undefined ? { html: args.html } : {}),
     ...(args.notes !== undefined ? { notes: args.notes } : {}),
   }
-  const outcome = host.update(request)
+  const outcome = await host.update(request)
   if (!outcome.ok) return errorResult(hostErrorMessage(outcome))
 
   return {
@@ -290,13 +301,14 @@ export async function runReadSlide(
   if (args.slideId === undefined && args.index === undefined) {
     return errorResult('read_slide needs a slideId or an index')
   }
-  const slide = host.resolve({
+  const slide = await host.resolve({
     ...(args.slideId !== undefined ? { slideId: args.slideId } : {}),
     ...(args.index !== undefined ? { index: args.index } : {}),
   })
   if (slide === null) {
     const ref = args.slideId ?? `index ${String(args.index)}`
-    return errorResult(`no slide at ${String(ref)}; the deck has ${String(host.count())} slides`)
+    const count = await host.count()
+    return errorResult(`no slide at ${String(ref)}; the deck has ${String(count)} slides`)
   }
   return {
     // HTML in the text block *and* structuredContent: the §6 rule is that when structuredContent is
@@ -314,7 +326,7 @@ export async function runReadSlide(
 }
 
 export async function runReorder(host: SlideToolHost, args: ReorderArgs): Promise<SlideToolResult> {
-  const outcome = host.reorder({ slideId: args.slideId, toPosition: args.toPosition })
+  const outcome = await host.reorder({ slideId: args.slideId, toPosition: args.toPosition })
   if (!outcome.ok) return errorResult(hostErrorMessage(outcome))
   return {
     content: [{ type: 'text', text: `Moved to position ${String(args.toPosition)}.` }],
@@ -326,7 +338,7 @@ export async function runScreenshot(
   host: SlideToolHost,
   args: ScreenshotArgs,
 ): Promise<SlideToolResult> {
-  const slide = host.resolve({ slideId: args.slideId })
+  const slide = await host.resolve({ slideId: args.slideId })
   if (slide === null) return errorResult(`no slide with id ${args.slideId}`)
   const outcome = await host.screenshot(args.slideId, args.atMs ?? 0)
   if (!outcome.ok) return errorResult(hostErrorMessage(outcome))

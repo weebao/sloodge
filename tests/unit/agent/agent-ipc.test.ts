@@ -6,10 +6,11 @@ import type { AgentService } from '../../../src/main/agent/service'
  * subprocess-teardown hooks. `electron` and the SDK are mocked; the service and vault are injected,
  * so the wiring is asserted end to end without a keychain or a subprocess.
  */
-const mocks = vi.hoisted(() => ({ ipcHandle: vi.fn() }))
+const mocks = vi.hoisted(() => ({ ipcHandle: vi.fn(), ipcOn: vi.fn() }))
 
 vi.mock('electron', () => ({
-  ipcMain: { handle: mocks.ipcHandle },
+  ipcMain: { handle: mocks.ipcHandle, on: mocks.ipcOn },
+  webContents: { fromId: vi.fn(() => undefined) },
   app: { getPath: () => '/ud' },
   safeStorage: {
     isEncryptionAvailable: () => true,

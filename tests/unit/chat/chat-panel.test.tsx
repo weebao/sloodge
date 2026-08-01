@@ -37,6 +37,8 @@ function makeFakeBridge(status: ApiKeyStatus): {
       return () => listeners.delete(listener)
     },
     onDeckUpdated: () => () => undefined,
+    onAgentEditRequest: () => () => undefined,
+    sendAgentEditResult: () => undefined,
   }
   const emit: Emit = (event) => {
     act(() => {

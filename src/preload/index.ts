@@ -53,6 +53,9 @@ const agent = createAgentBridge(
       ipcRenderer.removeListener(channel, wrapped)
     }
   },
+  (channel, payload) => {
+    ipcRenderer.send(channel, payload)
+  },
 )
 
 const api = {

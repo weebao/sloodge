@@ -34,12 +34,12 @@ function fakeHost(overrides: Partial<SlideToolHost> = {}): SlideToolHost {
     capabilities: ['static'],
   }
   return {
-    resolve: vi.fn(() => resolved),
-    list: vi.fn(() => [{ id: ID, index: 1, title: 'Hello' }]),
-    count: vi.fn(() => 1),
-    create: vi.fn(() => ok({ slideId: ID, index: 1 })),
-    update: vi.fn(() => ok({ slideId: ID, index: 1, revision: 2 })),
-    reorder: vi.fn(() => ok({ order: [ID] })),
+    resolve: vi.fn(async () => resolved),
+    list: vi.fn(async () => [{ id: ID, index: 1, title: 'Hello' }]),
+    count: vi.fn(async () => 1),
+    create: vi.fn(async () => ok({ slideId: ID, index: 1 })),
+    update: vi.fn(async () => ok({ slideId: ID, index: 1, revision: 2 })),
+    reorder: vi.fn(async () => ok({ order: [ID] })),
     screenshot: vi.fn(async () => ok({ pngBase64: 'UE5H' })),
     ...overrides,
   }
@@ -64,7 +64,7 @@ describe('runCreateSlide', () => {
 
   it('surfaces a host error as an actionable isError result', async () => {
     const host = fakeHost({
-      create: vi.fn(() =>
+      create: vi.fn(async () =>
         err<{ slideId: string; index: number }>('index-out-of-range', 'position 9 is out of range'),
       ),
     })
@@ -83,7 +83,7 @@ describe('runUpdateSlide', () => {
   })
 
   it('rejects when the slide does not exist', async () => {
-    const host = fakeHost({ resolve: vi.fn(() => null) })
+    const host = fakeHost({ resolve: vi.fn(async () => null) })
     const result = await runUpdateSlide(host, { slideId: ID, notes: 'x' })
     expect(result.isError).toBe(true)
     expect(host.update).not.toHaveBeenCalled()
@@ -114,7 +114,7 @@ describe('runReadSlide', () => {
   })
 
   it('reports the deck size when the slide is missing', async () => {
-    const host = fakeHost({ resolve: vi.fn(() => null), count: vi.fn(() => 5) })
+    const host = fakeHost({ resolve: vi.fn(async () => null), count: vi.fn(async () => 5) })
     const result = await runReadSlide(host, { index: 9 })
     expect(result.isError).toBe(true)
     expect((result.content[0] as { text: string }).text).toContain('5 slides')
@@ -135,7 +135,7 @@ describe('runReorder', () => {
 
   it('surfaces a bounds error from the host', async () => {
     const host = fakeHost({
-      reorder: vi.fn(() =>
+      reorder: vi.fn(async () =>
         err<{ order: string[] }>('index-out-of-range', 'position 9 is out of range'),
       ),
     })

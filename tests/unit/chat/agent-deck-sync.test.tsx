@@ -33,6 +33,8 @@ function fakeAgentBridge(): AgentBridge {
         deckListener = null
       }
     },
+    onAgentEditRequest: () => () => undefined,
+    sendAgentEditResult: () => undefined,
   }
 }
 
