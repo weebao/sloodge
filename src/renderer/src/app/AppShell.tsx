@@ -10,6 +10,8 @@ import { useExportPdf } from '../features/export/useExportPdf'
 import { useExportPptx } from '../features/export/useExportPptx'
 import { ExportPptxDialog } from '../features/export/ExportPptxDialog'
 import { useExportHtml } from '../features/export/useExportHtml'
+import { useOpenDeck } from '../features/document/useOpenDeck'
+import type { OpenDeckPayload } from '../../../shared/document/open'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
@@ -66,6 +68,7 @@ export function AppShell(): JSX.Element {
   const deleteSlide = useDeckStore((state) => state.deleteSlide)
   const duplicateSlide = useDeckStore((state) => state.duplicateSlide)
   const moveSlide = useDeckStore((state) => state.moveSlide)
+  const applyRemoteDeck = useDeckStore((state) => state.applyRemoteDeck)
   const undo = useDeckStore((state) => state.undo)
   const redo = useDeckStore((state) => state.redo)
 
@@ -107,6 +110,20 @@ export function AppShell(): JSX.Element {
   })
   const [pptxDialogOpen, setPptxDialogOpen] = useState(false)
 
+  // File ▸ Open (M4.5): .sloodge, .pptx and .potx. Main owns the chooser and the read; the renderer
+  // adopts the document with `doc:open` semantics, which resets the undo stack (see useOpenDeck.ts).
+  // The file name drives the tab strip so it is visible that a different document is loaded.
+  const [documentName, setDocumentName] = useState('Untitled.sloodge')
+  const [openError, setOpenError] = useState<string | null>(null)
+  const onOpened = useCallback((payload: OpenDeckPayload) => {
+    setDocumentName(payload.fileName)
+    setOpenError(null)
+  }, [])
+  const onOpenError = useCallback((error: { code: string; message: string }) => {
+    setOpenError(error.message)
+  }, [])
+  const openDeck = useOpenDeck({ applyRemoteDeck, onOpened, onError: onOpenError })
+
   // Settings (M2.7). Both openers are stable callbacks: `openSettings` is a `useMenuActions`
   // dependency, so a fresh identity each render would resubscribe `app:menu` on every keystroke.
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -134,7 +151,7 @@ export function AppShell(): JSX.Element {
   // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
   // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
   const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
-  useMenuActions(editHandlers, exportPdf, openPptxDialog, exportHtml, openSettings)
+  useMenuActions(editHandlers, exportPdf, openPptxDialog, exportHtml, openSettings, openDeck)
   useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
@@ -162,7 +179,7 @@ export function AppShell(): JSX.Element {
       id="sloodge-shell"
       className="flex h-screen w-screen flex-col overflow-hidden bg-shell-bg text-shell-fg dark:bg-ink dark:text-ink-fg"
     >
-      <MenuTabStrip />
+      <MenuTabStrip documentName={documentName} />
       {/* The toolbar row and the Design Mode switch are siblings on purpose: the toolbar is a tab
           panel whose contents M6.1 swaps per ribbon tab, and the switch must stay visible and
           operable on every tab (see DesignModeToggle's header). Owning the row here is what makes
@@ -193,6 +210,7 @@ export function AppShell(): JSX.Element {
         budget={budget}
         budgetUnknown={budgetUnknown}
         skills={sessionSkills}
+        openError={openError}
         {...(canPresent ? { onPresent: startPresent } : {})}
       />
       {presentFrom !== null ? (

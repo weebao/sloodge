@@ -46,7 +46,8 @@ export function menuOwnsEditAccelerators(): boolean {
 
  * `onExportPdf` (M4.2), `onExportPptx` (M4.3) and `onExportHtml` (M4.4) are the File-menu consumers: the ids are forwarded
  * to the renderer (`menuRouting.ts`) because the deck lives here, and this is where they are claimed.
- * The remaining File ids still belong to their milestones.
+ * `onOpenDeck` (M4.5) is File ▸ Open: main owns the native chooser and the read, the renderer
+ * adopts the document it gets back. The remaining File ids still belong to their milestones.
  *
  * Both handlers must have stable identities — they are effect dependencies, so a new function per
  * render would resubscribe `app:menu` on every keystroke. `useExportPdf` / `useExportHtml` guarantee
@@ -58,6 +59,7 @@ export function useMenuActions(
   onExportPptx?: () => void,
   onExportHtml?: () => void,
   onOpenSettings?: () => void,
+  onOpenDeck?: () => void,
 ): void {
   const { undo, redo } = handlers
   useEffect(() => {
@@ -86,7 +88,11 @@ export function useMenuActions(
         onOpenSettings?.()
         return
       }
+      if (action === 'file.open') {
+        onOpenDeck?.()
+        return
+      }
       // Every other id belongs to File; its milestone will claim it here.
     })
-  }, [undo, redo, onExportPdf, onExportPptx, onExportHtml, onOpenSettings])
+  }, [undo, redo, onExportPdf, onExportPptx, onExportHtml, onOpenSettings, onOpenDeck])
 }

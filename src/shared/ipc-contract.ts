@@ -12,6 +12,7 @@ import type { BudgetCap, BudgetSetRequest } from './agent/budget'
 import type { AuthStatus } from './agent/auth'
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
+import type { OpenDeckRequest, OpenDeckResponse } from './document/open'
 import type {
   ExportHtmlRequest,
   ExportHtmlResponse,
@@ -135,6 +136,7 @@ export type IpcRequests = {
   'agent:budget': { req: Record<string, never>; res: AgentBudgetResponse }
   'agent:setBudget': { req: BudgetSetRequest; res: AgentBudgetResponse }
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
+  'file:open': { req: OpenDeckRequest; res: OpenDeckResponse }
   'file:exportPdf': { req: ExportPdfRequest; res: ExportPdfResponse }
   'file:exportPptx': { req: ExportPptxRequest; res: ExportPptxResponse }
   'file:exportHtml': { req: ExportHtmlRequest; res: ExportHtmlResponse }
@@ -241,6 +243,12 @@ export const FILE_EXPORT_PDF_CHANNEL = 'file:exportPdf' satisfies IpcRequestChan
  * either literal would compile and ship as "Export as PowerPoint does nothing", invisible to a suite
  * that never crosses a real IPC boundary.
  */
+/**
+ * File ▸ Open (M4.5). Main owns the native chooser, so the request is empty and the renderer can
+ * never name a path it was not handed by the user.
+ */
+export const FILE_OPEN_CHANNEL = 'file:open' satisfies IpcRequestChannel
+
 export const FILE_EXPORT_PPTX_CHANNEL = 'file:exportPptx' satisfies IpcRequestChannel
 
 /**
@@ -295,6 +303,7 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_SET_BUDGET_CHANNEL,
   PRESENT_SET_FULLSCREEN_CHANNEL,
   FILE_EXPORT_PDF_CHANNEL,
+  FILE_OPEN_CHANNEL,
   FILE_EXPORT_PPTX_CHANNEL,
   FILE_EXPORT_HTML_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]

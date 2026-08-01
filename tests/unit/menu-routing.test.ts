@@ -33,10 +33,14 @@ describe('menuActionTarget', () => {
     expect(menuActionTarget('file.export.html')).toBe('renderer')
   })
 
+  it('forwards file.open to the renderer (M4.5)', () => {
+    expect(menuActionTarget('file.open')).toBe('renderer')
+  })
+
   it('does not forward the actions nothing consumes yet', () => {
     // A channel that delivers ids no one handles reads as though File ▸ New
     // were already wired; later milestones flip these when they claim them.
-    for (const action of ['file.new', 'file.open'] as const) {
+    for (const action of ['file.new'] as const) {
       expect(menuActionTarget(action)).toBe('log')
     }
   })
@@ -44,6 +48,7 @@ describe('menuActionTarget', () => {
   it('classifies every id in the shared union, so a new one cannot be forgotten', () => {
     const routed = MENU_ACTIONS.map((action) => [action, menuActionTarget(action)] as const)
     expect(routed.filter(([, target]) => target === 'renderer').map(([action]) => action)).toEqual([
+      'file.open',
       'file.export.pptx',
       'file.export.pdf',
       'file.export.html',

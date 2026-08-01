@@ -28,6 +28,12 @@ export type StatusBarProps = {
    * through M0.4, so the status bar is still renderable in isolation without standing up Present.
    */
   onPresent?: () => void
+  /**
+   * A file that could not be opened (M4.5). Shown here rather than in a modal: a failed open is
+   * informational — the previous document is still on screen and still editable — and a dialog
+   * would demand a dismissal the user has no decision to make about.
+   */
+  openError?: string | null
 }
 
 /** The one segment whose absence is the good news — see `SkillsIndicator`. */
@@ -155,6 +161,7 @@ export function StatusBar({
   budgetUnknown = false,
   skills,
   onPresent,
+  openError = null,
 }: StatusBarProps): JSX.Element {
   return (
     <footer
@@ -173,6 +180,14 @@ export function StatusBar({
       <SkillsIndicator skills={skills} />
       <span aria-hidden="true" className="h-3 w-px bg-chrome-line dark:bg-ink-line" />
       <CostMeter costUsd={sessionCostUsd} budget={budget} budgetUnknown={budgetUnknown} />
+      {openError === null ? null : (
+        <>
+          <span aria-hidden="true" className="h-3 w-px bg-chrome-line dark:bg-ink-line" />
+          <span role="status" title={openError} className="max-w-[40ch] truncate text-danger">
+            <span aria-hidden="true">⚠</span> {openError}
+          </span>
+        </>
+      )}
 
       <button
         type="button"

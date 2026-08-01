@@ -29,8 +29,8 @@ describe('menuActionTarget', () => {
   })
 
   it('still logs the not-yet-wired File actions', () => {
+    // `file.open` left this list at M4.5; `file.new` is the last unclaimed File id.
     expect(menuActionTarget('file.new')).toBe('log')
-    expect(menuActionTarget('file.open')).toBe('log')
   })
 
   it('still forwards edit actions', () => {
