@@ -57,6 +57,7 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
   const TYPE_READY = 'SL_READY'
   const TYPE_HITTEST = 'SL_HITTEST'
   const TYPE_INSPECT = 'SL_INSPECT'
+  const TYPE_ELEMENTS = 'SL_ELEMENTS'
   const ID_ATTR = 'data-sl-id'
   // The computed-style whitelist (§6.2) — must stay inside this self-contained function, so it is a
   // literal copy of `COMPUTED_STYLE_WHITELIST` in `element-context.ts`. `frame-script.test.tsx`
@@ -303,6 +304,35 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     return { ...d, box: boxForId(d.slId), ancestors: ancestorsOf(target) }
   }
 
+  // Whether an element is itself a valid selection target — the standing form of the `climb`
+  // predicate, used to enumerate the marquee/guide candidate set (M3.7). Mirrors the per-node checks
+  // in `climb` (grabbable.ts's `resolveSelectionTarget`), kept in sync by frame-script.test.tsx.
+  const isGrabbable = (el: Element): boolean =>
+    !NEVER[tag(el)] &&
+    isAddressable(el) &&
+    !insideIgnored(el) &&
+    !SVG_TEXT_FRAGMENT[tag(el)] &&
+    !isBareInlineWrapper(el) &&
+    !isEmptyBox(el)
+
+  // Every grabbable element as a full hit, in document order — the marquee tests rect intersection
+  // over this set, and smart guides snap against the rects of the elements not being dragged.
+  const allElements = () => {
+    const nodes = doc.querySelectorAll('[' + ID_ATTR + ']')
+    const seen: Record<string, boolean> = {}
+    const out: ReturnType<typeof hitTest>[] = []
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i]!
+      if (!isGrabbable(el)) continue
+      const d = describe(el)
+      // Adoption-agency clones share one id; report each id once (its rect is already unioned).
+      if (seen[d.slId]) continue
+      seen[d.slId] = true
+      out.push({ ...d, box: boxForId(d.slId), ancestors: ancestorsOf(el) })
+    }
+    return out
+  }
+
   // Computed styles (whitelisted subset) + rect for an already-selected id, for the M3.4 context
   // bundle (§6.2). The first node carrying the id is measured for styles (adoption-agency clones
   // share one id but the same computed style); the rect is unioned across all of them, matching
@@ -361,6 +391,19 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
         type: TYPE_INSPECT,
         slide: mySlide,
         payload: inspectId(p['slId']),
+      })
+      return
+    }
+
+    if (data['type'] === TYPE_ELEMENTS) {
+      send({
+        __sl: MAGIC,
+        v: VERSION,
+        id: data['id'],
+        dir: 'res',
+        type: TYPE_ELEMENTS,
+        slide: mySlide,
+        payload: allElements(),
       })
     }
   })
