@@ -184,13 +184,37 @@ the mac app would launch with a dead chat panel. M9.2 must build macOS on real h
 `current` _is_ darwin. Adding `darwin` to `supportedArchitectures` would fix the payload but not
 the dmg, and costs another ~275 MB per variant on every install.
 
-`build.toolsets.wine: "1.0.1"` is set so electron-builder downloads its own Wine instead of
-needing a system one (no sudo on this box). It does **not** work today: the upstream
-`wine-11.0-linux-x86_64.tar.xz` ships only `lib/wine/x86_64-unix/` and **no `x86_64-windows/`**
-PE directory, so every exe fails with `failed to load ...ntdll.dll error c0000135`. Verified by
-listing the tarball: `tar -tJf ... | grep -c x86_64-windows` → `0`. The key is kept because it is
-inert on a Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`)
-and costs nothing if the bundle is fixed upstream.
+#### Where Wine actually comes in — and what is still unexplained
+
+Only **one** step needs it. `makensis` compiling the installer does not:
+`~/.cache/electron-builder/nsis-3.0.4.1/**/linux/makensis` is an `ELF 64-bit LSB executable,
+x86-64`, run natively. Wine is invoked once, to **execute the freshly built installer so it can
+emit its own uninstaller** (`app-builder-lib/out/targets/NsisTarget.js`). That single invocation is
+what fails here.
+
+`build.toolsets.wine: "1.0.1"` is set so electron-builder downloads its own Wine rather than
+needing a system one (there is no sudo on this box). The download succeeds and
+`wine --version` prints `wine-11.0`, but running any exe fails:
+
+```bash
+W=~/.cache/electron-builder/wine@1.0.1/wine-11.0-linux-x86_64-*
+WINEPREFIX=$W/wine-home $W/bin/wine cmd /c "echo hello"
+# wine: failed to load .../lib/wine/x86_64-unix/ntdll.dll error c0000135
+# 0024:err:environ:run_wineboot failed to start wineboot 1
+```
+
+**The root cause is not identified.** Do not repeat this earlier guess, which was wrong: an earlier
+revision of this runbook claimed the bundle "ships no `x86_64-windows/` PE directory". That was an
+inference from `tar -tJf … | grep -c x86_64-windows` → `0`, which only says a directory of that
+_name_ is absent. The tarball does ship the Windows side — 191 entries under
+`wine-home/drive_c/windows/system32/`, including a `PE32+ executable (console) x86-64`
+`wineboot.exe` — at exactly the prefix `toolsets/wine.js:79` resolves (`<toolset>/wine-home`), and
+that path is validated at `:80-84`. So the bundle is not obviously incomplete, and why this one
+`wine` call fails under WSL2 remains an open question. Plausible unexplored leads: the WSL2 kernel,
+the `LD_LIBRARY_PATH` electron-builder injects, or a missing 32-bit/loader dependency.
+
+The `toolsets` key is kept regardless: it is a real electron-builder option, and it is inert on a
+Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`).
 
 ### 8.2 Building the NSIS installer on the Windows host
 
@@ -271,5 +295,26 @@ spawned from inside an archive) and must stay siblings.
   no `claude.exe` and **nothing in the build fails**.
 - electron-builder does _not_ filter those platform packages by their own `os`/`cpu` fields — the
   275 MB Linux CLI rode along inside the Windows app until `win.files` excluded it explicitly.
-- A platform-specific `files` array **overrides** the top-level `files`; it does not merge. Adding
-  `win.files` silently put `src/`, `tests/` and 24 MB of `docs/media` GIFs back into `app.asar`.
+- **Every** platform needs its own complete `files` list. A platform with no block falls through to
+  electron-builder's default `**/*` and packages the whole repo — that was `linux`, so `pnpm
+pack:dir` on this dev box produced a 63.7 MB asar with 184 `src/`, 145 `tests/` and 36 `docs/`
+  entries plus a foreign 254 MB `claude.exe`, against 37.7 MB for the shipped Windows one.
+- **Do not hoist the shared exclusions to a top-level `files`.** It reads like the obvious fix and
+  `fileMatcher.js:250-253` looks like it supports it (`addPatterns(config.files)` then
+  `addPatterns(customBuildOptions.files)` into one matcher). Measured on real `--win --dir` runs:
+
+  | `files` shape               | asar     | src | tests | docs | foreign CLI |
+  | --------------------------- | -------- | --- | ----- | ---- | ----------- |
+  | top-level only              | 37.7 MB  | 0   | 0     | 0    | 3           |
+  | top-level + platform        | 427.9 MB | 151 | 131   | 34   | 0           |
+  | platform only, full list    | 37.7 MB  | 0   | 0     | 0    | 0           |
+  | both carrying the full list | 401.9 MB | 0   | 0     | 0    | 0           |
+
+  Once a platform block exists, the app-source matcher takes the platform list and the top-level
+  list is routed to the _node_modules_ matcher instead — `release/builder-debug.yml` prints both
+  (`firstOrDefaultFilePatterns` vs `nodeModuleFilePatterns`) and shows the split. So the exclusions
+  are duplicated across `win`/`mac`/`linux` on purpose; `build-config.test.ts` guards the shape.
+
+- Icons are **deferred**: `directories.buildResources: "build"` names a dir that does not exist yet
+  and no `icon` is set, so every artifact carries the default Electron icon. M9.1 must add
+  `build/icon.png` (electron-builder auto-discovers it) before the release.

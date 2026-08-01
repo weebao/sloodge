@@ -46,6 +46,13 @@ allowBuilds:
 #
 # Deliberately NOT `darwin`: each variant is another 275MB, and macOS artifacts cannot be validly
 # produced from Linux anyway (M9.2 builds them on real hardware, where `current` IS darwin).
+#
+# NOTE for M9.2: this is a **cartesian product** of `os` x `cpu`, not a list of pairs. On this
+# linux/x64 host it expands to exactly linux-x64 + win32-x64. On the arm64 Mac M9.2 anticipates,
+# `current` becomes darwin/arm64 and the same four lines expand to darwin-arm64, darwin-x64,
+# win32-arm64 AND win32-x64 (~1GB), and each mac arch bundle would then carry both darwin CLIs.
+# There, pin `cpu` to the host's own arch and add a
+# `!**/node_modules/@anthropic-ai/claude-agent-sdk-darwin-<other-arch>/**` line to `build.mac.files`.
 supportedArchitectures:
   os:
     - current

@@ -125,6 +125,24 @@
       ],
       "category": "public.app-category.productivity"
     },
+    "linux": {
+      "files": [
+        "!**/.vscode/**",
+        "!.git",
+        "!src/**",
+        "!tests/**",
+        "!docs/**",
+        "!resources/**",
+        "!.claude/**",
+        "!experiments/**",
+        "!electron.vite.config.{js,ts,mjs,cjs}",
+        "!vitest.config.{js,ts,mjs,cjs}",
+        "!{.editorconfig,.prettierignore,.oxlintrc.json,README.md}",
+        "!{.env,.env.*,.npmrc,pnpm-lock.yaml,pnpm-workspace.yaml}",
+        "!{tsconfig.json,tsconfig.base.json,tsconfig.node.json,tsconfig.web.json}",
+        "!**/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,win32}-*/**"
+      ]
+    },
     "dmg": {
       "artifactName": "${name}-${version}-${arch}.${ext}"
     }
