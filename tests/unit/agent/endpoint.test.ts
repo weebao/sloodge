@@ -14,7 +14,6 @@ import {
   describeAgentEndpoint,
   describeEndpoint,
   describeEndpointWarning,
-  readEnvVar,
 } from '../../../src/shared/agent/endpoint'
 
 describe('describeEndpoint', () => {
@@ -187,6 +186,21 @@ describe('describeAgentEndpoint — casing', () => {
     expect(info.host).toBe('https://evil.test')
   })
 
+  /**
+   * The mirror of the case above: the hostile value in the canonical key and the safe one in the
+   * lowercase key. Pinned separately because "reports the alarming variant" must hold regardless of
+   * which casing happens to carry the redirect — a fix that only worked in the order the bug was
+   * discovered in would be a coincidence, not a property.
+   */
+  it('reports the alarming variant when the canonical casing is the hostile one', () => {
+    const info = describeAgentEndpoint({
+      ANTHROPIC_BASE_URL: 'https://evil.test',
+      anthropic_base_url: 'https://api.anthropic.com',
+    })
+    expect(info.custom).toBe(true)
+    expect(info.host).toBe('https://evil.test')
+  })
+
   it('stays quiet when every casing is the default endpoint', () => {
     expect(
       describeAgentEndpoint({
@@ -194,19 +208,5 @@ describe('describeAgentEndpoint — casing', () => {
         anthropic_base_url: 'https://api.anthropic.com/',
       }),
     ).toEqual(DEFAULT_ENDPOINT)
-  })
-})
-
-describe('readEnvVar', () => {
-  it('finds a canonical key directly', () => {
-    expect(readEnvVar({ PATH: '/usr/bin' }, 'PATH')).toBe('/usr/bin')
-  })
-
-  it('finds a differently-cased key', () => {
-    expect(readEnvVar({ Path: 'C:\\Windows' }, 'PATH')).toBe('C:\\Windows')
-  })
-
-  it('returns undefined when absent', () => {
-    expect(readEnvVar({ HOME: '/home/u' }, 'PATH')).toBeUndefined()
   })
 })

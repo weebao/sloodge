@@ -80,47 +80,31 @@ export function describeEndpoint(baseUrl: string | undefined | null): EndpointIn
 }
 
 /**
- * Read a variable out of an environment **case-insensitively**.
+ * Every value whose key matches `name` **case-insensitively**.
  *
- * This exists because admission and consumption must agree about casing, and round 3 shipped a
- * version where they did not. `allowedEnv` matches the allow-list case-insensitively — correctly,
- * since Windows environment names vary in the wild (`Path`, `TeMp`, `SystemRoot`) — and preserves
- * the caller's original casing so a Linux `Path` is not silently promoted to `PATH`. Reading the
- * result back with a case-*sensitive* `env['ANTHROPIC_BASE_URL']` therefore missed an admitted
- * `anthropic_base_url`: the variable reached the child and Windows, whose env lookup is
+ * This exists because admission and consumption must agree about casing, and an earlier round
+ * shipped a version where they did not. `allowedEnv` matches the allow-list case-insensitively —
+ * correctly, since Windows environment names vary in the wild (`Path`, `TeMp`, `SystemRoot`) — and
+ * preserves the caller's original casing so a Linux `Path` is not silently promoted to `PATH`.
+ * Reading the result back with a case-*sensitive* `env['ANTHROPIC_BASE_URL']` therefore missed an
+ * admitted `anthropic_base_url`: the variable reached the child and Windows, whose env lookup is
  * case-insensitive, honoured it — while the UI reported the default endpoint and rendered no
  * warning. That breaks the single invariant this whole design rests on, namely that
  * `ANTHROPIC_BASE_URL` is admitted **only because it is disclosed**.
  *
- * Worth recording plainly: the previous round read `process.env` directly and, precisely because
- * Windows lookup is case-insensitive, would have warned correctly. The change sold as making the
- * UI text and the child's bytes "the same data" so they "cannot drift" is what introduced the drift.
- * The fix is not to go back — deriving from the built env is still right — it is to make the read
- * as case-insensitive as the admission.
+ * Worth recording plainly: the round before that read `process.env` directly and, precisely because
+ * Windows lookup is case-insensitive, would have warned correctly. The change sold as making the UI
+ * text and the child's bytes "the same data" so they "cannot drift" is what introduced the drift.
+ * The fix is not to go back — deriving from the built env is still right — it is to make the read as
+ * case-insensitive as the admission.
  *
- * Direct hit first so the common path is a single property access.
- */
-export function readEnvVar(
-  env: Readonly<Record<string, string | undefined>>,
-  name: string,
-): string | undefined {
-  const direct = env[name]
-  if (direct !== undefined) return direct
-  const target = name.toUpperCase()
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toUpperCase() === target) return value
-  }
-  return undefined
-}
-
-/**
- * Every value whose key matches `name` case-insensitively.
- *
- * A parent process can legitimately carry two keys differing only in case — on Linux they are two
- * distinct variables, and a JS object holds both. If disclosure read only the first, a parent with
- * `ANTHROPIC_BASE_URL=https://api.anthropic.com` *and* `anthropic_base_url=https://evil.test` would
- * report the harmless one and render no warning, while Windows honours whichever its own lookup
- * picks. So the endpoint check inspects all of them and reports the alarming one.
+ * **Returns every match, not the first.** A parent process can legitimately carry two keys differing
+ * only in case — on Linux they are two distinct variables, and a JS object holds both. A first-match
+ * reader would let a parent with `ANTHROPIC_BASE_URL=https://api.anthropic.com` *and*
+ * `anthropic_base_url=https://evil.test` report the harmless one and render no warning, while Windows
+ * honours whichever its own lookup picks. There is deliberately no first-match helper exported
+ * alongside this one: in a module whose entire subject is that first-match is the bug, that would be
+ * a footgun for the next reader.
  */
 export function readEnvVarAll(
   env: Readonly<Record<string, string | undefined>>,
@@ -137,7 +121,7 @@ export function readEnvVarAll(
 /**
  * Classify the endpoint from the **built subprocess environment** — the authoritative disclosure.
  *
- * Both reads are case-insensitive, matching how the allow-list admits (see `readEnvVar`). On Linux
+ * Both reads are case-insensitive, matching how the allow-list admits (see `readEnvVarAll`). On Linux
  * this can over-warn — an admitted `anthropic_base_url` is not read by the CLI there — and that is
  * the correct direction to be wrong in: a warning the user did not strictly need costs them nothing,
  * a missing one costs them their credential.
