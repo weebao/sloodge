@@ -25,6 +25,12 @@ import { fileURLToPath } from 'node:url'
  * hand-models electron-builder's file matcher rather than restating config back to itself: it walks
  * indentation into a key tree, so the assertions are about *structure* — "which keys exist under
  * `on`" — rather than about whether some substring happens to appear in the file.
+ *
+ * The reader **fails closed**: anything it cannot model throws. That is not fastidiousness, it is
+ * the fix for a real hole. The first revision skipped lines its regex missed, and review found that
+ * `"pull_request":`, `'workflow_dispatch':`, and `? pull_request` / `:` are all triggers GitHub
+ * honours yet the reader silently ignored — so the suite stayed green while the budget rule was
+ * being abandoned. See the `fails closed` describe block at the bottom, which pins that property.
  */
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -32,6 +38,9 @@ const WORKFLOW_PATH = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml'
 
 /** The package.json script the workflow is required to call instead of its own command line. */
 const PACK_SCRIPT = 'pack:win:release'
+
+/** The step name that ties the tag being built to the version stamped into the artifacts. */
+const TAG_VERSION_STEP = 'Verify tag matches package version'
 
 const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')) as {
   readonly scripts?: Readonly<Record<string, string>>
@@ -42,12 +51,14 @@ const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'
 /* -------------------------------------------------------------------------- */
 
 interface YamlBlock {
-  /** `key: value` pairs at this level. */
+  /** `key: value` pairs at this level. Block scalars (`run: |`) hold their joined body text. */
   readonly scalars: ReadonlyMap<string, string>
   /** `key:` followed by an indented block. */
   readonly blocks: ReadonlyMap<string, YamlBlock>
-  /** `- item` entries at this level. */
+  /** `- item` entries at this level whose item is a plain scalar. */
   readonly sequence: readonly string[]
+  /** `- item` entries at this level whose item is a mapping (e.g. a workflow step). */
+  readonly items: readonly YamlBlock[]
 }
 
 interface SourceLine {
@@ -55,7 +66,17 @@ interface SourceLine {
   readonly text: string
 }
 
-const EMPTY_BLOCK: YamlBlock = { scalars: new Map(), blocks: new Map(), sequence: [] }
+const EMPTY_BLOCK: YamlBlock = {
+  scalars: new Map(),
+  blocks: new Map(),
+  sequence: [],
+  items: [],
+}
+
+/** A `key:` in any of the three spellings YAML accepts: bare, "double-quoted", 'single-quoted'. */
+const KEY_RE = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/
+/** Block scalar introducers, including the chomping/keep modifiers. */
+const BLOCK_SCALAR_RE = /^[|>][+-]?$/
 
 /** Drops blank lines and whole-line comments, and records each surviving line's indentation. */
 function readLines(source: string): readonly SourceLine[] {
@@ -71,9 +92,16 @@ function readLines(source: string): readonly SourceLine[] {
 /**
  * Parses a mapping at `indent`, returning it with the index of the first unconsumed line.
  *
- * Lines deeper than `indent` that are not the direct child of a key just parsed are skipped rather
- * than interpreted — that is what keeps block scalars (`run: |`, `path: |`) from being mistaken for
- * structure. This reader only has to be correct for the paths the assertions below actually walk.
+ * **This reader fails closed.** Any line it cannot model throws, rather than being skipped. That
+ * property is the whole point: an earlier revision skipped unmatched lines, and a review found
+ * three legal YAML spellings — `"pull_request":`, `'workflow_dispatch':`, and the explicit-key form
+ * `? pull_request` / `:` — that GitHub honours as real triggers (actionlint resolves all three and
+ * rejects them only when the event name is bogus) but that the reader silently ignored, leaving the
+ * budget guard GREEN while the budget was being abandoned. A structural reader that skips what it
+ * does not understand cannot be a guard, so every unmodelled syntax must become red, not invisible.
+ *
+ * Block scalar bodies (`run: |`, `path: |`) are consumed as opaque text rather than parsed, which
+ * is both more accurate and what keeps shell script lines from tripping the throw.
  */
 function parseBlock(
   lines: readonly SourceLine[],
@@ -83,29 +111,66 @@ function parseBlock(
   const scalars = new Map<string, string>()
   const blocks = new Map<string, YamlBlock>()
   const sequence: string[] = []
+  const items: YamlBlock[] = []
   let i = start
+
+  /** Collects every line indented deeper than `outer`, starting at `from`. */
+  const takeDeeper = (from: number, outer: number): readonly [SourceLine[], number] => {
+    const taken: SourceLine[] = []
+    let j = from
+    while (j < lines.length) {
+      const candidate = lines[j]
+      if (candidate === undefined || candidate.indent <= outer) break
+      taken.push(candidate)
+      j += 1
+    }
+    return [taken, j]
+  }
 
   while (i < lines.length) {
     const line = lines[i]
     if (line === undefined || line.indent < indent) break
     if (line.indent > indent) {
-      i += 1
+      throw new Error(
+        `unexpected indentation at "${line.text}" (indent ${line.indent}, expected ${indent})`,
+      )
+    }
+
+    if (line.text === '-' || line.text.startsWith('- ')) {
+      const rest = line.text === '-' ? '' : line.text.slice(2).trim()
+      const [deeper, afterDeeper] = takeDeeper(i + 1, line.indent)
+      const itemIndent = line.indent + 2
+      if (rest !== '' && KEY_RE.test(rest)) {
+        const itemLines = [{ indent: itemIndent, text: rest }, ...deeper]
+        const [item] = parseBlock(itemLines, 0, itemIndent)
+        items.push(item)
+      } else if (deeper.length === 0) {
+        sequence.push(rest)
+      } else {
+        throw new Error(`unmodelled sequence item: ${line.text}`)
+      }
+      i = afterDeeper
       continue
     }
-    if (line.text.startsWith('- ')) {
-      sequence.push(line.text.slice(2).trim())
-      i += 1
-      continue
-    }
-    const match = /^([A-Za-z0-9_.-]+):\s*(.*)$/.exec(line.text)
+
+    const match = KEY_RE.exec(line.text)
     if (match === null) {
-      i += 1
+      throw new Error(
+        `unparsed YAML line at indent ${line.indent}: ${line.text} — the reader must model ` +
+          `every line or it cannot be trusted as a guard`,
+      )
+    }
+    const key = match[1] ?? match[2] ?? match[3] ?? ''
+    const value = (match[4] ?? '').trim()
+    i += 1
+
+    if (BLOCK_SCALAR_RE.test(value)) {
+      const [body, afterBody] = takeDeeper(i, line.indent)
+      scalars.set(key, body.map((entry) => entry.text).join('\n'))
+      i = afterBody
       continue
     }
-    const key = match[1] ?? ''
-    const value = (match[2] ?? '').trim()
-    i += 1
-    if (value !== '' && value !== '|' && value !== '>') {
+    if (value !== '') {
       scalars.set(key, value)
       continue
     }
@@ -115,16 +180,13 @@ function parseBlock(
       blocks.set(key, child)
       i = consumed
     } else {
+      // A key with neither a value nor an indented body — e.g. a bare `pull_request:` trigger.
+      // Recording it is what makes the exhaustive trigger assertion red.
       blocks.set(key, EMPTY_BLOCK)
     }
   }
 
-  return [{ scalars, blocks, sequence }, i]
-}
-
-function parseWorkflow(source: string): YamlBlock {
-  const [block] = parseBlock(readLines(source), 0, 0)
-  return block
+  return [{ scalars, blocks, sequence, items }, i]
 }
 
 /** Every key present at a level, whether it held a scalar or a nested block. */
@@ -133,7 +195,23 @@ function keysOf(block: YamlBlock): readonly string[] {
 }
 
 const workflowSource = existsSync(WORKFLOW_PATH) ? readFileSync(WORKFLOW_PATH, 'utf8') : ''
-const workflow = parseWorkflow(workflowSource)
+
+/**
+ * Parsed lazily and memoized so a throw surfaces as a normal test failure with its message intact,
+ * rather than as a module-load error that obscures which assertion was being made.
+ */
+let parsed: YamlBlock | undefined
+function getWorkflow(): YamlBlock {
+  parsed ??= parseBlock(readLines(workflowSource), 0, 0)[0]
+  return parsed
+}
+
+/** Every step across every job, as parsed mappings. */
+function allSteps(): readonly YamlBlock[] {
+  return [...(getWorkflow().blocks.get('jobs')?.blocks.values() ?? [])].flatMap(
+    (job) => job.blocks.get('steps')?.items ?? [],
+  )
+}
 
 /* -------------------------------------------------------------------------- */
 
@@ -148,7 +226,9 @@ describe('release workflow', () => {
   it('parses into the structure the rest of this suite asserts on', () => {
     // Guards the reader itself: if `on:`/`jobs:` stopped resolving, every assertion below would
     // pass vacuously against empty maps.
-    expect(keysOf(workflow)).toEqual(expect.arrayContaining(['jobs', 'name', 'on', 'permissions']))
+    expect(keysOf(getWorkflow())).toEqual(
+      expect.arrayContaining(['jobs', 'name', 'on', 'permissions']),
+    )
   })
 })
 
@@ -158,7 +238,7 @@ describe('release workflow — CI budget guard', () => {
    * is allowed to exist as the single exception *because* it cannot fire during development.
    */
   it('is triggered by tag pushes and by nothing else whatsoever', () => {
-    const on = workflow.blocks.get('on')
+    const on = getWorkflow().blocks.get('on')
     expect(on, "workflow has no `on:` block — can't verify the budget guard").toBeDefined()
 
     expect(
@@ -171,7 +251,7 @@ describe('release workflow — CI budget guard', () => {
   })
 
   it('restricts the push trigger to tags, never to a branch', () => {
-    const push = workflow.blocks.get('on')?.blocks.get('push')
+    const push = getWorkflow().blocks.get('on')?.blocks.get('push')
     expect(push, '`on.push` must be a block containing `tags`').toBeDefined()
 
     expect(
@@ -184,7 +264,7 @@ describe('release workflow — CI budget guard', () => {
   })
 
   it('caps its own cost with an explicit job timeout', () => {
-    const jobs = workflow.blocks.get('jobs') ?? EMPTY_BLOCK
+    const jobs = getWorkflow().blocks.get('jobs') ?? EMPTY_BLOCK
     expect(jobs.blocks.size).toBeGreaterThan(0)
     for (const [name, job] of jobs.blocks) {
       const timeout = job.scalars.get('timeout-minutes')
@@ -212,7 +292,7 @@ describe('release workflow — build correctness', () => {
     // electron-builder EXECUTES the freshly built installer to emit its uninstaller, which needs
     // Wine and does not work on this project's WSL2 box (docs/windows-smoke-runbook.md §8.1). A
     // native Windows runner is the whole reason this workflow retires the manual procedure.
-    const jobs = workflow.blocks.get('jobs') ?? EMPTY_BLOCK
+    const jobs = getWorkflow().blocks.get('jobs') ?? EMPTY_BLOCK
     expect(jobs.blocks.size).toBeGreaterThan(0)
     for (const [name, job] of jobs.blocks) {
       expect(job.scalars.get('runs-on'), `job "${name}" must run on windows-latest`).toBe(
@@ -259,8 +339,8 @@ describe('release workflow — build correctness', () => {
   })
 
   it('grants release-write permission at the job level, not workflow-wide', () => {
-    expect(workflow.blocks.get('permissions')?.scalars.get('contents')).toBe('read')
-    const jobs = workflow.blocks.get('jobs') ?? EMPTY_BLOCK
+    expect(getWorkflow().blocks.get('permissions')?.scalars.get('contents')).toBe('read')
+    const jobs = getWorkflow().blocks.get('jobs') ?? EMPTY_BLOCK
     const writers = [...jobs.blocks.values()].filter(
       (job) => job.blocks.get('permissions')?.scalars.get('contents') === 'write',
     )
@@ -268,5 +348,70 @@ describe('release workflow — build correctness', () => {
       writers.length,
       'the packaging job needs job-scoped `contents: write` to attach artifacts',
     ).toBeGreaterThan(0)
+  })
+
+  it('refuses to build a tag whose version disagrees with package.json', () => {
+    // `build.nsis.artifactName` interpolates package.json's version, so without this step ANY tag
+    // produces `sloodge-<package version>-setup.exe`. Origin already carries v0.0.0-preview and
+    // v0.0.1-preview, which today would yield identically named artifacts that `--clobber`
+    // overwrites. Provenance has to cover the artifact's name, not just its source commit.
+    const guard = allSteps().find((step) => step.scalars.get('name') === TAG_VERSION_STEP)
+    expect(
+      guard,
+      `release.yml must have a "${TAG_VERSION_STEP}" step — otherwise a v0.0.2 tag silently ` +
+        'ships an installer named and self-reporting some other version',
+    ).toBeDefined()
+
+    const script = guard?.scalars.get('run') ?? ''
+    expect(script).toContain('package.json')
+    expect(script).toContain('GITHUB_REF_NAME')
+    // Must actually fail the job, not just warn.
+    expect(script, 'the version guard must exit non-zero on a mismatch').toContain('exit 1')
+  })
+
+  it('runs the version guard before the expensive steps', () => {
+    // A mismatch should cost seconds, not a 15-minute install-and-build.
+    const names = allSteps().map((step) => step.scalars.get('name') ?? step.scalars.get('uses'))
+    const guardAt = names.indexOf(TAG_VERSION_STEP)
+    const packAt = names.indexOf('Build and package')
+    expect(guardAt).toBeGreaterThanOrEqual(0)
+    expect(packAt).toBeGreaterThan(guardAt)
+  })
+})
+
+describe('release workflow — the reader fails closed', () => {
+  /**
+   * A guard is only as good as its parser. The first revision of this file SKIPPED lines its regex
+   * did not match, and review found three legal spellings that GitHub honours as real triggers but
+   * that the reader ignored, leaving the suite green while the budget rule was abandoned. These
+   * tests pin the fail-closed property itself, so it cannot regress back into a silent skip.
+   */
+  const parse = (yaml: string): YamlBlock => parseBlock(readLines(yaml), 0, 0)[0]
+
+  it('sees a double-quoted trigger key', () => {
+    expect(keysOf(parse('on:\n  "pull_request":\n  push:\n'))).toEqual(['on'])
+    expect(
+      keysOf(parse('on:\n  "pull_request":\n  push:\n').blocks.get('on') ?? EMPTY_BLOCK),
+    ).toEqual(['pull_request', 'push'])
+  })
+
+  it('sees a single-quoted trigger key', () => {
+    expect(
+      keysOf(parse("on:\n  'workflow_dispatch':\n  push:\n").blocks.get('on') ?? EMPTY_BLOCK),
+    ).toEqual(['push', 'workflow_dispatch'])
+  })
+
+  it('throws on YAML explicit-key syntax rather than ignoring it', () => {
+    expect(() => parse('on:\n  ? pull_request\n  :\n  push:\n')).toThrow(/unparsed YAML line/)
+  })
+
+  it('throws on any line it cannot model, rather than skipping it', () => {
+    expect(() => parse('on:\n  @not-yaml\n')).toThrow(/unparsed YAML line/)
+  })
+
+  it('treats a block scalar body as opaque text, not as structure', () => {
+    // Without this, the shell script inside `run: |` would trip the throw above.
+    const block = parse('run: |\n  set -euo pipefail\n  echo hi\n')
+    expect(block.scalars.get('run')).toBe('set -euo pipefail\necho hi')
   })
 })

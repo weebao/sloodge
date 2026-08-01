@@ -163,9 +163,16 @@ cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA Silent
 
 ## 8. Packaged build (M5.2) — building locally
 
-> **Releases are not cut this way.** Since M9.0, shipping artifacts are built by
+> **Releases are not to be cut this way.** As of M9.0, shipping artifacts are built by
 > `.github/workflows/release.yml`: push a `v*` tag and a `windows-latest` runner builds the NSIS
 > installer and zip from a clean checkout of that tag and attaches them to the release.
+>
+> **Caveat, stated up front rather than buried in §8.5: that workflow has never executed.** It is
+> validated statically (actionlint + shellcheck), by mutation-testing its guard, and by running the
+> same commands locally, but the first real tag is the first end-to-end proof. If that first push
+> fails, debug it with the procedure below — do not quietly hand-build the artifact instead, because
+> that is the exact habit M9.0 exists to break.
+>
 > **Do not hand-build a release artifact.** A preview release was once built from a stale worktree —
 > the artifact predated a merged milestone, so an entire export format silently did nothing in the
 > shipped build, and nothing in the build reported it. A binary from a developer machine has no
@@ -299,10 +306,26 @@ spawned from inside an archive) and must stay siblings.
 
 ### 8.5 The release path (M9.0) — `.github/workflows/release.yml`
 
-Push a `v*` tag. A `windows-latest` runner checks out that tag, `pnpm install --frozen-lockfile`,
-`pnpm test`, then `pnpm pack:win:release` (= `pnpm build && electron-builder --win --publish never`),
-and attaches `release/*.exe` + `release/*.zip` to the tag's GitHub release — creating it as a
-**draft** if it does not exist yet, so M9.4's human release-notes step survives.
+Push a `v*` tag. A `windows-latest` runner checks out that tag, verifies the tag matches
+`package.json`'s version, `pnpm install --frozen-lockfile`, `pnpm test`, then
+`pnpm pack:win:release` (= `pnpm build && electron-builder --win --publish never`), and attaches
+`release/*.exe` + `release/*.zip` to the tag's GitHub release — creating it as a **draft** if it does
+not exist yet, so M9.4's human release-notes step survives.
+
+**Tag naming is enforced.** The tag must be `v<version>` where `<version>` is `package.json`'s
+`version` exactly, optionally followed by `-<suffix>` (`v0.0.1-preview`). Otherwise the job fails in
+seconds with a message naming what to change. This exists because `build.nsis.artifactName`
+interpolates the version: without the check, _any_ tag against today's `0.0.0` emits
+`sloodge-0.0.0-setup.exe`, and the two `-preview` tags already on origin would produce identically
+named artifacts that `--clobber` would overwrite on top of each other. Bump `package.json` first,
+then tag.
+
+**`.gitattributes` is load-bearing here.** `windows-latest` installs Git for Windows with no
+`/o:CRLFOption`, so `core.autocrlf=true` applies and `actions/checkout` does not override it. Without
+the repo-root `* text=auto eol=lf`, 375 files check out CRLF and `skills-contract.test.ts` reds
+(`skill.startsWith('---\n')` is false for `---\r\n`), aborting the job before packaging. Measured on
+a `core.autocrlf=true` clone: 8 failed / 2664 passed without it, fully green with it. Every other
+suite — including the byte-exact export and round-trip tests — was unaffected.
 
 **Tag-triggered and nothing else.** No `pull_request`, no `push: branches`, no `workflow_dispatch`.
 The repo's CI budget rule is unit-tests-only (70-testing-ci.md §6.1) and this does not weaken it:
@@ -342,10 +365,13 @@ anyone adds one.
 
 **Still open / unproven:**
 
-- **The workflow has never run.** It was validated statically and by mutation-testing its guard, not
-  end-to-end — no tag has been pushed. The first real tag is the first proof. Most likely first-run
-  snags: a `--frozen-lockfile` mismatch if the lockfile lacks a resolution the runner needs, and the
-  `gh release upload` glob if `release/` ever emits an unexpected extension.
+- **The workflow has never run.** It was validated statically (actionlint 1.7.7 + shellcheck 0.10.0),
+  by mutation-testing its guard, and by running the same commands locally — but not end-to-end, since
+  no tag has been pushed. The first real tag is the first proof. The two failure modes review found
+  by reasoning rather than by running (CRLF checkout, tag/version mismatch) are now both guarded, and
+  the CRLF one was reproduced and re-verified against a `core.autocrlf=true` clone. Remaining
+  first-run risk is mostly the NSIS step itself, which has never executed on a Windows runner from
+  this config, and `gh release create/upload` behaviour against a real repo.
 - **Icons are still deferred** (see the last Gotcha): `directories.buildResources: "build"` names a
   directory that does not exist, so CI artifacts carry the default Electron icon exactly as local
   ones do. M9.1 must add `build/icon.png` — the CI path does not fix this.

@@ -309,7 +309,7 @@ or a web viewer). Not before.
 | **R8** | **Tailwind v4 churn** (`@theme`/CSS-first config is still young; v4 has shipped breaking-ish minors). | Low | Low | Caret-pin within v4 and keep our design tokens in one `theme.css`. Nothing in component source depends on config-file shape. |
 | **R9** | **electron-builder code signing** — Windows SmartScreen reputation and macOS notarization are the classic release-day blockers. | High | Med | Ship **unsigned** artifacts for v1 alpha (documented in the README), exactly as t3code does when credentials are absent. Wire the signing config (Azure Trusted Signing for Windows, Developer ID + `@electron/notarize` `afterSign` for macOS) but make it conditional on secrets being present, so the release pipeline is correct before certificates exist. |
 | **R10** | **Native-module creep** — one dependency pulling in a native addon reintroduces per-platform rebuilds and signing of unpacked binaries. | Low | Med | Hard rule: **no native modules in v1.** Every pick above is pure JS except Electron itself and the Agent SDK's binary. `parse5`, `pdf-lib`, `pptxgenjs` were all chosen partly for this. Enforce by reviewing `allowBuilds` on every dependency addition. |
-| **R11** | **Playwright + Electron E2E flake / cost**, tempting us to run it on PR CI and burn the minute budget. | Med | Low | Per overview decision 7: **CI runs Vitest only.** Playwright runs locally and on a nightly/pre-release job. Keep E2E to a handful of golden-path specs so it stays runnable on a laptop. |
+| **R11** | **Playwright + Electron E2E flake / cost**, tempting us to run it on PR CI and burn the minute budget. | Med | Low | Per overview decision 7: **CI runs Vitest only on the development path** (the M9.0 release workflow packages, but only on a `v*` tag — 70-testing-ci.md §6.5). Playwright runs locally and on a nightly/pre-release job. Keep E2E to a handful of golden-path specs so it stays runnable on a laptop. |
 
 ---
 
@@ -327,7 +327,8 @@ or a web viewer). Not before.
     "lint":       "oxlint --type-aware .",
     "format":     "prettier --write .",
     "check":      "prettier --check . && oxlint . && pnpm typecheck",
-    "test":       "vitest run",              // <- the only thing CI runs
+    "test":       "vitest run",              // <- the only thing CI runs on a PR or push
+                                             //    (a v* tag also runs pack:win:release; §6.5)
     "test:watch": "vitest",
     "test:e2e":   "playwright test",         // local / nightly only
     "dist:win":   "pnpm build && electron-builder --win nsis",

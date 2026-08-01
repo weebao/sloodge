@@ -1,0 +1,35 @@
+# Normalize line endings to LF in the working tree on every platform.
+#
+# This is load-bearing for M9.0's release workflow, not cosmetic. GitHub's windows-latest image
+# installs Git for Windows with no `/o:CRLFOption` argument, so the installer default
+# `core.autocrlf=true` applies, and actions/checkout never overrides it. Without this file the
+# release job checks out ~375 files as CRLF and `pnpm test` reds before packaging is ever reached:
+# `tests/unit/agent/skills-contract.test.ts` asserts `skill.startsWith('---\n')` against
+# `resources/skills/**/SKILL.md`, which is false for `---\r\n`, and the ```html fence regex stops
+# matching too. Measured on a `core.autocrlf=true` clone of this branch: 8 failed / 2664 passed.
+#
+# `eol=lf` (rather than bare `text=auto`) is what pins the *working tree*, which is what the tests
+# read. It also fixes local Windows clones and any future Windows job, instead of papering over the
+# one assertion that happens to notice today.
+* text=auto eol=lf
+
+# Fixtures whose bytes are asserted on must never be touched by any filter, even if a future
+# heuristic misjudges them as text. M4.6's PPTX round-trip identity gate compares archives
+# byte-for-byte; a line-ending rewrite there would be a silent, confusing failure.
+*.pptx  binary
+*.potx  binary
+*.pdf   binary
+*.png   binary
+*.gif   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ico   binary
+*.icns  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
+*.asar  binary
+*.exe   binary

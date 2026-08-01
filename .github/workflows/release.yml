@@ -60,6 +60,33 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Provenance is about more than which commit built the artifact: the artifact's NAME and its
+      # self-reported version must match the tag too. `build.nsis.artifactName` interpolates
+      # package.json's `version`, so without this check a `v0.0.2` tag silently ships
+      # `sloodge-0.0.0-setup.exe`. Not hypothetical — origin already carries `v0.0.0-preview` and
+      # `v0.0.1-preview`, which today would produce identically named files that `--clobber` would
+      # happily overwrite on top of each other.
+      #
+      # CONVENTION: the tag is `v<version>` where `<version>` is package.json's `version` exactly,
+      # optionally followed by `-<suffix>` for pre-releases (`v0.0.1-preview`). So cutting a release
+      # requires bumping package.json first — the step M9.1 describes but nothing previously
+      # enforced. Runs before `pnpm install` so a mismatch fails in seconds, not after a 15-minute
+      # build.
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="${GITHUB_REF_NAME}"
+          if [ "$tag" != "v$version" ] && [ "${tag#v"$version"-}" = "$tag" ]; then
+            echo "::error::Tag '$tag' does not match package.json version '$version'."
+            echo "Expected 'v$version' or 'v$version-<suffix>' (for example v$version-preview)."
+            echo "Fix: set \"version\" in package.json to the version this tag names, commit that,"
+            echo "then move the tag onto the new commit and force-push the tag."
+            exit 1
+          fi
+          echo "tag '$tag' matches package.json version '$version'"
+
       # NOTE the deliberately INVERTED env discipline versus test.yml. That workflow sets
       # ELECTRON_SKIP_BINARY_DOWNLOAD=1 because unit tests never launch Electron and the download
       # is ~120 MB of pure waste. Packaging is the opposite case: electron-builder packs the real
@@ -113,8 +140,23 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+
+          # nullglob so an unmatched pattern becomes an empty array rather than being passed to gh
+          # as the literal string `release/*.zip`, which fails with a confusing "file does not
+          # exist" after a successful 15-minute build. Both targets are required: the preceding
+          # upload-artifact step's `if-no-files-found: error` evaluates the UNION of the two
+          # patterns and stays green when only one of them matched.
+          shopt -s nullglob
+          installers=(release/*.exe)
+          archives=(release/*.zip)
+          shopt -u nullglob
+          if [ ${#installers[@]} -eq 0 ] || [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::expected both an .exe installer and a .zip in release/, found ${#installers[@]} exe and ${#archives[@]} zip"
+            exit 1
+          fi
+
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --draft --title "$tag" \
               --notes "Automated build from \`$tag\` (workflow run $GITHUB_RUN_ID). Release notes pending — see M9.4."
           fi
-          gh release upload "$tag" release/*.exe release/*.zip --clobber
+          gh release upload "$tag" "${installers[@]}" "${archives[@]}" --clobber

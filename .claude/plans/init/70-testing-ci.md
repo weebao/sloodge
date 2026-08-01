@@ -4,7 +4,8 @@
 
 ## 0. Constraints that shape everything here
 
-1. **GitHub Actions minutes are limited.** CI runs **unit tests and lint only**. No `tsc` full-project build, no `electron-vite build`, no `electron-builder` packaging, no Playwright, no Electron. Compilation and packaging happen locally and at release time, on a developer machine. This is a deliberate, load-bearing constraint, not an oversight — see §3.
+1. **GitHub Actions minutes are limited.** On the development path — every PR, every push to `main` — CI runs **unit tests and lint only**. No `tsc` full-project build, no `electron-vite build`, no `electron-builder` packaging, no Playwright, no Electron. This is a deliberate, load-bearing constraint, not an oversight — see §3.
+   **One exception, added in M9.0 (§6.5):** release packaging *does* run in CI, but only on a `v*` tag push — never on a PR, a branch push, a schedule, or a manual dispatch. It therefore costs nothing during development, which is what this constraint is actually protecting (frequency, not purity). The rule that packaging never happens on the development path is unchanged; what changed is that a *release* is no longer built by hand on a developer machine, because hand-built artifacts have no provenance. A test asserts the trigger set exhaustively so this exception cannot quietly widen.
 2. **The app is Electron.** Anything touching `webContents`, `BrowserWindow`, `printToPDF`, or `capturePage` cannot run in a plain Node test process and cannot run in CI. Those tests are local-only by construction, so the architecture must push as much logic as possible *out* of Electron-dependent code.
 3. **Slides are self-contained HTML documents.** The most valuable integration test in the project — "does this slide honour the contract?" — needs a browser but *not* Electron. Playwright against Chromium covers it, and [`experiments/init/harness/render.mjs`](../../../experiments/init/harness/render.mjs) already proves the pattern works.
 
@@ -29,6 +30,9 @@ Constraint 1 has a design consequence worth stating outright: **testability pres
                     │  doc model, patching, export mapping  │
                     └───────────────────────────────────────┘
 ```
+
+"CI RUNS ONLY THIS" describes the **development path**, which is the only path that runs on a push
+or a PR. Release packaging also runs in CI, but exclusively on a `v*` tag — see §6.5.
 
 | Layer | Runner | Where | Speed | Gate |
 |---|---|---|---|---|
@@ -323,21 +327,31 @@ The cost, stated honestly rather than hand-waved: Windows runners bill at **2x**
 
 **Why `windows-latest` specifically.** Not a preference: NSIS *cannot* be built on Linux, because electron-builder executes the freshly built installer in order to generate its uninstaller, which needs Wine — and Wine does not work on this project's WSL2 box (runbook §8.1, root cause still unidentified). A native Windows runner makes that step a non-event, and deletes the `--prepackaged` two-machine dance along with it.
 
-Deliberate differences from §6.2's unit-test workflow, each the *opposite* of the choice made there:
+Deliberate differences from the unit-test workflow, each the *opposite* of the choice made there. The left column is **`.github/workflows/test.yml` as it actually ships**, not §6.2's specification (see the drift note below):
 
-| Unit-test workflow | Release workflow | Why the inversion |
+| `test.yml` as shipped | Release workflow | Why the inversion |
 |---|---|---|
 | `ELECTRON_SKIP_BINARY_DOWNLOAD=1` | **not set** | Packaging packs the real win32 Electron binary; skipping the download breaks the artifact |
-| `--ignore-scripts` on install | **not set** | Electron's postinstall is what fetches that binary |
 | `ubuntu-latest` (1x billing) | `windows-latest` (2x) | NSIS is unbuildable on Linux |
 | `cancel-in-progress: true` | **`false`** | Killing a half-finished release leaves a tag with partial artifacts attached |
-| `permissions: contents: read` | job-scoped `contents: write` | Needed to attach artifacts to the release; scoped to the one job, workflow default stays read |
+| no `permissions:` block (inherits the repo default) | workflow-level `contents: read`, job-scoped `contents: write` | Release needs to attach artifacts; the release workflow is explicit about it rather than inheriting, and the write is scoped to the one job |
+| no `.gitattributes` dependency (ubuntu checks out LF regardless) | **depends on `.gitattributes`** | `windows-latest` checks out CRLF without it, which reds `skills-contract.test.ts` before packaging is reached — see below |
+
+**Drift note (unresolved, pre-existing).** §6.2's fenced example does not match the shipped file: it is headed `ci.yml` (the real file is `test.yml`), it specifies `--ignore-scripts` and `node-version-file: .nvmrc` (the real file uses neither — it runs a plain `pnpm install --frozen-lockfile` and pins `node-version: 24`), and it calls `pnpm typecheck:core` and `pnpm test:unit`, neither of which exists in `package.json`. M9.0 did not introduce this and does not fix it; it is flagged here so the table above is not read as describing §6.2. Reconciling §6.2 with `test.yml` is its own small chore.
+
+**The CRLF dependency is not incidental.** GitHub's `windows-latest` image installs Git for Windows with no `/o:CRLFOption`, so the installer default `core.autocrlf=true` applies, and `actions/checkout` never overrides it. Measured on a `core.autocrlf=true` clone of this branch: **375 files check out CRLF and 8 tests fail** — `tests/unit/agent/skills-contract.test.ts` asserts `skill.startsWith('---\n')` against `resources/skills/**/SKILL.md`, which is false for `---\r\n`. Because `pnpm test` runs *before* packaging with no `continue-on-error`, that alone would abort every release. The repo-root `.gitattributes` (`* text=auto eol=lf`) is therefore load-bearing for M9.0, not housekeeping. Notably, the other 2664 tests — including the byte-exact export and round-trip suites — pass even with the whole source tree in CRLF, so `skills-contract.test.ts` was the only sensitive suite.
 
 The workflow calls `pnpm pack:win:release`, **not** its own `electron-builder` command line. Targets (nsis + zip) and artifact names come from `package.json`'s `build.win` block, which `tests/unit/packaging/build-config.test.ts` already guards; a command line in the workflow would be a second source of truth that drifts silently — the same failure mode as the duplicate Windows-host config it replaces. The script passes `--publish never` so electron-builder does not detect the CI tag build and race the workflow's own upload step.
 
 Artifacts are attached to the tag's GitHub release via the preinstalled `gh` CLI (no third-party action, so no extra supply-chain surface — this repo sets `minimumReleaseAge` for the same reason). If no release exists for the tag, one is created **as a draft**: M9.4 keeps its human step, where a person writes the release notes and publishes.
 
-**This rule is enforced by a test, not by discipline.** `tests/unit/packaging/release-workflow.test.ts` asserts the trigger set *exhaustively* — the only key permitted under `on` is `push`, and the only key under `push` is `tags`. Adding `pull_request`, `workflow_dispatch`, a `branches` filter, or switching to a Linux runner reds the suite. Verified by mutation: nine separate edits (including each of those) were applied and each turned the suite red. If you are reading this because that test failed, it did its job.
+**Tag ↔ version is checked before anything expensive runs.** `build.nsis.artifactName` interpolates `package.json`'s `version`, so nothing except this step stops a `v0.0.2` tag from shipping a file named — and self-reporting — some other version. Origin already carries `v0.0.0-preview` and `v0.0.1-preview`, which would otherwise produce identically named artifacts that `--clobber` overwrites. **Convention: the tag is `v<version>` exactly, optionally with a `-<suffix>` for pre-releases (`v0.0.1-preview`).** Cutting a release therefore requires bumping `package.json` first — the step M9.1 describes and nothing previously enforced. The check runs before `pnpm install`, so a mismatch costs seconds rather than a 15-minute build, and its failure message names exactly what to change.
+
+**This rule is enforced by a test, not by discipline.** `tests/unit/packaging/release-workflow.test.ts` asserts the trigger set *exhaustively* — the only key permitted under `on` is `push`, and the only key under `push` is `tags`.
+
+That test's YAML reader **fails closed**: any line it cannot model throws rather than being skipped. This is the correction to a real hole. The first revision skipped unmatched lines, and review found three legal spellings — `"pull_request":`, `'workflow_dispatch':`, and the explicit-key form `? pull_request` / `:` — that GitHub honours as genuine triggers (actionlint resolves all three, and rejects them only when the event name is bogus) but that the reader silently ignored, leaving the suite green while the budget rule was being abandoned. A structural reader that skips what it does not understand cannot be a guard.
+
+Verified by mutation, each run against both the guard and actionlint: **16 edits, all red.** The three bypass spellings above; bare `pull_request:`/`workflow_dispatch:`; a `branches` filter; a `schedule` + cron; `ubuntu-latest`; an inline `electron-builder` command line; removed `timeout-minutes`; workflow-wide `contents: write`; a dropped `--publish never`; a set `ELECTRON_SKIP_BINARY_DOWNLOAD`; a renamed version-guard step; and a version guard downgraded to `exit 0`. actionlint called every mutation valid except the two deliberately malformed ones, which is what makes the bypass results meaningful. If you are reading this because that test failed, it did its job.
 
 ---
 

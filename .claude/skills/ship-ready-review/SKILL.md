@@ -75,8 +75,10 @@ pnpm test        # vitest run
 
 Notes that matter:
 
-- **CI runs `lint` and `test` only.** `typecheck` is your responsibility here; a type
-  error that CI would not catch is still a blocker.
+- **CI runs `lint` and `test` only** on PRs and pushes. `typecheck` is your responsibility
+  here; a type error that CI would not catch is still a blocker. (The one thing CI also
+  does is package the Windows release, but only on a `v*` tag — 70-testing-ci.md §6.5 —
+  so it still never runs on the change you are reviewing.)
 - If a command fails for a reason unrelated to the change (missing install, network),
   say so explicitly in `notes` and apply the unverified-confidence cap. Never silently
   skip.
