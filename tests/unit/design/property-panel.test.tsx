@@ -9,6 +9,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/history'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
@@ -229,18 +230,89 @@ describe('PropertyPanel — transform actions (M3.6)', () => {
   })
 })
 
+/** Current undo-stack depth — the thing a per-`input` commit would inflate one entry at a time. */
+function undoDepth(): number {
+  return useDeckStore.getState().history.summary().undoDepth
+}
+
+/**
+ * Simulate an OS colour-picker gesture: Chromium fires `input` continuously as the user drags, then
+ * exactly one `change` when the picker is confirmed. Only the `change` may reach the undo stack.
+ */
+function pickerDrag(element: HTMLElement, intermediates: readonly string[], final: string): void {
+  for (const value of intermediates) fireEvent.input(element, { target: { value } })
+  fireEvent.change(element, { target: { value: final } })
+}
+
 describe('PropertyPanel — colour controls (M3.8)', () => {
   it('a native swatch pick commits a colour hex as one undoable command, byte-exact undo', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
     fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
 
     const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
     expect(patched).toContain('color: #ff0000')
     // Mutation guard: the other declaration survives the colour write.
     expect(patched).toContain('font-size: 44px')
+    expect(undoDepth()).toBe(before + 1)
     expect(useDeckStore.getState().canUndo).toBe(true)
     expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a whole picker DRAG is ONE undo entry — intermediates never touch the stack', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    // Many `input` events (the drag), then the single `change` Chromium fires on confirm.
+    pickerDrag(
+      screen.getByTestId('swatch-color'),
+      ['#000031', '#0000aa', '#00aa55', '#88bb00'],
+      '#ff0000',
+    )
+
+    // Exactly one entry, carrying the FINAL colour — not the intermediates.
+    expect(undoDepth()).toBe(before + 1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: #ff0000')
+    for (const mid of ['#000031', '#0000aa', '#00aa55', '#88bb00']) {
+      expect(patched).not.toContain(mid)
+    }
+    // One undo reverses it byte-exact.
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a 250-event drag does NOT evict the user’s pre-existing history (the 200-entry cap)', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    // A short real drag emits hundreds of `input` events. Committing per event would overflow
+    // history.ts's 200-entry cap and silently destroy everything the user did before this pick.
+    const intermediates = Array.from(
+      { length: 250 },
+      (_, index) => `#0000${(index % 100).toString().padStart(2, '0')}`,
+    )
+    pickerDrag(screen.getByTestId('swatch-color'), intermediates, '#ff0000')
+
+    expect(undoDepth()).toBe(before + 1)
+    expect(undoDepth()).toBeLessThan(DEFAULT_MAX_HISTORY_ENTRIES)
+    // The pre-existing history is intact: one undo still reaches the seeded source.
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a cancelled picker (input events, no change) leaves the document untouched', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    const swatch = screen.getByTestId('swatch-color')
+    // The user dragged, then pressed Escape: `input` fired, `change` never did.
+    for (const value of ['#000031', '#0000aa']) {
+      fireEvent.input(swatch, { target: { value } })
+    }
+    expect(undoDepth()).toBe(before)
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
   })
 

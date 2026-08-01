@@ -3,11 +3,28 @@
  * M3.8). For each colour target — Text (`color`), Fill (`background-color`/SVG `fill`) and Stroke
  * (`border-color`/SVG `stroke`) — it renders a native `<input type="color">` swatch showing and picking
  * the current colour, an eyedropper button that samples a pixel anywhere in the app window, and the
- * deck's theme palette as a one-click quick row. Every choice is handed to `onApply(field, value)`,
- * which the panel commits as one undoable `slide.setHtml` (§7.1) — this component holds no state and
- * does no patching itself.
+ * deck's theme palette as a one-click quick row. Every *committed* choice is handed to
+ * `onApply(field, value)`, which the panel commits as one undoable `slide.setHtml` (§7.1) — this
+ * component holds no document state and does no patching itself.
  *
- * ## Why the writes look the way they do
+ * ## One picker gesture is one undo entry — why this listens for `change`, not React's `onChange`
+ *
+ * React wires `onChange` on an `<input>` to the DOM **`input`** event, and Chromium fires `input`
+ * *continuously* while the user drags inside the OS colour picker. Committing there would push one
+ * `slide.setHtml` per intermediate colour: a single short drag produced 250 undo entries in review,
+ * overflowing the 200-entry cap in `history.ts` and **evicting the user's real editing history**, after
+ * which "undo everything" landed on a mid-drag colour nobody chose. That is undo-state data loss, so
+ * intermediate values must never reach the stack.
+ *
+ * This is the same rule `useDragGesture.ts` already states for pointer drags — "intermediate previews
+ * never touch the stack; `onCommit` fires once" — applied to the picker gesture. Intermediate `input`
+ * events update **local preview state only** (so the swatch tracks the drag live, with no document
+ * write), and the commit happens on the DOM **`change`** event, which Chromium fires exactly once when
+ * the picker is closed/confirmed. Cancelling the picker fires no `change`, so the document is left
+ * untouched. `change` is attached with a ref rather than a prop precisely because React's `onChange`
+ * is the wrong event here.
+ *
+ * ## Why the written values look the way they do
  *
  * - The native input only speaks `#rrggbb`; a swatch/eyedropper pick is merged through
  *   `applyPickedColor` so the **source's alpha is preserved** (a translucent fill stays translucent).
@@ -16,21 +33,23 @@
  *
  * ## react-perf hygiene
  *
- * There are N swatches × 3 targets of interactive elements, so per-element inline closures would both
- * churn allocations and trip `react-perf`. Instead every handler is one stable `useCallback` that reads
- * the target field and the value from the element's `data-*` attributes, and the theme swatches'
- * colour style objects are memoised once per palette rather than allocated inline.
+ * Each target and each theme swatch is its own small component, so every handler is a `useCallback`
+ * closed over the field it edits rather than an inline arrow allocated per render — and the field no
+ * longer has to be smuggled through a `data-*` attribute and cast back.
  */
 
-import { useCallback, useMemo, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { PropertyField } from '../../../../shared/design/property-model'
 import { applyPickedColor, toColorInputValue } from '../../../../shared/design/color'
 import { themeSwatchWriteValue, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import type { ColorPicker } from './eyedropper'
 
+/** The subset of fields that name a colour channel. */
+export type ColorField = Extract<PropertyField, 'color' | 'fill' | 'stroke'>
+
 /** One colour target: the field it edits, its label, and its current source value (`null` if unset). */
 export interface ColorTarget {
-  readonly field: Extract<PropertyField, 'color' | 'fill' | 'stroke'>
+  readonly field: ColorField
   readonly label: string
   readonly current: string | null
 }
@@ -44,8 +63,122 @@ export interface ColorControlsProps {
   readonly onApply: (field: PropertyField, value: string) => void
 }
 
-function fieldOf(element: HTMLElement): PropertyField {
-  return element.dataset['field'] as PropertyField
+/** A theme-token swatch button. Its own component so the click handler closes over its write value. */
+function ThemeSwatchButton({
+  swatch,
+  field,
+  targetLabel,
+  onPick,
+}: {
+  readonly swatch: ThemeSwatch
+  readonly field: ColorField
+  readonly targetLabel: string
+  readonly onPick: (field: ColorField, value: string) => void
+}): JSX.Element {
+  const write = useMemo(() => themeSwatchWriteValue(swatch), [swatch])
+  const style = useMemo(() => ({ backgroundColor: swatch.hex }), [swatch.hex])
+  const onClick = useCallback((): void => onPick(field, write), [onPick, field, write])
+
+  return (
+    <button
+      type="button"
+      data-testid={`theme-${field}-${swatch.key}`}
+      aria-label={`Apply theme color ${swatch.label} to ${targetLabel}`}
+      title={swatch.label}
+      onClick={onClick}
+      style={style}
+      className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover:ring-accent dark:border-ink-line"
+    />
+  )
+}
+
+/** One target's row: the native swatch, the eyedropper button, and the theme quick row. */
+function ColorTargetRow({
+  target,
+  swatches,
+  picker,
+  onApply,
+}: {
+  readonly target: ColorTarget
+  readonly swatches: readonly ThemeSwatch[]
+  readonly picker: ColorPicker | null
+  readonly onApply: (field: PropertyField, value: string) => void
+}): JSX.Element {
+  const { field, label, current } = target
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Preview-only state for the drag. Seeded from source; the panel remounts these fields whenever the
+  // source changes (see `PropertyPanel`'s `key`), so this initial-from-props read never goes stale.
+  const [preview, setPreview] = useState(() => toColorInputValue(current))
+
+  const onPreview = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
+    setPreview(event.currentTarget.value)
+  }, [])
+
+  // The commit. `change` fires once, when the OS picker is confirmed — never during the drag, and not
+  // at all if the user cancels. Attached imperatively because React's `onChange` is the `input` event.
+  useEffect(() => {
+    const element = inputRef.current
+    if (element === null) return
+    const onCommit = (): void => {
+      onApply(field, applyPickedColor(current, element.value))
+    }
+    element.addEventListener('change', onCommit)
+    return (): void => {
+      element.removeEventListener('change', onCommit)
+    }
+  }, [field, current, onApply])
+
+  const onEyedrop = useCallback((): void => {
+    if (picker === null) return
+    void picker.pickColor().then((hex) => {
+      // A cancelled pick resolves `null`: sample nothing, write nothing.
+      if (hex !== null) onApply(field, applyPickedColor(current, hex))
+    })
+  }, [picker, field, current, onApply])
+
+  const onThemePick = useCallback(
+    (pickedField: ColorField, value: string): void => onApply(pickedField, value),
+    [onApply],
+  )
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="w-12 shrink-0 text-chrome-muted dark:text-ink-muted">{label}</span>
+      <input
+        ref={inputRef}
+        type="color"
+        name={field}
+        data-testid={`swatch-${field}`}
+        aria-label={`${label} color`}
+        value={preview}
+        onChange={onPreview}
+        className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 dark:border-ink-line"
+      />
+      {picker !== null ? (
+        <button
+          type="button"
+          data-testid={`eyedrop-${field}`}
+          aria-label={`Sample ${label} color with the eyedropper`}
+          onClick={onEyedrop}
+          className="rounded border border-chrome-line px-1.5 py-0.5 hover:border-accent dark:border-ink-line"
+        >
+          <span aria-hidden="true">💧</span>
+        </button>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-1">
+        {swatches.map((swatch) => (
+          <ThemeSwatchButton
+            key={swatch.key}
+            swatch={swatch}
+            field={field}
+            targetLabel={label}
+            onPick={onThemePick}
+          />
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function ColorControls({
@@ -54,102 +187,16 @@ export function ColorControls({
   picker,
   onApply,
 }: ColorControlsProps): JSX.Element {
-  // Precompute each theme swatch's written value and its (stable) colour style object, so the render
-  // below allocates neither a closure nor an object literal per swatch.
-  const swatchViews = useMemo(
-    () =>
-      swatches.map((swatch) => ({
-        key: swatch.key,
-        label: swatch.label,
-        write: themeSwatchWriteValue(swatch),
-        style: { backgroundColor: swatch.hex } as const,
-      })),
-    [swatches],
-  )
-
-  const onSwatchPick = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>): void => {
-      const current = event.currentTarget.dataset['current'] ?? null
-      onApply(fieldOf(event.currentTarget), applyPickedColor(current, event.currentTarget.value))
-    },
-    [onApply],
-  )
-
-  const runEyedrop = useCallback(
-    async (field: PropertyField, current: string | null): Promise<void> => {
-      if (picker === null) return
-      const hex = await picker.pickColor()
-      if (hex === null) return
-      onApply(field, applyPickedColor(current, hex))
-    },
-    [picker, onApply],
-  )
-
-  const onEyedropClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>): void => {
-      const current = event.currentTarget.dataset['current'] ?? null
-      void runEyedrop(fieldOf(event.currentTarget), current)
-    },
-    [runEyedrop],
-  )
-
-  const onThemeClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>): void => {
-      const write = event.currentTarget.dataset['write']
-      if (write === undefined) return
-      onApply(fieldOf(event.currentTarget), write)
-    },
-    [onApply],
-  )
-
   return (
     <div data-testid="color-controls" className="flex flex-col gap-1.5">
       {targets.map((target) => (
-        <div key={target.field} className="flex flex-wrap items-center gap-2">
-          <span className="w-12 shrink-0 text-chrome-muted dark:text-ink-muted">
-            {target.label}
-          </span>
-          <input
-            type="color"
-            name={target.field}
-            data-field={target.field}
-            data-current={target.current ?? undefined}
-            data-testid={`swatch-${target.field}`}
-            aria-label={`${target.label} color`}
-            value={toColorInputValue(target.current)}
-            onChange={onSwatchPick}
-            className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 dark:border-ink-line"
-          />
-          {picker !== null ? (
-            <button
-              type="button"
-              data-field={target.field}
-              data-current={target.current ?? undefined}
-              data-testid={`eyedrop-${target.field}`}
-              aria-label={`Sample ${target.label} color with the eyedropper`}
-              onClick={onEyedropClick}
-              className="rounded border border-chrome-line px-1.5 py-0.5 hover:border-accent dark:border-ink-line"
-            >
-              <span aria-hidden="true">💧</span>
-            </button>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-1">
-            {swatchViews.map((swatch) => (
-              <button
-                key={swatch.key}
-                type="button"
-                data-field={target.field}
-                data-write={swatch.write}
-                data-testid={`theme-${target.field}-${swatch.key}`}
-                aria-label={`Apply theme color ${swatch.label} to ${target.label}`}
-                title={swatch.label}
-                onClick={onThemeClick}
-                style={swatch.style}
-                className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover:ring-accent dark:border-ink-line"
-              />
-            ))}
-          </div>
-        </div>
+        <ColorTargetRow
+          key={target.field}
+          target={target}
+          swatches={swatches}
+          picker={picker}
+          onApply={onApply}
+        />
       ))}
     </div>
   )

@@ -7,11 +7,14 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  CORE_ORDER,
   DEFAULT_THEME_SWATCHES,
   themeColorSwatches,
   themeSwatchWriteValue,
+  themeTokenName,
 } from '../../../src/shared/design/theme-swatches'
 import { isSafeStyleValue } from '../../../src/shared/design/patch'
+import { THEME_TOKEN_NAME_PATTERN } from '../../../src/shared/document/starter-slide'
 import type { Theme, ThemeColors } from '../../../src/shared/document/types'
 
 /** A plain colour map — cast to `ThemeColors` at the boundary. The catchall index signature and the
@@ -77,9 +80,65 @@ describe('themeColorSwatches', () => {
     expect(keys).toEqual(['bg', 'fg', 'accent', 'muted'])
   })
 
+  it('drops an UPPERCASE-leading catchall key (it could never be declared)', () => {
+    const shouty: ColorMap = { ...BASE, UPPER: '#ff0000' }
+    expect(themeColorSwatches(makeTheme(shouty)).some((s) => s.key === 'UPPER')).toBe(false)
+  })
+
+  it('normalises a camelCase catchall key rather than emitting an undeclarable name', () => {
+    const camel: ColorMap = { ...BASE, camelKey: '#ff0000' }
+    const swatch = themeColorSwatches(makeTheme(camel)).find((s) => s.key === 'camelKey')
+    expect(swatch).toBeDefined()
+    expect(themeSwatchWriteValue(swatch!)).toBe('var(--sl-camel-key, #ff0000)')
+  })
+
+  it('drops an absurdly long key (bounded source and accessibility strings)', () => {
+    const long: ColorMap = { ...BASE, ['a'.repeat(5000)]: '#ff0000' }
+    expect(themeColorSwatches(makeTheme(long))).toHaveLength(4)
+  })
+
   it('drops a non-hex value defensively', () => {
     const bad: ColorMap = { ...BASE, weird: 'not-a-color' }
     expect(themeColorSwatches(makeTheme(bad)).some((s) => s.key === 'weird')).toBe(false)
+  })
+})
+
+describe('the reference namespace equals the declaration namespace', () => {
+  /**
+   * The cross-check that keeps this module pinned to `starter-slide.ts`'s emitter. CSS custom-property
+   * names are case-sensitive and the emitter only ever declares `/^--[a-z0-9-]+$/`, so a token name
+   * outside that set is a permanently dead reference — it renders from its hex fallback and never
+   * responds to a re-theme. Every key we ship must map into the declarable set.
+   */
+  it('EVERY core key produces a token name THEME_TOKEN_NAME_PATTERN accepts', () => {
+    for (const [key] of CORE_ORDER) {
+      expect(THEME_TOKEN_NAME_PATTERN.test(themeTokenName(key))).toBe(true)
+    }
+  })
+
+  it('kebab-cases camelCase keys (accentFg is declarable, --sl-accentFg would not be)', () => {
+    expect(themeTokenName('accentFg')).toBe('--sl-accent-fg')
+    expect(themeTokenName('accent')).toBe('--sl-accent')
+    expect(themeTokenName('series-0')).toBe('--sl-series-0')
+  })
+
+  it('every swatch a real theme yields is declarable, series included', () => {
+    const theme = makeTheme({ ...BASE, accentFg: '#ffffff', surface: '#1a2035' }, [
+      '#111111',
+      '#222222',
+      '#333333',
+    ])
+    const swatches = themeColorSwatches(theme)
+    expect(swatches.length).toBeGreaterThan(4)
+    for (const swatch of swatches) {
+      expect(THEME_TOKEN_NAME_PATTERN.test(themeTokenName(swatch.key))).toBe(true)
+    }
+  })
+
+  it('every default-palette swatch is declarable too', () => {
+    for (const swatch of DEFAULT_THEME_SWATCHES) {
+      expect(THEME_TOKEN_NAME_PATTERN.test(themeTokenName(swatch.key))).toBe(true)
+    }
   })
 })
 
@@ -90,6 +149,12 @@ describe('themeSwatchWriteValue', () => {
     )
     expect(themeSwatchWriteValue({ key: 'series-0', hex: '#111111', label: 'Series 1' })).toBe(
       'var(--sl-series-0, #111111)',
+    )
+  })
+
+  it('references the kebab-cased, declarable name for a camelCase key', () => {
+    expect(themeSwatchWriteValue({ key: 'accentFg', hex: '#ffffff', label: 'Accent text' })).toBe(
+      'var(--sl-accent-fg, #ffffff)',
     )
   })
 

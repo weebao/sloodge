@@ -11,26 +11,38 @@
  * So a swatch writes the **token reference**, not the resolved hex — which keeps the element re-themeable
  * when the deck's theme changes, the whole point of tokens.
  *
- * The written form is `var(--sl-<key>, <hex>)`: the short-alias custom property the theme block actually
- * defines (see `starter-slide.ts` `DEFAULT_THEME_TOKENS` — `--sl-accent`, not `--sl-color-accent`), with
- * the **resolved hex as a fallback** so an element still renders the intended colour on a slide that has
- * no inlined `sl:theme` block yet (hand-written slides, or before the theme has been applied). Both
- * halves are pure hex / a validated key, so the result never contains `;`, `{` or `}` and always passes
- * `isSafeStyleValue` at the write chokepoint.
+ * The written form is `var(<token>, <hex>)`, where `<token>` is `themeTokenName(key)` — the short-alias
+ * custom property the theme block actually defines (see `starter-slide.ts` `DEFAULT_THEME_TOKENS` —
+ * `--sl-accent`, not `--sl-color-accent`) — with the **resolved hex as a fallback** so an element still
+ * renders the intended colour on a slide that has no inlined `sl:theme` block yet (hand-written slides,
+ * or before the theme has been applied). Both halves are pure hex / a validated key, so the result never
+ * contains `;`, `{` or `}` and always passes `isSafeStyleValue` at the write chokepoint.
+ *
+ * ## The reference namespace must equal the declaration namespace
+ *
+ * A `var()` reference is only worth writing if something can *declare* the name it references, and the
+ * only names this app may declare are `THEME_TOKEN_NAME_PATTERN` (`/^--[a-z0-9-]+$/`, lowercase-only).
+ * CSS custom-property names are case-sensitive, so a camelCase schema key like `accentFg` must be
+ * written `--sl-accent-fg`; `--sl-accentFg` would parse fine and then never resolve, silently freezing
+ * the element at its hex fallback and quietly cancelling re-themeability. `themeTokenName` does that
+ * normalisation and `isSafeKey` re-checks its output against the very pattern the emitter enforces, so
+ * the two modules cannot drift apart without a test going red.
  *
  * ## Key hygiene
  *
  * `ThemeColorsSchema` is `.catchall(hexColor)`, so a forward-compat theme can carry colour keys this
  * build never heard of — and a key is attacker-influenceable document data. Only keys matching
- * `KEY_PATTERN` become swatches, so a hostile key like `x); color: red; --y: (` can never be spliced
- * into a `var(--sl-…)` reference. The value is re-validated against the deck's own hex pattern too.
+ * `KEY_PATTERN` (and yielding a declarable token name, and bounded in length) become swatches, so a
+ * hostile key like `x); color: red; --y: (` can never be spliced into a `var(--sl-…)` reference. The
+ * value is re-validated against the deck's own hex pattern too.
  */
 
+import { THEME_TOKEN_NAME_PATTERN } from '../document/starter-slide'
 import { HEX_COLOR_PATTERN, type Theme } from '../document/types'
 
 /** One theme colour offered in the quick row: its token key, resolved hex, and a human label. */
 export interface ThemeSwatch {
-  /** The token key, e.g. `accent` or `series-0`. Written into `var(--sl-<key>, …)`. */
+  /** The token key as the theme declares it, e.g. `accent`, `accentFg` or `series-0`. */
   readonly key: string
   /** The resolved hex value — shown as the swatch's colour and used as the `var()` fallback. */
   readonly hex: string
@@ -38,11 +50,38 @@ export interface ThemeSwatch {
   readonly label: string
 }
 
-/** Only clean token keys become swatches — this is what stops a catchall key from injecting CSS. */
-const KEY_PATTERN = /^[a-z][a-z0-9-]*$/i
+/**
+ * Only clean token keys become swatches — this is what stops a catchall key from injecting CSS.
+ * Case-**sensitive** in its first character: a key must start lowercase, so a shouty `UPPER` catchall
+ * key is dropped rather than turned into a custom property no token block may declare. Interior
+ * capitals are allowed because the schema itself ships camelCase keys (`accentFg`), which
+ * `themeTokenName` normalises to kebab-case below. Bounded in length so a pathological 5000-character
+ * key cannot land in the slide source or the accessibility tree.
+ */
+const KEY_PATTERN = /^[a-z][a-zA-Z0-9-]*$/
+const MAX_KEY_LENGTH = 64
 
-/** The core colour tokens, in the order the quick row shows them. */
-const CORE_ORDER: readonly (readonly [key: string, label: string])[] = [
+/**
+ * The CSS custom-property name a token key maps to. **This must land inside the namespace the app is
+ * allowed to *declare*** — `THEME_TOKEN_NAME_PATTERN` (`/^--[a-z0-9-]+$/`, enforced by
+ * `assertSafeThemeToken`) is lowercase-only, and CSS custom-property names are case-sensitive. So
+ * `accentFg` must be written `--sl-accent-fg`, never `--sl-accentFg`: the latter is syntactically
+ * fine but no token block this app can emit will ever declare it, leaving the reference permanently
+ * dead and silently frozen at its inlined hex fallback — which defeats the whole reason we write a
+ * token reference rather than a literal. camelCase is therefore kebab-cased and the whole name is
+ * lowercased, matching the mechanical mapping of `30-slide-format.md` §4.4.
+ */
+export function themeTokenName(key: string): string {
+  const kebab = key.replaceAll(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+  return `--sl-${kebab}`
+}
+
+/**
+ * The core colour tokens, in the order the quick row shows them. Exported so a test can assert that
+ * **every** key this module ships maps to a declarable custom-property name — the cross-check that
+ * keeps the reference namespace and the declaration namespace from drifting apart.
+ */
+export const CORE_ORDER: readonly (readonly [key: string, label: string])[] = [
   ['bg', 'Background'],
   ['fg', 'Foreground'],
   ['accent', 'Accent'],
@@ -67,8 +106,15 @@ export const DEFAULT_THEME_SWATCHES: readonly ThemeSwatch[] = [
   { key: 'muted', hex: '#9aa4b8', label: 'Muted' },
 ]
 
+/**
+ * A key is usable only if it is clean *and* the custom-property name it maps to is one a token block
+ * may actually declare. The second half is the load-bearing check: it pins this module to
+ * `starter-slide.ts`'s emitter, so a key shape that could never be declared is dropped here rather
+ * than becoming a silently dead `var()` reference in a slide.
+ */
 function isSafeKey(key: string): boolean {
-  return KEY_PATTERN.test(key)
+  if (key.length > MAX_KEY_LENGTH || !KEY_PATTERN.test(key)) return false
+  return THEME_TOKEN_NAME_PATTERN.test(themeTokenName(key))
 }
 
 function isHex(value: unknown): value is string {
@@ -111,5 +157,5 @@ export function themeColorSwatches(theme: Theme | null): ThemeSwatch[] {
  * custom property, with the resolved hex as a fallback. See the file header for why this shape.
  */
 export function themeSwatchWriteValue(swatch: ThemeSwatch): string {
-  return `var(--sl-${swatch.key}, ${swatch.hex})`
+  return `var(${themeTokenName(swatch.key)}, ${swatch.hex})`
 }

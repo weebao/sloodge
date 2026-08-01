@@ -349,9 +349,16 @@ export function toColorInputValue(input: string | null): string {
 /**
  * The value to *write* when a user picks `pickedHex` (from the swatch or the eyedropper) for a field
  * whose current source value is `current`. The picked RGB is kept; the **alpha of the current source
- * value is preserved** so picking a new hue for a translucent fill stays translucent. When the picked
- * value is unparseable it is written through verbatim (the caller already validated it); when `current`
+ * value is preserved** so picking a new hue for a translucent fill stays translucent. When `current`
  * has no alpha (or is absent/unparseable) the result is the plain 6-digit hex.
+ *
+ * An **unparseable `pickedHex` is passed through verbatim** rather than rejected here. No caller
+ * pre-validates it — the swatch forwards the browser's input value and the eyedropper forwards whatever
+ * `EyeDropper` resolved — so the guarantee that a junk value cannot reach the slide is supplied
+ * *downstream*, at the single chokepoint every style write funnels through: `isSafeStyleValue` in
+ * `patch.ts` rejects the whole batch (zero ops, nothing committed). Passing through rather than
+ * silently substituting a colour keeps this function honest about what it was given; the safety is
+ * defence-in-depth at the write, not a precondition on the caller.
  */
 export function applyPickedColor(current: string | null, pickedHex: string): string {
   const picked = parseColor(pickedHex)
