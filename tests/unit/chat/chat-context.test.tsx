@@ -35,6 +35,8 @@ function makeFakeBridge(): { bridge: AgentBridge; sendMessage: ReturnType<typeof
     interrupt: vi.fn(async () => true),
     onAgentEvent: () => () => undefined,
     onDeckUpdated: () => () => undefined,
+    onAgentEditRequest: () => () => undefined,
+    sendAgentEditResult: () => undefined,
   }
   return { bridge, sendMessage }
 }
