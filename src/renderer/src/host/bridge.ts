@@ -1,4 +1,5 @@
 import type { MenuAction } from '../../../shared/ipc-contract'
+import type { AgentBridge } from '../../../preload/agentBridge'
 
 /**
  * `window.sloodge` — the preload surface — and the single place the `Window` augmentation for it
@@ -26,6 +27,8 @@ export type SloodgeBridge = {
   publishSlide?: (html: string) => Promise<string>
   /** M2.0: release a published document. */
   revokeSlide?: (id: string) => Promise<boolean>
+  /** M2.1: the agent surface — key management, turns, streaming events, deck hot-updates. */
+  agent?: AgentBridge
 }
 
 declare global {
