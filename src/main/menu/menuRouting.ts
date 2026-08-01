@@ -19,14 +19,18 @@ import type { MenuAction } from '../../shared/ipc-contract'
 export type MenuDelivery = 'renderer' | 'log'
 
 /**
- * Only `edit.*` crosses to the renderer today.
+ * `edit.*` and `file.export.pdf` cross to the renderer; the rest of File still logs.
  *
- * The File ids are deliberately *not* forwarded: nothing in the renderer
- * handles them, and a channel that delivers actions no one consumes trains the
- * next reader to think the renderer is already wired for File ▸ New. When M5.1
- * claims them, this predicate is the one line that changes.
+ * The renderer is the authoritative owner of the live deck and its slide HTML (there is no
+ * main-process document store — the deck lives in `deckStore`, exactly as Present mode found in
+ * M4.1). So PDF export starts in the renderer: it gathers the wrapped slide HTML and the current
+ * index and invokes `file:exportPdf`, where main takes over the save dialog and the offscreen print.
+ * The remaining File ids (`file.new`, `file.open`, the pptx/html exports) still have no consumer, and
+ * a channel that delivers actions no one handles trains the next reader to think they are wired; each
+ * flips here when its milestone lands.
  */
 export function menuActionTarget(action: MenuAction): MenuDelivery {
+  if (action === 'file.export.pdf') return 'renderer'
   return action.startsWith('edit.') ? 'renderer' : 'log'
 }
 

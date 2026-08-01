@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
 import { installAgentIpc } from './ipc/agent'
+import { installExportIpc } from './export/install'
 import { installAppMenu } from './menu/appMenu'
 import { installPresentIpc } from './present/install'
 import { isAllowedNavigation, toSafeExternalUrl } from './security/externalUrls'
@@ -91,6 +92,9 @@ if (!gotSingleInstanceLock) {
     const agentService = installAgentIpc()
     // Present mode's fullscreen toggle (M4.1); acts on the requesting window's `event.sender`.
     installPresentIpc()
+    // PDF export (M4.2): renders each slide over the same `slide://` registry in an offscreen window
+    // and prints it, so export reuses the editor's secure sandbox rather than a weaker path.
+    installExportIpc(slideRegistry)
     app.on('before-quit', () => {
       void agentService.disposeAll()
     })
