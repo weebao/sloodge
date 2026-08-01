@@ -11,20 +11,19 @@
  * so positions handed over in inches by the walker land pixel-for-pixel. No slide master is used
  * (§3.7): Sloodge slides are independently authored and carry their own backgrounds.
  *
- * ## XML sanitization — EVERY inbound string, not just slide text
+ * ## XML sanitization is NOT done here
  *
- * OOXML parts are XML 1.0, and pptxgenjs writes our strings through verbatim apart from the five
- * metacharacters. So **every** value that originates from agent- or user-authored text is passed
- * through `sanitizeXmlText` here: text runs, hyperlink URLs, speaker notes, *and the deck metadata*
- * (`pptx.title` / `pptx.author` → `docProps/core.xml`). Round 1 covered only the slide/notes parts,
- * which left the metadata path able to produce the identical silent corruption; the writer test now
- * scans **every** `.xml`/`.rels` part in the produced zip so a newly-added property cannot regress
- * this class unnoticed. If you add another pptxgenjs property fed from our data, sanitize it here.
+ * This module builds plain option objects and hands them to `SafePptxDeck` (`safe-pptx.ts`), the sole
+ * module allowed to touch pptxgenjs, which deep-sanitizes every string it forwards. Three review
+ * rounds each found a *different* unsanitized path when the rule lived at call sites (slide text, then
+ * `pptx.title`/`pptx.author`, then a run's `fontFace`), so the rule moved to a boundary that cannot be
+ * bypassed: a field added to any option object below is sanitized automatically, and a
+ * `tests/unit/export/pptx-boundary.test.ts` grep fails the build if anything else imports pptxgenjs.
+ * Do not add `sanitizeXmlText` calls here — the boundary owns it.
  */
 
-import PptxGenJS from 'pptxgenjs'
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
-import { sanitizeXmlText } from '../../shared/export/pptx/sanitize'
+import { createSafePptxDeck, type SafePptxSlide } from './safe-pptx'
 import type {
   DeckPptxPlan,
   ShapeSpec,
@@ -39,7 +38,7 @@ export type PptxWriter = {
 
 const LAYOUT_NAME = 'SLOODGE_16x9'
 
-type PptxSlide = ReturnType<PptxGenJS['addSlide']>
+type PptxSlide = SafePptxSlide
 
 function fillOpt(
   fill: { color: string; transparency?: number } | undefined,
@@ -60,7 +59,7 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
     ...(run.fontFace !== undefined ? { fontFace: run.fontFace } : {}),
     ...(run.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
     ...(run.bullet !== undefined ? { bullet: run.bullet } : {}),
-    ...(run.hyperlink !== undefined ? { hyperlink: { url: sanitizeXmlText(run.hyperlink) } } : {}),
+    ...(run.hyperlink !== undefined ? { hyperlink: { url: run.hyperlink } } : {}),
   }
 }
 
@@ -92,7 +91,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       ...(shape.charSpacing !== undefined ? { charSpacing: shape.charSpacing } : {}),
     }
     slide.addText(
-      shape.runs.map((run) => ({ text: sanitizeXmlText(run.text), options: runOptions(run) })),
+      shape.runs.map((run) => ({ text: run.text, options: runOptions(run) })),
       opts,
     )
     return
@@ -125,14 +124,15 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
   slide.addShape(shape.kind, opts)
 }
 
-function addSlideToDeck(pptx: PptxGenJS, plan: SlidePlan): void {
-  const slide = pptx.addSlide()
+function addSlideToDeck(deck: ReturnType<typeof createSafePptxDeck>, plan: SlidePlan): void {
+  const slide = deck.addSlide()
 
   if (plan.background !== undefined) {
-    slide.background =
+    slide.setBackground(
       'dataUrl' in plan.background
         ? { data: plan.background.dataUrl }
-        : { color: plan.background.color }
+        : { color: plan.background.color },
+    )
   }
 
   if (plan.tier === 'raster' && plan.rasterDataUrl !== undefined) {
@@ -147,7 +147,7 @@ function addSlideToDeck(pptx: PptxGenJS, plan: SlidePlan): void {
     for (const shape of plan.shapes) addShape(slide, shape)
   }
 
-  if (plan.notes !== '') slide.addNotes(sanitizeXmlText(plan.notes))
+  if (plan.notes !== '') slide.addNotes(plan.notes)
 }
 
 /**
@@ -155,20 +155,21 @@ function addSlideToDeck(pptx: PptxGenJS, plan: SlidePlan): void {
  * `outputType: 'nodebuffer'`, then normalized to a `Uint8Array` for the atomic writer.
  */
 export async function writeDeckPptx(plan: DeckPptxPlan): Promise<Uint8Array> {
-  const pptx = new PptxGenJS()
-  pptx.defineLayout({ name: LAYOUT_NAME, width: SLIDE_WIDTH_INCHES, height: SLIDE_HEIGHT_INCHES })
-  pptx.layout = LAYOUT_NAME
-  // Deck METADATA is agent-settable text too (the deck title comes from the agent's `set_title`
-  // tool), and pptxgenjs writes it verbatim into `docProps/core.xml` (`<dc:title>`/`<dc:creator>`).
-  // An unsanitized control char there malforms that part and PowerPoint calls the whole file corrupt
-  // — the same silent failure as slide text, just via a part the first fix did not cover.
-  pptx.author = sanitizeXmlText(plan.author)
-  pptx.title = sanitizeXmlText(plan.title)
+  // Everything below goes through `SafePptxDeck`, which deep-sanitizes every string it forwards
+  // (including the deck metadata and per-run option fields like `fontFace`). This module therefore
+  // carries no sanitize calls of its own — the boundary owns that rule, so a new field added here
+  // cannot bypass it. See `safe-pptx.ts` for why the invariant is structural rather than reviewed.
+  const deck = createSafePptxDeck({
+    layoutName: LAYOUT_NAME,
+    widthInches: SLIDE_WIDTH_INCHES,
+    heightInches: SLIDE_HEIGHT_INCHES,
+    author: plan.author,
+    title: plan.title,
+  })
 
-  for (const slidePlan of plan.slides) addSlideToDeck(pptx, slidePlan)
+  for (const slidePlan of plan.slides) addSlideToDeck(deck, slidePlan)
 
-  const out = (await pptx.write({ outputType: 'nodebuffer' })) as Buffer
-  return new Uint8Array(out.buffer, out.byteOffset, out.byteLength)
+  return deck.write()
 }
 
 /** The production writer seam. */

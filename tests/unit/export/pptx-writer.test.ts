@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { unzipSync, strFromU8 } from 'fflate'
 import { writeDeckPptx } from '../../../src/main/export/pptx-writer'
+import { hasXmlIllegalChars } from '../../../src/shared/export/pptx/sanitize'
 import type { DeckPptxPlan, SlidePlan } from '../../../src/shared/export/pptx/types'
 
 /**
@@ -92,12 +93,18 @@ describe('writeDeckPptx (OPC validity)', () => {
     )
   })
 
-  it('sanitizes XML-1.0-illegal control characters out of EVERY part (no corrupt .pptx)', async () => {
-    const bell = String.fromCharCode(0x07)
-    const soh = String.fromCharCode(0x01)
-    // Control chars are seeded into every agent-settable text field the writer can reach: deck title
-    // and author (→ docProps/core.xml), slide body text, a bulleted run, a hyperlink's text AND its
-    // URL (→ slide rels), and the speaker notes.
+  it('sanitizes ALL XML-1.0-illegal characters out of EVERY part (no corrupt .pptx)', async () => {
+    const bell = String.fromCharCode(0x07) // C0
+    const soh = String.fromCharCode(0x01) // C0
+    const nonChar = String.fromCharCode(0xfffe) // non-character — NOT a C0 control
+    const nonChar2 = String.fromCharCode(0xffff) // non-character
+    const loneSurrogate = String.fromCharCode(0xd83d) // high surrogate with no low
+    // The full illegal set is seeded, not just C0: round 3 showed a C0-only oracle reads a U+FFFE
+    // part as clean, which is exactly how the `fontFace` hole stayed invisible. Every agent-settable
+    // text field the writer can reach is dirtied — deck title and author (→ docProps/core.xml), body
+    // text, a bulleted run, a hyperlink's text AND url, the FONT FAMILY (→ <a:latin typeface>), and
+    // the speaker notes.
+    const dirt = `${bell}${soh}${nonChar}${nonChar2}${loneSurrogate}`
     const dirty: SlidePlan = {
       tier: 'structured',
       shapes: [
@@ -105,38 +112,38 @@ describe('writeDeckPptx (OPC validity)', () => {
           kind: 'text',
           box: { x: 1, y: 1, w: 6, h: 1 },
           runs: [
-            { text: `Heading${bell} one${soh}` },
-            { text: `Bullet${bell} two${soh}`, bullet: true },
-            { text: `Link${bell} three${soh}`, hyperlink: `https://x.test/a${bell}b${soh}` },
+            { text: `Heading${dirt} one`, fontFace: `Inter${dirt}` },
+            { text: `Bullet${dirt} two`, bullet: true, fontFace: `Georgia${nonChar}` },
+            {
+              text: `Link${dirt} three`,
+              hyperlink: `https://x.test/a${dirt}b`,
+              fontFace: `Arial${loneSurrogate}`,
+            },
           ],
           align: 'left',
           valign: 'top',
         },
       ],
-      notes: `Notes${bell} body${soh} 日本語`,
+      notes: `Notes${dirt} body 日本語 📊`,
       confidence: 100,
       reasons: [],
     }
     const files = await build({
-      title: `Deck${bell} Q3${soh}`,
-      author: `Sloodge${bell}${soh}`,
+      title: `Deck${dirt} Q3`,
+      author: `Sloodge${dirt}`,
       slides: [dirty],
     })
 
-    // The widened oracle, asserted FIRST so it is the primary mutation signal: NO XML-1.0-illegal C0
-    // char (other than tab/LF/CR) may appear in ANY xml or rels part of the package — not just the
-    // slide/notes ones a targeted assertion would check. This is what makes the class
-    // un-regressable: a newly-added pptxgenjs property fed from our text is caught here even if
-    // nobody thinks to assert on its part. Mutation signal: un-sanitize `pptx.title`/`pptx.author`
-    // and this reds on `docProps/core.xml`.
-    // oxlint-disable-next-line no-control-regex -- deliberately scanning for illegal control chars.
-    const illegal = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]')
+    // The oracle, asserted FIRST so it is the primary mutation signal, and using the SAME predicate
+    // the sanitizer is defined by (`hasXmlIllegalChars`) rather than a restatement — a narrower
+    // duplicate here is what hid the `fontFace` hole for a round. No xml/rels part of the package may
+    // contain any illegal character.
     const scanned: string[] = []
     const offenders: string[] = []
     for (const [name, data] of Object.entries(files)) {
       if (!/\.(xml|rels)$/.test(name)) continue
       scanned.push(name)
-      if (illegal.test(strFromU8(data))) offenders.push(name)
+      if (hasXmlIllegalChars(strFromU8(data))) offenders.push(name)
     }
     expect(offenders).toEqual([])
 
@@ -147,9 +154,12 @@ describe('writeDeckPptx (OPC validity)', () => {
     expect(scanned).toContain('ppt/slides/_rels/slide1.xml.rels')
     expect(scanned.length).toBeGreaterThan(10)
 
-    // And the legal text survives, in the slide, the notes, and the deck metadata.
-    expect(strFromU8(files['ppt/slides/slide1.xml']!)).toContain('Heading one')
-    expect(strFromU8(files['ppt/slides/slide1.xml']!)).toContain('Bullet two')
+    // And the legal text survives — including the font family, which must still reach <a:latin>.
+    const slideXml = strFromU8(files['ppt/slides/slide1.xml']!)
+    expect(slideXml).toContain('Heading one')
+    expect(slideXml).toContain('Bullet two')
+    expect(slideXml).toContain('Inter')
+    expect(slideXml).toContain('Georgia')
     expect(strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)).toContain('Notes body')
     expect(strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)).toContain('日本語')
     expect(strFromU8(files['docProps/core.xml']!)).toContain('Deck Q3')
