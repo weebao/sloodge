@@ -10,7 +10,10 @@
  */
 
 import {
+  AGENT_AUTH_STATUS_CHANNEL,
   AGENT_CLEAR_KEY_CHANNEL,
+  AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
+  AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_EVENT_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
   AGENT_KEY_STATUS_CHANNEL,
@@ -21,6 +24,8 @@ import {
   DECK_UPDATED_CHANNEL,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
+import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
+import { type EndpointInfo } from '../shared/agent/endpoint'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
 import {
   isAgentEditRequest,
@@ -38,6 +43,14 @@ export type AgentBridge = {
   setApiKey: (key: string) => Promise<ApiKeyStatus>
   clearApiKey: () => Promise<ApiKeyStatus>
   getApiKeyStatus: () => Promise<ApiKeyStatus>
+  /**
+   * Store a `claude setup-token` subscription token (M2.7). Like the key, the plaintext travels
+   * main-ward only and resolves with the combined masked auth status.
+   */
+  setSubscriptionToken: (token: string) => Promise<AuthStatus>
+  clearSubscriptionToken: () => Promise<AuthStatus>
+  /** Both vault slots plus the derived active mode — what the Settings Auth tab renders. */
+  getAuthStatus: () => Promise<AuthStatus>
   /** Enqueue a user turn. `accepted: false` means no key is configured. */
   sendMessage: (text: string) => Promise<boolean>
   /** Stop the in-flight turn. */
@@ -64,8 +77,52 @@ function readStatus(response: unknown): ApiKeyStatus {
   if (rec === null || typeof rec !== 'object' || typeof rec.configured !== 'boolean') {
     throw new TypeError('agent key channel returned a malformed status')
   }
-  const last4 = typeof rec.last4 === 'string' ? rec.last4 : null
+  // Truncated HERE, not merely trusted from main. `authStore`'s docstring promises the renderer
+  // never holds plaintext; that guarantee should be structural at the masking boundary rather than
+  // contingent on main's `keyStatus()` happening to slice — the same argument `readAuthStatus` makes
+  // for `mode`.
+  const last4 = typeof rec.last4 === 'string' ? rec.last4.slice(-4) : null
   return { configured: rec.configured, last4 }
+}
+
+/**
+ * Re-narrow the combined auth status. Both slots go through the same `readStatus` gate, and the mode
+ * is *re-derived* here rather than trusted from the wire — so a main-process bug (or a malicious
+ * message on this channel) cannot make the UI claim "using your Claude subscription" while no
+ * subscription token is actually stored.
+ */
+function readAuthStatus(response: unknown): AuthStatus {
+  const status = (response as { status?: unknown } | null)?.status
+  const rec = status as { apiKey?: unknown; subscription?: unknown; endpoint?: unknown } | null
+  if (rec === null || typeof rec !== 'object') {
+    throw new TypeError('agent auth channel returned a malformed status')
+  }
+  return deriveAuthStatus(
+    readStatus({ status: rec.apiKey }),
+    readStatus({ status: rec.subscription }),
+    readEndpoint(rec.endpoint),
+  )
+}
+
+/**
+ * Narrow the endpoint report.
+ *
+ * **Fails closed, unlike the slot narrowing above.** A malformed or absent endpoint becomes
+ * "custom, host unknown" — i.e. it *warns* — rather than "default". The two adjacent narrowers
+ * deliberately encode opposite postures: for `mode` the safe answer is the conservative claim
+ * (`not-configured`), whereas for a field whose entire purpose is to warn, silence is the dangerous
+ * answer. This matches how `describeEndpoint` already treats an unparseable base URL.
+ */
+function readEndpoint(value: unknown): EndpointInfo {
+  const rec = value as { custom?: unknown; host?: unknown; transport?: unknown } | null
+  if (rec === null || typeof rec !== 'object' || typeof rec.custom !== 'boolean') {
+    return { custom: true, host: null, transport: 'network' }
+  }
+  return {
+    custom: rec.custom,
+    host: typeof rec.host === 'string' ? rec.host : null,
+    transport: rec.transport === 'unix-socket' ? 'unix-socket' : 'network',
+  }
 }
 
 export function createAgentBridge(
@@ -84,6 +141,18 @@ export function createAgentBridge(
     clearApiKey: async () => readStatus(await invoke(AGENT_CLEAR_KEY_CHANNEL, {})),
 
     getApiKeyStatus: async () => readStatus(await invoke(AGENT_KEY_STATUS_CHANNEL, {})),
+
+    setSubscriptionToken: async (token) => {
+      if (typeof token !== 'string' || token.trim().length === 0) {
+        throw new TypeError('setSubscriptionToken requires a non-empty token')
+      }
+      return readAuthStatus(await invoke(AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL, { key: token }))
+    },
+
+    clearSubscriptionToken: async () =>
+      readAuthStatus(await invoke(AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL, {})),
+
+    getAuthStatus: async () => readAuthStatus(await invoke(AGENT_AUTH_STATUS_CHANNEL, {})),
 
     sendMessage: async (text) => {
       if (typeof text !== 'string' || text.length === 0) {

@@ -8,7 +8,7 @@ import type {
 import type { AgentEvent } from '../../../src/shared/agent/types'
 
 const OPTIONS: AgentQueryOptions = {
-  apiKey: 'sk-ant-test',
+  credential: { kind: 'api-key', value: 'sk-ant-test' },
   model: 'claude-opus-5',
   cwd: '/workspace',
   configDir: '/config',

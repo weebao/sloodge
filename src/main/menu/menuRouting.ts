@@ -33,7 +33,10 @@ export function menuActionTarget(action: MenuAction): MenuDelivery {
   if (
     action === 'file.export.pdf' ||
     action === 'file.export.pptx' ||
-    action === 'file.export.html'
+    action === 'file.export.html' ||
+    // M2.7: the Settings dialog is renderer-owned, so `Ctrl/⌘+,` and File ▸ Settings… both land on
+    // the same `onOpenSettings` handler in `useMenuActions` rather than a second mechanism.
+    action === 'app.settings'
   )
     return 'renderer'
   return action.startsWith('edit.') ? 'renderer' : 'log'

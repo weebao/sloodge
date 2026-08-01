@@ -9,6 +9,7 @@ import { useExportPdf } from '../features/export/useExportPdf'
 import { useExportPptx } from '../features/export/useExportPptx'
 import { ExportPptxDialog } from '../features/export/ExportPptxDialog'
 import { useExportHtml } from '../features/export/useExportHtml'
+import { SettingsDialog } from '../features/settings/SettingsDialog'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
@@ -79,6 +80,16 @@ export function AppShell(): JSX.Element {
     deckTitle: deck.title,
   })
   const [pptxDialogOpen, setPptxDialogOpen] = useState(false)
+
+  // Settings (M2.7). Both openers are stable callbacks: `openSettings` is a `useMenuActions`
+  // dependency, so a fresh identity each render would resubscribe `app:menu` on every keystroke.
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true)
+  }, [])
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false)
+  }, [])
   const openPptxDialog = useCallback(() => {
     setPptxDialogOpen(true)
   }, [])
@@ -97,7 +108,7 @@ export function AppShell(): JSX.Element {
   // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
   // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
   const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
-  useMenuActions(editHandlers, exportPdf, openPptxDialog, exportHtml)
+  useMenuActions(editHandlers, exportPdf, openPptxDialog, exportHtml, openSettings)
   useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
@@ -138,7 +149,7 @@ export function AppShell(): JSX.Element {
           onMoveSlide={moveSlide}
         />
         <SlideCanvas slide={currentSlide} />
-        <ChatPanel />
+        <ChatPanel onOpenAuthSettings={openSettings} />
       </div>
       <StatusBar
         currentSlide={currentIndex + 1}
@@ -151,6 +162,7 @@ export function AppShell(): JSX.Element {
       {presentFrom !== null ? (
         <PresentSurface slides={slides} startIndex={presentFrom} onExit={exitPresent} />
       ) : null}
+      <SettingsDialog open={settingsOpen} initialTab="auth" onClose={closeSettings} />
       <ExportPptxDialog
         open={pptxDialogOpen}
         slideCount={slides.length}

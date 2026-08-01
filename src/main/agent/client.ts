@@ -18,6 +18,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { app } from 'electron'
 import path from 'node:path'
+import { buildAuthEnv } from './auth-env'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
 import { BUNDLED_SKILL_NAMES, resolveBundledSkillsDir } from './skills'
 
@@ -84,10 +85,13 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     settingSources: ['project'],
     strictMcpConfig: true,
     env: {
-      // `env` REPLACES the subprocess environment in the TS SDK — always spread `process.env`, or
-      // the subprocess loses PATH/HOME (§4, §16).
-      ...process.env,
-      ANTHROPIC_API_KEY: o.apiKey,
+      // `env` REPLACES the subprocess environment in the TS SDK, which is exactly what we want:
+      // `buildAuthEnv` builds it from an ALLOW-LIST rather than inheriting `process.env` and
+      // subtracting. Ambient credential vars, provider switches (`CLAUDE_CODE_USE_*`), transport
+      // selectors (`ANTHROPIC_UNIX_SOCKET`), header injectors, and anything Anthropic ships next
+      // release simply never reach the child — see auth-env.ts for why three rounds of deny-listing
+      // was the wrong shape.
+      ...buildAuthEnv(process.env, o.credential),
       CLAUDE_CONFIG_DIR: o.configDir,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     },

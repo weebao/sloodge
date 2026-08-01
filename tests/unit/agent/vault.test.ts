@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   decryptString: vi.fn((b: Buffer) => b.toString().replace(/^enc:/, '')),
   readFile: vi.fn(),
   writeFile: vi.fn(async () => {}),
+  rename: vi.fn(async () => {}),
   rm: vi.fn(async () => {}),
 }))
 
@@ -27,6 +28,7 @@ vi.mock('electron', () => ({
 vi.mock('node:fs/promises', () => ({
   readFile: mocks.readFile,
   writeFile: mocks.writeFile,
+  rename: mocks.rename,
   rm: mocks.rm,
 }))
 
@@ -47,7 +49,12 @@ describe('saveApiKey', () => {
   it('encrypts the trimmed key, writes it to the keychain-backed file, returns masked status', async () => {
     const status = await vault.saveApiKey('  sk-ant-abcW3z9\n')
     expect(mocks.encryptString).toHaveBeenCalledWith('sk-ant-abcW3z9')
-    expect(mocks.writeFile).toHaveBeenCalledWith(KEY_FILE, Buffer.from('enc:sk-ant-abcW3z9'))
+    // Written to a scratch file, then atomically renamed over the target.
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      `${KEY_FILE}.tmp`,
+      Buffer.from('enc:sk-ant-abcW3z9'),
+    )
+    expect(mocks.rename).toHaveBeenCalledWith(`${KEY_FILE}.tmp`, KEY_FILE)
     expect(status).toEqual({ configured: true, last4: 'W3z9' })
   })
 

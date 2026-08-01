@@ -14,8 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatPanel } from '../../../src/renderer/src/features/chat/ChatPanel'
 import { useChatContextStore } from '../../../src/renderer/src/features/chat/chatContextStore'
 import { createStarterDeck, useDeckStore } from '../../../src/renderer/src/stores/deckStore'
+import { useAuthStore } from '../../../src/renderer/src/stores/authStore'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
 import type { ApiKeyStatus } from '../../../src/shared/agent/types'
+import type { AuthStatus } from '../../../src/shared/agent/auth'
+import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import {
   buildElementContextBundle,
@@ -23,6 +26,13 @@ import {
 } from '../../../src/shared/design/element-context'
 
 const CONFIGURED: ApiKeyStatus = { configured: true, last4: 'aXY9' }
+/** Configured via an API key — the composer is open, which is all these chip cases need. */
+const AUTHED: AuthStatus = {
+  mode: 'api-key',
+  apiKey: CONFIGURED,
+  subscription: { configured: false, last4: null },
+  endpoint: DEFAULT_ENDPOINT,
+}
 const NOW = 1_700_000_000_000
 
 function makeFakeBridge(): { bridge: AgentBridge; sendMessage: ReturnType<typeof vi.fn> } {
@@ -31,6 +41,9 @@ function makeFakeBridge(): { bridge: AgentBridge; sendMessage: ReturnType<typeof
     setApiKey: vi.fn(async () => CONFIGURED),
     clearApiKey: vi.fn(async () => ({ configured: false, last4: null })),
     getApiKeyStatus: vi.fn(async () => CONFIGURED),
+    setSubscriptionToken: vi.fn(async () => AUTHED),
+    clearSubscriptionToken: vi.fn(async () => AUTHED),
+    getAuthStatus: vi.fn(async () => AUTHED),
     sendMessage,
     interrupt: vi.fn(async () => true),
     onAgentEvent: () => () => undefined,
@@ -73,6 +86,9 @@ beforeEach(() => {
   // A fresh starter deck so `currentSlideId` is a known real slide the bundle can be tied to.
   act(() => useDeckStore.setState(createStarterDeck(NOW)))
   act(() => useChatContextStore.getState().clear())
+  // `useAuthStore` is a module-level singleton (M2.7): reset it so one case's status never decides
+  // whether the next one's composer is gated.
+  act(() => useAuthStore.getState().reset())
 })
 
 afterEach(() => {

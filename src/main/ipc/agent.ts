@@ -9,7 +9,10 @@
 
 import { ipcMain, webContents, type WebContents } from 'electron'
 import {
+  AGENT_AUTH_STATUS_CHANNEL,
   AGENT_CLEAR_KEY_CHANNEL,
+  AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
+  AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_EVENT_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
   AGENT_KEY_STATUS_CHANNEL,
@@ -17,12 +20,14 @@ import {
   AGENT_SET_KEY_CHANNEL,
   DECK_AGENT_EDIT_CHANNEL,
   DECK_AGENT_EDIT_RESULT_CHANNEL,
+  type AgentAuthStatusResponse,
   type AgentInterruptResponse,
   type AgentKeyStatusResponse,
   type AgentSendResponse,
   type AgentSetKeyResponse,
 } from '../../shared/ipc-contract'
 import { isAgentSendRequest, isApiKeySetRequest, type ApiKeyStatus } from '../../shared/agent/types'
+import type { AuthStatus } from '../../shared/agent/auth'
 import { isAgentEditResponse } from '../../shared/document/agent-edit'
 import { bundledSkillsDir, defaultAgentPaths, realQuery } from '../agent/client'
 import { materializeSkills, nodeSkillFs } from '../agent/skills'
@@ -37,6 +42,11 @@ export type AgentIpcDeps = {
   readonly saveApiKey: (key: string) => Promise<ApiKeyStatus>
   readonly clearApiKey: () => Promise<ApiKeyStatus>
   readonly getApiKeyStatus: () => Promise<ApiKeyStatus>
+  /** M2.7 — the `claude setup-token` subscription token, same vault rules as the key. */
+  readonly saveSubscriptionToken: (token: string) => Promise<ApiKeyStatus>
+  readonly clearSubscriptionToken: () => Promise<ApiKeyStatus>
+  /** Both slots, masked and combined into the active mode. */
+  readonly getAuthStatus: () => Promise<AuthStatus>
 }
 
 /** Renderers whose teardown hooks are installed — a WeakSet so a destroyed WebContents isn't held. */
@@ -116,7 +126,7 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
     deps.service ??
     new AgentService({
       queryFn: realQuery,
-      loadApiKey: vault.loadApiKey,
+      loadCredential: vault.loadAgentCredential,
       resolvePaths: defaultAgentPaths,
       resolveMcpServers,
       // M2.4: put the three validated slide skills under `<cwd>/.claude/skills` before the
@@ -127,6 +137,9 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
   const saveApiKey = deps.saveApiKey ?? vault.saveApiKey
   const clearApiKey = deps.clearApiKey ?? vault.clearApiKey
   const getApiKeyStatus = deps.getApiKeyStatus ?? vault.getApiKeyStatus
+  const saveSubscriptionToken = deps.saveSubscriptionToken ?? vault.saveSubscriptionToken
+  const clearSubscriptionToken = deps.clearSubscriptionToken ?? vault.clearSubscriptionToken
+  const getAuthStatus = deps.getAuthStatus ?? vault.getAuthStatus
 
   ipcMain.handle(
     AGENT_SET_KEY_CHANNEL,
@@ -143,6 +156,35 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
   ipcMain.handle(AGENT_KEY_STATUS_CHANNEL, async (): Promise<AgentKeyStatusResponse> => {
     return { status: await getApiKeyStatus() }
   })
+
+  // --- M2.7 auth surface -------------------------------------------------------------------------
+  // Every one of these replies with a masked status only. The `saveSubscriptionToken` handler takes a
+  // secret *inward*; there is deliberately no channel that reads either credential back out.
+
+  ipcMain.handle(AGENT_AUTH_STATUS_CHANNEL, async (): Promise<AgentAuthStatusResponse> => {
+    return { status: await getAuthStatus() }
+  })
+
+  ipcMain.handle(
+    AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
+    async (_event, payload: unknown): Promise<AgentAuthStatusResponse> => {
+      if (!isApiKeySetRequest(payload)) {
+        throw new Error('agent:setSubscriptionToken requires { key: string }')
+      }
+      await saveSubscriptionToken(payload.key)
+      // Re-read both slots rather than deriving from the write: the renderer's next render must
+      // reflect the *combined* mode, and the key slot may already hold a value.
+      return { status: await getAuthStatus() }
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
+    async (): Promise<AgentAuthStatusResponse> => {
+      await clearSubscriptionToken()
+      return { status: await getAuthStatus() }
+    },
+  )
 
   ipcMain.handle(
     AGENT_SEND_CHANNEL,

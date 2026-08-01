@@ -47,6 +47,7 @@ describe('menuActionTarget', () => {
       'file.export.pptx',
       'file.export.pdf',
       'file.export.html',
+      'app.settings',
       'edit.undo',
       'edit.redo',
     ])

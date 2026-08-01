@@ -20,7 +20,9 @@ const { buildSdkOptions, bundledSkillsDir, defaultAgentPaths, realQuery } =
 const { DEFAULT_AGENT_MODEL } = await import('../../../src/shared/agent/types')
 
 const OPTIONS = {
-  apiKey: 'sk-ant-secret',
+  // M2.7: the seam carries a tagged credential rather than a bare key. `api-key` is the branch that
+  // must still land in `ANTHROPIC_API_KEY` for the subprocess (asserted below).
+  credential: { kind: 'api-key', value: 'sk-ant-secret' },
   model: DEFAULT_AGENT_MODEL,
   cwd: '/userData/agent/workspace',
   configDir: '/userData/agent/claude',

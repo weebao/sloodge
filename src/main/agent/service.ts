@@ -1,8 +1,8 @@
 /**
  * Owns the per-window agent sessions and mediates between the IPC layer and `AgentSession`. It is
- * `electron`-free and fully injectable: tests drive it with a fake `queryFn`, a fake key loader, and
- * a capturing `emit`, so the whole "no key -> refuse, key -> stream, teardown" flow runs with no
- * subprocess and no keychain.
+ * `electron`-free and fully injectable: tests drive it with a fake `queryFn`, a fake credential loader,
+ * and a capturing `emit`, so the whole "unconfigured -> refuse, credential -> stream, teardown" flow
+ * runs with no subprocess and no keychain.
  *
  * One `AgentSession` per renderer `WebContents` id (50-agent-integration.md §1): Sloodge is
  * single-deck-focused, so this is normally a map of one.
@@ -10,14 +10,18 @@
 
 import { DEFAULT_AGENT_MODEL, type AgentEvent, type AgentModelId } from '../../shared/agent/types'
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
+import type { AgentCredential } from './auth-env'
 import { defaultAgentLog, type AgentLog } from './log'
 import { AgentSession } from './session'
 import type { AgentQueryFn } from './query-contract'
 
 export type AgentServiceDeps = {
   readonly queryFn: AgentQueryFn
-  /** Reads the decrypted key from the vault; `null` means "not configured". */
-  readonly loadApiKey: () => Promise<string | null>
+  /**
+   * Resolves the session's credential from the vault — a subscription token if one is stored, else
+   * an API key (M2.7). `null` means nothing is configured and the turn must be refused.
+   */
+  readonly loadCredential: () => Promise<AgentCredential | null>
   /** App-owned cwd + CLAUDE_CONFIG_DIR for a session (isolation, §5). */
   readonly resolvePaths: () => { cwd: string; configDir: string }
   readonly defaultModel?: AgentModelId
@@ -56,7 +60,7 @@ export class AgentService {
   private readonly model: AgentModelId
   private readonly sessions = new Map<number, AgentSession>()
   /**
-   * In-flight session creations, keyed by senderId. Session creation spans an `await loadApiKey()`,
+   * In-flight session creations, keyed by senderId. Session creation spans an `await loadCredential()`,
    * so two concurrent sends for one sender would otherwise both see no session and both spawn a
    * `query()` subprocess — orphaning one (§9's worst case) the moment the M2.3 chat UI can fire a
    * double send. Caching the creation promise makes the second send await the first's result instead
@@ -70,9 +74,9 @@ export class AgentService {
   }
 
   /**
-   * Send a user turn for one renderer. Creates the session lazily on first use, but only if a key is
-   * configured — no key means `{ accepted: false }`, which the renderer renders as the inline
-   * "Add your Anthropic API key in Settings" prompt (50-agent-integration.md §4).
+   * Send a user turn for one renderer. Creates the session lazily on first use, but only if a credential
+   * is configured — none means `{ accepted: false }`, which the renderer renders as the composer's
+   * "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
    */
   async send(
     senderId: number,
@@ -87,8 +91,8 @@ export class AgentService {
 
   /**
    * Resolve the sender's session, creating exactly one even under concurrent sends. The creation
-   * promise is shared between racing callers and cleared once it settles; a `null` result (no key
-   * configured) is not cached, so a later send retries after the key is added.
+   * promise is shared between racing callers and cleared once it settles; a `null` result (nothing
+   * configured) is not cached, so a later send retries once a credential is added in Settings.
    */
   private ensureSession(
     senderId: number,
@@ -110,8 +114,8 @@ export class AgentService {
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSession | null> {
     try {
-      const apiKey = await this.deps.loadApiKey()
-      if (apiKey === null) return null
+      const credential = await this.deps.loadCredential()
+      if (credential === null) return null
       const { cwd, configDir } = this.deps.resolvePaths()
       // Skills are discovered from disk when the subprocess starts, so the copy has to land first.
       // A failure here must not cost the user their chat box — see `prepareWorkspace`'s docstring.
@@ -136,7 +140,7 @@ export class AgentService {
         queryFn: this.deps.queryFn,
         log,
         options: {
-          apiKey,
+          credential,
           model: this.model,
           cwd,
           configDir,
