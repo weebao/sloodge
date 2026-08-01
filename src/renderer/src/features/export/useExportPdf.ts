@@ -17,7 +17,7 @@
  * dialog is a later UI over a pipeline that already accepts All / Current / a range.
  */
 
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { getBridge } from '../../host/bridge'
 import { wrapSlideHtml } from '../canvas/wrapSlideHtml'
 import type { SlideView } from '../../stores/deckStore'
@@ -45,12 +45,21 @@ export type UseExportPdfArgs = {
 }
 
 /**
- * Returns a stable trigger that exports the whole deck to PDF. Inert (a no-op) in a plain-browser
- * host with no bridge. Errors are logged rather than thrown — an export failing must not take down
- * the editor; the surfaced report/error UI is part of the deferred dialog milestone.
+ * Returns a trigger that exports the whole deck to PDF. Inert (a no-op) in a plain-browser host with
+ * no bridge. Errors are logged rather than thrown — an export failing must not take down the editor;
+ * the surfaced report/error UI is part of the deferred dialog milestone.
+ *
+ * The returned callback has a **stable identity for the life of the component**: its args change on
+ * every deck edit (`slides` is a fresh array each edit), so a callback that depended on them would
+ * tear down and rebuild the `app:menu` subscription in `useMenuActions` on every keystroke. A ref
+ * holding the latest args, read lazily at click time, keeps the identity constant while the export
+ * still uses current data.
  */
-export function useExportPdf({ slides, currentIndex, deckTitle }: UseExportPdfArgs): () => void {
+export function useExportPdf(args: UseExportPdfArgs): () => void {
+  const argsRef = useRef(args)
+  argsRef.current = args
   return useCallback(() => {
+    const { slides, currentIndex, deckTitle } = argsRef.current
     const bridge = getBridge()
     if (bridge?.exportPdf === undefined) return
     if (slides.length === 0) return
@@ -68,5 +77,5 @@ export function useExportPdf({ slides, currentIndex, deckTitle }: UseExportPdfAr
         console.error('PDF export failed', error)
       },
     )
-  }, [slides, currentIndex, deckTitle])
+  }, [])
 }

@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => {
     readonly webContents = {
       id: 700 + instances.length,
       setZoomFactor: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      on: vi.fn(),
       loadURL: vi.fn(async () => undefined),
       executeJavaScript: vi.fn(async () => true),
       printToPDF: vi.fn(async () => holder.pdf),

