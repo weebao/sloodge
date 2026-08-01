@@ -1,0 +1,120 @@
+# Release packaging — DELIBERATELY TAG-TRIGGERED ONLY.
+#
+# The repo's CI budget rule (70-testing-ci.md §6.1) is: GitHub Actions runs unit tests only,
+# never compilation and never packaging, because Actions minutes are limited. This workflow is
+# the single exception and it does NOT weaken that rule, because it never runs during normal
+# development: there is no `pull_request` trigger, no `push: branches`, no `schedule`, no
+# `workflow_dispatch`. It fires only when a release is actually being cut, so its cost is
+# O(releases) — a handful of runs a year — not O(commits).
+#
+# DO NOT ADD ANOTHER TRIGGER HERE. `tests/unit/packaging/release-workflow.test.ts` reds if you do;
+# that test is the budget guard, not a formality.
+#
+# Why this exists at all: a preview release was once hand-built from a stale worktree, so the
+# shipped artifact predated a merged milestone and a whole export format silently did nothing.
+# A build from a clean checkout of the tag eliminates that class of bug, and it also retires the
+# hand-maintained duplicate builder config the manual procedure needed
+# (docs/windows-smoke-runbook.md §8.2).
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  # Never `cancel-in-progress` on a release: killing a half-finished packaging run leaves a tag
+  # with partial artifacts attached, which is exactly the ambiguity this workflow removes.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Read-only by default; the one job that needs to write widens it for itself.
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: windows installer (nsis + zip)
+    # windows-latest is load-bearing, not a preference. NSIS cannot be built on Linux because
+    # electron-builder EXECUTES the freshly built installer to generate its uninstaller, which
+    # needs Wine — and Wine does not work on this project's WSL2 dev box (runbook §8.1). A native
+    # Windows runner makes that step trivial: no Wine, no `--prepackaged` dance, no throwaway
+    # second package.json + electron-builder.yml kept in sync by hand.
+    runs-on: windows-latest
+    # Hard cap so a hung run cannot bill for hours. Windows runners bill at 2x, so this is the
+    # real budget ceiling: ~60 billable minutes worst case, per release.
+    timeout-minutes: 30
+    permissions:
+      # Job-scoped write, needed only to create/attach the release for this tag. The workflow-level
+      # default above stays read-only so nothing else in this file inherits write access.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # No explicit version: pnpm/action-setup reads it from package.json's packageManager field;
+      # pinning both makes the action error out. Same as test.yml.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # NOTE the deliberately INVERTED env discipline versus test.yml. That workflow sets
+      # ELECTRON_SKIP_BINARY_DOWNLOAD=1 because unit tests never launch Electron and the download
+      # is ~120 MB of pure waste. Packaging is the opposite case: electron-builder packs the real
+      # win32-x64 Electron binary, so the postinstall MUST run and the binary MUST be downloaded.
+      # Setting the skip flag here would produce a broken or failed package.
+      #
+      # `--frozen-lockfile` is what makes this build reproducible from the tag. Note that
+      # pnpm-workspace.yaml's `supportedArchitectures` resolves to just win32-x64 on this runner
+      # (`current` IS win32/x64 here), so unlike the Linux dev box this install does NOT also drag
+      # down the ~275 MB linux CLI it can never use.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # ~8 seconds against a ~15 minute packaging run. Cheap insurance that the tag being shipped
+      # is actually green, rather than discovering it after the artifact is in someone's hands.
+      - name: Unit tests
+        run: pnpm test
+
+      # The real script from package.json, not a copy of its command line. Targets (nsis + zip) and
+      # artifact names come from the `build.win` block, which tests/unit/packaging/build-config.test.ts
+      # already guards — duplicating them here would create a second source of truth that drifts.
+      - name: Build and package
+        run: pnpm pack:win:release
+
+      # Belt and braces: keep the artifacts reachable even if the release step below fails (e.g. on
+      # a permissions problem), so a release is never blocked on re-running a 15-minute build.
+      # `if-no-files-found: error` reds when packaging "succeeds" but emits nothing.
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sloodge-windows-${{ github.ref_name }}
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # `gh` is preinstalled on the runner — no third-party action, so no extra supply-chain
+      # surface (this repo takes that seriously enough to set `minimumReleaseAge`).
+      #
+      # A release is created as a DRAFT if it does not exist yet, so M9.4 keeps its human step:
+      # a person writes the release notes and presses publish. If a release for the tag already
+      # exists (a human created it first), the artifacts simply attach to it.
+      #
+      # GH_TOKEN is scoped to this step alone. electron-builder above therefore cannot see a token
+      # even if it wanted to auto-publish — belt and braces with the `--publish never` in the script.
+      - name: Attach artifacts to the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --title "$tag" \
+              --notes "Automated build from \`$tag\` (workflow run $GITHUB_RUN_ID). Release notes pending — see M9.4."
+          fi
+          gh release upload "$tag" release/*.exe release/*.zip --clobber

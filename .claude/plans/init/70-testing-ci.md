@@ -223,7 +223,7 @@ Kept short enough to actually be done. Per release, on both OSes:
 
 ### 6.1 Scope: unit tests only
 
-**One workflow, one job, no matrix, ubuntu-latest only.** No build, no typecheck of the full project, no packaging, no Electron, no Playwright, no coverage upload, no cross-OS matrix. A 3-OS matrix triples the bill for near-zero signal on code that is 90 % platform-agnostic pure TypeScript; platform differences show up in packaging and in the Electron shell, neither of which CI touches anyway.
+**One workflow, one job, no matrix, ubuntu-latest only.** No build, no typecheck of the full project, no packaging, no Electron, no Playwright, no coverage upload, no cross-OS matrix. (This governs the *development* path — every PR and every push to `main`. Release packaging is a separate tag-triggered workflow that cannot fire here; see §6.5.) A 3-OS matrix triples the bill for near-zero signal on code that is 90 % platform-agnostic pure TypeScript; platform differences show up in packaging and in the Electron shell, neither of which CI touches anyway.
 
 Typechecking is the one judgement call. Full `tsc -b` on an Electron monorepo is slow. The compromise: **`tsc --noEmit` on `src/shared` and `src/main/document` only** — the pure, dependency-light core — which is fast and catches the type errors that matter most. Full typecheck is a local pre-push concern.
 
@@ -300,7 +300,44 @@ The cost lands only on cache-miss runs, under a 10-minute cap for a ~7-second su
 
 ### 6.4 What is explicitly *not* automated
 
-Stated plainly so nobody adds it back without a decision: packaging/installers (local, at release), code signing and notarization (local, credentials never in CI), Playwright slide-contract tests (local), Electron smoke (local), auto-update publishing (manual release step), dependency auto-update bots (they generate PR runs, i.e. minutes, for a solo-scale repo).
+Stated plainly so nobody adds it back without a decision: code signing and notarization (local, credentials never in CI), Playwright slide-contract tests (local), Electron smoke (local), auto-update publishing (manual release step), dependency auto-update bots (they generate PR runs, i.e. minutes, for a solo-scale repo).
+
+Packaging *was* on this list and has moved — to §6.5, under a trigger that keeps it off the development path entirely. The rule in §6.1 is unchanged: **nothing in the PR/push path ever compiles or packages.**
+
+### 6.5 The one exception: release packaging, tag-triggered only (M9.0)
+
+`.github/workflows/release.yml` builds the Windows installer on `windows-latest`. It is the only workflow that compiles or packages anything, and it is allowed to exist because of exactly one property:
+
+```yaml
+on:
+  push:
+    tags:
+      - 'v*'
+```
+
+**No `pull_request`. No `push: branches`. No `schedule`. No `workflow_dispatch`.** It therefore costs nothing during normal development — its cost is O(releases), a handful of runs a year, not O(commits). §6.1's "no packaging in CI" was always a *budget* rule rather than a purity rule, and a workflow that cannot fire outside a release does not spend the budget it protects.
+
+The cost, stated honestly rather than hand-waved: Windows runners bill at **2x**, and a packaging run is roughly 12–15 minutes wall (install with the real Electron binary + the win32 Agent SDK CLI, `pnpm build`, then NSIS + zip). `timeout-minutes: 30` caps the worst case at ~60 billable minutes for a release. Cutting a release by hand costs more than that in human time, and it costs correctness besides — see below.
+
+**Why it is worth spending at all.** A preview release was once hand-built from a stale worktree: the artifact predated a merged milestone, so an entire export format silently did nothing in the shipped build, and no step of the build reported a problem. Hand-built artifacts from a developer machine have no provenance — nothing ties the binary to a commit. Building from a clean checkout of the tag removes that class of bug outright. It also retires the hand-maintained duplicate builder config the manual procedure required (a throwaway `package.json` + `electron-builder.yml` on the Windows host, kept in sync by hand — docs/windows-smoke-runbook.md §8.2).
+
+**Why `windows-latest` specifically.** Not a preference: NSIS *cannot* be built on Linux, because electron-builder executes the freshly built installer in order to generate its uninstaller, which needs Wine — and Wine does not work on this project's WSL2 box (runbook §8.1, root cause still unidentified). A native Windows runner makes that step a non-event, and deletes the `--prepackaged` two-machine dance along with it.
+
+Deliberate differences from §6.2's unit-test workflow, each the *opposite* of the choice made there:
+
+| Unit-test workflow | Release workflow | Why the inversion |
+|---|---|---|
+| `ELECTRON_SKIP_BINARY_DOWNLOAD=1` | **not set** | Packaging packs the real win32 Electron binary; skipping the download breaks the artifact |
+| `--ignore-scripts` on install | **not set** | Electron's postinstall is what fetches that binary |
+| `ubuntu-latest` (1x billing) | `windows-latest` (2x) | NSIS is unbuildable on Linux |
+| `cancel-in-progress: true` | **`false`** | Killing a half-finished release leaves a tag with partial artifacts attached |
+| `permissions: contents: read` | job-scoped `contents: write` | Needed to attach artifacts to the release; scoped to the one job, workflow default stays read |
+
+The workflow calls `pnpm pack:win:release`, **not** its own `electron-builder` command line. Targets (nsis + zip) and artifact names come from `package.json`'s `build.win` block, which `tests/unit/packaging/build-config.test.ts` already guards; a command line in the workflow would be a second source of truth that drifts silently — the same failure mode as the duplicate Windows-host config it replaces. The script passes `--publish never` so electron-builder does not detect the CI tag build and race the workflow's own upload step.
+
+Artifacts are attached to the tag's GitHub release via the preinstalled `gh` CLI (no third-party action, so no extra supply-chain surface — this repo sets `minimumReleaseAge` for the same reason). If no release exists for the tag, one is created **as a draft**: M9.4 keeps its human step, where a person writes the release notes and publishes.
+
+**This rule is enforced by a test, not by discipline.** `tests/unit/packaging/release-workflow.test.ts` asserts the trigger set *exhaustively* — the only key permitted under `on` is `push`, and the only key under `push` is `tags`. Adding `pull_request`, `workflow_dispatch`, a `branches` filter, or switching to a Linux runner reds the suite. Verified by mutation: nine separate edits (including each of those) were applied and each turned the suite red. If you are reading this because that test failed, it did its job.
 
 ---
 
@@ -485,7 +522,7 @@ The common friction — **squash-merge means the merged commit's hash differs fr
 ## 9. Decisions summary
 
 1. **Bottom-heavy pyramid**: vitest units carry the correctness weight because they are the only layer CI can afford; Playwright and Electron layers are local and gate releases, not merges.
-2. **CI = lint + core typecheck + vitest on ubuntu-latest only.** No build, no packaging, no Electron, no Playwright, no OS matrix, with binary downloads skipped, concurrency cancellation on, and a 10-minute hard cap.
+2. **CI = lint + core typecheck + vitest on ubuntu-latest only.** No build, no packaging, no Electron, no Playwright, no OS matrix, with binary downloads skipped, concurrency cancellation on, and a 10-minute hard cap. **One exception (§6.5):** release packaging runs on `windows-latest`, triggered by a `v*` tag push and nothing else, so it never fires on the development path; a test asserts that trigger set exhaustively.
 3. **Electron is quarantined** behind injected interfaces and a lint rule, so the logic that matters is testable in a plain Node process.
 4. **The experiment harness ([`render.mjs`](../../../experiments/init/harness/render.mjs)) is promoted to product test infrastructure**, with the [review rubric](../../../experiments/init/review-rubric.md) split into automated (mechanical) and human/LLM (semantic) halves.
 5. **PR titles are `feat`/`fix`/`doc`/`chore`/`ci`**; `chore`/`ci`/config PRs use `gh pr merge --auto`; `feat` PRs get a one-line description; **perf PRs must include measurements**; **UI PRs must include a screen recording**.

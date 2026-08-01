@@ -161,7 +161,21 @@ Full script kept at `C:\sloodge-smoke\click2.ps1`.
 cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA SilentlyContinue | Stop-Process -Force"
 ```
 
-## 8. Packaged build (M5.2) — the supported path
+## 8. Packaged build (M5.2) — building locally
+
+> **Releases are not cut this way.** Since M9.0, shipping artifacts are built by
+> `.github/workflows/release.yml`: push a `v*` tag and a `windows-latest` runner builds the NSIS
+> installer and zip from a clean checkout of that tag and attaches them to the release.
+> **Do not hand-build a release artifact.** A preview release was once built from a stale worktree —
+> the artifact predated a merged milestone, so an entire export format silently did nothing in the
+> shipped build, and nothing in the build reported it. A binary from a developer machine has no
+> provenance; a binary from a tag does.
+>
+> Everything below stays, for two reasons: it is still how you **debug packaging locally**, and it
+> records findings (the Wine failure, the `files`-hoisting measurements, the sibling-CLI layout)
+> that the CI path depends on but does not re-derive. §8.2 in particular is now
+> **local-debug-only** — the CI runner is natively Windows, so it needs no `--prepackaged` dance
+> and no second builder config.
 
 Verified 2026-08-01: NSIS installer built, silently installed to
 `%LOCALAPPDATA%\Programs\Sloodge`, launched, and driven through slide switch → Design Mode →
@@ -216,7 +230,14 @@ the `LD_LIBRARY_PATH` electron-builder injects, or a missing 32-bit/loader depen
 The `toolsets` key is kept regardless: it is a real electron-builder option, and it is inert on a
 Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`).
 
-### 8.2 Building the NSIS installer on the Windows host
+### 8.2 Building the NSIS installer on the Windows host — LOCAL DEBUG ONLY
+
+**Superseded for releases by §8.5.** This two-machine procedure exists because the dev box is Linux
+and NSIS is not buildable there; a `windows-latest` runner has no such problem and needs none of it.
+Keep it for reproducing a packaging bug on the actual Windows host, and note the specific liability
+it carries: `C:\sloodge-m52\builder\` holds a **duplicate of the repo's builder config, kept in sync
+by hand**, so anything M5.2 changes in `build.win`/`build.nsis` has to be mirrored there manually or
+the local build silently diverges from the shipped one. The CI path has one config, in the repo.
 
 Build the app dir in WSL, then let Windows do the NSIS step from the _prepackaged_ output:
 
@@ -275,6 +296,61 @@ The sibling layout is load-bearing: the SDK finds its CLI via
 `require.resolve('@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe')` anchored at `sdk.mjs`'s
 own realpath, with no PATH fallback. Both packages must be `asarUnpack`ed (a binary cannot be
 spawned from inside an archive) and must stay siblings.
+
+### 8.5 The release path (M9.0) — `.github/workflows/release.yml`
+
+Push a `v*` tag. A `windows-latest` runner checks out that tag, `pnpm install --frozen-lockfile`,
+`pnpm test`, then `pnpm pack:win:release` (= `pnpm build && electron-builder --win --publish never`),
+and attaches `release/*.exe` + `release/*.zip` to the tag's GitHub release — creating it as a
+**draft** if it does not exist yet, so M9.4's human release-notes step survives.
+
+**Tag-triggered and nothing else.** No `pull_request`, no `push: branches`, no `workflow_dispatch`.
+The repo's CI budget rule is unit-tests-only (70-testing-ci.md §6.1) and this does not weaken it:
+the workflow cannot fire during development, so its cost is per-release, not per-commit.
+`tests/unit/packaging/release-workflow.test.ts` asserts the trigger set exhaustively and reds if
+anyone adds one.
+
+**What M5.2's `build` block does on a Windows runner — carries over unchanged:**
+
+- `build.win.target` (nsis x64 + zip x64), `artifactName`, and the `nsis` block are platform config
+  and behave identically; the workflow deliberately does **not** pass targets on the command line,
+  so this block stays the single source of truth.
+- `asarUnpack` + `extraResources` (the M2.4 skills dir and the sibling SDK/CLI layout of §8.4) are
+  platform-independent.
+- `win.files` still needs its **full** exclusion list, duplicated rather than hoisted, for the
+  reason measured in the Gotchas table below. Nothing about a Windows runner changes that.
+- `build.toolsets.wine` is **inert** on the runner — `WineVmManager.execWine` returns early when
+  `process.platform === 'win32'`. It stays for the Linux dev box; it neither helps nor hurts in CI.
+
+**What is different, and better:**
+
+- **NSIS just works.** The one step that needs Wine — executing the built installer to emit its own
+  uninstaller (§8.1) — is a native exe run on a native Windows host. No Wine, no `--prepackaged`,
+  no second machine, no duplicated builder config.
+- **`supportedArchitectures` gets cheaper, not more expensive.** It is a cartesian product of
+  `os` x `cpu`; on the runner `current` _is_ win32/x64, so `[current, win32] x [current, x64]`
+  collapses to exactly `win32-x64`. The runner therefore does **not** download the ~275 MB Linux
+  CLI that this dev box is forced to fetch and then exclude. The
+  `!**/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,linux}-*/**` line in `win.files` becomes
+  inert there — keep it, it is still load-bearing for a cross-pack from Linux.
+- **The `NODE_OPTIONS=--experimental-require-module` hazard is gone.** It was needed only because the
+  Windows host runs node v22.11.0 and electron-builder 26 `require()`s ESM-only `@noble/hashes`. The
+  runner is pinned to node 24.
+- **`ELECTRON_SKIP_BINARY_DOWNLOAD` must NOT be set**, unlike `test.yml`. Packaging needs the real
+  win32 Electron binary; the skip flag there is a unit-test optimization and would break the artifact
+  here. A test asserts its absence.
+
+**Still open / unproven:**
+
+- **The workflow has never run.** It was validated statically and by mutation-testing its guard, not
+  end-to-end — no tag has been pushed. The first real tag is the first proof. Most likely first-run
+  snags: a `--frozen-lockfile` mismatch if the lockfile lacks a resolution the runner needs, and the
+  `gh release upload` glob if `release/` ever emits an unexpected extension.
+- **Icons are still deferred** (see the last Gotcha): `directories.buildResources: "build"` names a
+  directory that does not exist, so CI artifacts carry the default Electron icon exactly as local
+  ones do. M9.1 must add `build/icon.png` — the CI path does not fix this.
+- **macOS is not covered.** M9.2 still builds mac artifacts on real hardware; a `macos-latest` job
+  could be added later, but it bills at 10x and signing/notarization is deferred past 0.0.1 anyway.
 
 ## Gotchas summary
 
