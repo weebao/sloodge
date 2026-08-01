@@ -10,11 +10,15 @@ import {
   clampSlideIndex,
   createPresentState,
   keyToPresentIntent,
+  PRESENT_CONTROLS_HIDE_MS,
   reducePresent,
 } from './presentMachine'
 
-/** Idle time before the controls fade, per the wireframe's "on mouse move" affordance. */
-const CONTROLS_HIDE_MS = 2500
+/**
+ * Idle time before the controls fade, per the wireframe's "on mouse move" affordance. Shared with
+ * the HTML export's presenter shell (M4.4) so both surfaces fade on the same beat.
+ */
+const CONTROLS_HIDE_MS = PRESENT_CONTROLS_HIDE_MS
 
 export type PresentSurfaceProps = {
   /** The deck in presentation order — the same `SlideView[]` the rail and canvas use. */

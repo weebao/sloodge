@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseExportPdfRequest } from '../../../src/shared/export/request'
+import { parseExportHtmlRequest, parseExportPdfRequest } from '../../../src/shared/export/request'
 
 const valid = {
   slides: [
@@ -39,5 +39,42 @@ describe('parseExportPdfRequest', () => {
     ['deckTitle not a string', { ...valid, deckTitle: 42 }],
   ])('rejects %s', (_label, payload) => {
     expect(parseExportPdfRequest(payload)).toBeNull()
+  })
+})
+
+describe('parseExportPdfRequest — the optional slide id (M4.4)', () => {
+  it('keeps a string id, which the HTML bundle manifest records', () => {
+    const parsed = parseExportPdfRequest({
+      ...valid,
+      slides: [{ id: 's_01', title: 'One', html: 'x' }],
+    })
+    expect(parsed?.slides[0]).toEqual({ id: 's_01', title: 'One', html: 'x' })
+  })
+
+  it('omits the id entirely when absent, rather than inventing an empty one', () => {
+    const parsed = parseExportPdfRequest(valid)
+    expect(parsed?.slides[0]).not.toHaveProperty('id')
+  })
+
+  it.each([
+    ['a number', 42],
+    ['an object', { toString: 'evil' }],
+    ['null', null],
+  ])('drops a non-string id (%s) rather than coercing it into the manifest', (_label, id) => {
+    const parsed = parseExportPdfRequest({ ...valid, slides: [{ id, title: 'One', html: 'x' }] })
+    // The request is still valid — `id` is optional — but the bad value never reaches the bundle.
+    expect(parsed).not.toBeNull()
+    expect(parsed?.slides[0]).not.toHaveProperty('id')
+  })
+})
+
+describe('parseExportHtmlRequest', () => {
+  it('accepts the same well-formed request the PDF channel does', () => {
+    expect(parseExportHtmlRequest(valid)).toEqual(valid)
+  })
+
+  it('rejects a malformed payload, so main never zips garbage', () => {
+    expect(parseExportHtmlRequest({ nope: true })).toBeNull()
+    expect(parseExportHtmlRequest(null)).toBeNull()
   })
 })

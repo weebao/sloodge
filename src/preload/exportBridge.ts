@@ -8,8 +8,17 @@
  * write; this bridge only forwards the request and hands back main's report.
  */
 
-import { FILE_EXPORT_PDF_CHANNEL, FILE_EXPORT_PPTX_CHANNEL } from '../shared/ipc-contract'
-import type { ExportPdfRequest, ExportPdfResponse } from '../shared/export/types'
+import {
+  FILE_EXPORT_HTML_CHANNEL,
+  FILE_EXPORT_PDF_CHANNEL,
+  FILE_EXPORT_PPTX_CHANNEL,
+} from '../shared/ipc-contract'
+import type {
+  ExportHtmlRequest,
+  ExportHtmlResponse,
+  ExportPdfRequest,
+  ExportPdfResponse,
+} from '../shared/export/types'
 import type { ExportPptxRequest, ExportPptxResponse } from '../shared/export/pptx/types'
 
 export type ExportInvoke = (channel: string, payload: unknown) => Promise<unknown>
@@ -19,6 +28,8 @@ export type ExportBridge = {
   exportPdf: (request: ExportPdfRequest) => Promise<ExportPdfResponse>
   /** Start a PPTX export (structured + raster fallback). Resolves with main's report, or `{ canceled: true }`. */
   exportPptx: (request: ExportPptxRequest) => Promise<ExportPptxResponse>
+  /** Start an HTML-bundle export (M4.4). Resolves with main's report, or `{ canceled: true }`. */
+  exportHtml: (request: ExportHtmlRequest) => Promise<ExportHtmlResponse>
 }
 
 export function createExportBridge(invoke: ExportInvoke): ExportBridge {
@@ -30,6 +41,10 @@ export function createExportBridge(invoke: ExportInvoke): ExportBridge {
     exportPptx: async (request) => {
       const response = await invoke(FILE_EXPORT_PPTX_CHANNEL, request)
       return response as ExportPptxResponse
+    },
+    exportHtml: async (request) => {
+      const response = await invoke(FILE_EXPORT_HTML_CHANNEL, request)
+      return response as ExportHtmlResponse
     },
   }
 }

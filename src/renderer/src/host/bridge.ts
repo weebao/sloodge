@@ -1,5 +1,10 @@
 import type { MenuAction } from '../../../shared/ipc-contract'
-import type { ExportPdfRequest, ExportPdfResponse } from '../../../shared/export/types'
+import type {
+  ExportHtmlRequest,
+  ExportHtmlResponse,
+  ExportPdfRequest,
+  ExportPdfResponse,
+} from '../../../shared/export/types'
 import type { ExportPptxRequest, ExportPptxResponse } from '../../../shared/export/pptx/types'
 import type { AgentBridge } from '../../../preload/agentBridge'
 
@@ -43,11 +48,19 @@ export type SloodgeBridge = {
    */
   exportPdf?: (request: ExportPdfRequest) => Promise<ExportPdfResponse>
   /**
+  /**
    * M4.3: export the deck (or a slide range) to PPTX — structured conversion where the slide is
    * faithfully convertible, a full-slide raster fallback where it is not, chosen per slide by
    * confidence unless the caller forces a fidelity. Absent in a plain-browser host.
    */
   exportPptx?: (request: ExportPptxRequest) => Promise<ExportPptxResponse>
+
+  /**
+   * M4.4: export the deck (or a slide range) to a self-contained HTML bundle — a presenter shell
+   * plus the slide documents, zipped. Unlike PDF this keeps animation and interactivity, because the
+   * slides *are* the output. Absent in a plain-browser host, which has no save dialog.
+   */
+  exportHtml?: (request: ExportHtmlRequest) => Promise<ExportHtmlResponse>
 }
 
 declare global {

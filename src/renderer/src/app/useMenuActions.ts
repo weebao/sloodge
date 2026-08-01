@@ -43,14 +43,20 @@ export function menuOwnsEditAccelerators(): boolean {
 /**
  * Route `app:menu` events. Inert — and unsubscribed — when there is no bridge.
  *
- * `onExportPdf` (M4.2) and `onExportPptx` (M4.3) are the File-menu consumers: `file.export.pdf` /
- * `file.export.pptx` are forwarded to the renderer (`menuRouting.ts`) because the deck lives here, and
- * this is where they are claimed. The remaining File ids still belong to their milestones.
+
+ * `onExportPdf` (M4.2), `onExportPptx` (M4.3) and `onExportHtml` (M4.4) are the File-menu consumers: the ids are forwarded
+ * to the renderer (`menuRouting.ts`) because the deck lives here, and this is where they are claimed.
+ * The remaining File ids still belong to their milestones.
+ *
+ * Both handlers must have stable identities — they are effect dependencies, so a new function per
+ * render would resubscribe `app:menu` on every keystroke. `useExportPdf` / `useExportHtml` guarantee
+ * that with a ref; see their docstrings.
  */
 export function useMenuActions(
   handlers: EditActionHandlers,
   onExportPdf?: () => void,
   onExportPptx?: () => void,
+  onExportHtml?: () => void,
 ): void {
   const { undo, redo } = handlers
   useEffect(() => {
@@ -69,7 +75,11 @@ export function useMenuActions(
         onExportPptx?.()
         return
       }
+      if (action === 'file.export.html') {
+        onExportHtml?.()
+        return
+      }
       // Every other id belongs to File; its milestone will claim it here.
     })
-  }, [undo, redo, onExportPdf, onExportPptx])
+  }, [undo, redo, onExportPdf, onExportPptx, onExportHtml])
 }

@@ -1,8 +1,11 @@
 /**
- * Atomic PDF output (M4.2 / 60-export.md §1.4). Everything is written to `<outPath>.partial` and
- * `rename`d into place on success, so a failed or cancelled export never leaves a half-written PDF
+ * Atomic export output (M4.2 / 60-export.md §1.4). Everything is written to `<outPath>.partial` and
+ * `rename`d into place on success, so a failed or cancelled export never leaves a half-written file
  * where the user expects a deck. Mirrors the `.tmp` + `rename` discipline in `document/store.ts`,
  * kept as its own tiny function so it is testable against a real temp dir without a window.
+ *
+ * Format-agnostic since M4.4: the HTML bundle's zip is written through the identical path, because
+ * "never leave a truncated file at the user's chosen path" is a property of exporting, not of PDF.
  */
 
 import { open as fsOpen, rename, rm } from 'node:fs/promises'
@@ -17,7 +20,7 @@ export function partialPathFor(outPath: string): string {
  * on any failure, so a full disk or a permission error leaves the user's chosen path untouched
  * rather than holding a truncated file.
  */
-export async function writePdfAtomic(outPath: string, bytes: Uint8Array): Promise<void> {
+export async function writeExportAtomic(outPath: string, bytes: Uint8Array): Promise<void> {
   const partial = partialPathFor(outPath)
   try {
     const handle = await fsOpen(partial, 'w')

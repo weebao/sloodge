@@ -11,7 +11,7 @@
  * function only proves the shape.
  */
 
-import type { ExportPdfRequest, SlideExportInput, SlideRange } from './types'
+import type { ExportHtmlRequest, ExportPdfRequest, SlideExportInput, SlideRange } from './types'
 
 function parseSlideRange(value: unknown): SlideRange | null {
   if (value === null || typeof value !== 'object') return null
@@ -34,9 +34,12 @@ function parseSlideRange(value: unknown): SlideRange | null {
 
 function parseSlide(value: unknown): SlideExportInput | null {
   if (value === null || typeof value !== 'object') return null
-  const { title, html } = value as { title?: unknown; html?: unknown }
+  const { title, html, id } = value as { title?: unknown; html?: unknown; id?: unknown }
   if (typeof title !== 'string' || typeof html !== 'string') return null
-  return { title, html }
+  // `id` is optional (HTML export carries it, PDF does not) but must be a string when present: a
+  // number or object would reach the bundle manifest and be serialized as something a re-importer
+  // cannot match against a `SlideId`. A wrong-typed id is dropped, not coerced.
+  return typeof id === 'string' ? { title, html, id } : { title, html }
 }
 
 export function parseExportPdfRequest(payload: unknown): ExportPdfRequest | null {
@@ -64,4 +67,16 @@ export function parseExportPdfRequest(payload: unknown): ExportPdfRequest | null
   if (typeof deckTitle !== 'string') return null
 
   return { slides: parsedSlides, currentIndex, range: parsedRange, deckTitle }
+}
+
+/**
+ * Narrow an untyped payload to an `ExportHtmlRequest` (M4.4).
+ *
+ * The HTML request is structurally the PDF request, so this is the same validation — but it is
+ * exported under its own name because main's HTML handler must not read as "the PDF parser happens
+ * to fit". If the two requests diverge (HTML gains package-as-folder or include-shell options), this
+ * is where the extra fields get validated, and no call site changes.
+ */
+export function parseExportHtmlRequest(payload: unknown): ExportHtmlRequest | null {
+  return parseExportPdfRequest(payload)
 }

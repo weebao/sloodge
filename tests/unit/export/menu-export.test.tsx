@@ -1,9 +1,10 @@
 /**
  * @vitest-environment happy-dom
  *
- * The menu → renderer hop for PDF export (M4.2): `file.export.pdf` must route to the renderer
- * (`menuActionTarget`) and, once there, fire the export trigger (`useMenuActions`). The pipeline is
- * covered elsewhere; this pins the two ends of the delivery that CI can otherwise not see.
+ * The menu → renderer hop for export: `file.export.pdf` (M4.2) and `file.export.html` (M4.4) must
+ * route to the renderer (`menuActionTarget`) and, once there, fire *their own* trigger
+ * (`useMenuActions`). The pipelines are covered elsewhere; this pins the two ends of the delivery
+ * that CI can otherwise not see, including the cross-fire check that a swapped pair would red.
  */
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -23,9 +24,13 @@ describe('menuActionTarget', () => {
     expect(menuActionTarget('file.export.pptx')).toBe('renderer')
   })
 
-  it('still logs the not-yet-wired File exports', () => {
-    expect(menuActionTarget('file.export.html')).toBe('log')
+  it('forwards file.export.html to the renderer (M4.4)', () => {
+    expect(menuActionTarget('file.export.html')).toBe('renderer')
+  })
+
+  it('still logs the not-yet-wired File actions', () => {
     expect(menuActionTarget('file.new')).toBe('log')
+    expect(menuActionTarget('file.open')).toBe('log')
   })
 
   it('still forwards edit actions', () => {
@@ -48,12 +53,14 @@ function fakeBridge(): SloodgeBridge & { emit: (action: MenuAction) => void } {
 
 function Harness({
   onExportPdf,
-  onExportPptx,
+  onExportPptx = vi.fn(),
+  onExportHtml = vi.fn(),
 }: {
   onExportPdf: () => void
   onExportPptx?: () => void
+  onExportHtml?: () => void
 }): React.JSX.Element {
-  useMenuActions({ undo: vi.fn(), redo: vi.fn() }, onExportPdf, onExportPptx)
+  useMenuActions({ undo: vi.fn(), redo: vi.fn() }, onExportPdf, onExportPptx, onExportHtml)
   return <div />
 }
 
@@ -89,5 +96,33 @@ describe('useMenuActions — export', () => {
     bridge.emit('edit.undo')
     bridge.emit('file.new')
     expect(onExportPdf).not.toHaveBeenCalled()
+  })
+
+  it('fires the HTML trigger on file.export.html', () => {
+    const bridge = fakeBridge()
+    window.sloodge = bridge
+    const onExportHtml = vi.fn()
+    render(<Harness onExportPdf={vi.fn()} onExportHtml={onExportHtml} />)
+
+    bridge.emit('file.export.html')
+    expect(onExportHtml).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the two export triggers apart', () => {
+    // Swapping the two handler branches in `useMenuActions` would silently make File ▸ Export ▸ HTML
+    // produce a PDF. Each id must fire exactly its own trigger and leave the other untouched.
+    const bridge = fakeBridge()
+    window.sloodge = bridge
+    const onExportPdf = vi.fn()
+    const onExportHtml = vi.fn()
+    render(<Harness onExportPdf={onExportPdf} onExportHtml={onExportHtml} />)
+
+    bridge.emit('file.export.pdf')
+    expect(onExportPdf).toHaveBeenCalledTimes(1)
+    expect(onExportHtml).not.toHaveBeenCalled()
+
+    bridge.emit('file.export.html')
+    expect(onExportHtml).toHaveBeenCalledTimes(1)
+    expect(onExportPdf).toHaveBeenCalledTimes(1)
   })
 })

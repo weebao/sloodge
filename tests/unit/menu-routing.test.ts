@@ -29,10 +29,14 @@ describe('menuActionTarget', () => {
     expect(menuActionTarget('file.export.pptx')).toBe('renderer')
   })
 
+  it('forwards file.export.html to the renderer (M4.4)', () => {
+    expect(menuActionTarget('file.export.html')).toBe('renderer')
+  })
+
   it('does not forward the actions nothing consumes yet', () => {
     // A channel that delivers ids no one handles reads as though File ▸ New
     // were already wired; later milestones flip these when they claim them.
-    for (const action of ['file.new', 'file.open', 'file.export.html'] as const) {
+    for (const action of ['file.new', 'file.open'] as const) {
       expect(menuActionTarget(action)).toBe('log')
     }
   })
@@ -42,6 +46,7 @@ describe('menuActionTarget', () => {
     expect(routed.filter(([, target]) => target === 'renderer').map(([action]) => action)).toEqual([
       'file.export.pptx',
       'file.export.pdf',
+      'file.export.html',
       'edit.undo',
       'edit.redo',
     ])

@@ -72,7 +72,7 @@ const { setPresentFullscreen } = createPresentBridge(async (channel, payload) =>
  * M4.2's PDF export. The renderer assembles the wrapped slide HTML and the range; main owns the save
  * dialog and the offscreen print. One invoke, one report back.
  */
-const { exportPdf, exportPptx } = createExportBridge(async (channel, payload) =>
+const { exportPdf, exportPptx, exportHtml } = createExportBridge(async (channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 )
 
@@ -85,6 +85,7 @@ const api = {
   setPresentFullscreen,
   exportPdf,
   exportPptx,
+  exportHtml,
 } as const
 
 export type SloodgeApi = typeof api
