@@ -15,7 +15,11 @@ import {
   themeTokens,
 } from '../../../src/shared/import/pptx/theme'
 import { parseXml } from '../../../src/shared/import/xml'
-import { validateSlideContract } from '../../../src/shared/document/slide-contract'
+import {
+  FORBIDDEN_API_TOKENS,
+  packForApiScan,
+  validateSlideContract,
+} from '../../../src/shared/document/slide-contract'
 import { DEFAULT_THEME_TOKENS } from '../../../src/shared/document/starter-slide'
 import type { OpcRelationships } from '../../../src/shared/import/pptx/opc'
 
@@ -105,6 +109,64 @@ describe('contract compliance', () => {
       shape(textBody('<a:r><a:t>local storage and new Function()</a:t></a:r>')),
     )
     expect(validateSlideContract(result.html, ['static']).ok).toBe(true)
+  })
+
+  /**
+   * The regression that review round 1 caught, generalised so it cannot recur for any token.
+   *
+   * The original defuser restated SL-S04's normalisation by hand and got it wrong for exactly one
+   * token: `new Function(` was split on characters and joined with `\s*`, leaving the interior space
+   * *required*. The validator strips all whitespace, so it matched `newFunction(` and the defuser did
+   * not — and that spelling took a whole deck's import down with `unconvertible`. The old test used
+   * the spaced spelling, so the suite was green over the hole.
+   *
+   * This iterates `FORBIDDEN_API_TOKENS` itself, so a token added to the rule later is covered
+   * without anyone remembering, and it generates every spelling `packForApiScan` folds together —
+   * which is the definition of "what the validator will catch".
+   */
+  it('defuses every spelling of every forbidden token the validator normalises to a hit', () => {
+    expect(FORBIDDEN_API_TOKENS.length).toBeGreaterThan(10)
+
+    for (const token of FORBIDDEN_API_TOKENS) {
+      const packed = packForApiScan(token)
+      const spellings = [
+        token, // as written in the rule
+        packed, // all whitespace removed — the spelling that used to slip through
+        token.toUpperCase(),
+        token.replace(/ /g, '\t'), // tab instead of space
+        token.replace(/ /g, '\n'), // newline instead of space
+        packed.split('').join(' '), // whitespace injected between every character
+      ]
+
+      for (const spelling of spellings) {
+        // Sanity: every spelling really is one the validator would flag, so a passing assertion
+        // below means the defuser worked rather than that the input was harmless.
+        expect(packForApiScan(spelling)).toContain(packed)
+
+        const result = convert(
+          shape(textBody(`<a:r><a:t>Avoid ${spelling} in modern code</a:t></a:r>`)),
+        )
+        const errors = validateSlideContract(result.html, ['static']).issues.filter(
+          (issue) => issue.severity === 'error',
+        )
+        expect(
+          errors,
+          `token ${JSON.stringify(token)} spelled ${JSON.stringify(spelling)}`,
+        ).toEqual([])
+      }
+    }
+  })
+
+  it('imports a deck whose prose reads "newFunction(" — the exact round-1 blocker', async () => {
+    // End to end through the shipped path, not just the converter: this spelling previously failed
+    // conversion, failed the text-only fallback for the same reason, and failed the whole import.
+    const result = convert(
+      shape(textBody('<a:r><a:t>Avoid newFunction( in modern JavaScript</a:t></a:r>')),
+    )
+    expect(validateSlideContract(result.html, ['static']).ok).toBe(true)
+    expect(
+      result.html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+    ).toContain('Avoid newFunction( in modern JavaScript')
   })
 
   it('leaves ordinary text untouched', () => {
@@ -325,6 +387,47 @@ describe('colour and theme', () => {
     // The hex test rejects it long before it could reach CSS.
     expect(hostile.colors['lt1']).toBe('#ffffff')
     expect(themeTokens(hostile, DEFAULT_THEME_TOKENS)['--sl-bg']).toBe('#ffffff')
+  })
+
+  /**
+   * Review round 1's major: `tokenBlock` and the importer's fallback each carried a hand-copied,
+   * *weakened* version of `THEME_TOKEN_VALUE_FORBIDDEN` — both had dropped the `\p{Cc}` clause and
+   * the length cap — and silently dropped a failing token, which leaves `background: var(--sl-bg)`
+   * unresolvable and renders the slide transparent. Both copies are gone; the canonical
+   * `assertSafeThemeToken` now guards, and a failure substitutes the built-in default.
+   */
+  it('substitutes rather than drops a token value the canonical guard rejects', () => {
+    const hostile = {
+      ...DEFAULT_THEME_TOKENS,
+      // A newline: legal-looking, and specifically what the weakened copies let through. It shifts
+      // the line count between the `sl:theme` sentinels that byte-range retheming keys off.
+      '--sl-bg': '#fff\n  ;background:url(//evil.example/beacon.png)',
+      '--sl-muted': 'x'.repeat(500), // over MAX_THEME_TOKEN_VALUE_LENGTH
+    }
+    const tokens = themeTokens(FALLBACK_THEME, hostile)
+
+    // Never dropped — an absent declaration is a rendering failure, not a safe default.
+    expect(tokens['--sl-bg']).toBeDefined()
+    expect(tokens['--sl-muted']).toBeDefined()
+    expect(tokens['--sl-bg']).not.toContain('evil.example')
+    expect(tokens['--sl-bg']).not.toContain('\n')
+
+    const html = convertSlide({
+      slideId: SLIDE_ID,
+      slide: parseXml('<p:sld><p:cSld><p:spTree/></p:cSld></p:sld>'),
+      relationships: NO_RELS,
+      media: () => null,
+      theme: FALLBACK_THEME,
+      size: SIZE_16_9,
+      tokens,
+    }).html
+
+    expect(html).not.toContain('evil.example')
+    // Every `--sl-*` the slide's CSS references still resolves.
+    for (const name of ['--sl-bg', '--sl-fg', '--sl-font']) {
+      expect(html).toContain(`${name}:`)
+    }
+    expect(validateSlideContract(html, ['static']).ok).toBe(true)
   })
 
   it('rejects a control-character typeface name', () => {

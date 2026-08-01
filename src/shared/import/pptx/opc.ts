@@ -230,8 +230,14 @@ export function parseContentTypes(
     if (node.local === 'Default') {
       const extension = attribute(node, 'Extension')
       const type = attribute(node, 'ContentType')
-      if (extension !== undefined && type !== undefined && extension !== '__proto__') {
-        defaults[extension.toLowerCase()] = type
+      if (extension !== undefined && type !== undefined) {
+        // Normalise FIRST, then guard: the key written below is the lowercased form, so comparing
+        // the raw attribute let `__PROTO__` past the check and then become the key `__proto__`.
+        // Harmless today (null-prototype map, `getOwn` reads) but a guard that does not protect the
+        // value it guards is a trap for the next reader. The `Override` branch already gets this
+        // right, which is what made the inconsistency visible.
+        const normalizedExtension = extension.toLowerCase()
+        if (normalizedExtension !== '__proto__') defaults[normalizedExtension] = type
       }
     } else if (node.local === 'Override') {
       const partName = attribute(node, 'PartName')

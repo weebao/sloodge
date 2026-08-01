@@ -122,6 +122,16 @@ describe('parseContentTypes', () => {
     expect(contentTypeOf(types, 'no-extension')).toBeUndefined()
   })
 
+  it('normalises the extension before guarding it, so __PROTO__ cannot become a key', () => {
+    // The guard used to compare the raw attribute while writing the lowercased form, so an
+    // upper-case spelling walked past it and landed as the key `__proto__`.
+    const types = parseContentTypes(
+      '<Types><Default Extension="__PROTO__" ContentType="evil"/><Default Extension="PNG" ContentType="image/png"/></Types>',
+    )
+    expect(Object.keys(types.defaults)).toEqual(['png'])
+    expect(Object.getPrototypeOf(types.defaults)).toBeNull()
+  })
+
   it('drops prototype-pollution part names and keeps the map off the prototype chain', () => {
     const types = parseContentTypes(xml)
     expect(Object.getPrototypeOf(types.overrides)).toBeNull()

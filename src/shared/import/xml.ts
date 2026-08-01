@@ -416,10 +416,3 @@ export function descendantsNamed(element: XmlElement, local: string): XmlElement
   }
   return out
 }
-
-/** All character data at or below this element, concatenated in document order. */
-export function deepText(element: XmlElement): string {
-  let out = element.text
-  for (const child of element.children) out += deepText(child)
-  return out
-}

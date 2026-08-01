@@ -52,6 +52,7 @@ import {
   createStarterSlideHtml,
   DEFAULT_THEME_TOKENS,
   escapeHtml,
+  renderThemeBlock,
   SYSTEM_FONT_STACK,
 } from '../../shared/document/starter-slide'
 import {
@@ -245,21 +246,13 @@ function fallbackSlideHtml(
         `  <p class="sl-tx" data-sl-id="e_${(index + 2).toString(16).padStart(3, '0')}" style="font-size:24px;line-height:1.4;margin:0 0 12px"><span data-sl-run="${String(index)}">${defuseForbiddenTokens(escapeHtml(text))}</span></p>`,
     )
     .join('\n')
-  const declarations = Object.entries(tokens)
-    .filter(([name, value]) => /^--[a-z0-9-]+$/.test(name) && !/[<>{};@\\()]|\/\*|\*\//.test(value))
-    .map(([name, value]) => `    ${name}: ${value};`)
-    .join('\n')
   return `<!doctype html>
 <html lang="en" data-sl-slide="${escapeHtml(slideId)}" data-sl-contract="1" data-sl-origin="pptx-fallback">
 <head>
 <meta charset="utf-8">
 <title>${defuseForbiddenTokens(escapeHtml(title))}</title>
 <style>
-  /* sl:theme:start v=1 */
-  :root {
-${declarations}
-  }
-  /* sl:theme:end */
+${renderThemeBlock(tokens)}
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--sl-bg); }
   .slide {

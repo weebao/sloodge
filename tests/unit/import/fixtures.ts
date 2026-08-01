@@ -67,6 +67,26 @@ export function filePartNames(entries: Readonly<Record<string, Uint8Array>>): st
     .toSorted()
 }
 
+/**
+ * Text that is legal in HTML (Tier-1 accepts every one of these in slide content) and **illegal in
+ * XML 1.0**, so it corrupts an OOXML part if it reaches one unsanitized. Review round 1, blocker 2.
+ *
+ * Shared so the unit-level splice test and the whole-package round-trip test attack the same set:
+ * a battery that lives in one file cannot fall out of step with itself. Every entry is asserted
+ * hostile by `hasXmlIllegalChars` before it is used, so a typo cannot turn a case into a no-op.
+ */
+export const HOSTILE_XML_STRINGS: readonly string[] = [
+  'A\u0001B', // C0 control
+  'A\u000BB', // vertical tab — legal whitespace in HTML, illegal in XML
+  'A\u001FB', // unit separator
+  'A\uFFFEB', // non-character
+  'A\uFFFFB', // non-character
+  'A\uD800B', // lone high surrogate
+  'A\uDC00B', // lone low surrogate
+  '\u0000 leading NUL',
+  'mixed \u0001 and \uFFFE and \uD800 together',
+]
+
 export function sha256Hex(input: string | Uint8Array): string {
   return createHash('sha256')
     .update(typeof input === 'string' ? Buffer.from(input, 'utf8') : Buffer.from(input))

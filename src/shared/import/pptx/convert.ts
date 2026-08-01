@@ -45,7 +45,8 @@
  */
 
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../document/types'
-import { escapeHtml, SLIDE_CONTRACT_VERSION } from '../../document/starter-slide'
+import { FORBIDDEN_API_TOKENS, packForApiScan } from '../../document/slide-contract'
+import { escapeHtml, renderThemeBlock, SLIDE_CONTRACT_VERSION } from '../../document/starter-slide'
 import {
   attribute,
   childrenNamed,
@@ -61,25 +62,32 @@ import type { SlideSizeEmu } from './opc'
 export const EMU_PER_INCH = 914_400
 
 /**
- * The token list SL-S04 scans for, mirrored here. Kept in sync deliberately rather than imported:
- * `slide-contract.ts` keeps it private because it is a *rule*, and this is the importer choosing to
- * satisfy that rule, not to share its implementation.
+ * One matcher per forbidden token, derived from `slide-contract.ts`'s **own** list and **own**
+ * normalisation rather than a copy of either.
+ *
+ * The first version of this restated both, and got the normalisation wrong in exactly one place:
+ * it split each token on characters and joined with `\s*`, so the literal space inside
+ * `new Function(` became a *required* space. SL-S04 strips all whitespace before comparing, so it
+ * matched `newFunction(` while the defuser did not — and a slide whose prose read
+ * `Avoid newFunction( in modern JavaScript` failed conversion, failed the text-only fallback for
+ * the same reason, and took the entire deck import down as `unconvertible`. One innocuous word,
+ * one unopenable presentation.
+ *
+ * So the token is packed with `packForApiScan` first (which is what removes that space), and *then*
+ * `\s*` is inserted between every remaining character — because the validator's normalisation means
+ * arbitrary whitespace may sit anywhere inside a match. `i` covers the case fold. The list itself is
+ * imported, so a token added to the rule later is defused without anyone remembering to mirror it.
  */
-const SL_S04_TOKENS: readonly string[] = [
-  'fetch(',
-  'XMLHttpRequest',
-  'WebSocket',
-  'EventSource',
-  'sendBeacon',
-  'localStorage',
-  'indexedDB',
-  'document.cookie',
-  'alert(',
-  'confirm(',
-  'prompt(',
-  'eval(',
-  'new Function(',
-]
+const FORBIDDEN_TOKEN_MATCHERS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(
+  (token) =>
+    new RegExp(
+      packForApiScan(token)
+        .split('')
+        .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('\\s*'),
+      'gi',
+    ),
+)
 
 /**
  * Defuse SL-S04 token matches in *text content*, without changing what the text says.
@@ -106,16 +114,11 @@ const SL_S04_TOKENS: readonly string[] = [
  */
 export function defuseForbiddenTokens(escaped: string): string {
   let out = escaped
-  for (const token of SL_S04_TOKENS) {
-    // Build `f\s*e\s*t\s*c\s*h\s*\(` so the packed form cannot slip through spaced out.
-    const pattern = new RegExp(
-      token
-        .split('')
-        .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('\\s*'),
-      'gi',
-    )
-    out = out.replace(pattern, (match) => {
+  for (const matcher of FORBIDDEN_TOKEN_MATCHERS) {
+    // `lastIndex` is per-RegExp state and these are module-level `g` objects, so it must be reset
+    // before each use or a second call would resume mid-string and miss an early match.
+    matcher.lastIndex = 0
+    out = out.replace(matcher, (match) => {
       const first = match.codePointAt(0)
       if (first === undefined) return match
       return `&#${String(first)};${match.slice(String.fromCodePoint(first).length)}`
@@ -610,21 +613,6 @@ function walkTree(emitter: Emitter, parent: XmlElement, transform: Transform, de
   }
 }
 
-/** Serialize the `--sl-*` token block. Values are already validated by `themeTokens`. */
-function tokenBlock(tokens: Readonly<Record<string, string>>, version: number): string {
-  const declarations = Object.entries(tokens)
-    .filter(([name, value]) => /^--[a-z0-9-]+$/.test(name) && !/[<>{};@\\()]|\/\*|\*\//.test(value))
-    .map(([name, value]) => `    ${name}: ${value};`)
-    .join('\n')
-  return [
-    `  /* sl:theme:start v=${String(version)} */`,
-    '  :root {',
-    declarations,
-    '  }',
-    '  /* sl:theme:end */',
-  ].join('\n')
-}
-
 export function convertSlide(args: ConvertSlideArgs): ConvertedSlide {
   const notes = new Set<string>()
   const parts: string[] = []
@@ -686,7 +674,7 @@ export function convertSlide(args: ConvertSlideArgs): ConvertedSlide {
 <meta charset="utf-8">
 <title>${slideText(title)}</title>
 <style>
-${tokenBlock(args.tokens, themeVersion)}
+${renderThemeBlock(args.tokens, themeVersion)}
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--sl-bg); }
   .slide {

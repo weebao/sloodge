@@ -18,7 +18,8 @@ import {
   scanTextSpans,
 } from '../../../src/shared/import/pptx/rewrite'
 import { descendantsNamed, parseXml } from '../../../src/shared/import/xml'
-import { PPTX_FIXTURES, readFixture } from './fixtures'
+import { HOSTILE_XML_STRINGS, PPTX_FIXTURES, readFixture } from './fixtures'
+import { hasXmlIllegalChars } from '../../../src/shared/export/pptx/sanitize'
 
 /** The tree-walk ordering `convert.ts` uses to assign `data-sl-run` indices. */
 function treeTexts(xml: string): string[] {
@@ -187,5 +188,62 @@ describe('escapeXmlText', () => {
     expect(escapeXmlText('a & b < c > d')).toBe('a &amp; b &lt; c &gt; d')
     // `>` is escaped so a `]]>` sequence cannot appear in output.
     expect(escapeXmlText(']]>')).toBe(']]&gt;')
+  })
+
+  /**
+   * Review round 1, blocker 2: escaping alone let XML-1.0-illegal characters through into a spliced
+   * OOXML part, which real parsers reject and PowerPoint calls corrupt. Nothing upstream catches
+   * them — Tier-1 is an HTML contract and accepts U+0001 happily.
+   *
+   * The oracle is `hasXmlIllegalChars` from the canonical sanitizer, deliberately, so this test
+   * cannot drift narrower than the rule it is checking. `sanitize.ts`'s own docblock prescribes
+   * exactly this discipline, after a C0-only test regex read a `U+FFFE` part as clean in M4.3.
+   */
+  it('strips every XML-1.0-illegal character, using the canonical predicate as the oracle', () => {
+    for (const hostile of HOSTILE_XML_STRINGS) {
+      expect(hasXmlIllegalChars(hostile)).toBe(true) // the input really is hostile
+      expect(hasXmlIllegalChars(escapeXmlText(hostile))).toBe(false)
+    }
+  })
+
+  it('is the identity for legal text, so byte-minimality survives sanitization', () => {
+    // Tab/LF/CR, CJK and a surrogate PAIR (emoji) are all legal and must not be touched — otherwise
+    // an unedited run would encode differently from its original span and be rewritten for nothing.
+    for (const legal of ['plain', 'a\tb\nc\rd', '日本語', 'emoji \u{1F600} here', '']) {
+      expect(escapeXmlText(legal)).toBe(
+        legal.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+      )
+    }
+  })
+})
+
+describe('the splice cannot emit a malformed OOXML part', () => {
+  const xml = '<p:sld><a:t>Hello</a:t><a:t>World</a:t></p:sld>'
+
+  it('produces a well-formed part for hostile edited text', () => {
+    for (const hostile of HOSTILE_XML_STRINGS) {
+      const html = `<div><span data-sl-run="0">${hostile}</span><span data-sl-run="1">World</span></div>`
+      const result = rewriteSlideText(xml, html)
+      expect(result.ok).toBe(true)
+      if (!result.ok) continue
+
+      // The canonical predicate over the whole emitted part, not merely the substituted span.
+      expect(hasXmlIllegalChars(result.xml)).toBe(false)
+      // And it still parses — the property a real XML parser (and PowerPoint) cares about.
+      expect(() => parseXml(result.xml)).not.toThrow()
+    }
+  })
+
+  it('treats a run that differs only by illegal characters as unchanged', () => {
+    // Sanitizing "Hello\u0001" yields "Hello", which is what the original span already holds — so
+    // the run is not rewritten at all and the part comes back byte-identical. This is the
+    // interaction between the sanitizer and the byte-minimality proof, pinned.
+    const html =
+      '<div><span data-sl-run="0">Hello\u0001</span><span data-sl-run="1">World</span></div>'
+    const result = rewriteSlideText(xml, html)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.xml).toBe(xml)
+    expect(result.changedRuns).toEqual([])
   })
 })

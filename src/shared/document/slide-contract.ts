@@ -98,6 +98,15 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
  * token set to avoid emitting source the validator will then reject. `text-edit.ts` builds its
  * neutralization corpus from this array rather than restating it, so a token added here is
  * automatically covered there (and its tests fail if it is not).
+ *
+ * **Exported, together with `packForApiScan` below, because a second module has to satisfy this
+ * rule and must not restate it.** PPTX import (M4.5) rewrites imported *prose* so it cannot trip
+ * this scan — a deck about JavaScript legitimately contains the words `fetch(` and `localStorage` —
+ * and its first implementation re-derived both the list and the normalisation by hand. It got the
+ * normalisation subtly wrong for the one multi-word token (`new Function(`), so `newFunction(`
+ * matched here and was missed there, and the whole import died. Same failure mode `sanitize.ts`
+ * documents for `hasXmlIllegalChars`: a duplicated predicate drifts narrower than the rule it
+ * mirrors, and the drift is invisible until someone types the spelling nobody tested.
  */
 export const FORBIDDEN_API_TOKENS: readonly string[] = [
   'fetch(',
@@ -123,6 +132,11 @@ export const FORBIDDEN_API_TOKENS: readonly string[] = [
  * JS does not care about the spaces. That aggression is why a *writer* of slide source cannot simply
  * check `source.includes(token)` — it has to pack first, which is why this is exported rather than
  * inlined at its one original call site.
+ *
+ * This is the single definition of "the same token" for the rule. It is applied to both sides —
+ * the slide source and the token — which is what makes `new Function(`, `newFunction(`,
+ * `new\tFunction(` and `N E W F U N C T I O N (` one and the same match. Any consumer that has to
+ * agree with this scan must call this function rather than reimplement it.
  */
 export function packForApiScan(text: string): string {
   return text.replace(/\s+/g, '').toLowerCase()
@@ -371,7 +385,7 @@ export function validateSlideContract(
   const issues: SlideValidationIssue[] = []
   const caps = new Set(capabilities)
   const css = styleText(html)
-  const cssPacked = css.replace(/\s+/g, '').toLowerCase()
+  const cssPacked = packForApiScan(css)
   const source = html
 
   // Parse once, up front: the subresource and geometry rules below are decided over the parse5 tree

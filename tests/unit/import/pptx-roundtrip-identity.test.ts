@@ -47,7 +47,15 @@ import {
 } from '../../../src/main/export/pptx-roundtrip'
 import { readDeck, writeDeck, type DeckBundle } from '../../../src/main/document/store'
 import { planRoundTrip, LEDGER_ENTRY } from '../../../src/shared/import/pptx/ledger'
-import { filePartNames, fixturePath, PPTX_FIXTURES, readFixture, sha256Hex } from './fixtures'
+import {
+  filePartNames,
+  fixturePath,
+  HOSTILE_XML_STRINGS,
+  PPTX_FIXTURES,
+  readFixture,
+  sha256Hex,
+} from './fixtures'
+import { hasXmlIllegalChars } from '../../../src/shared/export/pptx/sanitize'
 
 const NOW = 1_770_000_000_000
 
@@ -255,6 +263,58 @@ describe('M4.6 — an edited round trip rewrites only the parts the edit touched
     expect(result.mode).toBe('rebuild')
     expect(result.bytes).toBeNull()
     expect(result.plan.reasons.join(' ')).toContain('cannot be expressed as text substitution')
+  })
+})
+
+describe('M4.6 — a patched export is always a well-formed package', () => {
+  /**
+   * Review round 1, blocker 2, asserted at the level that matters: the whole exported `.pptx`, not
+   * just the splice helper. A hostile edit reaches here through the ordinary editing path — Tier-1
+   * accepts XML-illegal characters in slide text because it is an *HTML* contract — so without the
+   * sanitizer the produced part is malformed and PowerPoint calls the file corrupt, silently, while
+   * every count-based check still reports success.
+   *
+   * The oracle is `hasXmlIllegalChars`, the canonical predicate, applied to every part of the
+   * package rather than the one that was edited.
+   */
+  it('emits no XML-illegal character in any part, however hostile the edit', async () => {
+    const { bundle } = await importAndPersist(PPTX_FIXTURES[0]!.name)
+    const slideId = bundle.manifest.slideOrder[0]!
+
+    const edits = HOSTILE_XML_STRINGS.map((hostile) => {
+      expect(hasXmlIllegalChars(hostile)).toBe(true) // the input really is hostile
+      const edited: DeckBundle = {
+        ...bundle,
+        slides: {
+          ...bundle.slides,
+          [slideId]: bundle.slides[slideId]!.replace(
+            /(<span[^>]*data-sl-run="0"[^>]*>)([^<]*)(<\/span>)/,
+            `$1${hostile}$3`,
+          ),
+        },
+      }
+      return { hostile, edited }
+    })
+
+    const exported = await Promise.all(
+      edits.map(async ({ hostile, edited }) => ({
+        hostile,
+        result: await exportPptxRoundTrip(edited),
+      })),
+    )
+
+    for (const { hostile, result } of exported) {
+      expect(result.mode).toBe('patched')
+      expect(result.bytes).not.toBeNull()
+
+      const parts = unzipSync(result.bytes!)
+      for (const [name, data] of Object.entries(parts)) {
+        if (!name.endsWith('.xml') && !name.endsWith('.rels')) continue
+        expect(hasXmlIllegalChars(strFromU8(data)), `${name} for ${JSON.stringify(hostile)}`).toBe(
+          false,
+        )
+      }
+    }
   })
 })
 

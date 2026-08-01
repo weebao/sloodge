@@ -30,6 +30,7 @@
  */
 
 import { attribute, descendantsNamed, firstChildNamed, type XmlElement } from '../xml'
+import { assertSafeThemeToken, DEFAULT_THEME_TOKENS } from '../../document/starter-slide'
 
 /** The twelve `a:clrScheme` slots, in schema order. */
 export const SCHEME_COLOR_SLOTS = [
@@ -128,7 +129,8 @@ function typefaceName(element: XmlElement | undefined): string | null {
   const latin = firstChildNamed(element, 'latin')
   const name = latin ? attribute(latin, 'typeface') : undefined
   if (name === undefined || name === '' || name.length > 128) return null
-  // eslint-disable-next-line no-control-regex -- deliberately matching the control range
+  // `\p{Cc}` is a Unicode property escape, not a literal control character, so `no-control-regex`
+  // does not apply and no suppression is needed.
   if (/\p{Cc}/u.test(name)) return null
   return name
 }
@@ -177,6 +179,7 @@ export function themeTokens(
   defaults: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const tokens: Record<string, string> = { ...defaults }
+  // Filled below, then validated as a whole before returning — see the note after the assignments.
   tokens['--sl-bg'] = safeHex(theme.colors['lt1'], defaults['--sl-bg'] ?? '#ffffff')
   tokens['--sl-fg'] = safeHex(theme.colors['dk1'], defaults['--sl-fg'] ?? '#000000')
   tokens['--sl-accent'] = safeHex(theme.colors['accent1'], defaults['--sl-accent'] ?? '#4472c4')
@@ -184,5 +187,27 @@ export function themeTokens(
     theme.colors['dk2'] ?? theme.colors['accent2'],
     defaults['--sl-muted'] ?? '#44546a',
   )
+
+  // Every token that will be inlined into a `<style>` block is checked by the **canonical** guard,
+  // not a copy of it. `assertSafeThemeToken` owns the rule (it bans the characters that escape the
+  // style element, the rule, the declaration and the `sl:theme` sentinels, plus every functional
+  // notation and every control character, and caps the length); restating it here is exactly the
+  // duplication that let a weakened copy — missing `\p{Cc}` and the length cap — ship in the first
+  // version of this milestone.
+  //
+  // A failure **substitutes the built-in default rather than dropping the declaration**. Dropping
+  // would leave `.slide { background: var(--sl-bg) }` with an unresolvable `var()` and no fallback,
+  // rendering the slide transparent — a worse outcome than a slightly wrong colour, and a silent
+  // one. The four `--sl-*` values above are re-derived through `safeHex` and cannot fail; this pass
+  // exists for the caller-supplied `defaults`, which are plain strings.
+  for (const [name, value] of Object.entries(tokens)) {
+    try {
+      assertSafeThemeToken(name, value)
+    } catch {
+      const fallback = DEFAULT_THEME_TOKENS[name as keyof typeof DEFAULT_THEME_TOKENS]
+      if (fallback === undefined) delete tokens[name]
+      else tokens[name] = fallback
+    }
+  }
   return tokens
 }

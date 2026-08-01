@@ -33,6 +33,7 @@
 
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
+import { sanitizeXmlText } from '../../export/pptx/sanitize'
 
 type Element = DefaultTreeAdapterTypes.Element
 type ChildNode = DefaultTreeAdapterTypes.ChildNode
@@ -167,9 +168,32 @@ export function scanTextSpans(xml: string): TextSpan[] {
   return spans
 }
 
-/** Escape character data for an XML text node. `>` is escaped too, so `]]>` cannot appear. */
+/**
+ * Prepare a string for splicing into an OOXML part: strip XML-1.0-illegal characters, then escape
+ * the three that can end a text node. `>` is escaped too, so `]]>` cannot appear.
+ *
+ * **The stripping half is not this module's rule and must not be restated here.** It comes from
+ * `src/shared/export/pptx/sanitize.ts`, which M4.3 spent three review rounds establishing as the
+ * single definition of XML-1.0 legality for everything that enters a `.pptx`. Escaping alone is not
+ * enough and the gap is not theoretical: a U+0001 or a lone surrogate in an edited text run passes
+ * every gate upstream — Tier-1 is an *HTML* contract and accepts them — and lands verbatim in
+ * `ppt/slides/slideN.xml`, which real XML parsers reject outright and PowerPoint calls corrupt.
+ * The zip stays structurally valid, so a slide-count check still reports success: exactly the silent
+ * failure `sanitize.ts`'s docblock describes.
+ *
+ * M4.3 reached that boundary after three rounds of patching individual paths, and this splice is a
+ * fourth path that would have re-derived the same escape by hand. Calling the shared sanitizer means
+ * the day the legality rules change, this path changes with them.
+ *
+ * Sanitizing does **not** disturb the byte-minimality property the round-trip depends on:
+ * `sanitizeXmlText` is the identity for legal text, so a run whose content is unchanged still encodes
+ * to bytes identical to the original span and is skipped rather than rewritten.
+ */
 export function escapeXmlText(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  return sanitizeXmlText(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }
 
 function isElement(node: ChildNode): node is Element {

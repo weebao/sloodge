@@ -9,7 +9,6 @@ import {
   attribute,
   childrenNamed,
   decodeXmlEntities,
-  deepText,
   descendantsNamed,
   firstChildNamed,
   parseXml,
@@ -38,7 +37,6 @@ describe('parseXml — structure', () => {
   it('keeps element children and direct text separately', () => {
     const root = parseXml('<p>lead<r>run</r>tail</p>')
     expect(root.text).toBe('leadtail')
-    expect(deepText(root)).toBe('leadtailrun')
     expect(root.children).toHaveLength(1)
   })
 
