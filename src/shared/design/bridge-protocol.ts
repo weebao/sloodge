@@ -73,6 +73,19 @@ export const SL_READY = 'SL_READY'
  */
 export const SL_HITTEST = 'SL_HITTEST'
 
+/**
+ * Parent → frame request / frame → parent response: report the whitelisted computed styles and the
+ * rendered rect of one already-selected element (§6.2, the M3.4 context bundle). This is the *only*
+ * way to get `getComputedStyle` out of the sandboxed frame — the renderer cannot reach the frame DOM.
+ *
+ * Like every frame → parent message, the response is an **untrusted hint** (see the trust-boundary
+ * section above): a co-resident slide script can forge a well-formed one. That is safe here because
+ * the parent never acts *authoritatively* on it — the computed styles and rect become inert
+ * informational context in the bundle, while the bundle's authoritative field (the element's source
+ * HTML) is re-derived from the parent-owned map, never from this payload (§2.2, `element-context.ts`).
+ */
+export const SL_INSPECT = 'SL_INSPECT'
+
 /** Direction tag. Requests carry an id a response echoes; events are fire-and-forget. */
 export type SlDir = 'req' | 'res' | 'evt'
 
@@ -149,9 +162,30 @@ export interface SlHittestRequest {
 /** `SL_HITTEST` response payload: the hit, or `null` when nothing addressable is under the point. */
 export type SlHittestResponse = SlHit | null
 
+/** `SL_INSPECT` request payload: the sl-id to inspect (the parent-tracked selection). */
+export interface SlInspectRequest {
+  readonly slId: string
+}
+
+/**
+ * `SL_INSPECT` response payload: the element's whitelisted computed styles and rendered rect, or
+ * `null` when the frame has no node for that sl-id (a stale selection the frame has since reloaded
+ * past). `computed` keys are CSS property names; values are the resolved strings from
+ * `getComputedStyle`. Both fields are untrusted hints (see `SL_INSPECT`).
+ */
+export interface SlInspect {
+  readonly slId: string
+  readonly computed: Readonly<Record<string, string>>
+  readonly rect: SlRect
+}
+export type SlInspectResponse = SlInspect | null
+
 export type BridgeEvent = SlEnvelope<typeof SL_READY, SlReadyPayload>
-export type BridgeRequest = SlEnvelope<typeof SL_HITTEST, SlHittestRequest>
-export type BridgeResponse = SlEnvelope<typeof SL_HITTEST, SlHittestResponse>
+export type BridgeRequest =
+  SlEnvelope<typeof SL_HITTEST, SlHittestRequest> | SlEnvelope<typeof SL_INSPECT, SlInspectRequest>
+export type BridgeResponse =
+  | SlEnvelope<typeof SL_HITTEST, SlHittestResponse>
+  | SlEnvelope<typeof SL_INSPECT, SlInspectResponse>
 
 /** Everything the parent can legitimately receive from the frame. */
 export type FromFrame = BridgeEvent | BridgeResponse
@@ -264,6 +298,24 @@ function isReadyPayload(value: unknown): value is SlReadyPayload {
   )
 }
 
+/** A record whose every own value is a string — the shape of a computed-style map. */
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string')
+}
+
+function isInspectRequestPayload(value: unknown): value is SlInspectRequest {
+  return isRecord(value) && typeof value['slId'] === 'string'
+}
+
+function isInspect(value: unknown): value is SlInspect {
+  return (
+    isRecord(value) &&
+    typeof value['slId'] === 'string' &&
+    isStringRecord(value['computed']) &&
+    isRect(value['rect'])
+  )
+}
+
 interface EnvelopeBase {
   readonly id: number
   readonly dir: string
@@ -335,6 +387,19 @@ export function parseFrameMessage(data: unknown, expectedSlide: string): FromFra
     }
   }
 
+  if (base.dir === 'res' && base.type === SL_INSPECT) {
+    if (base.payload !== null && !isInspect(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'res',
+      type: SL_INSPECT,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
   return null
 }
 
@@ -351,17 +416,35 @@ export function parseFrameMessage(data: unknown, expectedSlide: string): FromFra
 export function parseParentMessage(data: unknown, expectedSlide: string): BridgeRequest | null {
   const base = envelopeBase(data, expectedSlide)
   if (base === null) return null
-  if (base.dir !== 'req' || base.type !== SL_HITTEST) return null
-  if (!isHittestRequestPayload(base.payload)) return null
-  return {
-    __sl: SL_MAGIC,
-    v: SL_PROTOCOL_VERSION,
-    id: base.id,
-    dir: 'req',
-    type: SL_HITTEST,
-    slide: base.slide,
-    payload: base.payload,
+  if (base.dir !== 'req') return null
+
+  if (base.type === SL_HITTEST) {
+    if (!isHittestRequestPayload(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'req',
+      type: SL_HITTEST,
+      slide: base.slide,
+      payload: base.payload,
+    }
   }
+
+  if (base.type === SL_INSPECT) {
+    if (!isInspectRequestPayload(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'req',
+      type: SL_INSPECT,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
+  return null
 }
 
 /* -------------------------------------------------------------------------------------------- *
@@ -417,6 +500,38 @@ export function makeHittestResponse(
     id,
     dir: 'res',
     type: SL_HITTEST,
+    slide,
+    payload,
+  }
+}
+
+export function makeInspectRequest(
+  id: number,
+  slide: string,
+  payload: SlInspectRequest,
+): BridgeRequest {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'req',
+    type: SL_INSPECT,
+    slide,
+    payload,
+  }
+}
+
+export function makeInspectResponse(
+  id: number,
+  slide: string,
+  payload: SlInspectResponse,
+): BridgeResponse {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'res',
+    type: SL_INSPECT,
     slide,
     payload,
   }

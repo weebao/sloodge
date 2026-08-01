@@ -26,16 +26,19 @@
 import { useCallback, useMemo, useState, type JSX } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
+import { buildElementContextBundle } from '../../../../shared/design/element-context'
 import {
   buildFieldOps,
   readPropertyValues,
   resolveElement,
   type PropertyField,
 } from '../../../../shared/design/property-model'
+import { useChatContextStore } from '../chat/chatContextStore'
 import type { SlideView } from '../../stores/deckStore'
-import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
+import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
+import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   text: 'Text',
@@ -59,6 +62,13 @@ function editLabel(field: PropertyField, rawValue: string): string {
 export interface PropertyPanelProps {
   /** The slide whose element is selected — provides the id and the raw source bytes to edit. */
   readonly slide: SlideView
+  /**
+   * The `SL_INSPECT` client (computed styles + rect from the frame), when Design Mode is wired to a
+   * live frame. Optional: without it, "Ask Claude about this element" still attaches a bundle built
+   * from the parent-owned source map and the selection's last-known geometry — computed styles are an
+   * enrichment, not a requirement (§6.2). Absent in tests and in a no-frame host.
+   */
+  readonly inspect?: ElementInspectApi['inspect']
 }
 
 /**
@@ -66,12 +76,45 @@ export interface PropertyPanelProps {
  * from the editable fields so the fields remount (via `key`) whenever the source or selection
  * changes, resetting every input to the freshly-patched source value after a commit.
  */
-export function PropertyPanel({ slide }: PropertyPanelProps): JSX.Element | null {
+export function PropertyPanel({ slide, inspect }: PropertyPanelProps): JSX.Element | null {
   const selection = useDesignStore((state) => state.selection)
+  const attachContext = useChatContextStore((state) => state.attach)
 
   // The parent-owned map, rebuilt from the *current* slide bytes. Memoized on (id, source) so a
   // re-render that changed neither does not re-parse.
   const map = useMemo(() => buildSlideMap(slide.id, slide.html), [slide.id, slide.html])
+
+  // "Ask Claude about this element" (§6.1, wireframe §20): build the element context bundle and attach
+  // it to the next chat turn as the composer's `[⊕ctx]` chip. The bundle's authoritative field — the
+  // element's source HTML — is re-derived here from the parent-owned map keyed by the parent-tracked
+  // `slId` (§2.2), never from a bridge payload; computed styles/rect are an untrusted frame hint,
+  // fetched via `SL_INSPECT` when available and folded in as inert informational context.
+  const askAboutElement = useCallback(async (): Promise<void> => {
+    const slId = useDesignStore.getState().selection?.slId
+    if (slId === undefined) return
+    const current = getSlideHtml(useDeckStore.getState().slideHtml, slide.id)
+    if (current === undefined) return
+    const liveMap = buildSlideMap(slide.id, current)
+    if (liveMap.byId.get(slId) === undefined) return
+    const { deck, slideHtml } = useDeckStore.getState()
+    const index = selectSlideViews(deck, slideHtml).findIndex((view) => view.id === slide.id)
+    const info = inspect ? await inspect(slId) : null
+    const hintRect = info?.rect ?? useDesignStore.getState().selection?.rect ?? undefined
+    // Build with `exactOptionalPropertyTypes` in mind: only pass the frame hints when present, rather
+    // than passing `undefined`, which the strict optional types reject.
+    const bundle = buildElementContextBundle({
+      map: liveMap,
+      slId,
+      slide: { index: index < 0 ? 0 : index, title: slide.title },
+      ...(info?.computed !== undefined ? { computedStyles: info.computed } : {}),
+      ...(hintRect !== undefined ? { rect: hintRect } : {}),
+    })
+    if (bundle !== null) attachContext(bundle)
+  }, [slide.id, slide.title, inspect, attachContext])
+
+  const onAskClick = useCallback((): void => {
+    void askAboutElement()
+  }, [askAboutElement])
 
   if (selection === null) return null
   const element = resolveElement(map, selection.slId)
@@ -95,12 +138,24 @@ export function PropertyPanel({ slide }: PropertyPanelProps): JSX.Element | null
       {element === null || values === null ? (
         <p className="text-chrome-muted dark:text-ink-muted">Selection is no longer available.</p>
       ) : (
-        <PropertyFields
-          key={`${selection.slId}:${map.sourceHash}`}
-          slide={slide}
-          slId={selection.slId}
-          values={values}
-        />
+        <>
+          <PropertyFields
+            key={`${selection.slId}:${map.sourceHash}`}
+            slide={slide}
+            slId={selection.slId}
+            values={values}
+          />
+          <div className="mt-2">
+            <button
+              type="button"
+              data-testid="ask-claude-element"
+              onClick={onAskClick}
+              className="inline-flex items-center gap-1 rounded border border-accent/60 bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-shell-fg hover:bg-accent/20 dark:text-ink-fg"
+            >
+              <span aria-hidden="true">✨</span> Ask Claude about this element…
+            </button>
+          </div>
+        </>
       )}
     </section>
   )

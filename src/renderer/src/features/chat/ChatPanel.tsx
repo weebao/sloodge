@@ -7,6 +7,8 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react'
+import { elementContextLabel } from '../../../../shared/design/element-context'
+import { useChatContextStore } from './chatContextStore'
 import type { ChatMessage, ToolChip } from './transcript'
 import { useChatSession } from './useChatSession'
 
@@ -23,6 +25,8 @@ import { useChatSession } from './useChatSession'
  */
 export function ChatPanel(): JSX.Element {
   const { transcript, keyStatus, hasBridge, send, interrupt, submitKey } = useChatSession()
+  const attachment = useChatContextStore((state) => state.attachment)
+  const clearContext = useChatContextStore((state) => state.clear)
   const [draft, setDraft] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -37,9 +41,11 @@ export function ChatPanel(): JSX.Element {
 
   const submit = useCallback(() => {
     if (draft.trim().length === 0) return
-    send(draft)
+    // Consume the pending element context with this turn, then clear the chip.
+    send(draft, attachment)
+    if (attachment !== null) clearContext()
     setDraft('')
-  }, [draft, send])
+  }, [draft, send, attachment, clearContext])
 
   const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     setDraft(event.target.value)
@@ -99,12 +105,32 @@ export function ChatPanel(): JSX.Element {
           className="w-full resize-none rounded border border-chrome-line bg-white p-2 text-[13px] text-shell-fg outline-none placeholder:text-chrome-muted focus:border-accent disabled:opacity-60 dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg"
         />
         <div className="mt-2 flex items-center gap-2">
-          <span
-            title="Attach context (coming soon)"
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-chrome-line px-2 py-0.5 text-[11px] text-chrome-muted dark:border-ink-line dark:text-ink-muted"
-          >
-            <span aria-hidden="true">⊕</span> no context
-          </span>
+          {attachment !== null ? (
+            <span
+              data-testid="chat-context-chip"
+              title={`Element context: ${attachment.element.ancestorPath}`}
+              className="inline-flex items-center gap-1 rounded-full border border-accent/50 bg-accent/10 px-2 py-0.5 text-[11px] text-shell-fg dark:text-ink-fg"
+            >
+              {elementContextLabel(attachment)}
+              <button
+                type="button"
+                aria-label="Remove element context"
+                data-testid="chat-context-remove"
+                onClick={clearContext}
+                className="ml-0.5 rounded-full px-1 leading-none text-chrome-muted hover:text-shell-fg dark:text-ink-muted dark:hover:text-ink-fg"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </span>
+          ) : (
+            <span
+              data-testid="chat-context-empty"
+              title="Select an element in Design Mode, then “Ask Claude about this element”"
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-chrome-line px-2 py-0.5 text-[11px] text-chrome-muted dark:border-ink-line dark:text-ink-muted"
+            >
+              <span aria-hidden="true">⊕</span> no context
+            </span>
+          )}
 
           {transcript.costUsd > 0 ? (
             // Cost meter (10-architecture.md §1.3). Labelled "≈" — a client-side estimate from the

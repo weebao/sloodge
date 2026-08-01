@@ -17,11 +17,14 @@ import {
 } from '../../../src/renderer/src/features/design/frameScript'
 import {
   SL_HITTEST,
+  SL_INSPECT,
   SL_MAGIC,
   SL_PROTOCOL_VERSION,
   SL_READY,
   type SlHit,
+  type SlInspect,
 } from '../../../src/shared/design/bridge-protocol'
+import { COMPUTED_STYLE_WHITELIST } from '../../../src/shared/design/element-context'
 
 const SLIDE = 's_x'
 
@@ -161,6 +164,65 @@ describe('designBridgeFrameMain', () => {
     expect(parent.postMessage).not.toHaveBeenCalled()
   })
 
+  it('answers SL_INSPECT with whitelisted computed styles + rect for the selected id', () => {
+    const parent = makeParent()
+    // Inline styles so happy-dom's getComputedStyle returns concrete values for whitelisted props.
+    const target = document.querySelector('[data-sl-id="s_x:1"]') as HTMLElement
+    target.setAttribute('style', 'color: rgb(1, 2, 3); font-size: 20px; z-index: 5')
+    designBridgeFrameMain(parent as unknown as Window)
+    parent.postMessage.mockClear()
+
+    postToFrame(
+      {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: 99,
+        dir: 'req',
+        type: SL_INSPECT,
+        slide: SLIDE,
+        payload: { slId: 's_x:1' },
+      },
+      parent,
+    )
+
+    expect(parent.postMessage).toHaveBeenCalledTimes(1)
+    const [env] = parent.postMessage.mock.calls[0] as [Record<string, unknown>, string]
+    expect(env['type']).toBe(SL_INSPECT)
+    expect(env['dir']).toBe('res')
+    expect(env['id']).toBe(99)
+    const payload = env['payload'] as SlInspect
+    expect(payload.slId).toBe('s_x:1')
+    expect(payload.rect).toEqual({ x: 40, y: 60, width: 320, height: 84 })
+    expect(payload.computed['color']).toBe('rgb(1, 2, 3)')
+    expect(payload.computed['font-size']).toBe('20px')
+    // Only whitelisted properties ever appear — the drift guard for the inlined copy.
+    for (const key of Object.keys(payload.computed)) {
+      expect(COMPUTED_STYLE_WHITELIST).toContain(key)
+    }
+  })
+
+  it('answers SL_INSPECT with a null payload when the id is not in this frame', () => {
+    const parent = makeParent()
+    designBridgeFrameMain(parent as unknown as Window)
+    parent.postMessage.mockClear()
+
+    postToFrame(
+      {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: 7,
+        dir: 'req',
+        type: SL_INSPECT,
+        slide: SLIDE,
+        payload: { slId: 's_x:999' },
+      },
+      parent,
+    )
+    const [env] = parent.postMessage.mock.calls[0] as [Record<string, unknown>, string]
+    expect(env['type']).toBe(SL_INSPECT)
+    expect(env['payload']).toBeNull()
+  })
+
   it('installs its listener at most once', () => {
     const parent = makeParent()
     document.elementFromPoint = vi
@@ -187,8 +249,20 @@ describe('DESIGN_BRIDGE_SCRIPT / injectDesignBridge', () => {
   it('carries the shared wire constants (drift guard against the hard-coded copies)', () => {
     expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_READY)
     expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_HITTEST)
+    expect(DESIGN_BRIDGE_SCRIPT).toContain(SL_INSPECT)
     expect(DESIGN_BRIDGE_SCRIPT).toContain('data-sl-id')
     expect(DESIGN_BRIDGE_SCRIPT).toContain('data-sl-ignore')
+  })
+
+  it('inlines the full computed-style whitelist (drift guard against element-context.ts)', () => {
+    // The frame's STYLE_WHITELIST must be a literal copy of COMPUTED_STYLE_WHITELIST — the shipped
+    // script string is the only place the copy is observable, so assert every prop appears as a quoted
+    // literal in it. `.toString()` transpilation may use single or double quotes, so accept either.
+    for (const prop of COMPUTED_STYLE_WHITELIST) {
+      const present =
+        DESIGN_BRIDGE_SCRIPT.includes(`"${prop}"`) || DESIGN_BRIDGE_SCRIPT.includes(`'${prop}'`)
+      expect(present, `whitelist prop "${prop}" missing from shipped script`).toBe(true)
+    }
   })
 
   it('inserts the script immediately before the final </body>', () => {

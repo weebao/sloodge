@@ -13,6 +13,10 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import type { ApiKeyStatus } from '../../../../shared/agent/types'
+import {
+  composeAgentMessage,
+  type ElementContextBundle,
+} from '../../../../shared/design/element-context'
 import { getAgentBridge } from './agentClient'
 import { initialTranscript, reduceTranscript, type Transcript } from './transcript'
 
@@ -22,8 +26,12 @@ export type ChatSession = {
   readonly keyStatus: ApiKeyStatus | null
   /** False when this renderer has no agent bridge (browser host / older preload). */
   readonly hasBridge: boolean
-  /** Send the given text as a user turn. No-op while streaming, or for empty/whitespace text. */
-  readonly send: (text: string) => void
+  /**
+   * Send the given text as a user turn. No-op while streaming, or for empty/whitespace text. When an
+   * element context bundle is attached, the transcript still shows the user's plain words while the
+   * message that crosses to the agent carries the serialized context (§6.1) — see `composeAgentMessage`.
+   */
+  readonly send: (text: string, attachment?: ElementContextBundle | null) => void
   /** Stop the in-flight turn (the Stop button). */
   readonly interrupt: () => void
   /** Store an API key and refresh the key status (the first-run affordance). */
@@ -60,14 +68,17 @@ export function useChatSession(): ChatSession {
   }, [bridge])
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, attachment?: ElementContextBundle | null) => {
       const trimmed = text.trim()
       if (trimmed.length === 0) return
       if (transcript.turnState === 'streaming') return
       if (bridge === undefined) return
+      // The transcript shows the user's own words; the agent-bound message additionally carries the
+      // serialized element context (as inert, fenced data — never executed; see `composeAgentMessage`).
       dispatch({ type: 'user-send', text: trimmed })
+      const outbound = composeAgentMessage(trimmed, attachment ?? null)
       void bridge
-        .sendMessage(trimmed)
+        .sendMessage(outbound)
         .then((accepted) => {
           // The key was removed between the status probe and this send: surface it as a
           // chat-visible auth error rather than a silently swallowed turn.

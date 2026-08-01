@@ -26,10 +26,10 @@
  *
  * The frame trusts exactly one peer: `window.parent`, the host renderer. It validates
  * `event.source === parent` on every inbound message — **source identity, never `event.origin`**,
- * which is `"null"` for this opaque-origin frame and proves nothing (§2.2). It acts only on the one
- * request type the protocol enumerates (`SL_HITTEST`), for its own slide, and there is no
- * `eval`-style escape hatch. The parent applies the mirror-image check (`isMessageFromFrame`) so
- * spoofing is refused at both ends.
+ * which is `"null"` for this opaque-origin frame and proves nothing (§2.2). It acts only on the
+ * request types the protocol enumerates (`SL_HITTEST`, and `SL_INSPECT` for the M3.4 context bundle),
+ * for its own slide, and there is no `eval`-style escape hatch. The parent applies the mirror-image
+ * check (`isMessageFromFrame`) so spoofing is refused at both ends.
  */
 
 import { SL_ID_ATTR } from '../../../../shared/design/grabbable'
@@ -56,7 +56,64 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
   const VERSION = 1
   const TYPE_READY = 'SL_READY'
   const TYPE_HITTEST = 'SL_HITTEST'
+  const TYPE_INSPECT = 'SL_INSPECT'
   const ID_ATTR = 'data-sl-id'
+  // The computed-style whitelist (§6.2) — must stay inside this self-contained function, so it is a
+  // literal copy of `COMPUTED_STYLE_WHITELIST` in `element-context.ts`. `frame-script.test.tsx`
+  // asserts the two are byte-identical, so a drift fails a unit test.
+  const STYLE_WHITELIST = [
+    'display',
+    'position',
+    'top',
+    'right',
+    'bottom',
+    'left',
+    'width',
+    'height',
+    'font-family',
+    'font-size',
+    'font-weight',
+    'font-style',
+    'line-height',
+    'letter-spacing',
+    'color',
+    'background-color',
+    'background-image',
+    'opacity',
+    'text-align',
+    'text-transform',
+    'text-decoration',
+    'white-space',
+    'margin-top',
+    'margin-right',
+    'margin-bottom',
+    'margin-left',
+    'padding-top',
+    'padding-right',
+    'padding-bottom',
+    'padding-left',
+    'gap',
+    'flex-direction',
+    'align-items',
+    'justify-content',
+    'border-top-width',
+    'border-right-width',
+    'border-bottom-width',
+    'border-left-width',
+    'border-color',
+    'border-style',
+    'border-radius',
+    'box-shadow',
+    'transform',
+    'transform-origin',
+    'overflow',
+    'z-index',
+    'fill',
+    'stroke',
+    'stroke-width',
+    'stroke-linecap',
+    'paint-order',
+  ]
   const IGNORE_ATTR = 'data-sl-ignore'
   const BARE_INLINE: Record<string, boolean> = {
     span: true,
@@ -246,6 +303,23 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     return { ...d, box: boxForId(d.slId), ancestors: ancestorsOf(target) }
   }
 
+  // Computed styles (whitelisted subset) + rect for an already-selected id, for the M3.4 context
+  // bundle (§6.2). The first node carrying the id is measured for styles (adoption-agency clones
+  // share one id but the same computed style); the rect is unioned across all of them, matching
+  // `rectForId`. Returns null when the id is not in this frame (a stale selection).
+  const inspectId = (slId: string) => {
+    const node = doc.querySelector('[' + ID_ATTR + '="' + slId + '"]')
+    if (!node) return null
+    const style = win.getComputedStyle(node)
+    const computed: Record<string, string> = {}
+    for (let i = 0; i < STYLE_WHITELIST.length; i++) {
+      const prop = STYLE_WHITELIST[i]!
+      const value = style.getPropertyValue(prop)
+      if (value && value.length > 0) computed[prop] = value.trim()
+    }
+    return { slId, computed, rect: rectForId(slId) }
+  }
+
   const send = (env: unknown): void => {
     parentWin.postMessage(env, '*')
   }
@@ -256,23 +330,39 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     const data = event.data as Record<string, unknown> | null
     if (!data || typeof data !== 'object') return
     if (data['__sl'] !== MAGIC || data['v'] !== VERSION) return
-    if (data['dir'] !== 'req' || data['type'] !== TYPE_HITTEST) return
+    if (data['dir'] !== 'req') return
     if (data['slide'] !== mySlide) return
     const p = data['payload'] as Record<string, unknown> | null
     if (!p || typeof p !== 'object') return
-    if (typeof p['x'] !== 'number' || typeof p['y'] !== 'number') return
-    if (p['mode'] !== 'hover' && p['mode'] !== 'select') return
 
-    const hit = hitTest(p['x'], p['y'], p['alt'] === true)
-    send({
-      __sl: MAGIC,
-      v: VERSION,
-      id: data['id'],
-      dir: 'res',
-      type: TYPE_HITTEST,
-      slide: mySlide,
-      payload: hit,
-    })
+    if (data['type'] === TYPE_HITTEST) {
+      if (typeof p['x'] !== 'number' || typeof p['y'] !== 'number') return
+      if (p['mode'] !== 'hover' && p['mode'] !== 'select') return
+      const hit = hitTest(p['x'], p['y'], p['alt'] === true)
+      send({
+        __sl: MAGIC,
+        v: VERSION,
+        id: data['id'],
+        dir: 'res',
+        type: TYPE_HITTEST,
+        slide: mySlide,
+        payload: hit,
+      })
+      return
+    }
+
+    if (data['type'] === TYPE_INSPECT) {
+      if (typeof p['slId'] !== 'string') return
+      send({
+        __sl: MAGIC,
+        v: VERSION,
+        id: data['id'],
+        dir: 'res',
+        type: TYPE_INSPECT,
+        slide: mySlide,
+        payload: inspectId(p['slId']),
+      })
+    }
   })
 
   // Announce readiness so the parent knows the listener is armed and can re-send selection by id.
