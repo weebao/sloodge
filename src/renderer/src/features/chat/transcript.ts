@@ -85,8 +85,9 @@ export type Transcript = {
    * Shared, rather than a private field that folds the same way, because M2.5 puts this number in
    * the status bar and enforces the budget cap against it: it now has to *equal* what main recorded,
    * not merely resemble it. Both sides call `beginTurn`/`foldTurnCost` on the same events in the same
-   * order, so agreement is structural — see that module for the fold rule and why it is gated on a
-   * flag rather than on `turnState`.
+   * order, so agreement is structural — see that module for the fold rule, and for why it counts
+   * open turns rather than flipping a boolean (overlapping turns used to lose a whole turn's cost on
+   * both sides at once, which no cross-check between them could detect).
    */
   readonly cost: CostState
   /** In-state monotonic id source, so the reducer stays pure (no `Date.now`/`Math.random`). */
@@ -160,15 +161,14 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
  * event's own message when it carries one, so a novel SDK failure is still legible rather than a
  * generic dead end.
  *
- * Deliberately *not* extended to `budget` so the guard could quote the user's cap: an SDK-raised
- * `error_max_budget_usd` arrives with `message: "Turn ended: error_max_budget_usd"`, and preferring
- * the event message for that kind would put that raw subtype on screen. Both budget paths — ours at
- * turn admission and the SDK's mid-turn ceiling — therefore share one calibrated sentence, and the
- * number the user is arguing with is on the status bar and in Settings ▸ Budget where it can be
- * changed.
+ * `budget` gets the same treatment so our own refusal can name the cap the user is arguing with
+ * ("Budget reached for this session ($2.00)…" — `budgetRefusalMessage`). That is safe only because
+ * `event-mapping` now leaves `message` empty for every kind with calibrated copy: an SDK-raised
+ * `error_max_budget_usd` no longer carries "Turn ended: error_max_budget_usd", so it falls through
+ * to the sentence below rather than putting a raw subtype on screen.
  */
 export function errorCopy(kind: AgentErrorKind, message: string): string {
-  if (kind === 'unknown' && message.trim().length > 0) return message
+  if ((kind === 'unknown' || kind === 'budget') && message.trim().length > 0) return message
   return ERROR_COPY[kind]
 }
 
@@ -279,12 +279,13 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
     }
 
     case 'turn-end': {
-      // Fold this turn's `result` cost exactly once, gated on `cost.folded` rather than `turnState`
-      // so it works no matter which terminal state the turn has reached or when `turn-end` arrives:
+      // Fold this turn's `result` cost against the open-turn count rather than `turnState`, so it
+      // works no matter which terminal state the turn has reached or when `turn-end` arrives:
       //  - streaming -> turn-end: folds, settles, goes idle;
       //  - streaming -> error -> turn-end (or the paired [turn-end, error]): folds once, keeps error;
       //  - streaming -> interrupt -> turn-end: folds the interrupted turn's cost, keeps interrupted;
-      //  - a duplicate turn-end (already folded) is a reference-preserving no-op.
+      //  - a duplicate turn-end (no turn left open) is a reference-preserving no-op;
+      //  - Stop -> resend -> both results: two open turns, two folds, neither lost.
       // Only a still-`streaming` turn transitions to `idle`; a settled turn keeps its end-state.
       const cost = foldTurnCost(state.cost, event.costUsd)
       if (cost === state.cost) return state

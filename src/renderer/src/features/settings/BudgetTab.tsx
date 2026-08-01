@@ -112,7 +112,7 @@ export function BudgetTab(): JSX.Element {
           <span data-testid="budget-spend" className="font-medium">
             <span aria-hidden="true">≈</span> {formatCostUsd(spentUsd)}
           </span>
-          {storedCap === null ? ' of an unlimited budget.' : <> of ${storedCap.toFixed(2)}.</>}
+          {storedCap === null ? ' of an unlimited budget.' : <> of {formatCostUsd(storedCap)}.</>}
         </p>
         <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
           Estimated from Claude&rsquo;s published prices, not from your bill. The total covers this

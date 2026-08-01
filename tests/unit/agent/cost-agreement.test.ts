@@ -159,10 +159,30 @@ function rendererTotal(script: readonly ScriptedTurn[]): number {
   return state.cost.totalUsd
 }
 
+/**
+ * An **independent** model of what the script should cost: one turn bills once, at the first
+ * `result` the runtime sends for it.
+ *
+ * This exists because agreement alone is a weak oracle. A boolean fold flag once made both sides
+ * drop an overlapping turn's cost *in the same direction*, so the cross-check below stayed green
+ * while the meter under-reported a whole turn. A test that can only detect divergence cannot detect
+ * shared error — so every case is also checked against this model, which is derived from the script
+ * rather than from either implementation.
+ */
+function expectedFromScript(script: readonly ScriptedTurn[]): number {
+  return script.reduce((total, turn) => {
+    const first = turn.messages.find((m) => (m as { type?: string }).type === 'result')
+    return total + ((first as { total_cost_usd?: number } | undefined)?.total_cost_usd ?? 0)
+  }, 0)
+}
+
 async function expectAgreement(script: readonly ScriptedTurn[], expected: number): Promise<void> {
+  // The absolute oracle first: both sides must equal the money the script actually spent.
+  expect(expectedFromScript(script)).toBeCloseTo(expected, 10)
   const [main, renderer] = [await mainTotal(script), rendererTotal(script)]
   expect(main).toBeCloseTo(expected, 10)
   expect(renderer).toBeCloseTo(expected, 10)
+  // ...and only then that they agree with each other.
   expect(main).toBe(renderer)
 }
 
@@ -266,6 +286,60 @@ describe('cost agreement — main and the renderer report the same session total
       }
     }
     expect(state.cost.totalUsd).toBe(0)
+  })
+
+  it('agrees on OVERLAPPING turns — Stop, retype, Send, then both results', async () => {
+    // The regression that a boolean fold flag allowed, and that agreement alone could not catch.
+    //
+    // `interrupt-requested` moves the transcript to `interrupted` immediately, while the SDK's
+    // `result` for turn A is still in flight — and the composer's only send guard is
+    // `turnState === 'streaming'`. So the user can Stop, retype and Send inside that round trip,
+    // opening turn B while A is unfolded. Both sides used to report $0.50 for $0.80 spent, in the
+    // same direction, so the cross-check stayed green while a whole turn's money vanished from the
+    // meter *and* from the guard the meter feeds.
+    const SPENT = 0.5 + 0.3
+
+    // --- main ---
+    const runtime = scriptedRuntime()
+    const queryFn = vi.fn(() => runtime.handle) as unknown as AgentQueryFn
+    const emitted: AgentEvent[] = []
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (event) => emitted.push(event),
+      log: () => {},
+    })
+    session.send('A')
+    runtime.deliver([INIT])
+    await session.interrupt()
+    session.send('B')
+    runtime.deliver([
+      { type: 'result', subtype: 'success', total_cost_usd: 0.5 },
+      { type: 'result', subtype: 'success', total_cost_usd: 0.3 },
+    ])
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    runtime.end()
+    const mainSpend = session.estimatedSpendUsd
+    await session.close()
+
+    // --- renderer, same order ---
+    const seen = new Set<string>()
+    let state: Transcript = initialTranscript
+    state = reduceTranscript(state, { type: 'user-send', text: 'A' })
+    state = reduceTranscript(state, { type: 'interrupt-requested' })
+    state = reduceTranscript(state, { type: 'user-send', text: 'B' })
+    for (const raw of [
+      { type: 'result', subtype: 'success', total_cost_usd: 0.5 },
+      { type: 'result', subtype: 'success', total_cost_usd: 0.3 },
+    ]) {
+      for (const event of mapSdkMessage(raw, seen)) {
+        state = reduceTranscript(state, { type: 'agent-event', event })
+      }
+    }
+
+    expect(mainSpend).toBeCloseTo(SPENT, 10)
+    expect(state.cost.totalUsd).toBeCloseTo(SPENT, 10)
+    expect(mainSpend).toBe(state.cost.totalUsd)
   })
 
   it('agrees on an interrupted turn — the cost is folded, not discarded', async () => {

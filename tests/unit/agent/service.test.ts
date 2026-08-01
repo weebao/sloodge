@@ -24,13 +24,28 @@ function recordingQueryFn(): {
   let starts = 0
   const queryFn: AgentQueryFn = () => {
     starts += 1
-    const gen = (async function* () {})()
+    // A *live* streaming-input query: it stays open between turns and ends only when returned, which
+    // is what the real SDK does. A generator that ended immediately would model a query that had
+    // already terminated — and since M2.5 a terminated query correctly makes the session re-arm on
+    // the next send, so `starts` would count re-arms instead of the session creations these tests
+    // are about. The gate is released by `return()` so teardown still completes promptly.
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const gen = (async function* (): AsyncGenerator<unknown, void, unknown> {
+      await gate
+      // Unreachable in practice: the gate is only released by `return()`, which resumes this
+      // generator with a return completion. Present so the fake is a real generator.
+      yield undefined
+    })()
     const handle = gen as unknown as AgentQueryHandle
     handle.interrupt = async () => undefined
     handle.setModel = async () => undefined
     const originalReturn = gen.return.bind(gen)
     handle.return = ((value?: void) => {
       returns()
+      release?.()
       return originalReturn(value)
     }) as AgentQueryHandle['return']
     return handle
@@ -115,6 +130,63 @@ describe('AgentService', () => {
     expect(await service.send(1, 'second', emit)).toEqual({ accepted: false, reason: 'budget' })
     // A blocked send never opens another query.
     expect(starts).toBe(1)
+    await service.dispose(1)
+  })
+
+  it('recovers after a budget stop: raising the cap makes the very next send actually run', async () => {
+    // The claim this milestone writes into its own spec twice — "raise the limit in Settings and
+    // carry on". Hitting the cap is the GUARANTEED end state of the feature (maxBudgetUsd is the
+    // whole cap), and the SDK ends the query when it fires. If the session does not re-arm, every
+    // later send pushes into a dead bridge while `accepted: true` comes back, and the chat panel is
+    // finished for the life of the window.
+    const ceilings: (number | undefined)[] = []
+    let starts = 0
+    const queryFn: AgentQueryFn = (params) => {
+      starts += 1
+      ceilings.push(params.options.maxBudgetUsd)
+      const first = starts === 1
+      const gen = (async function* () {
+        if (first) {
+          // The SDK's own ceiling fires and TERMINATES the query.
+          yield { type: 'result', subtype: 'error_max_budget_usd', total_cost_usd: 2.4 }
+        } else {
+          yield { type: 'result', subtype: 'success', total_cost_usd: 0.1 }
+        }
+      })()
+      const handle = gen as unknown as AgentQueryHandle
+      handle.interrupt = async () => undefined
+      handle.setModel = async () => undefined
+      return handle
+    }
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
+    }
+    let capUsd: number = 2
+    const service = new AgentService({
+      queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => capUsd,
+    })
+
+    expect(await service.send(1, 'expensive', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
+    expect(ceilings[0]).toBe(2)
+
+    // Still blocked while the cap stands.
+    expect(await service.send(1, 'blocked', emit)).toEqual({ accepted: false, reason: 'budget' })
+    expect(starts).toBe(1)
+
+    // The user raises the limit in Settings.
+    capUsd = 20
+    expect(await service.send(1, 'after raising', emit)).toEqual({ accepted: true })
+
+    // A genuinely new query, and it produces events rather than vanishing into a dead bridge.
+    await vi.waitFor(() => expect(starts).toBe(2))
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    // ...carrying the RAISED cap's remaining budget, not the ceiling that stopped it.
+    expect(ceilings[1]).toBeCloseTo(20 - 2.4)
     await service.dispose(1)
   })
 
@@ -216,15 +288,23 @@ describe('AgentService', () => {
     await Promise.all([sendP, disposeP])
 
     // The invariant that matters: every subprocess that started was also closed — none orphaned.
+    //
+    // The exact count is deliberately NOT pinned. Whether the racing send gets far enough to open a
+    // query depends on how many microtasks separate it from the dispose, and M2.5 added one (the
+    // budget-cap read). Losing that race is the better outcome — no subprocess is spawned for a
+    // renderer that is already gone — so asserting `starts() === 1` would pin an incidental
+    // interleaving and call an improvement a regression.
     expect(rec.returns).toHaveBeenCalledTimes(rec.starts())
-    expect(rec.starts()).toBe(1)
-    expect(rec.returns).toHaveBeenCalledTimes(1)
 
-    // And the sender is not permanently poisoned — a later send builds a fresh session.
+    // And the sender is not permanently poisoned — a later send builds a fresh, live session.
     const send2 = service.send(5, 'b', () => {})
     resolveKey(LIVE)
-    await send2
-    expect(rec.starts()).toBe(2)
+    expect(await send2).toEqual({ accepted: true })
+    expect(rec.starts()).toBeGreaterThanOrEqual(1)
+
+    const started = rec.starts()
+    await service.disposeAll()
+    expect(rec.returns).toHaveBeenCalledTimes(started)
   })
 
   it('disposeAll waits for in-flight creations and closes them too', async () => {

@@ -31,6 +31,15 @@ describe('classifyResultSubtype', () => {
     expect(classifyResultSubtype('error_during_execution')).toBe('unknown')
     expect(classifyResultSubtype('success')).toBeNull()
   })
+
+  it('treats an UNRECOGNISED error_* subtype as an error, not as success', () => {
+    // The old `default: null` rendered an unfamiliar failure as a clean successful turn. M2.5 makes
+    // that costlier: a future `error_max_budget_*` variant would bill the user and show success.
+    expect(classifyResultSubtype('error_max_budget_tokens')).toBe('unknown')
+    expect(classifyResultSubtype('error_something_new')).toBe('unknown')
+    // Non-error subtypes still produce no error event.
+    expect(classifyResultSubtype('partial')).toBeNull()
+  })
 })
 
 describe('classifyException', () => {
@@ -216,6 +225,21 @@ describe('mapSdkMessage', () => {
     expect(kinds).toEqual(['turn-end', 'error'])
     expect(events[0]).toEqual({ type: 'turn-end', costUsd: 2, subtype: 'error_max_budget_usd' })
     expect(events[1]).toMatchObject({ type: 'error', kind: 'budget', recoverable: true })
+    // Empty message on purpose: the renderer's copy table owns the wording for every kind it has a
+    // calibrated sentence for, and `errorCopy` prefers a non-empty message — so a diagnostic string
+    // here would put "Turn ended: error_max_budget_usd" on screen instead (M2.5).
+    expect(events[1]).toMatchObject({ message: '' })
+  })
+
+  it('keeps the raw subtype only for `unknown`, where it is the best detail available', () => {
+    const events = mapSdkMessage(
+      { type: 'result', subtype: 'error_during_execution', total_cost_usd: 0 },
+      seen(),
+    )
+    expect(events[1]).toMatchObject({
+      kind: 'unknown',
+      message: 'Turn ended: error_during_execution',
+    })
   })
 
   it('defaults a missing cost to 0 rather than NaN', () => {

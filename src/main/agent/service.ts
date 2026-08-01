@@ -110,14 +110,28 @@ export class AgentService {
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSendResponse> {
     const existing = this.sessions.get(senderId)
-    if (existing !== undefined) {
-      const cap = (await this.deps.loadBudgetCap?.()) ?? null
-      if (!canStartTurn(evaluateBudget(existing.estimatedSpendUsd, cap))) {
-        return { accepted: false, reason: 'budget' }
-      }
+    // When there is no session yet, creation must be kicked off **synchronously**: two racing sends
+    // dedupe on the `creating` map, and awaiting anything before this would let both observe "no
+    // session" and spawn a subprocess each (§9's worst case). The cap resolves alongside it.
+    const creating = existing === undefined ? this.ensureSession(senderId, emit) : null
+    // Read once per send, so a cap changed in Settings takes effect on the very next turn — both for
+    // the admission check and for the ceiling handed to the SDK.
+    const capUsd = (await this.deps.loadBudgetCap?.()) ?? null
+    if (
+      existing !== undefined &&
+      !canStartTurn(evaluateBudget(existing.estimatedSpendUsd, capUsd))
+    ) {
+      return { accepted: false, reason: 'budget' }
     }
-    const session = await this.ensureSession(senderId, emit)
-    if (session === null) return { accepted: false, reason: 'no-credential' }
+    const session = existing ?? (await creating)
+    if (session === null || session === undefined) {
+      return { accepted: false, reason: 'no-credential' }
+    }
+    // Re-arm the in-flight ceiling for whatever query this send opens. After a budget stop the SDK
+    // has terminated the query and the session re-arms itself, so the next send opens a *new* one —
+    // which must carry the cap the user just raised, not the one that stopped it. Without this,
+    // "raise the limit in Settings and carry on" would start a query that instantly stops again.
+    session.setBudgetCeiling(remainingBudgetUsd(session.estimatedSpendUsd, capUsd))
     session.send(text)
     return { accepted: true }
   }
@@ -169,10 +183,10 @@ export class AgentService {
         log(`[agent] workspace preparation failed: ${String(error)}`)
       }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
-      // §10's in-flight ceiling. A fresh session has spent nothing, so this is the whole cap; the
-      // session recomputes what remains if it has to restart into the §8 fallback.
-      const capUsd = (await this.deps.loadBudgetCap?.()) ?? null
-      const maxBudgetUsd = remainingBudgetUsd(0, capUsd)
+      // §10's in-flight ceiling, seeded here so a session is never briefly uncapped. `send` re-arms
+      // it before every turn (so a cap raised in Settings reaches the next query) and the session
+      // recomputes what remains if it restarts into the §8 fallback.
+      const maxBudgetUsd = remainingBudgetUsd(0, (await this.deps.loadBudgetCap?.()) ?? null)
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
         log,

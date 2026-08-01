@@ -89,6 +89,7 @@ export function createBudgetStore(deps: {
   readonly resolvePath: () => string
 }): BudgetStore {
   let cached: BudgetCap | undefined
+  let writeSeq = 0
 
   return {
     load: async () => {
@@ -105,7 +106,12 @@ export function createBudgetStore(deps: {
 
     save: async (cap) => {
       const target = deps.resolvePath()
-      const scratch = `${target}.tmp`
+      // Unique scratch name: only main writes and Settings commits on blur, so overlapping saves are
+      // not reachable today — but a fixed `.tmp` would let two of them interleave write/rename and
+      // land a half-written file under the real name, which is exactly what write-then-rename exists
+      // to prevent.
+      writeSeq += 1
+      const scratch = `${target}.${String(process.pid)}.${String(writeSeq)}.tmp`
       // Write-then-rename, matching the vault: a crash mid-save leaves the old cap or the new one,
       // never a truncated file that would silently re-default the user's limit on next launch.
       await deps.fs.writeFile(scratch, serializeBudgetFile(cap))

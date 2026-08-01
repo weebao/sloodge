@@ -26,6 +26,13 @@ export type SessionMeterState = {
   readonly skills: SessionSkills
   readonly setCostUsd: (costUsd: number) => void
   readonly setSkills: (skills: SkillsStatus) => void
+  /**
+   * Return the store to its initial state. Nothing in `src/` calls this — and should not: the meter
+   * is per *session*, so it deliberately survives everything short of an app restart. It exists as
+   * the test-isolation seam a module-level singleton needs, matching `authStore.reset` (also
+   * src-unused). Without it a case that ends up mid-session leaks its total into the next one and
+   * the suite passes or fails by file order.
+   */
   readonly reset: () => void
 }
 

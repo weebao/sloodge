@@ -202,6 +202,43 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     expect(screen.queryByText(/budget reached/i)).toBeNull()
   })
 
+  it('names the cap in the refusal so the number the user is arguing with is on screen', async () => {
+    const fake = makeFakeBridge(0.1)
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(useBudgetStore.getState().loaded).toBe(true))
+
+    send('first')
+    await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
+    fake.emit({ type: 'turn-end', costUsd: 0.15, subtype: 'success' })
+
+    send('blocked')
+    expect((await screen.findByText(/budget reached for this session/i)).textContent).toContain(
+      '$0.10',
+    )
+  })
+
+  it('leaves the composer usable when the SDK stops the turn on its own ceiling', async () => {
+    // The other half of the budget stop: `error_max_budget_usd` maps to [turn-end, error], so the
+    // turn settles instead of stranding the composer in `streaming` forever. And the SDK's error —
+    // which knows only a subtype — must render as the calibrated sentence, never "Turn ended:
+    // error_max_budget_usd".
+    const fake = makeFakeBridge(2)
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('expensive')
+    await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
+    fake.emit({ type: 'turn-end', costUsd: 2.4, subtype: 'error_max_budget_usd' })
+    fake.emit({ type: 'error', kind: 'budget', message: '', recoverable: true })
+
+    await screen.findByText(/budget reached for this session/i)
+    expect(screen.queryByText(/Turn ended/i)).toBeNull()
+    // Not wedged in `streaming`: the composer is editable again.
+    await waitFor(() => expect(composer().disabled).toBe(false))
+  })
+
   it('publishes the session cost to the status-bar store — one accumulator, two readers', async () => {
     const fake = makeFakeBridge(2)
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }

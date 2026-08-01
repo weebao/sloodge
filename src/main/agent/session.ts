@@ -110,6 +110,16 @@ export class AgentSession {
    */
   private pendingTexts: string[] = []
   /**
+   * The `maxBudgetUsd` handed to the next query opened (§10). Seeded from the session's options and
+   * refreshed by `AgentService` on every send, so a cap raised in Settings reaches the SDK.
+   */
+  private budgetCeiling: number | undefined
+  /**
+   * The live query has ended (the SDK's `maxBudgetUsd` ceiling, `maxTurns`, or a fatal error) and the
+   * session needs a new one before it can carry another turn. See `retireQuery`.
+   */
+  private queryFinished = false
+  /**
    * What the runtime reported loading on `system:init`, or `null` before the first `ready` (M2.4,
    * §8). `null` rather than `[]` on purpose: "not yet known" and "none loaded" must be
    * distinguishable, or a consumer that reads this during the handshake shows a spurious
@@ -120,6 +130,7 @@ export class AgentSession {
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
     this.bridge = createChatBridge()
+    this.budgetCeiling = deps.options.maxBudgetUsd
   }
 
   /** Client-side cost estimate accumulated across this session's turns. */
@@ -147,7 +158,7 @@ export class AgentSession {
    */
   send(text: string): void {
     if (this.closed) return
-    if (this.handle === null) this.start()
+    if (this.handle === null || this.queryFinished) this.start()
     // Opens the cost turn on the same event the renderer opens its own on, which is what makes the
     // two accumulators agree rather than merely resemble each other (shared/agent/cost.ts).
     this.cost = beginTurn(this.cost)
@@ -155,8 +166,40 @@ export class AgentSession {
     this.bridge.send(text)
   }
 
+  /**
+   * Set the in-flight spend ceiling for the **next** query this session opens (§10).
+   *
+   * Load-bearing after a budget stop: that ends the query, `retireQuery` re-arms the session, and
+   * the next send opens a *fresh* query — which must be given the cap the user just raised, not the
+   * one that stopped it. `AgentService` recomputes this on every send, so the ceiling is never
+   * staler than the last thing the user saved in Settings.
+   */
+  setBudgetCeiling(maxBudgetUsd: number | undefined): void {
+    this.budgetCeiling = maxBudgetUsd
+  }
+
+  /** The session's options with the current ceiling applied; omitted entirely when uncapped. */
+  private queryOptions(extra?: Partial<AgentQueryOptions>): AgentQueryOptions {
+    const { maxBudgetUsd: _ignored, ...rest } = this.deps.options
+    return {
+      ...rest,
+      ...extra,
+      ...(this.budgetCeiling !== undefined ? { maxBudgetUsd: this.budgetCeiling } : {}),
+    }
+  }
+
   private start(): void {
-    this.handle = this.deps.queryFn({ prompt: this.bridge.stream(), options: this.deps.options })
+    if (this.queryFinished) {
+      // Re-arming after a terminated query. The old bridge's stream generator belongs to the dead
+      // query and nothing will ever drain it again, so the replacement gets a fresh one — the same
+      // repair `restartWithFallback` performs, for the same reason.
+      this.bridge.close()
+      this.bridge = createChatBridge()
+      // Nothing will answer these now; this send is a new turn, not a replay.
+      this.pendingTexts = []
+      this.queryFinished = false
+    }
+    this.handle = this.deps.queryFn({ prompt: this.bridge.stream(), options: this.queryOptions() })
     this.consuming = this.consume(this.handle, this.generation)
   }
 
@@ -186,7 +229,36 @@ export class AgentSession {
       if (this.closed || generation !== this.generation) return
       const { kind, message } = classifyException(error)
       this.deps.emit({ type: 'error', kind, message, recoverable: isRecoverable(kind) })
+    } finally {
+      this.retireQuery(generation)
     }
+  }
+
+  /**
+   * A query has ended. Drop it and re-arm the session so the **next** send opens a fresh one.
+   *
+   * Without this the session is permanently wedged, and the guaranteed way to reach that state is
+   * the one thing this milestone is about: `maxBudgetUsd` is the whole cap, so the turn that crosses
+   * it always terminates the query with `error_max_budget_usd`. `consume` would then exit its loop
+   * leaving `handle` non-null and the bridge drained, so every later `send` skipped `start()` and
+   * pushed into a queue nothing drains — while `AgentService.send` cheerfully returned
+   * `accepted: true`. "Raise the limit in Settings and carry on", which this milestone's own spec
+   * promises twice, did nothing at all, and the composer sat in `streaming` forever.
+   *
+   * Only a *flag* is set here — `handle` deliberately stays put so `close()` can still `return()` it
+   * and the "never orphan a subprocess" teardown path (§9) is unchanged. The actual re-arm happens
+   * in `start()`, on the next send that needs a query.
+   *
+   * The open-turn count is deliberately **not** cleared: the renderer's accumulator cannot see this
+   * event, so zeroing it here would be the one thing that makes the two ledgers disagree. A turn
+   * whose query died without a `result` stays open on both sides, symmetrically.
+   */
+  private retireQuery(generation: number): void {
+    // Superseded by the §8 restart: that path already installed a live handle and bridge.
+    if (generation !== this.generation) return
+    // `close()` owns teardown; re-arming a session the caller is disposing would resurrect it.
+    if (this.closed) return
+    this.queryFinished = true
   }
 
   /**
@@ -288,18 +360,14 @@ export class AgentSession {
     const replay = this.pendingTexts
     this.pendingTexts = []
 
-    const { maxBudgetUsd } = this.deps.options
+    // The replacement inherits what is *left* of the cap, not the original ceiling — otherwise a
+    // restart would quietly hand the session a second full budget (§10).
+    if (this.budgetCeiling !== undefined) {
+      this.budgetCeiling = Math.max(0, this.budgetCeiling - this.cost.totalUsd)
+    }
     this.handle = this.deps.queryFn({
       prompt: this.bridge.stream(),
-      options: {
-        ...this.deps.options,
-        skillFallbackPrompt: prompt,
-        // The replacement inherits what is *left* of the cap, not the original ceiling — otherwise a
-        // restart would quietly hand the session a second full budget (§10).
-        ...(maxBudgetUsd !== undefined
-          ? { maxBudgetUsd: Math.max(0, maxBudgetUsd - this.cost.totalUsd) }
-          : {}),
-      },
+      options: this.queryOptions({ skillFallbackPrompt: prompt }),
     })
     this.consuming = this.consume(this.handle, this.generation)
     for (const text of replay) {

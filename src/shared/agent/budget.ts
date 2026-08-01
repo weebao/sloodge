@@ -48,6 +48,8 @@
  * refused by us. Neither half is silent.
  */
 
+import { formatCostUsd } from './cost'
+
 /** §10's default: enough for a real editing session, small enough that a runaway is survivable. */
 export const DEFAULT_BUDGET_CAP_USD = 2
 
@@ -138,7 +140,7 @@ export function remainingBudgetUsd(spentUsd: number, capUsd: BudgetCap): number 
  * re-scoped from "this deck" to "this session" to match the semantics above.
  */
 export function budgetRefusalMessage(capUsd: BudgetCap): string {
-  const cap = capUsd === null ? '' : ` ($${capUsd.toFixed(2)})`
+  const cap = capUsd === null ? '' : ` (${formatCostUsd(capUsd)})`
   return `Budget reached for this session${cap}. Raise the limit in Settings ▸ Budget to continue.`
 }
 

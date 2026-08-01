@@ -13,7 +13,9 @@
 
 import { useCallback, useEffect, useMemo, useReducer } from 'react'
 import { isAuthenticated, NOT_CONFIGURED, type AuthStatus } from '../../../../shared/agent/auth'
+import type { AgentEvent } from '../../../../shared/agent/types'
 import {
+  budgetRefusalMessage,
   canStartTurn,
   evaluateBudget,
   type BudgetCap,
@@ -29,15 +31,24 @@ import {
 import { getAgentBridge } from './agentClient'
 import { initialTranscript, reduceTranscript, type Transcript } from './transcript'
 
-/** The chat-visible refusal, raised locally so the composer explains itself without a round trip. */
-const BUDGET_REFUSAL_EVENT = {
-  type: 'error',
-  kind: 'budget',
-  message: 'budget-cap-reached',
-  // Recoverable: raising the cap in Settings makes the very next send work. A dead end would be
-  // wrong copy for a state the user can clear in two clicks.
-  recoverable: true,
-} as const
+/**
+ * The chat-visible refusal, raised locally so the composer explains itself without a round trip.
+ *
+ * Carries `budgetRefusalMessage(cap)` as its message so the bubble names the number the user is
+ * arguing with — `errorCopy` prefers a non-empty message for `budget`. The SDK's own mid-turn
+ * `error_max_budget_usd` arrives with an empty message and falls through to the generic sentence,
+ * because it knows only a subtype.
+ */
+function budgetRefusalEvent(capUsd: BudgetCap): AgentEvent {
+  return {
+    type: 'error',
+    kind: 'budget',
+    message: budgetRefusalMessage(capUsd),
+    // Recoverable: raising the cap in Settings makes the very next send work. A dead end would be
+    // wrong copy for a state the user can clear in two clicks.
+    recoverable: true,
+  }
+}
 
 export type ChatSession = {
   readonly transcript: Transcript
@@ -145,7 +156,7 @@ export function useChatSession(): ChatSession {
       // never sent. A turn already in flight is never interrupted — see `shared/agent/budget.ts` for
       // why stop-before-the-next-turn is the honest half of this and `maxBudgetUsd` is the other.
       if (!canStartTurn(budget)) {
-        dispatch({ type: 'agent-event', event: BUDGET_REFUSAL_EVENT })
+        dispatch({ type: 'agent-event', event: budgetRefusalEvent(budget.capUsd) })
         return false
       }
       // The transcript shows the user's own words; the agent-bound message additionally carries the
@@ -160,7 +171,7 @@ export function useChatSession(): ChatSession {
           // stale local cap, or a spend main counted that we have not folded yet — so surface the
           // same refusal rather than the auth gate.
           if (result.reason === 'budget') {
-            dispatch({ type: 'agent-event', event: BUDGET_REFUSAL_EVENT })
+            dispatch({ type: 'agent-event', event: budgetRefusalEvent(capUsd) })
             return
           }
           // The credential was removed between the status probe and this send: surface it as a
@@ -190,7 +201,7 @@ export function useChatSession(): ChatSession {
         })
       return true
     },
-    [bridge, transcript.turnState, setAuthStatus, budget],
+    [bridge, transcript.turnState, setAuthStatus, budget, capUsd],
   )
 
   const interrupt = useCallback(() => {

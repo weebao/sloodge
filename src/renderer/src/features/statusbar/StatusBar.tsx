@@ -98,7 +98,7 @@ function CostMeter({ costUsd, budget }: { costUsd: number; budget: BudgetStatus 
     <span className="inline-flex items-center gap-1.5">
       <span data-testid="statusbar-cost" className={tone}>
         <span aria-hidden="true">≈</span> {formatCostUsd(costUsd)}
-        {capped && budget.capUsd !== null ? ` / $${budget.capUsd.toFixed(2)}` : ''} session
+        {capped && budget.capUsd !== null ? ` / ${formatCostUsd(budget.capUsd)}` : ''} session
       </span>
       {capped ? (
         <span

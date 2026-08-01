@@ -54,6 +54,11 @@ export function classifyAssistantError(error: string): AgentErrorKind {
 /**
  * Map an error `result.subtype` to a kind, or `null` for `subtype: "success"` and any non-error
  * subtype (the turn still ended; we emit `turn-end`, not `error`).
+ *
+ * Anything the SDK prefixes `error_` that we do not recognise is `unknown` rather than `null`. The
+ * old `default: null` rendered an unrecognised failure as a clean successful turn — and M2.5 made
+ * that costlier, since a future `error_max_budget_*` variant would bill the user and show success.
+ * An unfamiliar error is still an error.
  */
 export function classifyResultSubtype(subtype: string): AgentErrorKind | null {
   switch (subtype) {
@@ -65,7 +70,7 @@ export function classifyResultSubtype(subtype: string): AgentErrorKind | null {
     case 'error_max_structured_output_retries':
       return 'unknown'
     default:
-      return null
+      return subtype.startsWith('error') ? 'unknown' : null
   }
 }
 
@@ -214,7 +219,11 @@ export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
       events.push({
         type: 'error',
         kind,
-        message: `Turn ended: ${subtype}`,
+        // Only `unknown` carries the raw subtype. For kinds the renderer has calibrated copy for,
+        // the copy table owns the wording and this must stay empty — `errorCopy` prefers a non-empty
+        // message, so a diagnostic string here would put "Turn ended: error_max_budget_usd" on
+        // screen instead of the sentence written for that case (M2.5).
+        message: kind === 'unknown' ? `Turn ended: ${subtype}` : '',
         recoverable: isRecoverable(kind),
       })
     }

@@ -17,7 +17,29 @@ describe('cost accumulation', () => {
     let state = beginTurn(INITIAL_COST_STATE)
     state = foldTurnCost(state, 0.02)
     expect(state.totalUsd).toBeCloseTo(0.02)
-    expect(state.folded).toBe(true)
+    expect(state.openTurns).toBe(0)
+  })
+
+  it('counts overlapping turns separately — neither cost is lost', () => {
+    // The defect a boolean `folded` flag had: Stop -> retype -> Send opens a second turn while the
+    // first is still unfolded (the SDK's post-interrupt `result` has not landed yet). With a
+    // boolean, `beginTurn` was a no-op and the second result contributed NOTHING.
+    let state = beginTurn(INITIAL_COST_STATE)
+    state = beginTurn(state)
+    expect(state.openTurns).toBe(2)
+    state = foldTurnCost(state, 0.5)
+    state = foldTurnCost(state, 0.3)
+    expect(state.totalUsd).toBeCloseTo(0.8)
+    expect(state.openTurns).toBe(0)
+  })
+
+  it('folds no more results than turns were opened', () => {
+    let state = beginTurn(beginTurn(INITIAL_COST_STATE))
+    state = foldTurnCost(foldTurnCost(state, 0.5), 0.3)
+    // A third result belongs to no open turn.
+    const settled = foldTurnCost(state, 9.99)
+    expect(settled).toBe(state)
+    expect(settled.totalUsd).toBeCloseTo(0.8)
   })
 
   it('accumulates across turns', () => {
@@ -40,9 +62,11 @@ describe('cost accumulation', () => {
     expect(foldTurnCost(INITIAL_COST_STATE, 5).totalUsd).toBe(0)
   })
 
-  it('beginTurn is idempotent within an open turn', () => {
+  it('beginTurn opens an additional turn every time it is called', () => {
+    // Deliberately NOT idempotent: two sends mean two results are owed, and collapsing them is
+    // precisely how a turn's cost used to disappear.
     const open = beginTurn(INITIAL_COST_STATE)
-    expect(beginTurn(open)).toBe(open)
+    expect(beginTurn(open).openTurns).toBe(2)
   })
 
   it('an error turn still costs — the fold is not gated on success', () => {
@@ -56,8 +80,8 @@ describe('cost accumulation', () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
       const state = foldTurnCost(beginTurn(INITIAL_COST_STATE), bad)
       expect(state.totalUsd).toBe(0)
-      // Still marked folded: the turn did end, so the next stray result must not fold in its place.
-      expect(state.folded).toBe(true)
+      // The turn is still consumed: it did end, so the next stray result must not fold in its place.
+      expect(state.openTurns).toBe(0)
     }
   })
 })
