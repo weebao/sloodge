@@ -343,9 +343,20 @@ three skills already enforce; the rules below are its normative form, each with 
   iframe viewport, not the slide box — use px).
 
 **Self-containment (SL-S\*)**
-- **Zero external subresources.** No `<link rel=stylesheet>`, no `<script src>`, no CDN, no web fonts,
-  no `url(http…)`, no `@import`, no `<img src>` pointing outside the document. Raster images, if truly
-  needed, are `data:` URIs (or `assets/` entries inlined at load time — see §3.5).
+- **Zero external subresources.** No off-document reference from any referencing element or
+  attribute: `<link>` of *any* `rel` (incl. `imagesrcset`), `<script src>`, `<iframe src>`,
+  `<video src|poster>`, `<audio src>`, `<source src>`, `<object data>`, `<embed src>`, `<track src>`,
+  `<input src>` (type=image), any `srcset` candidate, an SVG `<use href|xlink:href>` pointing
+  off-document, `<img src>`/`<image href>` outside the document, the obsolete presentational
+  `background=` attribute, plus `url(http…)`/`//` and `@import` in CSS. Permitted targets are inline
+  payloads (`data:`, `blob:`, `sloodge-asset:`) and same-document `#` fragments (e.g.
+  `<use href="#gradient">`) — including inside `srcset`, which is parsed per the HTML srcset grammar
+  so a `data:` candidate's internal commas are not misread as candidate separators. Raster images, if
+  truly needed, are `data:` URIs (or `assets/` entries inlined at load time — see §3.5). **SL-S01 is
+  checked on the parsed HTML tree, not by regex**, so attribute order, casing, whitespace and entity
+  encoding cannot evade it. It rejects subresources *declared in the markup*; a script that
+  reconstructs a fetch at runtime is stopped by the `slide://` CSP (`connect-src 'none'`), the
+  load-bearing second layer.
 - No network at runtime: `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource`/`navigator.sendBeacon` are
   forbidden and blocked by CSP anyway.
 - No storage APIs (`localStorage`, `indexedDB`, cookies) — slides must be stateless across reloads.
@@ -636,7 +647,7 @@ Three tiers, all runnable headlessly (in the app, in `sloodge lint`, and in CI v
 
 | Rule | Severity | Check |
 |---|---|---|
-| `SL-S01` | error | No `<link>`, `<script src>`, `@import`, or `url(` with an `http(s)://`/`//` target |
+| `SL-S01` | error | No off-document subresource, checked on the parse5 tree: `<link>` (any rel, incl. `imagesrcset`), `<script src>`, `<iframe src>`, `<video src\|poster>`, `<audio src>`, `<source src>`, `<object data>`, `<embed src>`, `<track src>`, `<input src>` (type=image), any `srcset` candidate (parsed per srcset grammar), SVG `<use href\|xlink:href>` off-document, `background=`, plus CSS `@import` and `url(http(s)://` / `//`). Allowed: `data:`/`blob:`/`sloodge-asset:` and `#` fragments |
 | `SL-S02` | error | No `<img src>`/`<image href>` outside `data:` or `sloodge-asset:` |
 | `SL-S03` | error | No `@font-face`; font-family resolves to the system stack |
 | `SL-S04` | error | Source contains none of `fetch(`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `localStorage`, `indexedDB`, `document.cookie`, `alert(`, `eval(`, `new Function(` |
@@ -644,7 +655,7 @@ Three tiers, all runnable headlessly (in the app, in `sloodge lint`, and in CI v
 | `SL-G02` | error | `overflow:hidden` and `position:relative` on `.slide` |
 | `SL-G03` | error | `html,body{margin:0;padding:0}` and universal `box-sizing:border-box` present |
 | `SL-G04` | warn | Root padding ≥ 48px (or explicit `data-sl-fullbleed`) |
-| `SL-G05` | error | No `position:fixed`; no `vh`/`vw`/`dvh` units |
+| `SL-G05` | error | No `position:fixed`; no viewport units (`vh`/`vw`/`vmin`/`vmax`/`dvh`/…). Checked in `<style>` **and** inline `style=` attributes |
 | `SL-D01` | error | Every element inside `.slide` has a unique `data-sl-id`; `.slide` is `e_root` |
 | `SL-D02` | warn | No previously-known `data-sl-id` disappeared vs. the last saved revision (mapping loss) |
 | `SL-I01` | error | If `capabilities` ⊇ `interactive-js`: exactly one `data-hover-target` and one `data-click-target` |

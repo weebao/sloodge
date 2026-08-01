@@ -8,10 +8,25 @@
  * inherit the user's ambient `~/.claude` config, skills, hooks, or credentials.
  */
 
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk'
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type McpServerConfig,
+  type McpSdkServerConfigWithInstance,
+  type Options,
+} from '@anthropic-ai/claude-agent-sdk'
 import { app } from 'electron'
 import path from 'node:path'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
+
+/**
+ * Re-exported so the in-process `mcp__slides__*` server (`tools.ts`) can build tool definitions
+ * without importing `@anthropic-ai/claude-agent-sdk` itself — this file stays the single SDK
+ * importer (R3), and the slide tools depend on `./client` rather than the package.
+ */
+export { createSdkMcpServer, tool }
+export type { McpSdkServerConfigWithInstance }
 
 /**
  * Kept short on purpose — the craft knowledge lives in the bundled skills (M2.2), not here
@@ -43,6 +58,12 @@ export function defaultAgentPaths(): { cwd: string; configDir: string } {
  * runtime.
  */
 export function buildSdkOptions(o: AgentQueryOptions): Options {
+  // The `slides` server flows through the seam as opaque `unknown` (query-contract.ts keeps the
+  // interface SDK-free); it is created by `createSlidesServer` (an `McpSdkServerConfigWithInstance`)
+  // and cast back to the SDK's config type only here, the one file that knows the SDK. When present,
+  // the deck-mutating tools become the agent's only write surface: `mcp__slides__*` is allowed and
+  // Bash/Write/Edit stay denied below (§7).
+  const hasSlides = o.mcpServers !== undefined
   return {
     cwd: o.cwd,
 
@@ -58,11 +79,14 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     },
 
-    // --- tool surface (§7): a complete, minimal mutation surface. mcp__slides__* lands in M2.2. ---
+    // --- tool surface (§7): a complete, minimal mutation surface. The in-process slide tools are
+    // the ONLY way the agent mutates the deck; Bash/Write/Edit are denied so a shell/file write is
+    // never a fallback path out of the document sandbox. ---
     tools: ['Read', 'Skill'],
-    allowedTools: ['Read', 'Skill'],
+    allowedTools: hasSlides ? ['Read', 'Skill', 'mcp__slides__*'] : ['Read', 'Skill'],
     disallowedTools: ['Bash', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Agent', 'Task'],
     permissionMode: 'default',
+    ...(hasSlides ? { mcpServers: o.mcpServers as Record<string, McpServerConfig> } : {}),
 
     // --- prompting ---
     systemPrompt: {
