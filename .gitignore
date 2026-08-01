@@ -15,3 +15,6 @@ experiments/init/harness/package-lock.json
 
 # Skill-iteration experiments and harnesses are local artifacts
 experiments/
+
+# Agent worktrees are local scratch, never tracked
+.claude/worktrees/
