@@ -5,6 +5,10 @@ packages:
 catalog:
   fflate: ^0.8.3
   parse5: ^8.0.1
+  # Exact-pinned (M4.2): merges the per-slide single-page printToPDF outputs into one deck PDF.
+  # Pure JS, no native deps (11-tech-stack.md R10). Pinned exact rather than ^1.17 so a patch
+  # cannot change PDF byte output under us.
+  pdf-lib: 1.17.1
   zod: ^4.4.3
   react: ^19.2.8
   react-dom: ^19.2.8

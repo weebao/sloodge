@@ -40,8 +40,14 @@ export function menuOwnsEditAccelerators(): boolean {
   return getBridge() !== undefined
 }
 
-/** Route `app:menu` events. Inert — and unsubscribed — when there is no bridge. */
-export function useMenuActions(handlers: EditActionHandlers): void {
+/**
+ * Route `app:menu` events. Inert — and unsubscribed — when there is no bridge.
+ *
+ * `onExportPdf` is the M4.2 File-menu consumer: `file.export.pdf` is forwarded to the renderer
+ * (`menuRouting.ts`) because the deck lives here, and this is where it is claimed. The remaining File
+ * ids still belong to their milestones.
+ */
+export function useMenuActions(handlers: EditActionHandlers, onExportPdf?: () => void): void {
   const { undo, redo } = handlers
   useEffect(() => {
     const bridge = getBridge()
@@ -49,8 +55,13 @@ export function useMenuActions(handlers: EditActionHandlers): void {
     return bridge.onMenuAction((action) => {
       if (action === 'edit.undo' || action === 'edit.redo') {
         runEditAction(action, { undo, redo }, documentEditHost())
+        return
+      }
+      if (action === 'file.export.pdf') {
+        onExportPdf?.()
+        return
       }
       // Every other id belongs to File; its milestone will claim it here.
     })
-  }, [undo, redo])
+  }, [undo, redo, onExportPdf])
 }

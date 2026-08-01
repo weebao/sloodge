@@ -1,4 +1,5 @@
 import type { MenuAction } from '../../../shared/ipc-contract'
+import type { ExportPdfRequest, ExportPdfResponse } from '../../../shared/export/types'
 import type { AgentBridge } from '../../../preload/agentBridge'
 
 /**
@@ -34,6 +35,12 @@ export type SloodgeBridge = {
    * the call. Absent in a plain-browser host, where the surface falls back to a maximized overlay.
    */
   setPresentFullscreen?: (fullscreen: boolean) => Promise<boolean>
+  /**
+   * M4.2: export the deck (or a slide range) to PDF. The renderer hands over the wrapped slide HTML;
+   * main runs the save dialog and the offscreen print and resolves with a report. Absent in a
+   * plain-browser host, where there is no main process to print.
+   */
+  exportPdf?: (request: ExportPdfRequest) => Promise<ExportPdfResponse>
 }
 
 declare global {

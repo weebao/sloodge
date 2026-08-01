@@ -5,6 +5,7 @@ import { ThumbnailRail } from '../features/deck/ThumbnailRail'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { PresentSurface } from '../features/present/PresentSurface'
+import { useExportPdf } from '../features/export/useExportPdf'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
@@ -37,13 +38,6 @@ export function AppShell(): JSX.Element {
   const undo = useDeckStore((state) => state.undo)
   const redo = useDeckStore((state) => state.redo)
 
-  // Undo/redo has one owner per host, never two: the native Edit menu in Electron (its items own
-  // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
-  // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
-  const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
-  useMenuActions(editHandlers)
-  useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
-
   const toggleDesign = useDesignStore((state) => state.toggle)
   useDesignModeKey(toggleDesign)
   const setDesignEnabled = useDesignStore((state) => state.setEnabled)
@@ -56,6 +50,21 @@ export function AppShell(): JSX.Element {
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
   const currentSlide = currentIndex === -1 ? null : (slides[currentIndex] ?? null)
+
+  // PDF export (M4.2): File ▸ Export ▸ PDF arrives as an `app:menu` action; this trigger gathers the
+  // wrapped slide HTML and asks main to run the save dialog + offscreen print. See useExportPdf.ts.
+  const exportPdf = useExportPdf({
+    slides,
+    currentIndex: Math.max(0, currentIndex),
+    deckTitle: deck.title,
+  })
+
+  // Undo/redo has one owner per host, never two: the native Edit menu in Electron (its items own
+  // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
+  // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
+  const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
+  useMenuActions(editHandlers, exportPdf)
+  useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
   // persisted or undone, and it has its own navigation cursor so advancing the talk does not move the

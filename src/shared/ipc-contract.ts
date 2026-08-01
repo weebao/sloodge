@@ -10,6 +10,7 @@
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
+import type { ExportPdfRequest, ExportPdfResponse } from './export/types'
 
 /**
  * Native-menu action ids, and the single source of truth for them: the main
@@ -105,6 +106,7 @@ export type IpcRequests = {
   'agent:send': { req: AgentSendRequest; res: AgentSendResponse }
   'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
+  'file:exportPdf': { req: ExportPdfRequest; res: ExportPdfResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
@@ -175,6 +177,14 @@ export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
 export const PRESENT_SET_FULLSCREEN_CHANNEL = 'present:setFullscreen' satisfies IpcRequestChannel
 
 /**
+ * PDF export (M4.2). Main registers the handler, preload invokes it, and — like the others — a typo
+ * in either literal would compile and ship as "Export as PDF does nothing", invisible to a suite that
+ * never crosses a real IPC boundary. Main owns the save dialog and the file write, so the renderer
+ * hands over slide HTML and gets back a report, never a filesystem path it could tamper with.
+ */
+export const FILE_EXPORT_PDF_CHANNEL = 'file:exportPdf' satisfies IpcRequestChannel
+
+/**
  * The deck hot-update channel (§9). Main pushes a full deck snapshot after every agent-driven
  * mutation; the renderer adopts it into its deck store so the slides appear as they are written.
  */
@@ -212,6 +222,7 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_SEND_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
   PRESENT_SET_FULLSCREEN_CHANNEL,
+  FILE_EXPORT_PDF_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]
 
 export const IPC_EVENT_CHANNELS = [

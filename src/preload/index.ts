@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
 import { createAgentBridge } from './agentBridge'
+import { createExportBridge } from './exportBridge'
 import { createMenuActionHandler } from './menuActionHandler'
 import { createPresentBridge } from './presentBridge'
 import { createSlideBridge } from './slideBridge'
@@ -67,6 +68,14 @@ const { setPresentFullscreen } = createPresentBridge(async (channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 )
 
+/**
+ * M4.2's PDF export. The renderer assembles the wrapped slide HTML and the range; main owns the save
+ * dialog and the offscreen print. One invoke, one report back.
+ */
+const { exportPdf } = createExportBridge(async (channel, payload) =>
+  ipcRenderer.invoke(channel, payload),
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
@@ -74,6 +83,7 @@ const api = {
   revokeSlide,
   agent,
   setPresentFullscreen,
+  exportPdf,
 } as const
 
 export type SloodgeApi = typeof api
