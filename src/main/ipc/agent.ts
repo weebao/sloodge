@@ -24,7 +24,8 @@ import {
 } from '../../shared/ipc-contract'
 import { isAgentSendRequest, isApiKeySetRequest, type ApiKeyStatus } from '../../shared/agent/types'
 import { isAgentEditResponse } from '../../shared/document/agent-edit'
-import { defaultAgentPaths, realQuery } from '../agent/client'
+import { bundledSkillsDir, defaultAgentPaths, realQuery } from '../agent/client'
+import { materializeSkills, nodeSkillFs } from '../agent/skills'
 import { createRendererDeckEditor, type RendererDeckEditor } from '../agent/deck-editor'
 import { createDeckToolHost } from '../agent/deck-host'
 import { AgentService } from '../agent/service'
@@ -118,6 +119,10 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
       loadApiKey: vault.loadApiKey,
       resolvePaths: defaultAgentPaths,
       resolveMcpServers,
+      // M2.4: put the three validated slide skills under `<cwd>/.claude/skills` before the
+      // subprocess starts, since that is the only settings layer the agent loads (§5, §8).
+      prepareWorkspace: (cwd) =>
+        materializeSkills({ sourceDir: bundledSkillsDir(), cwd, fs: nodeSkillFs }),
     })
   const saveApiKey = deps.saveApiKey ?? vault.saveApiKey
   const clearApiKey = deps.clearApiKey ?? vault.clearApiKey

@@ -4,3 +4,7 @@ out
 pnpm-lock.yaml
 .claude/plans
 experiments
+
+# Bundled agent skills are vendored, adversarially-validated prose (M2.4). They ship to the model
+# byte-for-byte; a formatter reflowing tables or code fences would edit validated content.
+resources/skills

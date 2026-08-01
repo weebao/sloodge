@@ -211,6 +211,20 @@ function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
     )
   }
 
+  if (message.kind === 'notice') {
+    // `status`, not `alert`: the session works, it is just degraded. Deliberately quiet chrome so it
+    // reads as a caveat on the answer rather than a failure of it (M2.4, §8).
+    return (
+      <div
+        role="status"
+        data-testid="chat-notice"
+        className="self-start rounded-lg border border-dashed border-chrome-line px-3 py-2 text-[12px] text-chrome-muted dark:border-ink-line dark:text-ink-muted"
+      >
+        <p className="whitespace-pre-wrap">{message.text}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="self-start rounded-lg bg-white px-3 py-2 text-[13px] text-shell-fg dark:bg-ink-alt dark:text-ink-fg">
       <p className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-chrome-muted dark:text-ink-muted">

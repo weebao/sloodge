@@ -165,6 +165,17 @@ describe('ChatPanel — streaming transcript', () => {
     expect(screen.getByRole('alert').textContent).toMatch(/authentication failed/i)
   })
 
+  it('shows a visible, non-alarming notice when the bundled skills did not load', () => {
+    fake.emit({ type: 'skills-degraded', missing: ['svg-animation', 'interactive-graph'] })
+
+    const notice = screen.getByRole('status')
+    expect(notice.textContent).toMatch(/svg-animation/)
+    expect(notice.textContent).toMatch(/interactive-graph/)
+    // Degraded, not failed: it must not render as an error, and the turn keeps streaming.
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: /stop/i })).toBeTruthy()
+  })
+
   it('renders "(no response)" for a turn that produced no text or tools', () => {
     fake.emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
     const log = screen.getByRole('log', { name: 'Conversation' })

@@ -19,6 +19,13 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
+/** Every string in an array value, dropping non-strings; anything else reads as an empty list. */
+function asStringArray(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
 function asFiniteNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
@@ -183,7 +190,10 @@ export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
     const sessionId = asString(message['session_id'])
     const model = asString(message['model'])
     if (sessionId === null || model === null) return []
-    return [{ type: 'ready', sessionId, model }]
+    // The loaded-skill list is advisory: an older/newer runtime that omits it must still produce a
+    // usable `ready` (the session is fine without it), so a missing or malformed array reads as [].
+    const skills = asStringArray(message['skills'])
+    return [{ type: 'ready', sessionId, model, skills }]
   }
 
   if (type === 'stream_event') {

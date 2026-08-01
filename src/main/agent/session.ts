@@ -10,13 +10,29 @@
 import type { AgentEvent } from '../../shared/agent/types'
 import { createChatBridge, type ChatBridge } from './bridge'
 import { classifyException, isRecoverable, mapSdkMessage } from './event-mapping'
+import { defaultAgentLog, type AgentLog } from './log'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
+import { missingSkills, type BundledSkillName } from './skills'
 
 export type AgentSessionDeps = {
   readonly queryFn: AgentQueryFn
   readonly options: AgentQueryOptions
   readonly emit: (event: AgentEvent) => void
+  /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
+  readonly log?: AgentLog
 }
+
+/**
+ * The §8 verification result. `known: false` until the runtime's `system:init` arrives — a consumer
+ * must not read "nothing loaded" out of the handshake window.
+ */
+export type SkillStatus =
+  | { readonly known: false }
+  | {
+      readonly known: true
+      readonly loaded: readonly string[]
+      readonly missing: readonly BundledSkillName[]
+    }
 
 export class AgentSession {
   private readonly deps: AgentSessionDeps
@@ -28,6 +44,13 @@ export class AgentSession {
   private readonly seenAssistantIds = new Set<string>()
   /** Client-side estimate; accumulated per `result` message, never billed off (§10). */
   private spendUsd = 0
+  /**
+   * What the runtime reported loading on `system:init`, or `null` before the first `ready` (M2.4,
+   * §8). `null` rather than `[]` on purpose: "not yet known" and "none loaded" must be
+   * distinguishable, or a consumer that reads this during the handshake shows a spurious
+   * degradation notice for a session that is about to report all three skills.
+   */
+  private loadedSkills: readonly string[] | null = null
 
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
@@ -37,6 +60,22 @@ export class AgentSession {
   /** Client-side cost estimate accumulated across this session's turns. */
   get estimatedSpendUsd(): number {
     return this.spendUsd
+  }
+
+  /**
+   * The §8 skill assertion, readable once a turn has started: what the runtime actually loaded and
+   * which bundled skills are missing. `missing` non-empty means the materialized `SKILL.md` files
+   * were not discovered — the agent is running without its craft knowledge.
+   *
+   * What that currently triggers: the main-process log and the `skills-degraded` event (below). The
+   * §8 system-prompt fallback restart and the `skills: fallback` status line are **not implemented**
+   * — both are M2.5's, which owns the status bar (see 50-agent-integration.md §8 and 80-roadmap.md).
+   * Until then the degradation is announced, not repaired.
+   */
+  get skillStatus(): SkillStatus {
+    const loaded = this.loadedSkills
+    if (loaded === null) return { known: false }
+    return { known: true, loaded, missing: missingSkills(loaded) }
   }
 
   /**
@@ -60,6 +99,10 @@ export class AgentSession {
         for (const event of mapSdkMessage(raw, this.seenAssistantIds)) {
           if (event.type === 'turn-end') this.spendUsd += event.costUsd
           this.deps.emit(event)
+          // Emitted *after* `ready` so the renderer has an open session before the notice lands, and
+          // only from the first init of the session (a resumed/recycled query re-announces, but the
+          // user has already been told).
+          if (event.type === 'ready') this.noteSkills(event.skills)
         }
       }
     } catch (error) {
@@ -70,6 +113,26 @@ export class AgentSession {
       const { kind, message } = classifyException(error)
       this.deps.emit({ type: 'error', kind, message, recoverable: isRecoverable(kind) })
     }
+  }
+
+  /**
+   * The §8 assertion, run against the runtime's own loaded-skill list. Always logs what loaded (a
+   * healthy session is worth one line when a support case asks "did it have the skills?"), and emits
+   * a user-visible degradation notice when any bundled skill is missing — the alternative is a
+   * session that answers confidently without the craft knowledge and says so nowhere.
+   *
+   * Announced once: only the first `ready` of a session reaches this.
+   */
+  private noteSkills(skills: readonly string[]): void {
+    if (this.loadedSkills !== null) return
+    this.loadedSkills = skills
+    const missing = missingSkills(skills)
+    const log = this.deps.log ?? defaultAgentLog
+    log(
+      `[agent] skills loaded: [${skills.join(', ')}]` +
+        (missing.length > 0 ? ` — MISSING: [${missing.join(', ')}]` : ''),
+    )
+    if (missing.length > 0) this.deps.emit({ type: 'skills-degraded', missing })
   }
 
   /** Stop the in-flight turn (the Stop button). Streaming-input mode only. Safe if idle. */

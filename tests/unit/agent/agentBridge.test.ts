@@ -81,11 +81,13 @@ describe('createAgentBridge — event stream', () => {
     expect(subscribe).toHaveBeenCalledWith(AGENT_EVENT_CHANNEL, expect.any(Function))
 
     const deliver = handlers.get(AGENT_EVENT_CHANNEL)
-    deliver?.({ type: 'ready', sessionId: 's', model: 'claude-opus-5' })
+    deliver?.({ type: 'ready', sessionId: 's', model: 'claude-opus-5', skills: [] })
     deliver?.({ type: 'not-a-real-event' })
     deliver?.(null)
 
-    expect(received).toEqual([{ type: 'ready', sessionId: 's', model: 'claude-opus-5' }])
+    expect(received).toEqual([
+      { type: 'ready', sessionId: 's', model: 'claude-opus-5', skills: [] },
+    ])
     unsubscribe()
     expect(handlers.has(AGENT_EVENT_CHANNEL)).toBe(false)
   })

@@ -30,12 +30,28 @@ function fakeHandle(
   return handle
 }
 
+/** A `system:init` message reporting exactly the skills the runtime says it loaded. */
+const initWith = (skills: readonly string[]): Record<string, unknown> => ({
+  type: 'system',
+  subtype: 'init',
+  session_id: 's1',
+  model: 'claude-opus-5',
+  skills,
+})
+
 describe('AgentSession', () => {
   it('starts the query lazily and streams mapped events for a turn', async () => {
     const emitted: AgentEvent[] = []
     const queryFn = vi.fn(() =>
       fakeHandle([
-        { type: 'system', subtype: 'init', session_id: 's1', model: 'claude-opus-5' },
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's1',
+          model: 'claude-opus-5',
+          // A healthy session: all three bundled skills loaded, so no degradation notice.
+          skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
+        },
         {
           type: 'stream_event',
           event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },
@@ -44,7 +60,12 @@ describe('AgentSession', () => {
       ]),
     ) as unknown as AgentQueryFn
 
-    const session = new AgentSession({ queryFn, options: OPTIONS, emit: (e) => emitted.push(e) })
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
     session.send('hello')
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'turn-end')).toBe(true))
@@ -81,7 +102,12 @@ describe('AgentSession', () => {
     const emitted: AgentEvent[] = []
     const queryFn: AgentQueryFn = () =>
       fakeHandle([], { throwError: new Error('getaddrinfo ENOTFOUND api.anthropic.com') })
-    const session = new AgentSession({ queryFn, options: OPTIONS, emit: (e) => emitted.push(e) })
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
     session.send('hi')
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'error')).toBe(true))
@@ -109,5 +135,80 @@ describe('AgentSession', () => {
     session.send('after-close')
     // No second query is started by a post-close send.
     expect(queryFn).toHaveBeenCalledTimes(1)
+  })
+
+  describe('skillStatus — the §8 assertion that the bundled skills reached the model', () => {
+    it('reports nothing missing, and no degradation notice, when init lists all three', async () => {
+      const emitted: AgentEvent[] = []
+      const logged: string[] = []
+      const queryFn = vi.fn(() =>
+        fakeHandle([initWith(['slide-deck', 'svg-animation', 'interactive-graph'])]),
+      ) as unknown as AgentQueryFn
+      const session = new AgentSession({
+        queryFn,
+        options: OPTIONS,
+        emit: (e) => emitted.push(e),
+        log: (m) => logged.push(m),
+      })
+      session.send('hello')
+
+      await vi.waitFor(() => expect(session.skillStatus.known).toBe(true))
+      expect(session.skillStatus).toEqual({
+        known: true,
+        loaded: ['slide-deck', 'svg-animation', 'interactive-graph'],
+        missing: [],
+      })
+      expect(emitted.some((e) => e.type === 'skills-degraded')).toBe(false)
+      // A healthy session still logs, so a support case can answer "did it have the skills?".
+      expect(logged.join('\n')).toContain('slide-deck')
+      await session.close()
+    })
+
+    it('emits a user-visible degradation notice naming what did not load', async () => {
+      const emitted: AgentEvent[] = []
+      const logged: string[] = []
+      const queryFn = vi.fn(() => fakeHandle([initWith(['slide-deck'])])) as unknown as AgentQueryFn
+      const session = new AgentSession({
+        queryFn,
+        options: OPTIONS,
+        emit: (e) => emitted.push(e),
+        log: (m) => logged.push(m),
+      })
+      session.send('hello')
+
+      await vi.waitFor(() => expect(emitted.some((e) => e.type === 'skills-degraded')).toBe(true))
+      expect(emitted.find((e) => e.type === 'skills-degraded')).toEqual({
+        type: 'skills-degraded',
+        missing: ['svg-animation', 'interactive-graph'],
+      })
+      // The notice follows `ready`, so the renderer has an open session when it lands.
+      expect(emitted.map((e) => e.type).slice(0, 2)).toEqual(['ready', 'skills-degraded'])
+      expect(logged.join('\n')).toContain('MISSING')
+      await session.close()
+    })
+
+    it('announces at most once, even if the runtime re-inits mid-session', async () => {
+      const emitted: AgentEvent[] = []
+      const queryFn = vi.fn(() =>
+        fakeHandle([initWith([]), initWith([])]),
+      ) as unknown as AgentQueryFn
+      const session = new AgentSession({
+        queryFn,
+        options: OPTIONS,
+        emit: (e) => emitted.push(e),
+        log: () => {},
+      })
+      session.send('hello')
+
+      await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'ready')).toHaveLength(2))
+      expect(emitted.filter((e) => e.type === 'skills-degraded')).toHaveLength(1)
+      await session.close()
+    })
+
+    it('is "not yet known" before init, so a consumer cannot misread the handshake as absence', () => {
+      const queryFn = vi.fn(() => fakeHandle([])) as unknown as AgentQueryFn
+      const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {} })
+      expect(session.skillStatus).toEqual({ known: false })
+    })
   })
 })

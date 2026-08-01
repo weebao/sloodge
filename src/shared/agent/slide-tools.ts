@@ -269,7 +269,15 @@ export async function runUpdateSlide(
     // Validated against the slide's *existing* capabilities: there is no command to change a
     // slide's declared capabilities today (M1.2 has slide.setHtml/setNotes only), so an edit that
     // introduces a script into a slide declared "static" is rejected with an actionable SL-H01
-    // rather than silently accepted — the agent recreates the slide instead.
+    // rather than silently accepted.
+    //
+    // Note there is no repair path from here, and the bundled skills (M2.4) say so explicitly:
+    // this rejection cannot be fixed by another `update_slide`, and there is no delete tool, so
+    // "recreate it" would leave a duplicate beside the broken slide. The skills therefore instruct
+    // the agent to stop and ask the *user* to delete the slide — and, above all, to declare
+    // `capabilities` correctly on `create_slide`, which is the only place they can be set. If a
+    // capabilities-mutating command is ever added to M1.2's union, this comment and that
+    // instruction both change together.
     const validation = validateSlideContract(args.html, current.capabilities)
     if (!validation.ok) {
       return errorResult(`slide HTML rejected — ${contractErrorSummary(validation)}`)
