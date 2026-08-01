@@ -125,3 +125,52 @@ describe('defaultAgentPaths', () => {
     })
   })
 })
+
+/** `systemPrompt` is a union in the SDK; Sloodge always builds the preset object form. */
+const appendOf = (options: ReturnType<typeof buildSdkOptions>): string => {
+  const prompt = options.systemPrompt
+  if (typeof prompt !== 'object' || prompt === null || Array.isArray(prompt)) {
+    throw new TypeError('expected the preset systemPrompt object')
+  }
+  return prompt.append ?? ''
+}
+
+describe('buildSdkOptions — §8 skill fallback shape (M2.5)', () => {
+  const FALLBACK = '## Skill: slide-deck\n\nUse a 1280x720 canvas.'
+
+  it('names the three bundled skills and inlines nothing by default', () => {
+    const options = buildSdkOptions(OPTIONS)
+    expect(options.skills).toEqual(['slide-deck', 'svg-animation', 'interactive-graph'])
+    expect(appendOf(options)).not.toContain('## Skill:')
+  })
+
+  it('empties the skills filter and inlines the bodies when running as the fallback', () => {
+    // Emptied rather than left populated: naming skills that demonstrably did not load is a claim
+    // the init message already contradicted, and a later successful discovery would otherwise
+    // double the guidance — once from disk, once from the prompt.
+    const options = buildSdkOptions({ ...OPTIONS, skillFallbackPrompt: FALLBACK })
+    expect(options.skills).toEqual([])
+    const append = appendOf(options)
+    expect(append).toContain(FALLBACK)
+    // The base Sloodge preamble survives — the fallback adds craft knowledge, it does not replace
+    // the description of what the app is.
+    expect(append).toContain('presentation-design assistant')
+  })
+})
+
+describe('buildSdkOptions — §10 budget ceiling (M2.5)', () => {
+  it('omits maxBudgetUsd entirely when the user has set no cap', () => {
+    // A sentinel would read to the SDK as a real ceiling.
+    expect('maxBudgetUsd' in buildSdkOptions(OPTIONS)).toBe(false)
+  })
+
+  it('passes the remaining budget as the in-flight ceiling', () => {
+    expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 1.5 }).maxBudgetUsd).toBe(1.5)
+  })
+
+  it('passes a ceiling of zero through rather than treating it as absent', () => {
+    // The session is already blocked; a query that ends immediately with error_max_budget_usd is
+    // the correct outcome, not one that runs free because the number looked degenerate.
+    expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 0 }).maxBudgetUsd).toBe(0)
+  })
+})

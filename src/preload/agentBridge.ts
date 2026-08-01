@@ -11,6 +11,8 @@
 
 import {
   AGENT_AUTH_STATUS_CHANNEL,
+  AGENT_BUDGET_CHANNEL,
+  AGENT_SET_BUDGET_CHANNEL,
   AGENT_CLEAR_KEY_CHANNEL,
   AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
@@ -24,6 +26,8 @@ import {
   DECK_UPDATED_CHANNEL,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
+import { DEFAULT_BUDGET_CAP_USD, isBudgetCap, type BudgetCap } from '../shared/agent/budget'
+import type { AgentSendRefusal } from '../shared/ipc-contract'
 import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
 import { type EndpointInfo } from '../shared/agent/endpoint'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
@@ -38,6 +42,12 @@ export type AgentSubscribe = (channel: string, handler: (payload: unknown) => vo
 /** Fire-and-forget renderer → main send (for the agent-edit reply, which is not an `invoke`). */
 export type AgentSend = (channel: string, payload: unknown) => void
 
+/** What a `sendMessage` resolved to: accepted, or refused with a reason the composer can act on. */
+export type AgentSendResult = {
+  readonly accepted: boolean
+  readonly reason: AgentSendRefusal | null
+}
+
 export type AgentBridge = {
   /** Store an API key. The plaintext travels main-ward only; resolves with the masked status. */
   setApiKey: (key: string) => Promise<ApiKeyStatus>
@@ -51,10 +61,18 @@ export type AgentBridge = {
   clearSubscriptionToken: () => Promise<AuthStatus>
   /** Both vault slots plus the derived active mode — what the Settings Auth tab renders. */
   getAuthStatus: () => Promise<AuthStatus>
-  /** Enqueue a user turn. `accepted: false` means no key is configured. */
-  sendMessage: (text: string) => Promise<boolean>
+  /**
+   * Enqueue a user turn. A refusal carries *why* (M2.5) — `no-credential` gates the composer,
+   * `budget` points at Settings ▸ Budget — because the two need opposite UI and a bare `false` made
+   * a budget stop render as an auth failure.
+   */
+  sendMessage: (text: string) => Promise<AgentSendResult>
   /** Stop the in-flight turn. */
   interrupt: () => Promise<boolean>
+  /** The persisted session spend cap (M2.5, §10). `null` is "no limit". */
+  getBudgetCap: () => Promise<BudgetCap>
+  /** Persist a new cap from Settings ▸ Budget; resolves with what was stored. */
+  setBudgetCap: (cap: BudgetCap) => Promise<BudgetCap>
   /** Subscribe to the streaming event feed. Returns an unsubscribe function. */
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void
   /**
@@ -125,6 +143,19 @@ function readEndpoint(value: unknown): EndpointInfo {
   }
 }
 
+/**
+ * Narrow a cap off the wire.
+ *
+ * **Fails safe, not open.** A malformed reply becomes the documented default ($2.00) rather than
+ * `null`: `null` means "no limit", so treating a broken message as `null` would silently uncap a
+ * user who had set a budget. Between "cap something the user did not ask to cap" and "spend without
+ * the limit they configured", the first is recoverable in one visit to Settings.
+ */
+function readBudgetCap(response: unknown): BudgetCap {
+  const value = (response as { capUsd?: unknown } | null)?.capUsd
+  return isBudgetCap(value) ? value : DEFAULT_BUDGET_CAP_USD
+}
+
 export function createAgentBridge(
   invoke: AgentInvoke,
   subscribe: AgentSubscribe,
@@ -159,12 +190,29 @@ export function createAgentBridge(
         throw new TypeError('sendMessage requires a non-empty text')
       }
       const response = await invoke(AGENT_SEND_CHANNEL, { text })
-      return (response as { accepted?: unknown } | null)?.accepted === true
+      const rec = response as { accepted?: unknown; reason?: unknown } | null
+      const accepted = rec?.accepted === true
+      // Re-narrowed rather than trusted: an unrecognised reason must not reach a renderer `switch`.
+      // An accepted send has no reason, and an unexplained refusal reads as `no-credential` — the
+      // conservative answer, since it is the one that offers the user a way forward.
+      const reason: AgentSendRefusal | null = accepted
+        ? null
+        : rec?.reason === 'budget'
+          ? 'budget'
+          : 'no-credential'
+      return { accepted, reason }
     },
 
     interrupt: async () => {
       const response = await invoke(AGENT_INTERRUPT_CHANNEL, {})
       return (response as { interrupted?: unknown } | null)?.interrupted === true
+    },
+
+    getBudgetCap: async () => readBudgetCap(await invoke(AGENT_BUDGET_CHANNEL, {})),
+
+    setBudgetCap: async (cap) => {
+      if (!isBudgetCap(cap)) throw new TypeError('setBudgetCap requires a positive cap or null')
+      return readBudgetCap(await invoke(AGENT_SET_BUDGET_CHANNEL, { capUsd: cap }))
     },
 
     onAgentEvent: (listener) =>

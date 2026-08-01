@@ -129,13 +129,13 @@ describe('reduceTranscript — turn-end', () => {
     ])
     expect(state.turnState).toBe('idle')
     expect(assistant(state).streaming).toBe(false)
-    expect(state.costUsd).toBeCloseTo(0.0123)
+    expect(state.cost.totalUsd).toBeCloseTo(0.0123)
   })
 
   it('accumulates cost across turns', () => {
     let state = run([sendTurn('a'), ev({ type: 'turn-end', costUsd: 0.1, subtype: 'success' })])
     state = run([sendTurn('b'), ev({ type: 'turn-end', costUsd: 0.25, subtype: 'success' })], state)
-    expect(state.costUsd).toBeCloseTo(0.35)
+    expect(state.cost.totalUsd).toBeCloseTo(0.35)
   })
 
   it('a second turn-end for a settled turn is a no-op and never re-folds cost', () => {
@@ -145,7 +145,7 @@ describe('reduceTranscript — turn-end', () => {
       ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' }),
     )
     expect(twice).toBe(once)
-    expect(twice.costUsd).toBeCloseTo(0.05)
+    expect(twice.cost.totalUsd).toBeCloseTo(0.05)
   })
 })
 
@@ -153,7 +153,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
   it('streaming -> turn-end -> idle folds the cost once', () => {
     const state = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' })])
     expect(state.turnState).toBe('idle')
-    expect(state.costUsd).toBeCloseTo(0.05)
+    expect(state.cost.totalUsd).toBeCloseTo(0.05)
   })
 
   it('streaming -> error -> turn-end folds the failed turn cost once, keeping error', () => {
@@ -164,7 +164,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
       ev({ type: 'turn-end', costUsd: 0.03, subtype: 'error_during_execution' }),
     ])
     expect(state.turnState).toBe('error')
-    expect(state.costUsd).toBeCloseTo(0.03)
+    expect(state.cost.totalUsd).toBeCloseTo(0.03)
   })
 
   it('streaming -> interrupt -> turn-end folds the interrupted turn cost once', () => {
@@ -176,7 +176,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
       ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
     ])
     expect(state.turnState).toBe('interrupted')
-    expect(state.costUsd).toBeCloseTo(0.04)
+    expect(state.cost.totalUsd).toBeCloseTo(0.04)
   })
 
   it('an interrupted turn does not double-fold on a duplicate post-interrupt result', () => {
@@ -186,7 +186,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
       ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
       ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
     ])
-    expect(state.costUsd).toBeCloseTo(0.04)
+    expect(state.cost.totalUsd).toBeCloseTo(0.04)
   })
 })
 
@@ -222,7 +222,7 @@ describe('reduceTranscript — errors', () => {
       ev({ type: 'error', kind: 'max-turns', message: 'Turn ended', recoverable: true }),
     ])
     expect(state.turnState).toBe('error')
-    expect(state.costUsd).toBeCloseTo(0.02)
+    expect(state.cost.totalUsd).toBeCloseTo(0.02)
   })
 })
 

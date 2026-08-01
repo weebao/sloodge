@@ -56,6 +56,24 @@ export type AgentQueryOptions = {
    * building `Options`, and the orchestration only ever passes the value straight through.
    */
   readonly mcpServers?: Readonly<Record<string, unknown>>
+  /**
+   * §8's fallback (M2.5). When present, this session runs with `skills: []` and this text appended to
+   * `systemPrompt.append` instead of discovering the bundled skills from the filesystem. Set only by
+   * `AgentSession`'s one-shot restart, after an init reported the skills missing — it is the *shape*
+   * of the degraded session, so it lives in the options rather than as a flag someone could set
+   * independently of the prompt it implies.
+   */
+  readonly skillFallbackPrompt?: string
+  /**
+   * The SDK's own in-flight spend ceiling for this query (§10). The query stops when the client-side
+   * estimate crosses it and ends with `result.subtype === 'error_max_budget_usd'`.
+   *
+   * This is the half of the budget guard that can act *during* a turn, which nothing on our side of
+   * the boundary can: cost only reaches us on the `result` message, and pricing tokens ourselves is
+   * exactly what §10 forbids. The renderer's turn-admission check is the other half. `undefined`
+   * means the user has configured no cap.
+   */
+  readonly maxBudgetUsd?: number
 }
 
 /**

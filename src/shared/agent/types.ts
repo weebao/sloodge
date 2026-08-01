@@ -53,6 +53,30 @@ export const AGENT_ERROR_KINDS = [
 export type AgentErrorKind = (typeof AGENT_ERROR_KINDS)[number]
 
 /**
+ * How the session is carrying Sloodge's slide-craft knowledge (M2.5, 50-agent-integration.md §8).
+ *
+ * - `ok` — the three bundled skills loaded from the workspace. Progressive disclosure: ~100 tokens
+ *   per skill until one is relevant. Nothing is shown in the status bar; this is the design working.
+ * - `fallback` — the skills did not load, so the session restarted **once** with `skills: []` and the
+ *   three SKILL.md bodies inlined into the system prompt. Same output quality, higher token cost per
+ *   turn. The status bar reads `skills: fallback` so a support case can spot it.
+ * - `unavailable` — the skills did not load and the fallback could not be built either (the bundled
+ *   SKILL.md files are unreadable). The agent answers without the craft knowledge; the chat panel
+ *   says so.
+ *
+ * `unknown` is not a member: the status is only reported once a session has resolved an init, and
+ * "not yet known" is the *absence* of this event rather than a value of it. The renderer's store
+ * carries its own idle state.
+ */
+export const SKILLS_STATUSES = ['ok', 'fallback', 'unavailable'] as const
+
+export type SkillsStatus = (typeof SKILLS_STATUSES)[number]
+
+export function isSkillsStatus(value: unknown): value is SkillsStatus {
+  return typeof value === 'string' && (SKILLS_STATUSES as readonly string[]).includes(value)
+}
+
+/**
  * Token usage for one assistant message or turn. Deliberately a subset of the SDK's `usage` object —
  * `cacheReadTokens` is the main cost lever on long sessions (50-agent-integration.md §10) and the
  * only cache field M2.1 forwards.
@@ -85,12 +109,25 @@ export type AgentEvent =
       readonly skills: readonly string[]
     }
   /**
-   * The bundled skills did not load for this session (50-agent-integration.md §8). Emitted once per
-   * session, right after `ready`, and only when something is actually missing — the agent still
-   * works, but without the craft knowledge the skills carry, so this is a visible degradation
-   * notice rather than an error. A silent skill-less session is the failure M2.4 exists to prevent.
+   * The bundled skills did not load for this session **and could not be recovered**
+   * (50-agent-integration.md §8). Emitted at most once per session, right after `ready`, and only
+   * once M2.5's fallback restart has been ruled out — the agent still works, but without the craft
+   * knowledge the skills carry, so this is a visible degradation notice rather than an error. A
+   * silent skill-less session is the failure M2.4 exists to prevent.
+   *
+   * A session that *was* repaired by the fallback restart does not emit this: nagging about a
+   * condition that has been fixed teaches users to ignore the notice. It reports `skills-status:
+   * fallback` instead, which the status bar shows quietly.
    */
   | { readonly type: 'skills-degraded'; readonly missing: readonly string[] }
+  /**
+   * How the session's slide-craft knowledge is being loaded (M2.5, §8) — the status bar's
+   * `skills: fallback` indicator. Emitted whenever the session resolves an init, so a restart is
+   * never invisible: §8 pairs the automatic fallback restart with this indicator precisely because
+   * "a session that silently restarts itself with a different prompt shape, and says so nowhere, is
+   * worse than the loud non-healing state".
+   */
+  | { readonly type: 'skills-status'; readonly status: SkillsStatus }
   | { readonly type: 'assistant-delta'; readonly text: string }
   | { readonly type: 'assistant-message'; readonly text: string; readonly usage: AgentUsage }
   | { readonly type: 'tool-use'; readonly toolUseId: string; readonly label: string }
@@ -127,6 +164,7 @@ export const MAX_API_KEY_LENGTH = 512
 const AGENT_EVENT_TYPES = [
   'ready',
   'skills-degraded',
+  'skills-status',
   'assistant-delta',
   'assistant-message',
   'tool-use',

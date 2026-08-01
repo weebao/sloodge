@@ -7,8 +7,9 @@
  * holds a text field a user can lose work in: Escape closes, focus moves into the dialog on open and
  * returns to the opener on close, and a dirty draft survives an accidental dismissal.
  *
- * Auth is the substance. Model, Budget, and About are honest stubs — each says what it will hold and
- * which milestone fills it, rather than rendering a control that silently does nothing.
+ * Auth (M2.7) and Budget (M2.5) are the substance. Model and About remain honest stubs — each says
+ * what it will hold and which milestone fills it, rather than rendering a control that silently does
+ * nothing.
  */
 
 import {
@@ -21,6 +22,7 @@ import {
   type MouseEvent,
 } from 'react'
 import { AuthTab } from './AuthTab'
+import { BudgetTab } from './BudgetTab'
 import {
   INITIAL_SETTINGS_STATE,
   isSettingsTab,
@@ -257,16 +259,6 @@ function ModelTab(): JSX.Element {
         ))}
       </ul>
     </div>
-  )
-}
-
-/** Placeholder until M2.5 lands cost tracking and the spend cap (50-agent-integration.md §10). */
-function BudgetTab(): JSX.Element {
-  return (
-    <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
-      Per-deck spend tracking and a budget cap arrive with cost tracking. When they do, this tab
-      sets the limit and shows what the current deck has cost.
-    </p>
   )
 }
 

@@ -44,7 +44,7 @@ function makeFakeBridge(status: AuthStatus): {
   getAuthStatus: ReturnType<typeof vi.fn>
 } {
   const listeners = new Set<(e: AgentEvent) => void>()
-  const sendMessage = vi.fn(async () => true)
+  const sendMessage = vi.fn(async () => ({ accepted: true, reason: null }))
   const interrupt = vi.fn(async () => true)
   const getAuthStatus = vi.fn(async () => status)
   const bridge: AgentBridge = {
@@ -63,6 +63,8 @@ function makeFakeBridge(status: AuthStatus): {
     onDeckUpdated: () => () => undefined,
     onAgentEditRequest: () => () => undefined,
     sendAgentEditResult: () => undefined,
+    getBudgetCap: vi.fn(async () => 2),
+    setBudgetCap: vi.fn(async (cap: number | null) => cap),
   }
   const emit: Emit = (event) => {
     act(() => {

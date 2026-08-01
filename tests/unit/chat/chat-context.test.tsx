@@ -36,7 +36,7 @@ const AUTHED: AuthStatus = {
 const NOW = 1_700_000_000_000
 
 function makeFakeBridge(): { bridge: AgentBridge; sendMessage: ReturnType<typeof vi.fn> } {
-  const sendMessage = vi.fn(async () => true)
+  const sendMessage = vi.fn(async () => ({ accepted: true, reason: null }))
   const bridge: AgentBridge = {
     setApiKey: vi.fn(async () => CONFIGURED),
     clearApiKey: vi.fn(async () => ({ configured: false, last4: null })),
@@ -50,6 +50,8 @@ function makeFakeBridge(): { bridge: AgentBridge; sendMessage: ReturnType<typeof
     onDeckUpdated: () => () => undefined,
     onAgentEditRequest: () => () => undefined,
     sendAgentEditResult: () => undefined,
+    getBudgetCap: vi.fn(async () => 2),
+    setBudgetCap: vi.fn(async (cap: number | null) => cap),
   }
   return { bridge, sendMessage }
 }

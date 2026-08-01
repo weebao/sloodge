@@ -58,10 +58,22 @@ describe('createAgentBridge — key channels', () => {
 })
 
 describe('createAgentBridge — turns', () => {
-  it('sendMessage returns the accepted flag', async () => {
-    const { bridge, invoke } = makeBridge(async () => ({ accepted: false }))
-    expect(await bridge.sendMessage('hi')).toBe(false)
+  it('sendMessage reports an accepted turn with no refusal reason', async () => {
+    const { bridge, invoke } = makeBridge(async () => ({ accepted: true }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: true, reason: null })
     expect(invoke).toHaveBeenCalledWith(AGENT_SEND_CHANNEL, { text: 'hi' })
+  })
+
+  it('sendMessage carries the budget refusal reason through (M2.5)', async () => {
+    const { bridge } = makeBridge(async () => ({ accepted: false, reason: 'budget' }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: false, reason: 'budget' })
+  })
+
+  it('re-narrows an unrecognised refusal reason to the conservative no-credential', async () => {
+    // A reason the renderer cannot switch on must not reach it; `no-credential` is the answer that
+    // still offers the user a way forward.
+    const { bridge } = makeBridge(async () => ({ accepted: false, reason: 'wat' }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: false, reason: 'no-credential' })
   })
 
   it('sendMessage rejects an empty text', async () => {

@@ -38,8 +38,10 @@ function fakeAgentBridge(): AgentBridge {
     setSubscriptionToken: vi.fn(async () => AUTHED),
     clearSubscriptionToken: vi.fn(async () => AUTHED),
     getAuthStatus: vi.fn(async () => AUTHED),
-    sendMessage: vi.fn(async () => true),
+    sendMessage: vi.fn(async () => ({ accepted: true, reason: null })),
     interrupt: vi.fn(async () => true),
+    getBudgetCap: vi.fn(async () => 2),
+    setBudgetCap: vi.fn(async (cap: number | null) => cap),
     onAgentEvent: () => () => undefined,
     onDeckUpdated: (listener) => {
       deckListener = listener

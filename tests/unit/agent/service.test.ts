@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentService } from '../../../src/main/agent/service'
 import type { AgentCredential } from '../../../src/main/agent/auth-env'
 import type { AgentQueryFn, AgentQueryHandle } from '../../../src/main/agent/query-contract'
+import type { AgentEvent } from '../../../src/shared/agent/types'
 
 /**
  * What the vault resolves to once the user is configured (M2.7: `loadCredential` replaced the bare
@@ -57,7 +58,10 @@ describe('AgentService', () => {
       loadCredential: async () => null,
       resolvePaths: PATHS,
     })
-    expect(await service.send(1, 'hi', () => {})).toEqual({ accepted: false })
+    expect(await service.send(1, 'hi', () => {})).toEqual({
+      accepted: false,
+      reason: 'no-credential',
+    })
     expect(rec.starts()).toBe(0)
   })
 
@@ -69,9 +73,105 @@ describe('AgentService', () => {
       .mockResolvedValue(LIVE)
     const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
-    expect(await service.send(1, 'first', () => {})).toEqual({ accepted: false })
+    expect(await service.send(1, 'first', () => {})).toEqual({
+      accepted: false,
+      reason: 'no-credential',
+    })
     expect(await service.send(1, 'second', () => {})).toEqual({ accepted: true })
     expect(rec.starts()).toBe(1)
+  })
+
+  it('refuses a turn once the session has spent its cap — the authoritative guard (M2.5, §10)', async () => {
+    // The renderer performs the same check so the composer can explain itself without a round trip,
+    // but a guard that only exists in the renderer is one a renderer bug can walk past.
+    let starts = 0
+    const queryFn: AgentQueryFn = () => {
+      starts += 1
+      // One turn that ends having spent past the cap. It is not interrupted — it already ran.
+      const gen = (async function* () {
+        yield { type: 'result', subtype: 'success', total_cost_usd: 0.25 }
+      })()
+      const handle = gen as unknown as AgentQueryHandle
+      handle.interrupt = async () => undefined
+      handle.setModel = async () => undefined
+      return handle
+    }
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
+    }
+    const service = new AgentService({
+      queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => 0.1,
+    })
+
+    // The first turn is never refused on budget: a session with no spend cannot have exhausted a
+    // positive cap, and the check runs against the session that already exists.
+    expect(await service.send(1, 'first', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitted.some((e) => e.type === 'turn-end')).toBe(true))
+
+    expect(await service.send(1, 'second', emit)).toEqual({ accepted: false, reason: 'budget' })
+    // A blocked send never opens another query.
+    expect(starts).toBe(1)
+    await service.dispose(1)
+  })
+
+  it('keeps accepting turns while under the cap', async () => {
+    const rec = recordingQueryFn()
+    const service = new AgentService({
+      queryFn: rec.queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => 2,
+    })
+    expect(await service.send(1, 'first', NOOP)).toEqual({ accepted: true })
+    expect(await service.send(1, 'second', NOOP)).toEqual({ accepted: true })
+    expect(rec.starts()).toBe(1)
+    await service.dispose(1)
+  })
+
+  it('hands the SDK the remaining budget as an in-flight ceiling', async () => {
+    let captured: number | undefined
+    const queryFn: AgentQueryFn = (params) => {
+      captured = params.options.maxBudgetUsd
+      const gen = (async function* () {})()
+      const handle = gen as unknown as AgentQueryHandle
+      handle.interrupt = async () => undefined
+      handle.setModel = async () => undefined
+      return handle
+    }
+    const service = new AgentService({
+      queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => 2,
+    })
+    await service.send(1, 'hi', NOOP)
+    expect(captured).toBe(2)
+    await service.dispose(1)
+  })
+
+  it('omits the ceiling when the user has configured no cap', async () => {
+    let captured: number | undefined = 999
+    const queryFn: AgentQueryFn = (params) => {
+      captured = params.options.maxBudgetUsd
+      const gen = (async function* () {})()
+      const handle = gen as unknown as AgentQueryHandle
+      handle.interrupt = async () => undefined
+      handle.setModel = async () => undefined
+      return handle
+    }
+    const service = new AgentService({
+      queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => null,
+    })
+    await service.send(1, 'hi', NOOP)
+    expect(captured).toBeUndefined()
+    await service.dispose(1)
   })
 
   it('creates exactly one session under concurrent sends for one sender (no orphaned subprocess)', async () => {

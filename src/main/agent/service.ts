@@ -9,6 +9,12 @@
  */
 
 import { DEFAULT_AGENT_MODEL, type AgentEvent, type AgentModelId } from '../../shared/agent/types'
+import {
+  canStartTurn,
+  evaluateBudget,
+  remainingBudgetUsd,
+  type BudgetCap,
+} from '../../shared/agent/budget'
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
 import type { AgentCredential } from './auth-env'
 import { defaultAgentLog, type AgentLog } from './log'
@@ -45,6 +51,17 @@ export type AgentServiceDeps = {
    * healthy session otherwise.
    */
   readonly prepareWorkspace?: (cwd: string) => Promise<WorkspacePreparation | void>
+  /**
+   * §8's fallback material (M2.5), handed to each session so it can self-repair a skill-less start.
+   * Resolved lazily *inside* the session — a healthy session never reads the bundle.
+   */
+  readonly loadFallbackPrompt?: () => Promise<string | null>
+  /**
+   * The user's configured spend cap (§10, M2.5), read fresh on every send so a change in Settings
+   * takes effect on the next turn rather than the next app launch. `undefined` (dep absent) and
+   * `null` (no limit) both mean "do not cap".
+   */
+  readonly loadBudgetCap?: () => Promise<BudgetCap>
   /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
   readonly log?: AgentLog
 }
@@ -75,16 +92,32 @@ export class AgentService {
 
   /**
    * Send a user turn for one renderer. Creates the session lazily on first use, but only if a credential
-   * is configured — none means `{ accepted: false }`, which the renderer renders as the composer's
-   * "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
+   * is configured — none means `{ accepted: false, reason: 'no-credential' }`, which the renderer renders
+   * as the composer's "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
+   *
+   * The budget check (§10, M2.5) runs **before** `ensureSession`, against the session that already
+   * exists. Two consequences worth stating: a first turn is never refused on budget (a session with
+   * no spend cannot have exhausted a positive cap), and a blocked send never spawns a subprocess.
+   *
+   * This is the *authoritative* turn-admission check. The renderer performs the same one so the
+   * composer can explain itself without a round trip, but a guard that only exists in the renderer is
+   * a guard a renderer bug can walk past — and the number both sides compare against is the same one,
+   * because the cost accumulators are the same function (`shared/agent/cost.ts`).
    */
   async send(
     senderId: number,
     text: string,
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSendResponse> {
+    const existing = this.sessions.get(senderId)
+    if (existing !== undefined) {
+      const cap = (await this.deps.loadBudgetCap?.()) ?? null
+      if (!canStartTurn(evaluateBudget(existing.estimatedSpendUsd, cap))) {
+        return { accepted: false, reason: 'budget' }
+      }
+    }
     const session = await this.ensureSession(senderId, emit)
-    if (session === null) return { accepted: false }
+    if (session === null) return { accepted: false, reason: 'no-credential' }
     session.send(text)
     return { accepted: true }
   }
@@ -136,15 +169,23 @@ export class AgentService {
         log(`[agent] workspace preparation failed: ${String(error)}`)
       }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
+      // §10's in-flight ceiling. A fresh session has spent nothing, so this is the whole cap; the
+      // session recomputes what remains if it has to restart into the §8 fallback.
+      const capUsd = (await this.deps.loadBudgetCap?.()) ?? null
+      const maxBudgetUsd = remainingBudgetUsd(0, capUsd)
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
         log,
+        ...(this.deps.loadFallbackPrompt !== undefined
+          ? { loadFallbackPrompt: this.deps.loadFallbackPrompt }
+          : {}),
         options: {
           credential,
           model: this.model,
           cwd,
           configDir,
           ...(mcpServers !== undefined ? { mcpServers } : {}),
+          ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
         },
         emit,
       })

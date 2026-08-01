@@ -69,7 +69,14 @@ describe('AgentSession', () => {
     session.send('hello')
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'turn-end')).toBe(true))
-    expect(emitted.map((e) => e.type)).toEqual(['ready', 'assistant-delta', 'turn-end'])
+    // `skills-status` rides with `ready` from M2.5: every resolved init reports how the session
+    // loaded its craft knowledge, so a fallback restart can never be invisible (§8).
+    expect(emitted.map((e) => e.type)).toEqual([
+      'ready',
+      'skills-status',
+      'assistant-delta',
+      'turn-end',
+    ])
     expect(session.estimatedSpendUsd).toBeCloseTo(0.02)
   })
 
@@ -155,15 +162,22 @@ describe('AgentSession', () => {
       await vi.waitFor(() => expect(session.skillStatus.known).toBe(true))
       expect(session.skillStatus).toEqual({
         known: true,
+        mode: 'skills',
         loaded: ['slide-deck', 'svg-animation', 'interactive-graph'],
         missing: [],
       })
       expect(emitted.some((e) => e.type === 'skills-degraded')).toBe(false)
+      expect(emitted.find((e) => e.type === 'skills-status')).toEqual({
+        type: 'skills-status',
+        status: 'ok',
+      })
       // A healthy session still logs, so a support case can answer "did it have the skills?".
       expect(logged.join('\n')).toContain('slide-deck')
       await session.close()
     })
 
+    // No `loadFallbackPrompt` dep on these sessions, so §8's repair is unavailable and M2.4's loud
+    // state is the correct outcome. The repaired path is covered in skills-fallback.test.ts.
     it('emits a user-visible degradation notice naming what did not load', async () => {
       const emitted: AgentEvent[] = []
       const logged: string[] = []
@@ -181,8 +195,17 @@ describe('AgentSession', () => {
         type: 'skills-degraded',
         missing: ['svg-animation', 'interactive-graph'],
       })
-      // The notice follows `ready`, so the renderer has an open session when it lands.
-      expect(emitted.map((e) => e.type).slice(0, 2)).toEqual(['ready', 'skills-degraded'])
+      // The notice follows `ready`, so the renderer has an open session when it lands, and the
+      // status-bar indicator lands with it reading `unavailable` (M2.5).
+      expect(emitted.map((e) => e.type).slice(0, 3)).toEqual([
+        'ready',
+        'skills-status',
+        'skills-degraded',
+      ])
+      expect(emitted.find((e) => e.type === 'skills-status')).toEqual({
+        type: 'skills-status',
+        status: 'unavailable',
+      })
       expect(logged.join('\n')).toContain('MISSING')
       await session.close()
     })

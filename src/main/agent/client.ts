@@ -78,6 +78,12 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
   // the deck-mutating tools become the agent's only write surface: `mcp__slides__*` is allowed and
   // Bash/Write/Edit stay denied below (§7).
   const hasSlides = o.mcpServers !== undefined
+  // §8's fallback shape (M2.5): skill discovery failed for this session, so the craft knowledge is
+  // inlined into the system prompt and the `skills` context filter is emptied. Emptied rather than
+  // left populated because naming skills that demonstrably did not load is a claim the init message
+  // already contradicted — and because a later successful discovery would then silently double the
+  // guidance, once from disk and once from the prompt.
+  const fallbackPrompt = o.skillFallbackPrompt
   return {
     cwd: o.cwd,
 
@@ -111,15 +117,22 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     // project layer picked up — is never loaded, which is the second half of the §5 isolation that
     // `settingSources: ['project']` starts. The user's `~/.claude/skills` is invisible on both
     // counts. ---
-    skills: [...BUNDLED_SKILL_NAMES],
+    skills: fallbackPrompt === undefined ? [...BUNDLED_SKILL_NAMES] : [],
 
     // --- prompting ---
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
-      append: SLOODGE_SYSTEM_APPEND,
+      append:
+        fallbackPrompt === undefined
+          ? SLOODGE_SYSTEM_APPEND
+          : `${SLOODGE_SYSTEM_APPEND}\n\n${fallbackPrompt}`,
       excludeDynamicSections: true,
     },
+
+    // --- budget (§10): the in-flight ceiling. Omitted entirely when the user has set no cap, so
+    // the SDK is never handed a sentinel it would read as a real limit. ---
+    ...(o.maxBudgetUsd !== undefined ? { maxBudgetUsd: o.maxBudgetUsd } : {}),
 
     // --- model & streaming ---
     model: o.model,

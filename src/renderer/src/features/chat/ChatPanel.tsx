@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { elementContextLabel } from '../../../../shared/design/element-context'
+import { formatCostUsd } from '../../../../shared/agent/cost'
 import { useDeckStore } from '../../stores/deckStore'
 import { useChatContextStore } from './chatContextStore'
 import type { ChatMessage, ToolChip } from './transcript'
@@ -58,8 +59,11 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
 
   const submit = useCallback(() => {
     if (draft.trim().length === 0) return
+    // A turn the guard refused (M2.5's budget cap) never opened, so the composer keeps the user's
+    // words to retry once they raise the limit — and the context chip stays attached to them.
+    // Clearing on a refusal would silently eat a message that was never sent.
+    if (!send(draft, attachment)) return
     // Consume the pending element context with this turn, then clear the chip.
-    send(draft, attachment)
     if (attachment !== null) clearContext()
     setDraft('')
   }, [draft, send, attachment, clearContext])
@@ -149,11 +153,13 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
             </span>
           )}
 
-          {transcript.costUsd > 0 ? (
+          {transcript.cost.totalUsd > 0 ? (
             // Cost meter (10-architecture.md §1.3). Labelled "≈" — a client-side estimate from the
-            // SDK's price table, never billing truth (50-agent-integration.md §10).
+            // SDK's price table, never billing truth (50-agent-integration.md §10). The status bar
+            // shows the same number from the same accumulator (M2.5); this one stays because it sits
+            // next to the composer where the spending actually happens.
             <span className="text-[11px] text-chrome-muted dark:text-ink-muted">
-              ≈ ${transcript.costUsd.toFixed(2)} session
+              <span aria-hidden="true">≈</span> {formatCostUsd(transcript.cost.totalUsd)} session
             </span>
           ) : null}
 

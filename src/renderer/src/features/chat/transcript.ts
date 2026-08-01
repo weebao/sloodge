@@ -32,6 +32,12 @@
  */
 
 import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../../../shared/agent/types'
+import {
+  beginTurn,
+  foldTurnCost,
+  INITIAL_COST_STATE,
+  type CostState,
+} from '../../../../shared/agent/cost'
 
 /** The four lifecycle states the composer and Stop control branch on. */
 export type TurnState = 'idle' | 'streaming' | 'error' | 'interrupted'
@@ -72,19 +78,17 @@ export type ChatMessage =
 export type Transcript = {
   readonly turnState: TurnState
   readonly messages: readonly ChatMessage[]
-  /** Running session cost estimate (§10 — "≈", never billing truth). */
-  readonly costUsd: number
   /**
-   * Whether the current turn's `result` cost has already been folded into `costUsd`. Reset on every
-   * `user-send` and set by the first `turn-end` of the turn. It makes the invariant "cost folds
-   * exactly once per turn" explicit and *order-independent*: the SDK's post-interrupt `result`
-   * arrives after the turn has already settled to `interrupted`, and a failed turn's `result`
-   * arrives paired with an `error` — a `turnState`-based guard would swallow the former and a naive
-   * fold would double-count a duplicate `result`. Gating on this flag instead of `turnState` folds
-   * an interrupted turn's cost (matching main's accumulator, session.ts) while still refusing a
-   * second `turn-end`.
+   * Running session cost estimate (§10 — "≈", never billing truth), held as the **shared**
+   * accumulator state from `shared/agent/cost.ts`.
+   *
+   * Shared, rather than a private field that folds the same way, because M2.5 puts this number in
+   * the status bar and enforces the budget cap against it: it now has to *equal* what main recorded,
+   * not merely resemble it. Both sides call `beginTurn`/`foldTurnCost` on the same events in the same
+   * order, so agreement is structural — see that module for the fold rule and why it is gated on a
+   * flag rather than on `turnState`.
    */
-  readonly costFolded: boolean
+  readonly cost: CostState
   /** In-state monotonic id source, so the reducer stays pure (no `Date.now`/`Math.random`). */
   readonly seq: number
 }
@@ -92,8 +96,7 @@ export type Transcript = {
 export const initialTranscript: Transcript = {
   turnState: 'idle',
   messages: [],
-  costUsd: 0,
-  costFolded: true,
+  cost: INITIAL_COST_STATE,
   seq: 0,
 }
 
@@ -142,7 +145,10 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
   'rate-limit': 'Claude is busy right now. Try again in a moment.',
   overloaded: 'Claude is overloaded. Try again shortly.',
   network: "Can't reach Claude. Slides and Design Mode still work offline.",
-  budget: 'Budget reached for this deck. Raise the limit in Settings to continue.',
+  // M2.5 re-scoped this from "this deck" to the session — what the guard actually meters — and
+  // names the tab that changes it. Shared by both budget paths: our turn-admission refusal and the
+  // SDK's mid-turn `error_max_budget_usd` ceiling.
+  budget: 'Budget reached for this session. Raise the limit in Settings ▸ Budget to continue.',
   'max-turns': 'This got complicated — Claude stopped after the step limit.',
   interrupted: 'Stopped.',
   'runtime-missing': 'The Claude runtime is missing. Reinstall Sloodge.',
@@ -153,6 +159,13 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
  * User-facing text for an error event. Known kinds get calibrated copy; `unknown` falls back to the
  * event's own message when it carries one, so a novel SDK failure is still legible rather than a
  * generic dead end.
+ *
+ * Deliberately *not* extended to `budget` so the guard could quote the user's cap: an SDK-raised
+ * `error_max_budget_usd` arrives with `message: "Turn ended: error_max_budget_usd"`, and preferring
+ * the event message for that kind would put that raw subtype on screen. Both budget paths — ours at
+ * turn admission and the SDK's mid-turn ceiling — therefore share one calibrated sentence, and the
+ * number the user is arguing with is on the status bar and in Settings ▸ Budget where it can be
+ * changed.
  */
 export function errorCopy(kind: AgentErrorKind, message: string): string {
   if (kind === 'unknown' && message.trim().length > 0) return message
@@ -205,6 +218,11 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
   switch (event.type) {
     case 'ready':
       // Session handshake — no transcript change (the user bubble already opened the turn).
+      return state
+
+    case 'skills-status':
+      // Status-bar telemetry, not conversation (M2.5). The chat panel deliberately says nothing
+      // about a session that repaired itself; `sessionMeterStore` carries this to the status bar.
       return state
 
     case 'skills-degraded': {
@@ -260,22 +278,23 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
       }
     }
 
-    case 'turn-end':
-      // Fold this turn's `result` cost exactly once, gated on `costFolded` rather than `turnState`
+    case 'turn-end': {
+      // Fold this turn's `result` cost exactly once, gated on `cost.folded` rather than `turnState`
       // so it works no matter which terminal state the turn has reached or when `turn-end` arrives:
       //  - streaming -> turn-end: folds, settles, goes idle;
       //  - streaming -> error -> turn-end (or the paired [turn-end, error]): folds once, keeps error;
       //  - streaming -> interrupt -> turn-end: folds the interrupted turn's cost, keeps interrupted;
-      //  - a duplicate turn-end (costFolded already true) is a reference-preserving no-op.
+      //  - a duplicate turn-end (already folded) is a reference-preserving no-op.
       // Only a still-`streaming` turn transitions to `idle`; a settled turn keeps its end-state.
-      if (state.costFolded) return state
+      const cost = foldTurnCost(state.cost, event.costUsd)
+      if (cost === state.cost) return state
       return {
         ...state,
         turnState: state.turnState === 'streaming' ? 'idle' : state.turnState,
         messages: settleLive(state.messages),
-        costUsd: state.costUsd + event.costUsd,
-        costFolded: true,
+        cost,
       }
+    }
 
     case 'error': {
       const settled = settleLive(state.messages)
@@ -319,8 +338,9 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
         ...state,
         turnState: 'streaming',
         messages: [...state.messages, user, assistant],
-        // A fresh turn: its `result` cost has not been folded yet.
-        costFolded: false,
+        // A fresh turn: its `result` cost has not been folded yet. `AgentSession.send` opens the
+        // turn on the same event, which is what keeps the two accumulators in step.
+        cost: beginTurn(state.cost),
         seq: state.seq + 2,
       }
     }

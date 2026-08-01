@@ -8,6 +8,12 @@
  */
 
 import type { AgentEvent } from '../../shared/agent/types'
+import {
+  beginTurn,
+  foldTurnCost,
+  INITIAL_COST_STATE,
+  type CostState,
+} from '../../shared/agent/cost'
 import { createChatBridge, type ChatBridge } from './bridge'
 import { classifyException, isRecoverable, mapSdkMessage } from './event-mapping'
 import { defaultAgentLog, type AgentLog } from './log'
@@ -18,6 +24,15 @@ export type AgentSessionDeps = {
   readonly queryFn: AgentQueryFn
   readonly options: AgentQueryOptions
   readonly emit: (event: AgentEvent) => void
+  /**
+   * §8's fallback material (M2.5): the three SKILL.md bodies composed into a system-prompt append,
+   * or `null` when they could not be read. Called at most once, and only after an init has already
+   * reported the skills missing — so the bundle read costs nothing on a healthy session.
+   *
+   * Absent (the dep not supplied at all) means this session cannot self-repair: it reports
+   * `unavailable` and keeps M2.4's loud chat notice. Tests use that to exercise both branches.
+   */
+  readonly loadFallbackPrompt?: () => Promise<string | null>
   /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
   readonly log?: AgentLog
 }
@@ -25,25 +40,75 @@ export type AgentSessionDeps = {
 /**
  * The §8 verification result. `known: false` until the runtime's `system:init` arrives — a consumer
  * must not read "nothing loaded" out of the handshake window.
+ *
+ * `mode` distinguishes the two healthy shapes: a `skills` session discovered its skills from the
+ * workspace, a `fallback` session is running with `skills: []` and the bodies inlined (M2.5). The
+ * distinction is load-bearing for `missing`, which is meaningless in fallback mode — an empty
+ * `loaded` array is exactly what a fallback session is *supposed* to report.
  */
 export type SkillStatus =
   | { readonly known: false }
   | {
       readonly known: true
+      readonly mode: SkillMode
       readonly loaded: readonly string[]
       readonly missing: readonly BundledSkillName[]
     }
 
+/** How this session is loading its slide-craft knowledge. See `SkillStatus`. */
+export type SkillMode = 'skills' | 'fallback'
+
 export class AgentSession {
   private readonly deps: AgentSessionDeps
-  private readonly bridge: ChatBridge
+  /**
+   * Not `readonly`: the §8 fallback restart replaces it. The old bridge's stream generator is owned
+   * by the query being torn down and cannot be handed to a second one, so a restart needs a fresh
+   * queue as well as a fresh query.
+   */
+  private bridge: ChatBridge
   private handle: AgentQueryHandle | null = null
   private consuming: Promise<void> | null = null
   private closed = false
   /** Assistant-id dedup set, held for the session's whole lifetime (§10, §16). */
   private readonly seenAssistantIds = new Set<string>()
-  /** Client-side estimate; accumulated per `result` message, never billed off (§10). */
-  private spendUsd = 0
+  /**
+   * Client-side estimate, folded by the shared rule in `shared/agent/cost.ts` — the same function
+   * the renderer's transcript uses, so the status bar cannot drift from what main recorded (§10).
+   * Never billed off.
+   */
+  private cost: CostState = INITIAL_COST_STATE
+  /**
+   * Which query generation is live. Incremented by the fallback restart so the outgoing query's
+   * remaining messages are dropped instead of interleaving with the replacement's — without it, the
+   * old subprocess's `result` and the new one's `ready` would both reach the renderer and the chat
+   * would show one turn ending twice.
+   */
+  private generation = 0
+  /** See `SkillMode`. Flips exactly once, when the fallback restart opens the replacement query. */
+  private skillMode: SkillMode = 'skills'
+  /**
+   * The §8 restart-once guard. Set **before** the restart's first `await`, so a second init that
+   * also reports missing skills cannot start a third query — a session that restarts on every init
+   * would spawn subprocesses in a loop, and a loop of `query()` spawns against a broken workspace is
+   * the worst possible response to a degraded one. Fallback is a single attempt by construction.
+   */
+  private restartAttempted = false
+  /**
+   * The generation whose init has already been announced, so a runtime that re-inits mid-session
+   * does not re-announce a degradation the user was told about (M2.4's "announce once"). Keyed on
+   * the generation rather than a bare boolean because the fallback restart genuinely *is* a new
+   * announcement — the whole point is that the shape changed.
+   */
+  private reportedGeneration: number | null = null
+  /**
+   * Turns sent but not yet ended. The restart replays these into the replacement query: by the time
+   * `system:init` arrives the SDK has already consumed the user's message off the bridge, so a
+   * restart that did not replay would silently swallow the very turn that triggered it.
+   *
+   * At most one entry in practice — the composer refuses to send while a turn is streaming — but
+   * kept as a list so a queued second send is not lost either.
+   */
+  private pendingTexts: string[] = []
   /**
    * What the runtime reported loading on `system:init`, or `null` before the first `ready` (M2.4,
    * §8). `null` rather than `[]` on purpose: "not yet known" and "none loaded" must be
@@ -59,23 +124,21 @@ export class AgentSession {
 
   /** Client-side cost estimate accumulated across this session's turns. */
   get estimatedSpendUsd(): number {
-    return this.spendUsd
+    return this.cost.totalUsd
   }
 
   /**
    * The §8 skill assertion, readable once a turn has started: what the runtime actually loaded and
-   * which bundled skills are missing. `missing` non-empty means the materialized `SKILL.md` files
-   * were not discovered — the agent is running without its craft knowledge.
-   *
-   * What that currently triggers: the main-process log and the `skills-degraded` event (below). The
-   * §8 system-prompt fallback restart and the `skills: fallback` status line are **not implemented**
-   * — both are M2.5's, which owns the status bar (see 50-agent-integration.md §8 and 80-roadmap.md).
-   * Until then the degradation is announced, not repaired.
+   * which bundled skills are missing. In `skills` mode, `missing` non-empty means the materialized
+   * `SKILL.md` files were not discovered. In `fallback` mode it is reported as empty regardless of
+   * what the runtime listed, because a fallback session runs with `skills: []` deliberately — the
+   * knowledge is in the system prompt, and reading its empty init as a degradation would be wrong.
    */
   get skillStatus(): SkillStatus {
     const loaded = this.loadedSkills
     if (loaded === null) return { known: false }
-    return { known: true, loaded, missing: missingSkills(loaded) }
+    const mode = this.skillMode
+    return { known: true, mode, loaded, missing: mode === 'fallback' ? [] : missingSkills(loaded) }
   }
 
   /**
@@ -85,54 +148,174 @@ export class AgentSession {
   send(text: string): void {
     if (this.closed) return
     if (this.handle === null) this.start()
+    // Opens the cost turn on the same event the renderer opens its own on, which is what makes the
+    // two accumulators agree rather than merely resemble each other (shared/agent/cost.ts).
+    this.cost = beginTurn(this.cost)
+    this.pendingTexts.push(text)
     this.bridge.send(text)
   }
 
   private start(): void {
     this.handle = this.deps.queryFn({ prompt: this.bridge.stream(), options: this.deps.options })
-    this.consuming = this.consume(this.handle)
+    this.consuming = this.consume(this.handle, this.generation)
   }
 
-  private async consume(handle: AgentQueryHandle): Promise<void> {
+  private async consume(handle: AgentQueryHandle, generation: number): Promise<void> {
     try {
       for await (const raw of handle) {
+        // A superseded query may still yield buffered messages after the restart swapped it out.
+        // They describe a session the user is no longer in, so they are dropped — including any
+        // residual cost, which at init time (the only moment a restart happens) is zero.
+        if (generation !== this.generation) return
         for (const event of mapSdkMessage(raw, this.seenAssistantIds)) {
-          if (event.type === 'turn-end') this.spendUsd += event.costUsd
+          if (event.type === 'turn-end') {
+            this.cost = foldTurnCost(this.cost, event.costUsd)
+            this.pendingTexts = []
+          }
           this.deps.emit(event)
-          // Emitted *after* `ready` so the renderer has an open session before the notice lands, and
-          // only from the first init of the session (a resumed/recycled query re-announces, but the
-          // user has already been told).
-          if (event.type === 'ready') this.noteSkills(event.skills)
+          // Handled *after* `ready` is emitted so the renderer has an open session before any
+          // notice or status lands.
+          if (event.type === 'ready') this.onReady(event.skills, generation)
         }
       }
     } catch (error) {
       // `query()` can throw *after* yielding its error `result` (§13). The result's cost/session_id
       // were already folded in above; here we surface the residual (usually a transport failure) as
-      // a typed event, never a raw string. A deliberate interrupt is not an error.
-      if (this.closed) return
+      // a typed event, never a raw string. A deliberate interrupt is not an error, and neither is a
+      // query we ourselves tore down to restart.
+      if (this.closed || generation !== this.generation) return
       const { kind, message } = classifyException(error)
       this.deps.emit({ type: 'error', kind, message, recoverable: isRecoverable(kind) })
     }
   }
 
   /**
-   * The §8 assertion, run against the runtime's own loaded-skill list. Always logs what loaded (a
-   * healthy session is worth one line when a support case asks "did it have the skills?"), and emits
-   * a user-visible degradation notice when any bundled skill is missing — the alternative is a
-   * session that answers confidently without the craft knowledge and says so nowhere.
+   * The §8 assertion, run against the runtime's own loaded-skill list, and the decision that follows
+   * from it. Always logs what loaded — a healthy session is worth one line when a support case asks
+   * "did it have the skills?" — then takes exactly one of three paths:
    *
-   * Announced once: only the first `ready` of a session reaches this.
+   * 1. **Nothing missing** (or this is already a fallback session): report the mode and stop.
+   * 2. **Missing, and repairable**: restart once into the system-prompt fallback. No chat notice —
+   *    the restart *fixes* the problem, and a notice about a repaired condition trains the user to
+   *    ignore notices. The `skills: fallback` status line is what makes it observable, which is
+   *    exactly why §8 requires the pair to ship together.
+   * 3. **Missing, and not repairable**: M2.4's loud state, unchanged — the status reads
+   *    `unavailable` and the chat panel says the slides may not follow Sloodge's design rules.
    */
-  private noteSkills(skills: readonly string[]): void {
-    if (this.loadedSkills !== null) return
+  private onReady(skills: readonly string[], generation: number): void {
+    if (generation !== this.generation) return
     this.loadedSkills = skills
+    // Announce once per generation. M2.4's rule ("a resumed/recycled query re-announces, but the
+    // user has already been told") still holds within a session shape; a restart is a new shape and
+    // does get its own line, which is the entire point of the indicator.
+    if (this.reportedGeneration === generation) return
+    this.reportedGeneration = generation
+
+    const fallback = this.skillMode === 'fallback'
     const missing = missingSkills(skills)
     const log = this.deps.log ?? defaultAgentLog
     log(
       `[agent] skills loaded: [${skills.join(', ')}]` +
+        (fallback ? ' — mode: fallback (system-prompt inlined)' : '') +
         (missing.length > 0 ? ` — MISSING: [${missing.join(', ')}]` : ''),
     )
-    if (missing.length > 0) this.deps.emit({ type: 'skills-degraded', missing })
+
+    if (missing.length === 0) {
+      this.deps.emit({ type: 'skills-status', status: fallback ? 'fallback' : 'ok' })
+      return
+    }
+
+    // Something is missing. Note that a *fallback* session reaches here every time by construction —
+    // it runs with `skills: []`, so its init reports all three missing — which is exactly why
+    // `restartAttempted` is the load-bearing guard rather than a belt-and-braces one: without it,
+    // the restarted session would ask to be restarted again, forever, spawning a CLI subprocess per
+    // round. It is checked *first*, and set before `restartWithFallback`'s first `await`.
+    if (!this.restartAttempted && this.deps.loadFallbackPrompt !== undefined) {
+      this.restartAttempted = true
+      void this.restartWithFallback(missing)
+      return
+    }
+
+    if (fallback) {
+      // The expected steady state after a successful repair: nothing loaded from disk because
+      // nothing was asked for, and the craft knowledge is resident in the system prompt. Quietly
+      // indicated in the status bar, deliberately *not* announced in chat — the problem is fixed.
+      this.deps.emit({ type: 'skills-status', status: 'fallback' })
+      return
+    }
+
+    // M2.4's loud state, now reached only once self-repair has been ruled out.
+    this.deps.emit({ type: 'skills-status', status: 'unavailable' })
+    this.deps.emit({ type: 'skills-degraded', missing })
+  }
+
+  /**
+   * §8's automatic fallback: reopen the query with `skills: []` and the three SKILL.md bodies
+   * appended to `systemPrompt.append`, replaying whatever turn was in flight.
+   *
+   * Ordering matters and is deliberate. The replacement query is built and installed *before* the
+   * outgoing one is torn down, so a failure while opening it cannot leave the session with no handle
+   * at all; and the generation is bumped first, so nothing the old query emits in the meantime
+   * reaches the renderer.
+   *
+   * Called at most once per session — see `restartAttempted`.
+   */
+  private async restartWithFallback(missing: readonly BundledSkillName[]): Promise<void> {
+    const log = this.deps.log ?? defaultAgentLog
+    let prompt: string | null = null
+    try {
+      prompt = (await this.deps.loadFallbackPrompt?.()) ?? null
+    } catch (error) {
+      log(`[agent] skills fallback unavailable: ${String(error)}`)
+    }
+    if (this.closed) return
+    if (prompt === null || prompt.trim().length === 0) {
+      // The bundle could not be read either. Nothing to restart *into* — a second identical session
+      // would just be a wasted subprocess — so fall back to announcing the degradation.
+      log('[agent] skills fallback unavailable: no SKILL.md bodies could be read')
+      this.deps.emit({ type: 'skills-status', status: 'unavailable' })
+      this.deps.emit({ type: 'skills-degraded', missing })
+      return
+    }
+
+    log(`[agent] restarting session with skills: [] + inlined SKILL.md bodies (§8 fallback)`)
+    const superseded = this.handle
+    const supersededConsuming = this.consuming
+    this.generation += 1
+    this.skillMode = 'fallback'
+    this.loadedSkills = null
+    this.bridge = createChatBridge()
+    const replay = this.pendingTexts
+    this.pendingTexts = []
+
+    const { maxBudgetUsd } = this.deps.options
+    this.handle = this.deps.queryFn({
+      prompt: this.bridge.stream(),
+      options: {
+        ...this.deps.options,
+        skillFallbackPrompt: prompt,
+        // The replacement inherits what is *left* of the cap, not the original ceiling — otherwise a
+        // restart would quietly hand the session a second full budget (§10).
+        ...(maxBudgetUsd !== undefined
+          ? { maxBudgetUsd: Math.max(0, maxBudgetUsd - this.cost.totalUsd) }
+          : {}),
+      },
+    })
+    this.consuming = this.consume(this.handle, this.generation)
+    for (const text of replay) {
+      this.pendingTexts.push(text)
+      this.bridge.send(text)
+    }
+
+    // Tear the old subprocess down last. An orphaned CLI outliving its replacement is §9's worst
+    // failure mode, so this is awaited rather than floated, but its outcome cannot affect the live
+    // session: the generation guard has already muted it.
+    try {
+      await superseded?.return(undefined)
+      await supersededConsuming
+    } catch {
+      // Already settled, or settled by erroring — either way the replacement is the live session.
+    }
   }
 
   /** Stop the in-flight turn (the Stop button). Streaming-input mode only. Safe if idle. */

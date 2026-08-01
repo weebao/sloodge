@@ -730,14 +730,20 @@ This makes system-prompt injection the *fallback*, not the design — we get pro
 
 **Shipped in M2.4 vs deferred.** M2.4 built the bundling, the materialization into `<workspace>/.claude/skills`, the `skills: [...]` context filter, and the *detection* half of this section: `system:init`'s `skills` array is read into `AgentSession.skillStatus`, every session start logs what loaded, and a missing skill raises a `skills-degraded` event that the chat panel renders as a visible notice ("Slide skills unavailable (…) — slides may not follow Sloodge's design rules").
 
-Two pieces of this section are **not shipped**, and both are deferred to **[M2.5](80-roadmap.md)** — whose row names them explicitly, so the deferral is written into the receiving milestone and not only here:
+Two pieces of this section were deferred from M2.4 to **[M2.5](80-roadmap.md)**, and **both shipped there**:
 
-| Deferred piece | Why M2.5 |
-|---|---|
-| The bottom-bar `skills: fallback` indicator | M2.5 *is* the status-bar milestone (cost meter + budget guard). The status bar does not exist before it, so no earlier milestone can host the indicator. |
-| The automatic fallback restart — re-running the query with `skills: []` and the three SKILL.md bodies appended to `systemPrompt.append` | It is `AgentSession` behaviour rather than status-bar work, but it is the other half of the same degradation story and is invisible without the indicator: a session that silently restarts itself with a different prompt shape, and says so nowhere, is worse than the loud non-healing state we ship today. Shipping the pair together in M2.5 keeps the restart observable from the moment it exists. |
+| Deferred piece | Why M2.5 | Shipped as |
+|---|---|---|
+| The bottom-bar `skills: fallback` indicator | M2.5 *is* the status-bar milestone (cost meter + budget guard). The status bar does not exist before it, so no earlier milestone can host the indicator. | The `skills-status` event (`shared/agent/types.ts`) → `sessionMeterStore` → `StatusBar`'s `SkillsIndicator`. |
+| The automatic fallback restart — re-running the query with `skills: []` and the three SKILL.md bodies appended to `systemPrompt.append` | It is `AgentSession` behaviour rather than status-bar work, but it is the other half of the same degradation story and is invisible without the indicator: a session that silently restarts itself with a different prompt shape, and says so nowhere, is worse than the loud non-healing state M2.4 shipped. Shipping the pair together keeps the restart observable from the moment it exists. | `AgentSession.restartWithFallback` + `readSkillBodies`/`composeFallbackSystemPrompt` (skills.ts) + `skillFallbackPrompt` on the query seam. |
 
-Until M2.5, a degraded session is **loud but not self-healing**: the user is told in the chat panel, the main process logs it, and the agent still answers without the craft knowledge. Do not read the paragraphs above as describing shipped behaviour for the restart or the status line.
+### M2.5's fallback: the details worth knowing before changing it
+
+- **Exactly one restart, ever.** A fallback session runs with `skills: []`, so *its own* `system:init` reports all three bundled skills missing — by design. Without `AgentSession.restartAttempted` it would therefore ask to be restarted again, forever, spawning a CLI subprocess per round. The guard is load-bearing, not defensive; a mutation removing it exhausts the heap.
+- **The in-flight turn is replayed.** By the time `system:init` arrives the SDK has already consumed the user's message off the input bridge, so the restart builds a *fresh* bridge and re-sends whatever had not yet ended. A restart that did not replay would silently swallow the turn that triggered it.
+- **The superseded query is muted, then closed.** A generation counter drops anything the outgoing query emits after the swap, so one turn never ends twice; the old handle is then `return()`ed so no subprocess outlives its replacement (§9).
+- **A repaired session says nothing in chat.** `skills-degraded` — M2.4's notice — is now emitted *only* when the fallback could not be built (the bundled `SKILL.md` files are unreadable), which the indicator reports as `skills: unavailable`. Nagging about a condition that has been fixed is how users learn to ignore notices; the quiet status line is the whole notification for a successful repair, which is what this section asked for.
+- **`icons.md` is not inlined.** It stays on disk in the workspace and `Read` remains allowed, so slide-deck's hard rule 3 resolves exactly as it would with skills loaded. Inlining it would add tokens to every turn to save one tool call on the few turns that need icons.
 
 ### Caveats carried from the research
 
@@ -805,13 +811,24 @@ for await (const m of q) {
 }
 ```
 
-### Budget guard
+### What M2.5 shipped, and where it departs from the sketch above
 
-`maxBudgetUsd` stops a query when the client-side estimate hits a ceiling; the run ends with `result.subtype === "error_max_budget_usd"`.
+The cost meter and the budget guard landed in **M2.5**. Three decisions differ from this section as originally written, and the differences are deliberate.
 
-- **Per-turn ceiling:** `maxBudgetUsd = remaining deck budget`, recomputed each turn.
-- **Per-deck budget:** default **$2.00**, editable in Settings, persisted in the `.sloodge` file's settings block.
-- At 80% the bar turns amber; on `error_max_budget_usd` the chat shows *"Budget reached for this deck ($2.00). Raise the limit in Settings to continue."* with a one-click "+$2" action that bumps the budget and re-sends the last user message.
+**1. One accumulator, shared.** Before M2.5 the total was summed twice — `AgentSession.spendUsd` folded every `turn-end`, the renderer's transcript folded once per turn behind a flag — and the two agreed only by coincidence. They diverge on a duplicated `result` or a `result` outside any turn, invisibly, because nothing compared them. The fold rule now lives in `shared/agent/cost.ts`; main and the renderer both call it, so the status bar cannot drift from what main recorded, and `tests/unit/agent/cost-agreement.test.ts` drives one scripted stream through both and asserts equality. This matters beyond display: the guard is enforced against that number.
+
+**2. The meter is per *session*; the cap is an app preference, not a deck field.** This section put the budget in the `.sloodge` settings block. That was not shippable as written: the SDK offers **no session-level or lifetime total** (above), and Sloodge has no durable spend ledger — so a per-deck *budget* would reset to unspent on every launch and never bind. A cap must be scoped at least as wide as the thing it caps, so the cap is persisted app-wide (`main/agent/budget-store.ts`, a plain JSON file under `userData` — not the `safeStorage` vault, since it is not a secret) and the meter reads "session", matching the wireframe. **When durable per-deck spend lands (§12's resume work), the cap should move into the deck's settings block alongside it.** Until then, keeping them together would be a per-deck budget in name only.
+
+**3. Stop before the next turn — and hand the in-flight ceiling to the SDK.** A turn that crosses the cap cannot be un-spent, so the honest options were stop-before-the-next-turn and interrupt-in-flight. Sloodge does the first, for three reasons: cost only reaches us on the `result` message (deltas carry no price and `usage` carries tokens, not dollars, and pricing them locally is the thing this section forbids); an interrupt at slide 3 of 5 leaves the user having paid full price for a half-edited deck, which bounds nothing and maximises waste; and the SDK already owns the only real in-flight brake. So both halves ship — `maxBudgetUsd` is passed per query as the remaining budget, and turn *admission* is refused between turns with copy the user can act on. Neither half is silent.
+
+### Budget guard, as shipped
+
+`maxBudgetUsd` stops a query when the client-side estimate hits a ceiling; the run ends with `result.subtype === "error_max_budget_usd"` (already classified as the `budget` error kind).
+
+- **In-flight ceiling:** `maxBudgetUsd = remaining budget`, computed at session start and recomputed if the §8 fallback restarts the query — so a restart inherits what is *left*, not a second full budget.
+- **Session budget:** default **$2.00**, editable in **Settings ▸ Budget**, persisted under `userData`. `null` is an explicit "no limit" and survives the round trip.
+- **Turn admission:** at 80% the meter turns amber and still sends; at the cap it turns red and a new turn is refused — in the renderer (so the composer explains itself without a round trip, keeping the user's typed words for the retry) *and* in `AgentService.send`, which is authoritative and never spawns a subprocess for a blocked send. A refusal carries a `reason` (`'budget'` vs `'no-credential'`) because the two need opposite UI; a bare `accepted: false` used to render a budget stop as an authentication failure.
+- Raising the limit in Settings unblocks the very next send. The "+$2 and re-send the last message" one-click action is **not** shipped — re-sending a message the user did not re-authorise, at a moment defined by having just run out of money, is the wrong default.
 - `maxTurns: 40` is the companion guard — **there is no built-in wall-clock timeout**; `maxTurns` + `maxBudgetUsd` + the Stop button are the three brakes.
 - **Prompt caching is automatic**, no config. We surface `cache_read_input_tokens` in the dev-only usage panel because it's the main lever on cost for long deck sessions. If sessions turn out to be spaced further apart than 5 minutes in real use, set `ENABLE_PROMPT_CACHING_1H=1` via `options.env` for a 1-hour TTL.
 
