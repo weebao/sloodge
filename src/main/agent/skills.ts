@@ -134,8 +134,8 @@ export type MaterializeSkillsResult = {
  * Copy the bundled skills into the deck workspace and write the workspace's own settings file.
  *
  * **Never throws.** It runs on the path to creating a session, and a missing or unreadable skill file
- * must degrade the agent (skills absent → §8's system-prompt fallback), not prevent the user from
- * chatting at all. Failures come back in `failures` for the caller to log; a skill missing any of its
+ * must degrade the agent (it runs without its craft knowledge, and says so — see `missingSkills`),
+ * not prevent the user from chatting at all. Failures come back in `failures` for the caller to log; a skill missing any of its
  * files is left out of `installed` entirely rather than half-installed, because a `SKILL.md` whose
  * `icons.md` did not arrive tells the model to read a file that is not there.
  *
@@ -202,9 +202,12 @@ function reason(error: unknown): string {
 
 /**
  * Which of the bundled skills the running session did **not** load, given the `skills` array the SDK
- * reports on its `system:init` message (§8). A non-empty result is the trigger for the documented
- * fallback (append the SKILL.md bodies to the system prompt) and for the `skills: fallback` status
- * line; today it is surfaced through `AgentSession.skillStatus` so the degradation is observable.
+ * reports on its `system:init` message (§8).
+ *
+ * A non-empty result is surfaced two ways today: the main-process log, and the `skills-degraded`
+ * event `AgentSession` emits for the chat panel's notice. It does **not** yet trigger §8's
+ * system-prompt fallback or a `skills: fallback` status line — those are M2.5's (it owns the status
+ * bar; see 80-roadmap.md). So this reports a degradation; it does not repair one.
  */
 export function missingSkills(loaded: readonly string[]): readonly BundledSkillName[] {
   const present = new Set(loaded.map(canonicalSkillName))

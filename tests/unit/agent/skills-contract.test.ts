@@ -64,15 +64,22 @@ function slideExamples(markdown: string): { capabilities: SlideCapability[]; htm
   while ((match = fence.exec(markdown)) !== null) {
     const html = match[1] ?? ''
     if (!html.includes('class="slide"')) continue
-    // The nearest `create_slide` … `capabilities: [...]` instruction preceding this example.
-    const before = markdown.slice(0, match.index)
-    const instructions = [
-      ...before.matchAll(/mcp__slides__create_slide[^\n]*?`capabilities: (\[[^\]]*\])`/g),
-    ]
-    const declared = instructions.at(-1)?.[1]
+    // Strictly the sentence that INTRODUCES this fence — the last non-blank line before it — and it
+    // must have the exact documented shape. Searching backwards for "the nearest create_slide
+    // mention" instead would silently match the "Declare `capabilities` as a TOOL ARGUMENT" bullet
+    // further up (it names both the tool and a `capabilities: [...]` value), so a reworded
+    // introduction would quietly fall back to that bullet's capabilities and the suite would keep
+    // passing while testing the wrong thing.
+    const lines = markdown.slice(0, match.index).split('\n')
+    while (lines.length > 0 && (lines.at(-1) ?? '').trim() === '') lines.pop()
+    const introduction = lines.at(-1) ?? ''
+    const declared =
+      /call `mcp__slides__create_slide` with `capabilities: (\[[^\]]*\])`, a `title`, and this `html`:$/.exec(
+        introduction,
+      )?.[1]
     expect(
       declared,
-      'a full-slide example must be introduced by a create_slide call naming its capabilities',
+      `the line introducing a full-slide example must be the documented create_slide instruction; got: ${introduction}`,
     ).toBeDefined()
     out.push({ capabilities: JSON.parse(declared ?? '[]') as SlideCapability[], html })
   }

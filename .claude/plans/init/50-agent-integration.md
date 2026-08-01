@@ -518,7 +518,16 @@ The first `system:init` message carries the loaded `skills` array. `AgentSession
 
 This makes system-prompt injection the *fallback*, not the design — we get progressive disclosure when the filesystem cooperates and correctness when it doesn't.
 
-**Shipped in M2.4 vs deferred.** M2.4 built the bundling, the materialization into `<workspace>/.claude/skills`, the `skills: [...]` context filter, and the *detection* half of this section: `system:init`'s `skills` array is read into `AgentSession.skillStatus`, every session start logs what loaded, and a missing skill raises a `skills-degraded` event that the chat panel renders as a visible notice ("Slide skills unavailable (…) — slides may not follow Sloodge's design rules"). The **automatic fallback restart** — re-running the query with `skills: []` and the three SKILL.md bodies appended to `systemPrompt.append` — is **deferred to M2.7**, along with the bottom-bar `skills: fallback` indicator (the bottom bar's agent status is M2.7's surface). Until then a degraded session is loud but not self-healing: the user is told, and the agent still answers without the craft knowledge. Do not read this section as describing shipped behaviour for the restart.
+**Shipped in M2.4 vs deferred.** M2.4 built the bundling, the materialization into `<workspace>/.claude/skills`, the `skills: [...]` context filter, and the *detection* half of this section: `system:init`'s `skills` array is read into `AgentSession.skillStatus`, every session start logs what loaded, and a missing skill raises a `skills-degraded` event that the chat panel renders as a visible notice ("Slide skills unavailable (…) — slides may not follow Sloodge's design rules").
+
+Two pieces of this section are **not shipped**, and both are deferred to **[M2.5](80-roadmap.md)** — whose row names them explicitly, so the deferral is written into the receiving milestone and not only here:
+
+| Deferred piece | Why M2.5 |
+|---|---|
+| The bottom-bar `skills: fallback` indicator | M2.5 *is* the status-bar milestone (cost meter + budget guard). The status bar does not exist before it, so no earlier milestone can host the indicator. |
+| The automatic fallback restart — re-running the query with `skills: []` and the three SKILL.md bodies appended to `systemPrompt.append` | It is `AgentSession` behaviour rather than status-bar work, but it is the other half of the same degradation story and is invisible without the indicator: a session that silently restarts itself with a different prompt shape, and says so nowhere, is worse than the loud non-healing state we ship today. Shipping the pair together in M2.5 keeps the restart observable from the moment it exists. |
+
+Until M2.5, a degraded session is **loud but not self-healing**: the user is told in the chat panel, the main process logs it, and the agent still answers without the craft knowledge. Do not read the paragraphs above as describing shipped behaviour for the restart or the status line.
 
 ### Caveats carried from the research
 

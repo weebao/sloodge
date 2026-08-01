@@ -65,8 +65,12 @@ export class AgentSession {
   /**
    * The §8 skill assertion, readable once a turn has started: what the runtime actually loaded and
    * which bundled skills are missing. `missing` non-empty means the materialized `SKILL.md` files
-   * were not discovered — the agent is running without its craft knowledge, which is the trigger for
-   * the documented system-prompt fallback and the `skills: fallback` status line.
+   * were not discovered — the agent is running without its craft knowledge.
+   *
+   * What that currently triggers: the main-process log and the `skills-degraded` event (below). The
+   * §8 system-prompt fallback restart and the `skills: fallback` status line are **not implemented**
+   * — both are M2.5's, which owns the status bar (see 50-agent-integration.md §8 and 80-roadmap.md).
+   * Until then the degradation is announced, not repaired.
    */
   get skillStatus(): SkillStatus {
     const loaded = this.loadedSkills
