@@ -8,6 +8,7 @@ import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
+import { useAgentDeckEditor } from './useAgentDeckEditor'
 import { useAgentDeckSync } from './useAgentDeckSync'
 import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
 import { useUndoRedoKeys } from './useUndoRedoKeys'
@@ -45,7 +46,9 @@ export function AppShell(): JSX.Element {
   const toggleDesign = useDesignStore((state) => state.toggle)
   useDesignModeKey(toggleDesign)
 
-  // Agent-driven deck mutations hot-update the canvas and rail (§9), independent of the chat stream.
+  // Agent tool edits (M2.6) apply through the authoritative history so they are undoable by the same
+  // Ctrl/⌘+Z as a manual edit; the full-snapshot `deck:updated` sync is doc:open/full-reload only.
+  useAgentDeckEditor()
   useAgentDeckSync()
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])

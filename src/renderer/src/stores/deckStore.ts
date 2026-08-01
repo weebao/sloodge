@@ -36,6 +36,12 @@ import {
   hasSlide,
 } from '../../../shared/document/deck'
 import type { DeckUpdate } from '../../../shared/document/deck-update'
+import {
+  applyAgentCommandsToHistory,
+  snapshotOfDoc,
+  type AgentApplyResult,
+  type AgentDeckSnapshot,
+} from '../../../shared/document/agent-edit'
 import { DocumentHistory } from '../../../shared/document/history'
 import { createStarterSlideHtml } from '../../../shared/document/starter-slide'
 import {
@@ -112,12 +118,30 @@ export type DeckState = DeckSnapshot & {
    */
   setSlideHtml: (id: SlideId, html: string, elementId: string, label: string) => boolean
   /**
-   * Adopt a whole deck snapshot pushed by the agent over `deck:updated` (§9), so the canvas and rail
-   * hot-update as slides are written. Returns `false` (a no-op) when the snapshot's manifest fails
-   * validation — a malformed push must never blank the editor. See `applyRemoteDeck` below for why
-   * this replaces the document via `history.reset` rather than landing on the undo stack.
+   * Adopt a whole deck snapshot as a **document open / full reload** — `history.reset`, which clears
+   * the undo stack (§5 `doc:open` semantics). Returns `false` (a no-op) when the snapshot's manifest
+   * fails validation — a malformed push must never blank the editor.
+   *
+   * **Not the agent-edit path (M2.6).** An agent tool edit goes through `applyAgentCommands` so it
+   * lands on the undo stack and Ctrl/⌘+Z reverses it. Resetting on every agent write would wipe the
+   * user's undo history, which is exactly why the full-snapshot `deck:updated` path is now confined to
+   * doc:open / full-reload and is not driven by the agent (see `deck-update.ts`).
    */
   applyRemoteDeck: (update: DeckUpdate) => boolean
+  /**
+   * Apply an agent turn's `DocCommand`s (M2.6) through the *same* `DocumentHistory` a manual edit
+   * uses, tagged `origin: agent`, so the edit lands on the one undo stack the Edit menu drives — the
+   * undo-parity invariant (§6 / §5). Unlike `applyRemoteDeck` this does **not** reset the history:
+   * one call is one undo entry the standard Ctrl/⌘+Z reverses in a single step. Returns the applied
+   * result (new revision + snapshot) or a typed error, which the tool relays back to the agent.
+   */
+  applyAgentCommands: (
+    commands: readonly DocCommand[],
+    turnId: string,
+    toolUseId: string,
+  ) => AgentApplyResult
+  /** A serializable read of the authoritative deck, for the agent's `read_slide`/`screenshot` (§6). */
+  snapshotForAgent: () => AgentDeckSnapshot
   undo: () => boolean
   redo: () => boolean
 }
@@ -288,6 +312,25 @@ function reselect(
   return deck.slideOrder[index] ?? null
 }
 
+/**
+ * Selection after an agent turn. A create should be *visible*: if the batch inserted a slide, select
+ * the (last) inserted one so the canvas jumps to what the agent just made — the "an agent tool call
+ * visibly mutates the on-screen deck" acceptance criterion. Otherwise fall back to the same
+ * nearest-surviving-slide rule `undo`/`redo` use, so an edit to an off-screen slide does not yank the
+ * user away from where they were.
+ */
+function agentReselect(
+  commands: readonly DocCommand[],
+  deck: DeckManifest,
+  current: SlideId | null,
+  previousIndex: number,
+): SlideId | null {
+  let inserted: SlideId | null = null
+  for (const command of commands) if (command.t === 'slide.insert') inserted = command.slide.id
+  if (inserted !== null && hasSlide(deck, inserted)) return inserted
+  return reselect(deck, current, previousIndex)
+}
+
 export const useDeckStore = createStore<DeckState>((set, get) => {
   /**
    * The one place a command reaches the document. Applies the batch, and republishes the document
@@ -442,6 +485,23 @@ export const useDeckStore = createStore<DeckState>((set, get) => {
       })
       return true
     },
+
+    applyAgentCommands: (commands, turnId, toolUseId) => {
+      const state = get()
+      const previousIndex = selectCurrentIndex(state.deck, state.currentSlideId)
+      const result = applyAgentCommandsToHistory(state.history, commands, turnId, toolUseId)
+      // A rejected batch leaves the document identical *by reference* (the funnel never mutated it),
+      // so publishing anyway would notify every subscriber that nothing had changed.
+      if (!result.ok) return result
+      const manifest = state.history.doc.manifest
+      set({
+        ...published(state.history),
+        currentSlideId: agentReselect(commands, manifest, state.currentSlideId, previousIndex),
+      })
+      return result
+    },
+
+    snapshotForAgent: () => snapshotOfDoc(get().history.doc),
 
     undo: () => {
       const state = get()

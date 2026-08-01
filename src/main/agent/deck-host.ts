@@ -1,25 +1,32 @@
 /**
- * `SlideToolHost` implemented over the M1.2 command layer and M1.3 history — the bridge between the
- * pure `mcp__slides__*` handlers (`src/shared/agent/slide-tools.ts`) and a live deck.
+ * `SlideToolHost` over the M2.6 reconciliation seam — the bridge between the pure `mcp__slides__*`
+ * handlers (`src/shared/agent/slide-tools.ts`) and the *authoritative renderer deck*.
  *
- * Every mutating method builds a `DocCommand` and dispatches it through `DocumentHistory.apply`
- * tagged `origin: { kind: "agent" }`, so an agent edit lands on the same undo stack as a manual one
- * (50-agent-integration.md §6, 10-architecture.md §5) — Ctrl+Z reverses it identically. Nothing here
- * reaches into the deck directly, writes a file, or reads outside the document: the tool server's
- * entire mutation surface is these commands, which is what confines the agent to the document
- * sandbox (§7 — Bash/Write/Edit are already denied at the SDK level in M2.1).
+ * Before M2.6 this host owned a `DocumentHistory` of its own and mutated it directly. That made an
+ * agent edit undoable at *that* history — but the shipped app is renderer-authoritative (the single
+ * `DocumentHistory` lives in `deckStore`, M1.3/M1.4), so a second history in main would have been a
+ * divergent deck the user's Ctrl/⌘+Z never sees. Now every mutating method builds a `DocCommand`
+ * tagged `origin: agent` and hands it to a `DeckEditor`, which routes it into the *renderer's* history
+ * via `history.apply` (see `deck-editor.ts` / `agent-edit.ts`). The renderer stays the single source
+ * of truth; the agent edit lands on the same undo stack as a manual one; Ctrl/⌘+Z reverses it in one
+ * step (50-agent-integration.md §6, 10-architecture.md §5).
  *
- * `electron`-free and injectable: it takes a `DocumentHistory<DeckBundle>`, an optional change
- * notifier (the `deck:updated` push seam of §9), and an optional screenshot capturer. Tests drive it
- * with a real in-memory bundle and a fake capturer — no renderer, no subprocess.
+ * Reads (`resolve`/`list`/`count`) read the same authoritative deck through `editor.snapshot()`, so
+ * the agent always sees current state — including its own just-applied edits. Nothing here reaches
+ * into a deck directly, writes a file, or reads outside the document: the tool server's entire
+ * mutation surface is these commands, which is what confines the agent to the document sandbox (§7).
+ *
+ * `electron`-free and injectable: it takes a `DeckEditor` (an in-process one over a `DocumentHistory`
+ * in tests, an IPC-backed one in production) and an optional screenshot capturer. A renderer that
+ * went away mid-call surfaces as `renderer-unavailable` — a typed error the model can act on, never a
+ * hang (M2.1 lifecycle discipline; the `DeckEditor` enforces the no-hang guarantee).
  *
  * ## Deferred: the real screenshot render
  *
  * `screenshot` delegates to an injected `capture` function. Wiring that to an offscreen
- * `BrowserWindow` + `webContents.capturePage()` (§6, §17) is the integration piece that depends on
- * the renderer surface and is **deliberately out of this milestone** — a host constructed without a
- * capturer returns `screenshot-unavailable`, and the interface + a testable fake prove the tool
- * contract end-to-end (fake SDK-less handler → host → deck mutates → undo restores) without it.
+ * `BrowserWindow` + `webContents.capturePage()` (§6, §17) depends on the renderer surface and is
+ * **deliberately out of this milestone** — a host constructed without a capturer returns
+ * `screenshot-unavailable`.
  */
 
 import {
@@ -29,8 +36,9 @@ import {
   slideCount,
   slidesInOrder,
 } from '../../shared/document/deck'
-import type { DeckDoc, DocCommand } from '../../shared/document/commands'
-import type { CommandOrigin, DocumentHistory, HistoryError } from '../../shared/document/history'
+import type { DocCommand } from '../../shared/document/commands'
+import type { AgentDeckSnapshot, AgentEditErrorCode } from '../../shared/document/agent-edit'
+import type { DeckManifest } from '../../shared/document/types'
 import type {
   CreateSlideRequest,
   HostErrorCode,
@@ -41,16 +49,18 @@ import type {
   SlideToolHost,
   UpdateSlideRequest,
 } from '../../shared/agent/slide-tools'
+import type { DeckEditor } from './deck-editor'
 
 /** Renders a resolved slide to a base64 PNG. Wiring to the offscreen renderer is deferred (§17). */
 export type SlideScreenshotFn = (slide: ResolvedSlide, atMs: number) => Promise<string>
 
 export type DeckToolHostDeps = {
-  /** The live deck history the tools mutate. `doc` must be a `DeckBundle`-shaped `DeckDoc`. */
-  readonly history: DocumentHistory<DeckDoc>
+  /** The authoritative deck, reached over IPC (production) or in-process (tests). */
+  readonly editor: DeckEditor
   /** The conversation this host serves — recorded on `origin` for agent-tagged undo entries. */
   readonly sessionId?: string
-  /** Pushed after every successful mutation so thumbnails rerender mid-turn (§9). */
+  /** Pushed after every successful mutation (§9). The live canvas/rail already re-render off the
+   * renderer history apply; this is a seam for any main-side observer (cost meter, autosave). */
   readonly onChange?: () => void
   /** Offscreen render, injected. Absent → `screenshot` returns `screenshot-unavailable`. */
   readonly capture?: SlideScreenshotFn
@@ -58,67 +68,84 @@ export type DeckToolHostDeps = {
   readonly now?: () => number
 }
 
-function agentOrigin(sessionId: string | undefined, tool: string): CommandOrigin {
-  return { kind: 'agent', turnId: sessionId ?? 'agent', toolUseId: tool }
-}
-
-/** Map a history/command error onto a host outcome the model can act on. */
-function fromHistoryError<T>(error: HistoryError): HostOutcome<T> & { ok: false } {
-  const code: HostErrorCode =
-    error.code === 'slide-not-found'
+/** Map an edit error from the reconciliation layer onto a host outcome the model can act on. */
+function fromEditError<T>(
+  code: AgentEditErrorCode,
+  message: string,
+): HostOutcome<T> & { ok: false } {
+  const hostCode: HostErrorCode =
+    code === 'slide-not-found'
       ? 'slide-not-found'
-      : error.code === 'index-out-of-range'
+      : code === 'index-out-of-range'
         ? 'index-out-of-range'
-        : 'invalid'
-  return { ok: false, code, message: error.message }
+        : code === 'renderer-unavailable'
+          ? 'renderer-unavailable'
+          : code === 'internal'
+            ? 'internal'
+            : 'invalid'
+  return { ok: false, code: hostCode, message }
 }
 
-export function createDeckToolHost(deps: DeckToolHostDeps): SlideToolHost {
-  const { history, sessionId, onChange, capture } = deps
-  const now = deps.now ?? Date.now
-
+function resolveFromSnapshot(snapshot: AgentDeckSnapshot, ref: SlideRef): ResolvedSlide | null {
+  const { manifest, slides, notes } = snapshot
   const resolveById = (id: string): ResolvedSlide | null => {
-    const entry = getSlide(history.doc.manifest, id)
+    const entry = getSlide(manifest, id)
     if (!entry) return null
-    const index = indexOfSlide(history.doc.manifest, id)
+    const index = indexOfSlide(manifest, id)
     if (index === -1) return null
-    const html = Object.hasOwn(history.doc.slides, id) ? history.doc.slides[id]! : ''
-    const notes = Object.hasOwn(history.doc.notes, id) ? history.doc.notes[id]! : null
     return {
       id: entry.id,
       index: index + 1,
       title: entry.title,
-      notes,
-      html,
+      notes: Object.hasOwn(notes, id) ? (notes[id] ?? null) : null,
+      html: Object.hasOwn(slides, id) ? (slides[id] ?? '') : '',
       capabilities: entry.capabilities ?? ['static'],
     }
   }
+  if (ref.slideId !== undefined) return resolveById(ref.slideId)
+  if (ref.index !== undefined) {
+    const id = manifest.slideOrder[ref.index - 1]
+    return id === undefined ? null : resolveById(id)
+  }
+  return null
+}
+
+export function createDeckToolHost(deps: DeckToolHostDeps): SlideToolHost {
+  const { editor, sessionId, onChange, capture } = deps
+  const now = deps.now ?? Date.now
+  const turnId = sessionId ?? 'agent'
+
+  /** A snapshot or a typed failure — the read path's single point of renderer-liveness handling. */
+  const readSnapshot = async (): Promise<
+    | { ok: true; snapshot: AgentDeckSnapshot }
+    | { ok: false; code: AgentEditErrorCode; message: string }
+  > => editor.snapshot()
 
   return {
-    resolve(ref: SlideRef): ResolvedSlide | null {
-      if (ref.slideId !== undefined) return resolveById(ref.slideId)
-      if (ref.index !== undefined) {
-        const order = history.doc.manifest.slideOrder
-        const id = order[ref.index - 1]
-        return id === undefined ? null : resolveById(id)
-      }
-      return null
+    async resolve(ref: SlideRef): Promise<ResolvedSlide | null> {
+      const snap = await readSnapshot()
+      return snap.ok ? resolveFromSnapshot(snap.snapshot, ref) : null
     },
 
-    list() {
-      return slidesInOrder(history.doc.manifest).map((slide, i) => ({
+    async list() {
+      const snap = await readSnapshot()
+      if (!snap.ok) return []
+      return slidesInOrder(snap.snapshot.manifest).map((slide, i) => ({
         id: slide.id,
         index: i + 1,
         title: slide.title,
       }))
     },
 
-    count() {
-      return slideCount(history.doc.manifest)
+    async count() {
+      const snap = await readSnapshot()
+      return snap.ok ? slideCount(snap.snapshot.manifest) : 0
     },
 
-    create(request: CreateSlideRequest): HostOutcome<{ slideId: string; index: number }> {
-      const count = slideCount(history.doc.manifest)
+    async create(request: CreateSlideRequest) {
+      const snap = await readSnapshot()
+      if (!snap.ok) return fromEditError(snap.code, snap.message)
+      const count = slideCount(snap.snapshot.manifest)
       if (
         request.position !== undefined &&
         (request.position < 1 || request.position > count + 1)
@@ -144,17 +171,17 @@ export function createDeckToolHost(deps: DeckToolHostDeps): SlideToolHost {
         html: request.html,
         ...(request.notes !== undefined ? { notes: request.notes } : {}),
       }
-      const applied = history.apply([command], agentOrigin(sessionId, 'create_slide'))
-      if (!applied.ok) return fromHistoryError(applied.error)
-      const index = indexOfSlide(history.doc.manifest, entry.id) + 1
+      const applied = await editor.apply([command], turnId, 'create_slide')
+      if (!applied.ok) return fromEditError(applied.code, applied.message)
+      const index = indexOfSlide(applied.snapshot.manifest, entry.id) + 1
       onChange?.()
       return { ok: true, value: { slideId: entry.id, index } }
     },
 
-    update(
-      request: UpdateSlideRequest,
-    ): HostOutcome<{ slideId: string; index: number; revision: number }> {
-      if (!getSlide(history.doc.manifest, request.slideId)) {
+    async update(request: UpdateSlideRequest) {
+      const snap = await readSnapshot()
+      if (!snap.ok) return fromEditError(snap.code, snap.message)
+      if (!getSlide(snap.snapshot.manifest, request.slideId)) {
         return {
           ok: false,
           code: 'slide-not-found',
@@ -171,16 +198,20 @@ export function createDeckToolHost(deps: DeckToolHostDeps): SlideToolHost {
       if (commands.length === 0) {
         return { ok: false, code: 'invalid', message: 'update needs html or notes' }
       }
-      const applied = history.apply(commands, agentOrigin(sessionId, 'update_slide'))
-      if (!applied.ok) return fromHistoryError(applied.error)
-      const index = indexOfSlide(history.doc.manifest, request.slideId) + 1
+      // Both commands ride one `apply`, so an html+notes edit is a single undo entry (undo-parity).
+      const applied = await editor.apply(commands, turnId, 'update_slide')
+      if (!applied.ok) return fromEditError(applied.code, applied.message)
+      const index = indexOfSlide(applied.snapshot.manifest, request.slideId) + 1
       onChange?.()
-      return { ok: true, value: { slideId: request.slideId, index, revision: history.rev } }
+      return { ok: true, value: { slideId: request.slideId, index, revision: applied.rev } }
     },
 
-    reorder(request: ReorderRequest): HostOutcome<{ order: string[] }> {
-      const count = slideCount(history.doc.manifest)
-      if (!getSlide(history.doc.manifest, request.slideId)) {
+    async reorder(request: ReorderRequest) {
+      const snap = await readSnapshot()
+      if (!snap.ok) return fromEditError(snap.code, snap.message)
+      const manifest: DeckManifest = snap.snapshot.manifest
+      const count = slideCount(manifest)
+      if (!getSlide(manifest, request.slideId)) {
         return {
           ok: false,
           code: 'slide-not-found',
@@ -199,14 +230,18 @@ export function createDeckToolHost(deps: DeckToolHostDeps): SlideToolHost {
         id: request.slideId,
         to: request.toPosition - 1,
       }
-      const applied = history.apply([command], agentOrigin(sessionId, 'reorder'))
-      if (!applied.ok) return fromHistoryError(applied.error)
+      const applied = await editor.apply([command], turnId, 'reorder')
+      if (!applied.ok) return fromEditError(applied.code, applied.message)
       onChange?.()
-      return { ok: true, value: { order: slidesInOrder(history.doc.manifest).map((s) => s.id) } }
+      return {
+        ok: true,
+        value: { order: slidesInOrder(applied.snapshot.manifest).map((s) => s.id) },
+      }
     },
 
     async screenshot(slideId: string, atMs: number): Promise<HostOutcome<{ pngBase64: string }>> {
-      const slide = resolveById(slideId)
+      const snap = await readSnapshot()
+      const slide = snap.ok ? resolveFromSnapshot(snap.snapshot, { slideId }) : null
       if (slide === null) {
         return { ok: false, code: 'slide-not-found', message: `no slide with id ${slideId}` }
       }

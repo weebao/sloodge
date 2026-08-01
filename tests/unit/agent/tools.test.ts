@@ -44,12 +44,12 @@ type CapturedTool = {
 
 function fakeHost(): SlideToolHost {
   return {
-    resolve: vi.fn(() => null),
-    list: vi.fn(() => []),
-    count: vi.fn(() => 0),
-    create: vi.fn(() => ok({ slideId: 's_x' as SlideId, index: 1 })),
-    update: vi.fn(() => ok({ slideId: 's_x' as SlideId, index: 1, revision: 1 })),
-    reorder: vi.fn(() => ok({ order: [] as string[] })),
+    resolve: vi.fn(async () => null),
+    list: vi.fn(async () => []),
+    count: vi.fn(async () => 0),
+    create: vi.fn(async () => ok({ slideId: 's_x' as SlideId, index: 1 })),
+    update: vi.fn(async () => ok({ slideId: 's_x' as SlideId, index: 1, revision: 1 })),
+    reorder: vi.fn(async () => ok({ order: [] as string[] })),
     screenshot: vi.fn(async () => ok({ pngBase64: 'x' })),
   }
 }

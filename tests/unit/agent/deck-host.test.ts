@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createDeckToolHost } from '../../../src/main/agent/deck-host'
+import { createLocalDeckEditor } from '../../../src/main/agent/deck-editor'
 import { DocumentHistory } from '../../../src/shared/document/history'
 import type { DeckDoc } from '../../../src/shared/document/commands'
 import { slideCount, slidesInOrder } from '../../../src/shared/document/deck'
@@ -15,13 +16,13 @@ const html = (title: string): string =>
   createStarterSlideHtml({ id: 's_01H8XQZ4P7K2M9NB3VYRTC6FDA' as SlideId, title })
 
 describe('createDeckToolHost — create', () => {
-  it('appends a slide through a command, and the edit is undoable', () => {
+  it('appends a slide through a command, and the edit is undoable', async () => {
     const history = historyOf(2)
     const onChange = vi.fn()
-    const host = createDeckToolHost({ history, onChange })
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(history), onChange })
 
     const before = slideCount(history.doc.manifest)
-    const outcome = host.create({ html: html('New'), title: 'New', capabilities: ['static'] })
+    const outcome = await host.create({ html: html('New'), title: 'New', capabilities: ['static'] })
 
     expect(outcome.ok).toBe(true)
     if (!outcome.ok) return
@@ -37,10 +38,10 @@ describe('createDeckToolHost — create', () => {
     expect(slideCount(history.doc.manifest)).toBe(before)
   })
 
-  it('inserts at a 1-based position', () => {
+  it('inserts at a 1-based position', async () => {
     const history = historyOf(2)
-    const host = createDeckToolHost({ history })
-    const outcome = host.create({
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(history) })
+    const outcome = await host.create({
       html: html('Front'),
       title: 'Front',
       capabilities: ['static'],
@@ -49,12 +50,12 @@ describe('createDeckToolHost — create', () => {
     expect(outcome.ok).toBe(true)
     if (!outcome.ok) return
     expect(outcome.value.index).toBe(1)
-    expect(host.resolve({ index: 1 })?.title).toBe('Front')
+    expect((await host.resolve({ index: 1 }))?.title).toBe('Front')
   })
 
-  it('rejects a position out of range', () => {
-    const host = createDeckToolHost({ history: historyOf(2) })
-    const outcome = host.create({
+  it('rejects a position out of range', async () => {
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(historyOf(2)) })
+    const outcome = await host.create({
       html: html('X'),
       title: 'X',
       capabilities: ['static'],
@@ -67,25 +68,26 @@ describe('createDeckToolHost — create', () => {
 })
 
 describe('createDeckToolHost — update', () => {
-  it('replaces HTML and notes through commands, undoably', () => {
+  it('replaces HTML and notes through commands, undoably', async () => {
     const { doc, ids } = makeDoc(1)
     const history = new DocumentHistory<DeckDoc>(doc)
-    const host = createDeckToolHost({ history })
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(history) })
     const id = ids[0]!
     const originalHtml = history.doc.slides[id]
 
-    const outcome = host.update({ slideId: id, html: html('Edited'), notes: 'note' })
+    const outcome = await host.update({ slideId: id, html: html('Edited'), notes: 'note' })
     expect(outcome.ok).toBe(true)
-    expect(host.resolve({ slideId: id })?.html).toBe(html('Edited'))
-    expect(host.resolve({ slideId: id })?.notes).toBe('note')
+    expect((await host.resolve({ slideId: id }))?.html).toBe(html('Edited'))
+    expect((await host.resolve({ slideId: id }))?.notes).toBe('note')
 
+    // html + notes were one apply → one undo entry restores both.
     history.undo()
     expect(history.doc.slides[id]).toBe(originalHtml)
   })
 
-  it('rejects an unknown slide id', () => {
-    const host = createDeckToolHost({ history: historyOf(1) })
-    const outcome = host.update({
+  it('rejects an unknown slide id', async () => {
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(historyOf(1)) })
+    const outcome = await host.update({
       slideId: 's_00000000000000000000000000' as SlideId,
       html: html('x'),
     })
@@ -96,13 +98,13 @@ describe('createDeckToolHost — update', () => {
 })
 
 describe('createDeckToolHost — reorder', () => {
-  it('moves a slide and returns the new order, undoably', () => {
+  it('moves a slide and returns the new order, undoably', async () => {
     const { doc, ids } = makeDoc(3)
     const history = new DocumentHistory<DeckDoc>(doc)
-    const host = createDeckToolHost({ history })
+    const host = createDeckToolHost({ editor: createLocalDeckEditor(history) })
     const first = ids[0]!
 
-    const outcome = host.reorder({ slideId: first, toPosition: 3 })
+    const outcome = await host.reorder({ slideId: first, toPosition: 3 })
     expect(outcome.ok).toBe(true)
     if (!outcome.ok) return
     expect(outcome.value.order.at(-1)).toBe(first)
@@ -111,10 +113,12 @@ describe('createDeckToolHost — reorder', () => {
     expect(slidesInOrder(history.doc.manifest)[0]?.id).toBe(first)
   })
 
-  it('rejects an out-of-range target position', () => {
+  it('rejects an out-of-range target position', async () => {
     const { doc, ids } = makeDoc(3)
-    const host = createDeckToolHost({ history: new DocumentHistory<DeckDoc>(doc) })
-    const outcome = host.reorder({ slideId: ids[0]!, toPosition: 9 })
+    const host = createDeckToolHost({
+      editor: createLocalDeckEditor(new DocumentHistory<DeckDoc>(doc)),
+    })
+    const outcome = await host.reorder({ slideId: ids[0]!, toPosition: 9 })
     expect(outcome.ok).toBe(false)
     if (outcome.ok) return
     expect(outcome.code).toBe('index-out-of-range')
@@ -122,18 +126,22 @@ describe('createDeckToolHost — reorder', () => {
 })
 
 describe('createDeckToolHost — read + screenshot seam', () => {
-  it('resolves by id and by 1-based index', () => {
+  it('resolves by id and by 1-based index', async () => {
     const { doc, ids } = makeDoc(2)
-    const host = createDeckToolHost({ history: new DocumentHistory<DeckDoc>(doc) })
-    expect(host.resolve({ slideId: ids[1]! })?.index).toBe(2)
-    expect(host.resolve({ index: 2 })?.id).toBe(ids[1]!)
-    expect(host.resolve({ index: 9 })).toBeNull()
-    expect(host.count()).toBe(2)
+    const host = createDeckToolHost({
+      editor: createLocalDeckEditor(new DocumentHistory<DeckDoc>(doc)),
+    })
+    expect((await host.resolve({ slideId: ids[1]! }))?.index).toBe(2)
+    expect((await host.resolve({ index: 2 }))?.id).toBe(ids[1]!)
+    expect(await host.resolve({ index: 9 })).toBeNull()
+    expect(await host.count()).toBe(2)
   })
 
   it('reports screenshot-unavailable when no capturer is wired', async () => {
     const { doc, ids } = makeDoc(1)
-    const host = createDeckToolHost({ history: new DocumentHistory<DeckDoc>(doc) })
+    const host = createDeckToolHost({
+      editor: createLocalDeckEditor(new DocumentHistory<DeckDoc>(doc)),
+    })
     const outcome = await host.screenshot(ids[0]!, 0)
     expect(outcome.ok).toBe(false)
     if (outcome.ok) return
@@ -143,7 +151,10 @@ describe('createDeckToolHost — read + screenshot seam', () => {
   it('delegates to an injected capturer and returns base64 PNG', async () => {
     const { doc, ids } = makeDoc(1)
     const capture = vi.fn(async () => 'BASE64PNG')
-    const host = createDeckToolHost({ history: new DocumentHistory<DeckDoc>(doc), capture })
+    const host = createDeckToolHost({
+      editor: createLocalDeckEditor(new DocumentHistory<DeckDoc>(doc)),
+      capture,
+    })
     const outcome = await host.screenshot(ids[0]!, 250)
     expect(outcome.ok).toBe(true)
     if (!outcome.ok) return
