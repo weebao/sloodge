@@ -182,48 +182,139 @@ Signing/AV notes:
 
 ---
 
-## 4. Auth: user-supplied API key in the OS keychain
+## 4. Auth: subscription token or API key, both in the OS keychain
 
-**claude.ai OAuth / subscription login is contractually prohibited for shipped third-party products.** Anthropic's own docs state this explicitly: the CLI's stored `~/.claude` OAuth credentials work for personal/dev use, but distributing a product that consumes claude.ai login or claude.ai rate limits requires prior approval. Sloodge is a distributed desktop app, so: **API key only.** (This is also why we set `CLAUDE_CONFIG_DIR` away from `~/.claude` in §5 — it prevents accidentally picking up a developer's personal OAuth credentials during dev and shipping behavior that depends on them.)
+**Updated by M2.7.** Through M2.6 this section said "API key only". That is no longer the whole
+story: a Pro/Max subscriber can now authenticate without ever handling an API key. What changed is
+*not* that we drive a login — it is that the CLI exposes a mintable long-lived token we can store
+exactly like a key.
 
-Branding follows the same rules: "Powered by Claude" / "Claude Agent" is permitted; "Claude Code" branding is not. The chat panel says **"Powered by Claude"** in the footer, nowhere else.
+### Verified surface (bundled CLI 2.1.220 / SDK 0.3.220, probed 2026-08-01)
+
+Findings recorded here rather than guessed, per the M2.7 roadmap row. The SDK ships **no `bin`**; it
+resolves a native `claude` binary from a per-platform sibling package
+(`@anthropic-ai/claude-agent-sdk-<platform>-<arch>`, listed in the SDK's own `manifest.json`) and
+spawns it. Everything below was read from that binary's own `--help` output, run against a throwaway
+`CLAUDE_CONFIG_DIR`. **No login was ever completed and no real credential was read.**
+
+| Command | Verified behaviour |
+|---|---|
+| `claude setup-token` | Exists. Help text: *"Set up a long-lived authentication token (requires Claude subscription)."* Prints a token the user can paste elsewhere. **This is the path we use.** |
+| `claude auth login [--claudeai\|--console\|--sso\|--email]` | Exists; `--claudeai` (subscription) is the default. With no TTY it prints an OSC-8-wrapped PKCE authorize URL (`claude.com/cai/oauth/authorize?…code_challenge_method=S256`, redirect `platform.claude.com/oauth/code/callback`) and then **blocks on stdin** at `Paste code here if prompted >`. |
+| `claude auth status [--json\|--text]` | Exists. **JSON is the default**: `{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}`. `authMethod:"oauth"` once signed in. |
+| `claude auth logout` | Exists. |
+| Credential storage | `.credentials.json` under `CLAUDE_CONFIG_DIR` — the isolated dir genuinely receives its own `.claude.json`, so §5's redirect works for config. **Caveat below.** |
+| Consumption | `CLAUDE_CODE_OAUTH_TOKEN` is a first-class credential source in the binary, alongside `apiKeyHelper` / `ANTHROPIC_AUTH_TOKEN` / `none`. The binary carries an explicit warning string about a shell-set `CLAUDE_CODE_OAUTH_TOKEN` belonging to a different account. |
+
+### Decision: paste a minted token, do not drive a browser login
+
+Sloodge asks the user to run `claude setup-token` in their own terminal and paste the result into
+**Settings ▸ Auth**. We store it in the same `safeStorage` vault as the API key and inject it as
+`CLAUDE_CODE_OAUTH_TOKEN`.
+
+Why not the `auth login` flow, even though it is technically drivable:
+
+- **No supported programmatic login exists.** The flow above is an interactive TUI contract, not an
+  API. Scraping a URL out of its stdout and feeding a code back through stdin is a screen-scrape of
+  an unversioned surface that can change in any patch release.
+- **The reference implementation deliberately does not do it.** t3code — the most-scrutinised
+  third-party Electron wrapper around this CLI — contains no OAuth flow at all: no authorize URL, no
+  PKCE, no token exchange. It has the user authenticate out of band and consumes the result.
+- **A minted token is strictly better for us than t3code's ambient-credential approach.** The secret
+  lands in *our* encrypted vault rather than in machine-global state, so there is nothing to isolate,
+  nothing of the user's to clobber, and no platform-specific credential-store behaviour to get right.
+
+Known limits of a `setup-token` token, none of which affect Sloodge: it cannot establish Remote
+Control sessions or fetch claude.ai connectors, and `--bare` mode ignores it.
+
+**Distribution caveat, unresolved.** The earlier version of this section recorded that consuming
+claude.ai subscription capacity from a *distributed third-party product* requires prior approval from
+Anthropic. That constraint is about entitlement, not mechanism, so it applies to a pasted
+subscription token as much as it would to a driven login. Nothing in M2.7 resolves it. The feature
+ships because the user chose it explicitly; **confirm entitlement before distributing broadly.** The
+API-key path is unaffected either way.
+
+Branding rules are unchanged: "Powered by Claude" / "Claude Agent" is permitted; "Claude Code"
+branding is not. The chat panel says **"Powered by Claude"** in the footer, nowhere else.
+
+### Credential precedence — the trap this milestone had to close
+
+The CLI resolves credentials in this order:
+
+```
+Bedrock/Vertex/Foundry -> ANTHROPIC_AUTH_TOKEN -> ANTHROPIC_API_KEY -> apiKeyHelper
+  -> CLAUDE_CODE_OAUTH_TOKEN -> interactive subscription login
+```
+
+**`ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN`.** M2.1 spreads `process.env` into the
+subprocess — which it must, or the child loses `PATH` and `HOME` (§16) — so a developer's ambient key,
+or one left in a user's shell profile, would silently outrank a token the user deliberately pasted,
+billing their console account while the UI reads "using your Claude subscription".
+
+So `buildAuthEnv` (`src/main/agent/auth-env.ts`) **deletes** every credential variable and then sets
+exactly one. Deleting, not merely declining to set, is the whole point; it is pinned by a test that
+puts an ambient `ANTHROPIC_API_KEY` in the base environment and asserts it is absent from the result.
+`ANTHROPIC_BASE_URL` is deliberately *not* stripped — a proxy endpoint is configuration, not a
+credential.
 
 ### Storage
 
-```ts
-// src/main/agent/auth.ts
-import { safeStorage, app } from "electron";
-import fs from "node:fs/promises";
-import path from "node:path";
+Two slots, one rule. `src/main/agent/vault.ts`:
 
-const KEY_FILE = () => path.join(app.getPath("userData"), "anthropic.key.enc");
+| Slot | File under `userData` | Injected as |
+|---|---|---|
+| API key | `anthropic.key.enc` | `ANTHROPIC_API_KEY` |
+| Subscription token | `claude.oauth.enc` | `CLAUDE_CODE_OAUTH_TOKEN` |
 
-export async function saveApiKey(plaintext: string) {
-  if (!safeStorage.isEncryptionAvailable()) throw new KeychainUnavailableError();
-  await fs.writeFile(KEY_FILE(), safeStorage.encryptString(plaintext.trim()));
-}
+Separate files rather than one blob so clearing one cannot corrupt or race the other, and a decrypt
+failure on one degrades to "that credential is absent" instead of losing both.
 
-export async function loadApiKey(): Promise<string | null> {
-  try {
-    return safeStorage.decryptString(await fs.readFile(KEY_FILE()));
-  } catch { return null; }
-}
-```
+- `safeStorage` backs onto **Keychain** (macOS) and **DPAPI** (Windows); the ciphertext is bound to
+  the OS user account.
+- **Neither credential ever crosses IPC toward the renderer.** Settings sends a secret *in* via
+  `agent:setKey` / `agent:setSubscriptionToken` and can only read back a masked `AuthStatus`
+  (`{ mode, apiKey: { configured, last4 }, subscription: { configured, last4 } }`). There is
+  deliberately no channel that returns a stored credential.
+- The preload bridge **re-derives** `mode` from the two masked slots rather than trusting the wire, so
+  a main-process bug cannot make the UI claim a subscription is active when no token is stored.
+- If `safeStorage.isEncryptionAvailable()` is false (rare Linux dev case), we refuse to persist.
 
-- `safeStorage` backs onto **Keychain** (macOS) and **DPAPI** (Windows) — the ciphertext is bound to the OS user account.
-- The key **never crosses IPC toward the renderer.** Settings UI sends the key *in* via `ipcRenderer.invoke("settings:setApiKey", value)` and can only ever read back a masked status (`{ configured: true, last4: "…aXY9" }`).
-- Injected per-query via `options.env`. Remember TS `env` **replaces** the subprocess environment — always `{ ...process.env, ANTHROPIC_API_KEY }`, or the subprocess loses `PATH` and friends.
-- If `safeStorage.isEncryptionAvailable()` is false (rare Linux dev case), refuse to persist and hold the key in memory for the session only, with a visible banner.
+### macOS isolation caveat — unverified, needs a Mac
+
+Anthropic's documentation describes the `CLAUDE_CONFIG_DIR`-relative `.credentials.json` as applying
+"on Linux or Windows"; macOS is conspicuously absent, because the Keychain lookup is keyed off `HOME`
+rather than the config dir. **Strong inference, not empirically verified — no Mac was available:** on
+macOS `CLAUDE_CONFIG_DIR` may not isolate *credentials*, so an in-app login and the user's own
+ambient login could share a Keychain entry and clobber each other.
+
+Sloodge's chosen design sidesteps this entirely — we never write to the CLI's credential store, we
+inject a token via the environment. Recorded here because it constrains any future milestone that
+reconsiders driving `claude auth login`.
+
+Related, if that ever happens: set `CLAUDE_CONFIG_DIR`, **never `HOME`**. Overriding `HOME` relocates
+the macOS Keychain lookup so the spawned CLI cannot find its own OAuth credentials and reports "Not
+logged in" — a bug t3code hit and fixed.
+
+### Windows executable resolution — for whoever wires the CLI directly
+
+Not needed by M2.7 (we spawn nothing), but load-bearing for any milestone that does: the SDK spawns
+`pathToClaudeCodeExecutable` **without a shell** and without `PATH`/`PATHEXT` resolution, so a bare
+`claude` fails, and an npm `claude.cmd` shim fails with `spawn EINVAL` on Node >= 20.12. Resolve
+through to the real `claude.exe`. A packaged Electron app is *more* likely to hit this than a dev CLI.
+`package.json` already `asarUnpack`s the platform packages; a resolved path still needs the
+`app.asar` -> `app.asar.unpacked` rewrite, since nothing can be spawned from inside an archive.
 
 ### Failure UX
 
 | Condition | UI |
 |---|---|
-| No key configured | Chat box disabled with inline "Add your Anthropic API key in Settings →" |
-| 401 from API | Toast + Settings deep-link; key marked invalid, not deleted |
+| Nothing configured | Composer disabled with an inline **"Set up authentication"** card linking to Settings ▸ Auth |
+| 401 from API | Typed `auth` error in the transcript pointing at Settings; the credential is marked invalid, not deleted |
 | Offline / DNS failure | Chat message bubble: "Can't reach Claude. Slides and Design Mode still work offline." |
+| No OS encryption backend | The vault's own error surfaces verbatim in the Auth tab; nothing is persisted |
 
-Future (not v1): `ANTHROPIC_BASE_URL` proxy mode so a team can route through their own server and no key lives on the client.
+Future (not v1): `ANTHROPIC_BASE_URL` proxy mode so a team can route through their own server and no
+credential lives on the client.
 
 ---
 

@@ -3,33 +3,46 @@
  *
  * The live chat panel driven by a fake agent bridge — no real IPC, no API call. The pure transcript
  * logic is proven in `transcript.test.ts`; this covers the component wiring: compose+send calls the
- * bridge, Enter vs Shift+Enter, Stop interrupts, chips + errors render, the no-key gate, and the
- * disabled-while-streaming composer.
+ * bridge, Enter vs Shift+Enter, Stop interrupts, chips + errors render, the unauthenticated gate, and
+ * the disabled-while-streaming composer.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatPanel } from '../../../src/renderer/src/features/chat/ChatPanel'
+import { useAuthStore } from '../../../src/renderer/src/stores/authStore'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
 import type { AgentEvent, ApiKeyStatus } from '../../../src/shared/agent/types'
+import type { AuthStatus } from '../../../src/shared/agent/auth'
 
 type Emit = (event: AgentEvent) => void
 
-function makeFakeBridge(status: ApiKeyStatus): {
+const KEY_SET: ApiKeyStatus = { configured: true, last4: 'aXY9' }
+const KEY_UNSET: ApiKeyStatus = { configured: false, last4: null }
+
+/** Configured through the API-key slot — the composer is open. */
+const CONFIGURED: AuthStatus = { mode: 'api-key', apiKey: KEY_SET, subscription: KEY_UNSET }
+/** Neither vault slot filled — the composer is gated behind the Settings link. */
+const NO_AUTH: AuthStatus = { mode: 'not-configured', apiKey: KEY_UNSET, subscription: KEY_UNSET }
+
+function makeFakeBridge(status: AuthStatus): {
   bridge: AgentBridge
   emit: Emit
   sendMessage: ReturnType<typeof vi.fn>
   interrupt: ReturnType<typeof vi.fn>
-  setApiKey: ReturnType<typeof vi.fn>
+  getAuthStatus: ReturnType<typeof vi.fn>
 } {
   const listeners = new Set<(e: AgentEvent) => void>()
   const sendMessage = vi.fn(async () => true)
   const interrupt = vi.fn(async () => true)
-  const setApiKey = vi.fn(async () => ({ configured: true, last4: 'aXY9' }) as ApiKeyStatus)
+  const getAuthStatus = vi.fn(async () => status)
   const bridge: AgentBridge = {
-    setApiKey,
-    clearApiKey: vi.fn(async () => ({ configured: false, last4: null })),
-    getApiKeyStatus: vi.fn(async () => status),
+    setApiKey: vi.fn(async () => KEY_SET),
+    clearApiKey: vi.fn(async () => KEY_UNSET),
+    getApiKeyStatus: vi.fn(async () => status.apiKey),
+    setSubscriptionToken: vi.fn(async () => status),
+    clearSubscriptionToken: vi.fn(async () => status),
+    getAuthStatus,
     sendMessage,
     interrupt,
     onAgentEvent: (listener) => {
@@ -45,14 +58,18 @@ function makeFakeBridge(status: ApiKeyStatus): {
       for (const listener of listeners) listener(event)
     })
   }
-  return { bridge, emit, sendMessage, interrupt, setApiKey }
+  return { bridge, emit, sendMessage, interrupt, getAuthStatus }
 }
 
-const CONFIGURED: ApiKeyStatus = { configured: true, last4: 'aXY9' }
-const NO_KEY: ApiKeyStatus = { configured: false, last4: null }
+beforeEach(() => {
+  // `useAuthStore` is a module-level singleton (M2.7): without this, a case that ends up configured
+  // leaves the next one's composer ungated and the gate tests pass or fail by file order.
+  act(() => useAuthStore.getState().reset())
+})
 
 afterEach(() => {
   cleanup()
+  act(() => useAuthStore.getState().reset())
   delete window.sloodge
   vi.restoreAllMocks()
 })
@@ -61,36 +78,52 @@ const composer = (): HTMLTextAreaElement =>
   screen.getByPlaceholderText('Ask Claude…') as HTMLTextAreaElement
 
 describe('ChatPanel — no bridge (browser host)', () => {
-  it('renders an editable composer with an inert Send and no key gate', () => {
+  it('renders an editable composer with an inert Send and no auth gate', () => {
     render(<ChatPanel />)
     expect(composer().disabled).toBe(false)
     expect(screen.getByRole('button', { name: /send/i }).getAttribute('aria-disabled')).toBe('true')
-    expect(screen.queryByText(/add your claude api key/i)).toBeNull()
+    expect(screen.queryByText(/set up authentication/i)).toBeNull()
   })
 })
 
-describe('ChatPanel — no key configured', () => {
+describe('ChatPanel — no credential configured', () => {
   beforeEach(() => {
-    window.sloodge = { onMenuAction: () => () => undefined, agent: makeFakeBridge(NO_KEY).bridge }
+    window.sloodge = { onMenuAction: () => () => undefined, agent: makeFakeBridge(NO_AUTH).bridge }
   })
 
-  it('shows the add-key affordance and disables the composer', async () => {
+  it('shows the Set up authentication affordance and disables the composer', async () => {
     render(<ChatPanel />)
-    expect(await screen.findByText(/add your claude api key/i)).toBeTruthy()
+    expect(await screen.findByText(/set up authentication/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open Settings' })).toBeTruthy()
     expect(composer().disabled).toBe(true)
   })
 
-  it('storing a key clears the gate and enables the composer', async () => {
-    const fake = makeFakeBridge(NO_KEY)
-    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+  it('the gate hands off to Settings instead of taking a credential inline', async () => {
+    // M2.7 moved credential entry into Settings ▸ Auth so there is exactly one place a secret is
+    // typed. The gate must therefore *only* be a link — no field, no save, no second masking rule.
+    const onOpenAuthSettings = vi.fn()
+    render(<ChatPanel onOpenAuthSettings={onOpenAuthSettings} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Settings' }))
+
+    expect(onOpenAuthSettings).toHaveBeenCalledTimes(1)
+    expect(screen.queryByLabelText(/api key/i)).toBeNull()
+  })
+
+  it('a credential stored from Settings clears the gate and enables the composer', async () => {
+    window.sloodge = { onMenuAction: () => () => undefined, agent: makeFakeBridge(NO_AUTH).bridge }
     render(<ChatPanel />)
-    await screen.findByText(/add your claude api key/i)
+    await screen.findByText(/set up authentication/i)
+    expect(composer().disabled).toBe(true)
 
-    fireEvent.change(screen.getByLabelText('Claude API key'), { target: { value: 'sk-ant-xyz' } })
-    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    // The Settings dialog lives in a different subtree and publishes through the shared store; the
+    // composer has to follow it, which is the whole reason the status left local component state.
+    act(() => {
+      useAuthStore.setState({ status: CONFIGURED, loaded: true })
+    })
 
-    await waitFor(() => expect(fake.setApiKey).toHaveBeenCalledWith('sk-ant-xyz'))
     await waitFor(() => expect(composer().disabled).toBe(false))
+    expect(screen.queryByText(/set up authentication/i)).toBeNull()
   })
 })
 

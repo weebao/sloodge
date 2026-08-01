@@ -18,6 +18,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { app } from 'electron'
 import path from 'node:path'
+import { buildAuthEnv } from './auth-env'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
 import { BUNDLED_SKILL_NAMES, resolveBundledSkillsDir } from './skills'
 
@@ -84,10 +85,12 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     settingSources: ['project'],
     strictMcpConfig: true,
     env: {
-      // `env` REPLACES the subprocess environment in the TS SDK — always spread `process.env`, or
-      // the subprocess loses PATH/HOME (§4, §16).
-      ...process.env,
-      ANTHROPIC_API_KEY: o.apiKey,
+      // `env` REPLACES the subprocess environment in the TS SDK — `buildAuthEnv` spreads
+      // `process.env` so the subprocess keeps PATH/HOME (§4, §16), and *deletes* every credential
+      // variable before setting the one this session actually uses. That deletion is the point:
+      // `ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN` in the CLI's precedence, so an
+      // ambient key would otherwise hijack a subscription session (see auth-env.ts).
+      ...buildAuthEnv(process.env, o.credential),
       CLAUDE_CONFIG_DIR: o.configDir,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     },

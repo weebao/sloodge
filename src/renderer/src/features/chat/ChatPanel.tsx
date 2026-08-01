@@ -24,8 +24,13 @@ import { useChatSession } from './useChatSession'
  * Deck hot-updates ride a separate feed (`deck:updated` → `deckStore.applyRemoteDeck`, wired in
  * `AppShell`), so the canvas and rail update mid-turn independently of this chat stream.
  */
-export function ChatPanel(): JSX.Element {
-  const { transcript, keyStatus, hasBridge, send, interrupt, submitKey } = useChatSession()
+export type ChatPanelProps = {
+  /** Opens Settings on the Auth tab. Supplied by `AppShell`, which owns the dialog. */
+  onOpenAuthSettings?: (() => void) | undefined
+}
+
+export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Element {
+  const { transcript, needsAuth, hasBridge, send, interrupt } = useChatSession()
   const attachment = useChatContextStore((state) => state.attachment)
   const clearContext = useChatContextStore((state) => state.clear)
   const currentSlideId = useDeckStore((state) => state.currentSlideId)
@@ -33,7 +38,7 @@ export function ChatPanel(): JSX.Element {
   const logRef = useRef<HTMLDivElement>(null)
 
   const streaming = transcript.turnState === 'streaming'
-  const needsKey = hasBridge && keyStatus !== null && !keyStatus.configured
+  const needsKey = hasBridge && needsAuth
 
   // Invalidate a stale context chip on slide switch: a bundle built for slide A must not ride a turn
   // sent while looking at slide B (the element isn't the one on screen, and the agent would edit the
@@ -101,7 +106,7 @@ export function ChatPanel(): JSX.Element {
       </div>
 
       <div className="border-t border-chrome-line p-2 dark:border-ink-line">
-        {needsKey ? <KeyGate onSubmitKey={submitKey} /> : null}
+        {needsKey ? <AuthGate onOpenSettings={onOpenAuthSettings} /> : null}
 
         <label className="sr-only" htmlFor="chat-composer">
           Ask Claude
@@ -265,56 +270,27 @@ function ToolChipRow({ chip }: { chip: ToolChip }): JSX.Element {
 }
 
 /**
- * First-run affordance: no key configured, so the composer is disabled and this inline form takes
- * the key in. It calls `agent:setKey` (the plaintext travels main-ward only, §4). A full Settings
- * dialog — model picker, budget cap (20-ui-wireframes.md) — is its own milestone; this is the
- * minimal, honest "add your Claude API key" gate the streaming feature needs to be usable at all.
+ * The composer's unauthenticated state (M2.7).
+ *
+ * Through M2.6 this was an inline key form. It is now a link into Settings > Auth, because there must
+ * be exactly one place a credential is entered - two entry points means two validation paths, two
+ * masking rules, and a real chance they drift. It also means the composer never has to explain the
+ * subscription-vs-key choice in the width of a sidebar.
  */
-function KeyGate({ onSubmitKey }: { onSubmitKey: (key: string) => Promise<void> }): JSX.Element {
-  const [value, setValue] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const save = useCallback(() => {
-    const key = value.trim()
-    if (key.length === 0 || busy) return
-    setBusy(true)
-    void onSubmitKey(key).finally(() => {
-      setBusy(false)
-      setValue('')
-    })
-  }, [value, busy, onSubmitKey])
-
-  const onValueChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    setValue(event.target.value)
-  }, [])
-
+function AuthGate({ onOpenSettings }: { onOpenSettings?: (() => void) | undefined }): JSX.Element {
   return (
     <div className="mb-2 rounded border border-accent/40 bg-accent/5 p-2 text-[12px]">
-      <p className="mb-1 font-medium text-shell-fg dark:text-ink-fg">Add your Claude API key</p>
+      <p className="mb-1 font-medium text-shell-fg dark:text-ink-fg">Set up authentication</p>
       <p className="mb-2 text-[11px] text-chrome-muted dark:text-ink-muted">
-        Stored securely in your OS keychain. Needed before Claude can build slides.
+        Sign in with your Claude subscription, or add an API key, before Claude can build slides.
       </p>
-      <div className="flex items-center gap-2">
-        <label className="sr-only" htmlFor="chat-api-key">
-          Claude API key
-        </label>
-        <input
-          id="chat-api-key"
-          type="password"
-          value={value}
-          placeholder="sk-ant-…"
-          onChange={onValueChange}
-          className="min-w-0 flex-1 rounded border border-chrome-line bg-white px-2 py-1 text-[12px] text-shell-fg outline-none focus:border-accent dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg"
-        />
-        <button
-          type="button"
-          onClick={save}
-          disabled={busy || value.trim().length === 0}
-          className="rounded bg-accent px-2 py-1 text-[12px] font-medium text-white disabled:opacity-40"
-        >
-          Save
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="rounded bg-accent px-2 py-1 text-[12px] font-medium text-white"
+      >
+        Open Settings
+      </button>
     </div>
   )
 }

@@ -10,12 +10,21 @@ import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../../src/renderer/src/app/AppShell'
 import { createStarterDeck, useDeckStore } from '../../../src/renderer/src/stores/deckStore'
+import { useAuthStore } from '../../../src/renderer/src/stores/authStore'
 import { addSlide, createEmptyDeck, createSlideEntry } from '../../../src/shared/document/deck'
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
 import type { DeckUpdate } from '../../../src/shared/document/deck-update'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
+import type { AuthStatus } from '../../../src/shared/agent/auth'
 
 const NOW = 1_781_000_000_000
+
+/** A configured, masked auth status — the shell's chat panel must not sit behind the gate here. */
+const AUTHED: AuthStatus = {
+  mode: 'api-key',
+  apiKey: { configured: true, last4: 'aXY9' },
+  subscription: { configured: false, last4: null },
+}
 
 let deckListener: ((u: DeckUpdate) => void) | null = null
 
@@ -24,6 +33,9 @@ function fakeAgentBridge(): AgentBridge {
     setApiKey: vi.fn(async () => ({ configured: true, last4: 'aXY9' })),
     clearApiKey: vi.fn(async () => ({ configured: false, last4: null })),
     getApiKeyStatus: vi.fn(async () => ({ configured: true, last4: 'aXY9' })),
+    setSubscriptionToken: vi.fn(async () => AUTHED),
+    clearSubscriptionToken: vi.fn(async () => AUTHED),
+    getAuthStatus: vi.fn(async () => AUTHED),
     sendMessage: vi.fn(async () => true),
     interrupt: vi.fn(async () => true),
     onAgentEvent: () => () => undefined,
@@ -57,6 +69,9 @@ function fiveSlideSnapshot(): DeckUpdate {
 
 beforeEach(() => {
   useDeckStore.setState(createStarterDeck(NOW))
+  // `useAuthStore` is a module-level singleton (M2.7), so a status left behind by a previous case
+  // would leak into the next one and make these order-dependent.
+  useAuthStore.getState().reset()
   deckListener = null
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('about:blank')
   vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined)

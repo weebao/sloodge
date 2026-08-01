@@ -17,6 +17,7 @@
  */
 
 import type { AgentModelId } from '../../shared/agent/types'
+import type { AgentCredential } from './auth-env'
 
 /**
  * One queued user turn. Structurally a subset of the SDK's `SDKUserMessage`, so the facade can hand
@@ -37,7 +38,12 @@ export type AgentUserMessage = {
  * inside `client.ts` and are not represented here — they are invariant, not per-call.
  */
 export type AgentQueryOptions = {
-  readonly apiKey: string
+  /**
+   * The resolved credential for this session (M2.7) — an API key or a `claude setup-token`
+   * subscription token. Which environment variable it becomes, and which conflicting ones get
+   * deleted, is `buildAuthEnv`'s job; the orchestration never touches the value.
+   */
+  readonly credential: AgentCredential
   readonly model: AgentModelId
   readonly cwd: string
   readonly configDir: string

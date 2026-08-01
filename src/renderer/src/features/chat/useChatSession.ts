@@ -11,8 +11,9 @@
  * no key affordance is offered (you cannot store a key without a bridge).
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
-import type { ApiKeyStatus } from '../../../../shared/agent/types'
+import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { isAuthenticated, NOT_CONFIGURED, type AuthStatus } from '../../../../shared/agent/auth'
+import { selectAuthLoaded, selectAuthStatus, useAuthStore } from '../../stores/authStore'
 import {
   composeAgentMessage,
   type ElementContextBundle,
@@ -22,8 +23,16 @@ import { initialTranscript, reduceTranscript, type Transcript } from './transcri
 
 export type ChatSession = {
   readonly transcript: Transcript
-  /** `null` while the initial key-status probe is in flight; the masked status afterwards. */
-  readonly keyStatus: ApiKeyStatus | null
+  /**
+   * The masked auth status from the shared store (M2.7). Read from a store rather than local state
+   * because Settings writes the credential from a different subtree — per-hook state would leave the
+   * composer gated after a successful save.
+   */
+  readonly authStatus: AuthStatus
+  /** False until the first status probe resolves, so the gate never flashes at a configured user. */
+  readonly authLoaded: boolean
+  /** True once we know the user has no credential — the composer shows the Settings link. */
+  readonly needsAuth: boolean
   /** False when this renderer has no agent bridge (browser host / older preload). */
   readonly hasBridge: boolean
   /**
@@ -34,14 +43,14 @@ export type ChatSession = {
   readonly send: (text: string, attachment?: ElementContextBundle | null) => void
   /** Stop the in-flight turn (the Stop button). */
   readonly interrupt: () => void
-  /** Store an API key and refresh the key status (the first-run affordance). */
-  readonly submitKey: (key: string) => Promise<void>
 }
 
 export function useChatSession(): ChatSession {
   const bridge = useMemo(() => getAgentBridge(), [])
   const [transcript, dispatch] = useReducer(reduceTranscript, initialTranscript)
-  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null)
+  const authStatus = useAuthStore(selectAuthStatus)
+  const authLoaded = useAuthStore(selectAuthLoaded)
+  const setAuthStatus = useAuthStore((state) => state.setStatus)
 
   // Probe the key status once and stream every agent event into the reducer. The subscription and
   // the probe share one effect because both live and die with the bridge.
@@ -49,14 +58,14 @@ export function useChatSession(): ChatSession {
     if (bridge === undefined) return undefined
     let live = true
     void bridge
-      .getApiKeyStatus()
+      .getAuthStatus()
       .then((status) => {
-        if (live) setKeyStatus(status)
+        if (live) setAuthStatus(status)
       })
       .catch(() => {
-        // A failed probe is treated as "no key configured": the worst case is offering the
-        // add-key affordance to a user who already has one, which their first send corrects.
-        if (live) setKeyStatus({ configured: false, last4: null })
+        // A failed probe is treated as "nothing configured": the worst case is offering the
+        // Settings link to a user who is already set up, which their first send corrects.
+        if (live) setAuthStatus(NOT_CONFIGURED)
       })
     const unsubscribe = bridge.onAgentEvent((event) => {
       dispatch({ type: 'agent-event', event })
@@ -65,7 +74,7 @@ export function useChatSession(): ChatSession {
       live = false
       unsubscribe()
     }
-  }, [bridge])
+  }, [bridge, setAuthStatus])
 
   const send = useCallback(
     (text: string, attachment?: ElementContextBundle | null) => {
@@ -80,19 +89,19 @@ export function useChatSession(): ChatSession {
       void bridge
         .sendMessage(outbound)
         .then((accepted) => {
-          // The key was removed between the status probe and this send: surface it as a
-          // chat-visible auth error rather than a silently swallowed turn.
+          // The credential was removed between the status probe and this send: surface it as a
+          // chat-visible auth error rather than a silently swallowed turn, and re-gate the composer.
           if (!accepted) {
             dispatch({
               type: 'agent-event',
               event: {
                 type: 'error',
                 kind: 'auth',
-                message: 'No Claude API key is configured.',
+                message: 'No Claude credential is configured.',
                 recoverable: false,
               },
             })
-            setKeyStatus({ configured: false, last4: null })
+            setAuthStatus(NOT_CONFIGURED)
           }
         })
         .catch((error: unknown) => {
@@ -108,7 +117,7 @@ export function useChatSession(): ChatSession {
           })
         })
     },
-    [bridge, transcript.turnState],
+    [bridge, transcript.turnState, setAuthStatus],
   )
 
   const interrupt = useCallback(() => {
@@ -116,14 +125,14 @@ export function useChatSession(): ChatSession {
     if (bridge !== undefined) void bridge.interrupt()
   }, [bridge])
 
-  const submitKey = useCallback(
-    async (key: string) => {
-      if (bridge === undefined) return
-      const status = await bridge.setApiKey(key)
-      setKeyStatus(status)
-    },
-    [bridge],
-  )
-
-  return { transcript, keyStatus, hasBridge: bridge !== undefined, send, interrupt, submitKey }
+  return {
+    transcript,
+    authStatus,
+    authLoaded,
+    // Only a *known* unconfigured state gates the composer; an unresolved probe must not.
+    needsAuth: authLoaded && !isAuthenticated(authStatus),
+    hasBridge: bridge !== undefined,
+    send,
+    interrupt,
+  }
 }

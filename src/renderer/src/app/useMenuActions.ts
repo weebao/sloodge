@@ -57,6 +57,7 @@ export function useMenuActions(
   onExportPdf?: () => void,
   onExportPptx?: () => void,
   onExportHtml?: () => void,
+  onOpenSettings?: () => void,
 ): void {
   const { undo, redo } = handlers
   useEffect(() => {
@@ -79,7 +80,13 @@ export function useMenuActions(
         onExportHtml?.()
         return
       }
+      // M2.7: File ▸ Settings… and the native `Ctrl/⌘+,` accelerator arrive here as one id, so the
+      // dialog has exactly one entry point rather than a second in-renderer key handler.
+      if (action === 'app.settings') {
+        onOpenSettings?.()
+        return
+      }
       // Every other id belongs to File; its milestone will claim it here.
     })
-  }, [undo, redo, onExportPdf, onExportPptx, onExportHtml])
+  }, [undo, redo, onExportPdf, onExportPptx, onExportHtml, onOpenSettings])
 }

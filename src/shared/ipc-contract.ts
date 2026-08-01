@@ -8,6 +8,7 @@
  */
 
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
+import type { AuthStatus } from './agent/auth'
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
 import type {
@@ -44,6 +45,7 @@ export const MENU_ACTIONS = [
   'file.export.pptx',
   'file.export.pdf',
   'file.export.html',
+  'app.settings',
   'edit.undo',
   'edit.redo',
 ] as const
@@ -86,6 +88,11 @@ export type SlideRevokeResponse = { revoked: boolean }
  */
 export type AgentSetKeyResponse = { status: ApiKeyStatus }
 export type AgentKeyStatusResponse = { status: ApiKeyStatus }
+/**
+ * The full masked auth picture (M2.7) — both vault slots plus the derived active mode. Every field is
+ * a masked `ApiKeyStatus`; no plaintext credential can appear in this shape by construction.
+ */
+export type AgentAuthStatusResponse = { status: AuthStatus }
 export type AgentSendResponse = { accepted: boolean }
 export type AgentInterruptResponse = { interrupted: boolean }
 
@@ -109,6 +116,9 @@ export type IpcRequests = {
   'agent:setKey': { req: ApiKeySetRequest; res: AgentSetKeyResponse }
   'agent:clearKey': { req: Record<string, never>; res: AgentKeyStatusResponse }
   'agent:keyStatus': { req: Record<string, never>; res: AgentKeyStatusResponse }
+  'agent:authStatus': { req: Record<string, never>; res: AgentAuthStatusResponse }
+  'agent:setSubscriptionToken': { req: ApiKeySetRequest; res: AgentAuthStatusResponse }
+  'agent:clearSubscriptionToken': { req: Record<string, never>; res: AgentAuthStatusResponse }
   'agent:send': { req: AgentSendRequest; res: AgentSendResponse }
   'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
@@ -172,6 +182,15 @@ export const SLIDE_REVOKE_CHANNEL = 'slide:revoke' satisfies IpcRequestChannel
 export const AGENT_SET_KEY_CHANNEL = 'agent:setKey' satisfies IpcRequestChannel
 export const AGENT_CLEAR_KEY_CHANNEL = 'agent:clearKey' satisfies IpcRequestChannel
 export const AGENT_KEY_STATUS_CHANNEL = 'agent:keyStatus' satisfies IpcRequestChannel
+/**
+ * The M2.7 auth channels. `setSubscriptionToken` carries a `claude setup-token` token *inward* only;
+ * like the API key it can be read back solely as a masked status.
+ */
+export const AGENT_AUTH_STATUS_CHANNEL = 'agent:authStatus' satisfies IpcRequestChannel
+export const AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL =
+  'agent:setSubscriptionToken' satisfies IpcRequestChannel
+export const AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL =
+  'agent:clearSubscriptionToken' satisfies IpcRequestChannel
 export const AGENT_SEND_CHANNEL = 'agent:send' satisfies IpcRequestChannel
 export const AGENT_INTERRUPT_CHANNEL = 'agent:interrupt' satisfies IpcRequestChannel
 export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
@@ -247,6 +266,9 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_SET_KEY_CHANNEL,
   AGENT_CLEAR_KEY_CHANNEL,
   AGENT_KEY_STATUS_CHANNEL,
+  AGENT_AUTH_STATUS_CHANNEL,
+  AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
+  AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
   PRESENT_SET_FULLSCREEN_CHANNEL,

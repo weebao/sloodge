@@ -69,6 +69,12 @@ export function buildAppMenuTemplate({
         ],
       },
       { type: 'separator' },
+      // Settings lives on File on every platform (M2.7). On macOS its conventional home is the app
+      // menu, but that is `{ role: 'appMenu' }` here — an opaque Electron-built submenu we cannot
+      // insert into without hand-rolling the whole thing. `CmdOrCtrl+,` is the chord users actually
+      // reach for, and registering it here means it works on macOS regardless of where the item sits.
+      actionItem('Settings…', 'app.settings', 'CmdOrCtrl+,', onAction),
+      { type: 'separator' },
       { role: isMac ? 'close' : 'quit' },
     ],
   }

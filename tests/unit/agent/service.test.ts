@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentService } from '../../../src/main/agent/service'
+import type { AgentCredential } from '../../../src/main/agent/auth-env'
 import type { AgentQueryFn, AgentQueryHandle } from '../../../src/main/agent/query-contract'
+
+/**
+ * What the vault resolves to once the user is configured (M2.7: `loadCredential` replaced the bare
+ * `loadApiKey`). `null` still means "nothing stored", which is what the refusal tests turn on.
+ */
+const LIVE: AgentCredential = { kind: 'api-key', value: 'sk-ant-live' }
 
 /**
  * A queryFn that counts how many `query()` subprocesses it opens (`starts`) and records every
@@ -47,7 +54,7 @@ describe('AgentService', () => {
     const rec = recordingQueryFn()
     const service = new AgentService({
       queryFn: rec.queryFn,
-      loadApiKey: async () => null,
+      loadCredential: async () => null,
       resolvePaths: PATHS,
     })
     expect(await service.send(1, 'hi', () => {})).toEqual({ accepted: false })
@@ -56,11 +63,11 @@ describe('AgentService', () => {
 
   it('accepts a turn once a key is configured, and does not cache the no-key refusal', async () => {
     const rec = recordingQueryFn()
-    const loadApiKey = vi
-      .fn<() => Promise<string | null>>()
+    const loadCredential = vi
+      .fn<() => Promise<AgentCredential | null>>()
       .mockResolvedValueOnce(null)
-      .mockResolvedValue('sk-ant-live')
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+      .mockResolvedValue(LIVE)
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     expect(await service.send(1, 'first', () => {})).toEqual({ accepted: false })
     expect(await service.send(1, 'second', () => {})).toEqual({ accepted: true })
@@ -69,21 +76,21 @@ describe('AgentService', () => {
 
   it('creates exactly one session under concurrent sends for one sender (no orphaned subprocess)', async () => {
     const rec = recordingQueryFn()
-    let resolveKey: (key: string | null) => void = NOOP
-    const loadApiKey = vi.fn(
+    let resolveKey: (credential: AgentCredential | null) => void = NOOP
+    const loadCredential = vi.fn(
       () =>
-        new Promise<string | null>((resolve) => {
+        new Promise<AgentCredential | null>((resolve) => {
           resolveKey = resolve
         }),
     )
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     // Two sends race before the first key load resolves.
     const p1 = service.send(7, 'a', () => {})
     const p2 = service.send(7, 'b', () => {})
-    expect(loadApiKey).toHaveBeenCalledTimes(1) // the second send awaits the first's creation
+    expect(loadCredential).toHaveBeenCalledTimes(1) // the second send awaits the first's creation
 
-    resolveKey('sk-ant-live')
+    resolveKey(LIVE)
     expect(await Promise.all([p1, p2])).toEqual([{ accepted: true }, { accepted: true }])
 
     expect(rec.starts()).toBe(1) // exactly one subprocess spawned for the sender
@@ -94,18 +101,18 @@ describe('AgentService', () => {
 
   it('closes — never orphans — a session created while a dispose was in flight', async () => {
     const rec = recordingQueryFn()
-    let resolveKey: (key: string | null) => void = NOOP
-    const loadApiKey = vi.fn(
+    let resolveKey: (credential: AgentCredential | null) => void = NOOP
+    const loadCredential = vi.fn(
       () =>
-        new Promise<string | null>((resolve) => {
+        new Promise<AgentCredential | null>((resolve) => {
           resolveKey = resolve
         }),
     )
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     const sendP = service.send(5, 'a', () => {}) // creation goes in flight
     const disposeP = service.dispose(5) // races the creation, before the key resolves
-    resolveKey('sk-ant-live')
+    resolveKey(LIVE)
     await Promise.all([sendP, disposeP])
 
     // The invariant that matters: every subprocess that started was also closed — none orphaned.
@@ -115,25 +122,25 @@ describe('AgentService', () => {
 
     // And the sender is not permanently poisoned — a later send builds a fresh session.
     const send2 = service.send(5, 'b', () => {})
-    resolveKey('sk-ant-live')
+    resolveKey(LIVE)
     await send2
     expect(rec.starts()).toBe(2)
   })
 
   it('disposeAll waits for in-flight creations and closes them too', async () => {
     const rec = recordingQueryFn()
-    let resolveKey: (key: string | null) => void = NOOP
-    const loadApiKey = vi.fn(
+    let resolveKey: (credential: AgentCredential | null) => void = NOOP
+    const loadCredential = vi.fn(
       () =>
-        new Promise<string | null>((resolve) => {
+        new Promise<AgentCredential | null>((resolve) => {
           resolveKey = resolve
         }),
     )
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     const sendP = service.send(8, 'a', () => {}) // creation in flight
     const allP = service.disposeAll() // quit races the creation
-    resolveKey('sk-ant-live')
+    resolveKey(LIVE)
     await Promise.all([sendP, allP])
 
     expect(rec.returns).toHaveBeenCalledTimes(rec.starts())
@@ -143,16 +150,16 @@ describe('AgentService', () => {
   it('disposeAll closes every live session even when an in-flight creation rejects (no orphans at quit)', async () => {
     const rec = recordingQueryFn()
     let rejectB: (reason?: unknown) => void = NOOP
-    const loadApiKey = vi
-      .fn<() => Promise<string | null>>()
-      .mockResolvedValueOnce('sk-ant-live') // sender A: resolves, becomes a live session
+    const loadCredential = vi
+      .fn<() => Promise<AgentCredential | null>>()
+      .mockResolvedValueOnce(LIVE) // sender A: resolves, becomes a live session
       .mockImplementationOnce(
         () =>
-          new Promise<string | null>((_resolve, reject) => {
+          new Promise<AgentCredential | null>((_resolve, reject) => {
             rejectB = reject // sender B: creation will reject
           }),
       )
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     await service.send(1, 'a', () => {}) // A live, subprocess started
     expect(rec.starts()).toBe(1)
@@ -169,13 +176,13 @@ describe('AgentService', () => {
   it('dispose does not throw when the in-flight creation rejects', async () => {
     const rec = recordingQueryFn()
     let rejectKey: (reason?: unknown) => void = NOOP
-    const loadApiKey = vi.fn(
+    const loadCredential = vi.fn(
       () =>
-        new Promise<string | null>((_resolve, reject) => {
+        new Promise<AgentCredential | null>((_resolve, reject) => {
           rejectKey = reject
         }),
     )
-    const service = new AgentService({ queryFn: rec.queryFn, loadApiKey, resolvePaths: PATHS })
+    const service = new AgentService({ queryFn: rec.queryFn, loadCredential, resolvePaths: PATHS })
 
     const sendP = service.send(4, 'a', () => {})
     const disposeP = service.dispose(4)
@@ -190,7 +197,7 @@ describe('AgentService', () => {
     const rec = recordingQueryFn()
     const service = new AgentService({
       queryFn: rec.queryFn,
-      loadApiKey: async () => 'sk-ant-live',
+      loadCredential: async () => LIVE,
       resolvePaths: PATHS,
     })
     await service.send(1, 'a', () => {})
@@ -204,7 +211,7 @@ describe('AgentService', () => {
     const rec = recordingQueryFn()
     const service = new AgentService({
       queryFn: rec.queryFn,
-      loadApiKey: async () => 'sk-ant-live',
+      loadCredential: async () => LIVE,
       resolvePaths: PATHS,
     })
     expect(await service.interrupt(99)).toEqual({ interrupted: false })
@@ -233,7 +240,7 @@ describe('AgentService', () => {
       })
       const service = new AgentService({
         queryFn: rec.queryFn,
-        loadApiKey: async () => 'sk-ant-live',
+        loadCredential: async () => LIVE,
         resolvePaths: PATHS,
         prepareWorkspace,
       })
@@ -258,7 +265,7 @@ describe('AgentService', () => {
       const logged: string[] = []
       const service = new AgentService({
         queryFn: rec.queryFn,
-        loadApiKey: async () => 'sk-ant-live',
+        loadCredential: async () => LIVE,
         resolvePaths: PATHS,
         prepareWorkspace: async () => ({
           installed: ['svg-animation'],
@@ -278,7 +285,7 @@ describe('AgentService', () => {
       const logged: string[] = []
       const service = new AgentService({
         queryFn: rec.queryFn,
-        loadApiKey: async () => 'sk-ant-live',
+        loadCredential: async () => LIVE,
         resolvePaths: PATHS,
         prepareWorkspace: () => Promise.reject(new Error('EACCES')),
         log: (message) => logged.push(message),
@@ -294,7 +301,7 @@ describe('AgentService', () => {
       const prepareWorkspace = vi.fn(async () => {})
       const service = new AgentService({
         queryFn: rec.queryFn,
-        loadApiKey: async () => 'sk-ant-live',
+        loadCredential: async () => LIVE,
         resolvePaths: PATHS,
         prepareWorkspace,
       })
@@ -309,7 +316,7 @@ describe('AgentService', () => {
       const rec = recordingQueryFn()
       const service = new AgentService({
         queryFn: rec.queryFn,
-        loadApiKey: async () => 'sk-ant-live',
+        loadCredential: async () => LIVE,
         resolvePaths: PATHS,
         prepareWorkspace: () => Promise.reject(new Error('EACCES')),
       })
