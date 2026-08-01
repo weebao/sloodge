@@ -52,6 +52,20 @@ export function clientPointToFrame(client: Point, box: ScreenBox, scale: number)
 }
 
 /**
+ * Convert a client-space pointer *delta* to a frame-space delta.
+ *
+ * A drag reads the pointer's travel in client pixels; the frame is painted at `scale`, so the
+ * element must move by `delta / scale` frame px to track the pointer 1:1. The box origin cancels in
+ * a difference, so — unlike `clientPointToFrame` — no `ScreenBox` is needed: this is purely the
+ * scale division, isolated here so the scale-correctness of the whole drag is one tested function.
+ * A non-usable scale yields `{0, 0}` (no movement) rather than `NaN`/`Infinity`.
+ */
+export function clientDeltaToFrame(delta: Point, scale: number): Point {
+  if (!isUsableScale(scale)) return { x: 0, y: 0 }
+  return { x: delta.x / scale, y: delta.y / scale }
+}
+
+/**
  * Convert a frame-space rect (as the bridge reports it) to overlay pixels.
  *
  * The overlay is not itself scaled, so a frame rect is multiplied by `z` to place it. A non-usable

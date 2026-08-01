@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  clientDeltaToFrame,
   clientPointToFrame,
   frameRectToOverlay,
   unionRects,
@@ -34,6 +35,22 @@ describe('clientPointToFrame', () => {
       x: 0,
       y: 0,
     })
+  })
+})
+
+describe('clientDeltaToFrame — scale-correct drag delta', () => {
+  it('divides the client delta by scale (the box origin cancels)', () => {
+    // A 100px client drag on a frame painted at 0.5x is a 200px move in frame space.
+    expect(clientDeltaToFrame({ x: 100, y: 50 }, 0.5)).toEqual({ x: 200, y: 100 })
+  })
+
+  it('is the identity at 1:1', () => {
+    expect(clientDeltaToFrame({ x: 30, y: -20 }, 1)).toEqual({ x: 30, y: -20 })
+  })
+
+  it('a non-usable scale yields no movement rather than NaN/Infinity', () => {
+    expect(clientDeltaToFrame({ x: 40, y: 40 }, 0)).toEqual({ x: 0, y: 0 })
+    expect(clientDeltaToFrame({ x: 40, y: 40 }, Number.NaN)).toEqual({ x: 0, y: 0 })
   })
 })
 
