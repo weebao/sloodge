@@ -81,4 +81,35 @@ describe('deepSanitizeXmlStrings', () => {
   it('sanitizes object KEYS as well as values', () => {
     expect(deepSanitizeXmlStrings({ [`k${dirty}`]: 'v' })).toEqual({ k: 'v' })
   })
+
+  it('returns class instances and exotic objects BY IDENTITY, deliberately', () => {
+    // Only plain objects are rebuilt. A Date/Buffer/class instance walked field-by-field would come
+    // back as a bare object and break the consumer, so they pass through untouched — the pptxgenjs
+    // surface takes no such value carrying user text today. Pinned so the choice is visible rather
+    // than incidental: if a class instance ever *does* carry agent text, this test must be revisited.
+    class Widget {
+      label: string
+      constructor(label: string) {
+        this.label = label
+      }
+    }
+    const widget = new Widget(`w${dirty}`)
+    expect(deepSanitizeXmlStrings(widget)).toBe(widget)
+    expect(deepSanitizeXmlStrings(widget).label).toBe(`w${dirty}`)
+
+    const date = new Date(0)
+    expect(deepSanitizeXmlStrings(date)).toBe(date)
+    const buffer = Buffer.from('bytes')
+    expect(deepSanitizeXmlStrings(buffer)).toBe(buffer)
+  })
+
+  it('walks a null-prototype object and cannot be used to pollute Object.prototype', () => {
+    const nullProto = Object.create(null) as Record<string, unknown>
+    nullProto[`k${dirty}`] = `v${dirty}`
+    expect(deepSanitizeXmlStrings(nullProto)).toEqual({ k: 'v' })
+
+    const polluter = JSON.parse('{"__proto__": {"polluted": true}}') as Record<string, unknown>
+    deepSanitizeXmlStrings(polluter)
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined()
+  })
 })

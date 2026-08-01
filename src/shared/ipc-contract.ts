@@ -182,15 +182,19 @@ export const PRESENT_SET_FULLSCREEN_CHANNEL = 'present:setFullscreen' satisfies 
  * PDF export (M4.2). Main registers the handler, preload invokes it, and — like the others — a typo
  * in either literal would compile and ship as "Export as PDF does nothing", invisible to a suite that
  * never crosses a real IPC boundary. Main owns the save dialog and the file write, so the renderer
- * hands over slide HTML and gets back a report, never a filesystem path it could tamper with.
+ * hands over slide HTML and gets back a report. The renderer never *chooses* or supplies a path: main
+ * owns `showSaveDialog` and the write, so a compromised renderer cannot direct the output anywhere.
+ * (The report does echo the chosen `outPath` back for display; that is main reporting where it wrote,
+ * not the renderer nominating a destination.)
  */
 export const FILE_EXPORT_PDF_CHANNEL = 'file:exportPdf' satisfies IpcRequestChannel
 
 /**
  * PPTX export (M4.3). Same discipline as the PDF channel: main owns the save dialog and the file
- * write, so the renderer hands over slide HTML plus the fidelity choice and gets back a report, never a
- * filesystem path. A typo in either literal would compile and ship as "Export as PowerPoint does
- * nothing", invisible to a suite that never crosses a real IPC boundary.
+ * write, so the renderer hands over slide HTML plus the fidelity choice and gets back a report — it
+ * never chooses the destination (the report's `outPath` is main echoing where it wrote). A typo in
+ * either literal would compile and ship as "Export as PowerPoint does nothing", invisible to a suite
+ * that never crosses a real IPC boundary.
  */
 export const FILE_EXPORT_PPTX_CHANNEL = 'file:exportPptx' satisfies IpcRequestChannel
 

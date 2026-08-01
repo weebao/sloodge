@@ -64,8 +64,10 @@ export function deepSanitizeXmlStrings<T>(value: T): T {
   if (typeof value === 'string') return sanitizeXmlText(value) as T
   if (Array.isArray(value)) return value.map((item) => deepSanitizeXmlStrings(item)) as T
   if (value !== null && typeof value === 'object') {
-    // Only plain objects are walked; class instances (none are passed today) would be returned as-is
-    // rather than silently rebuilt into a bare object.
+    // Only plain objects are walked. A Date, Buffer, or class instance walked field-by-field would
+    // come back as a bare object and break its consumer, so such values pass through BY IDENTITY —
+    // a deliberate choice, safe because nothing on the pptxgenjs surface carries agent text inside a
+    // class instance today. Pinned by `sanitize.test.ts`; revisit if that ever changes.
     const proto: unknown = Object.getPrototypeOf(value)
     if (proto !== Object.prototype && proto !== null) return value
     const out: Record<string, unknown> = {}

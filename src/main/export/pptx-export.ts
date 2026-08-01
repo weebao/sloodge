@@ -133,7 +133,11 @@ export async function buildSlidesPptx(args: BuildPptxArgs): Promise<BuildPptxRes
         confidence: plan.confidence,
         notes: outcomeNotes(plan),
       })
-      if (plan.tier === 'raster' && plan.rasterDataUrl === undefined) {
+      // `planSlide` never returns `tier: 'raster'` without a capture — it downgrades to `structured`
+      // and records the reason — so the previous `tier === 'raster' && rasterDataUrl === undefined`
+      // check here was unreachable, and its message ("kept structured shapes") contradicted its own
+      // condition. Surface the downgrade the planner actually reports instead.
+      if (plan.reasons.some((reason) => reason.includes('raster capture unavailable'))) {
         warnings.push(
           `Slide ${String(position + 1)} (${slide.title}) had no raster capture and kept structured shapes.`,
         )

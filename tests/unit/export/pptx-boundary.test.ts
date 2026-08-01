@@ -32,9 +32,20 @@ function sourceFiles(dir: string): string[] {
   return out
 }
 
-/** Any reference that would pull the library in: a static import, a re-export, or a dynamic import. */
+/**
+ * Any reference that would pull the library in: a static import or re-export (`from 'pptxgenjs'`),
+ * `require('pptxgenjs')`, or a dynamic `import('pptxgenjs')`. All three quote styles are matched,
+ * including backticks.
+ *
+ * **Residual, deliberately accepted:** a specifier assembled at runtime (`'pptx' + 'genjs'`, or a
+ * variable) defeats any regex. That is not the failure mode this guards — it guards the ordinary
+ * accident of a developer importing the library directly in a new module — and a contributor
+ * assembling the string dynamically has evidently decided to route around the boundary, which review
+ * catches. Making this airtight would need a resolver-level check (walking the module graph), which is
+ * disproportionate here.
+ */
 const PPTXGENJS_REFERENCE =
-  /(?:from\s*['"]pptxgenjs['"])|(?:require\(\s*['"]pptxgenjs['"]\s*\))|(?:import\(\s*['"]pptxgenjs['"]\s*\))/
+  /(?:from\s*['"`]pptxgenjs['"`])|(?:require\(\s*['"`]pptxgenjs['"`]\s*\))|(?:import\(\s*['"`]pptxgenjs['"`]\s*\))/
 
 describe('pptxgenjs boundary', () => {
   const files = sourceFiles(SRC_ROOT)
@@ -51,14 +62,13 @@ describe('pptxgenjs boundary', () => {
     expect(importers).toEqual([ADAPTER])
   })
 
-  it('the adapter really does route everything through the deep sanitizer', () => {
-    const adapterSource = readFileSync(join(SRC_ROOT, 'main', 'export', 'safe-pptx.ts'), 'utf8')
-    expect(adapterSource).toContain('deepSanitizeXmlStrings')
-    // Every forwarding method sanitizes; none may hand a raw value to the library.
-    for (const method of ['addText', 'addShape', 'addImage', 'addNotes']) {
-      expect(adapterSource).toContain(method)
-    }
-  })
+  // NOTE: there was a third check here asserting the adapter's source *contains* the string
+  // `deepSanitizeXmlStrings` and the names of its forwarding methods. It was deleted in review round
+  // 4: it proved only that some text appears in a file, and the reviewer demonstrated that the
+  // sanitize call could be removed from four separate methods with that check — and the entire suite
+  // — still green. Whether each method actually sanitizes is a behavioural question, and it is now
+  // answered behaviourally in `safe-pptx.test.ts`, which drives every forwarding method against a
+  // recording fake pptxgenjs and fails if any of them forwards an unsanitized string.
 
   it('the writer carries no sanitize calls of its own (the boundary owns the rule)', () => {
     const writerSource = readFileSync(join(SRC_ROOT, 'main', 'export', 'pptx-writer.ts'), 'utf8')
