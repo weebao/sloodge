@@ -43,6 +43,13 @@ export type AgentQueryOptions = {
   readonly configDir: string
   /** Resume a prior conversation for this deck; omitted starts fresh (50-agent-integration.md §12). */
   readonly resumeSessionId?: string
+  /**
+   * In-process MCP servers (M2.2 — `{ slides: slidesServer }` for the `mcp__slides__*` tools).
+   * Typed `unknown` on purpose: the seam stays SDK-free, so the SDK's server-config type is not
+   * imported here. `client.ts` — the sole SDK importer — casts it back to the SDK shape when
+   * building `Options`, and the orchestration only ever passes the value straight through.
+   */
+  readonly mcpServers?: Readonly<Record<string, unknown>>
 }
 
 /**

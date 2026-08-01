@@ -20,6 +20,13 @@ export type AgentServiceDeps = {
   /** App-owned cwd + CLAUDE_CONFIG_DIR for a session (isolation, §5). */
   readonly resolvePaths: () => { cwd: string; configDir: string }
   readonly defaultModel?: AgentModelId
+  /**
+   * The in-process MCP servers to attach to a session — `{ slides: slidesServer }` for the
+   * `mcp__slides__*` tools (M2.2). Resolved per session so the tool handlers can be bound to that
+   * session's live deck host. Returns `undefined` when no deck is open, in which case the agent runs
+   * with the read-only surface. Kept opaque here (the seam is SDK-free — see query-contract.ts).
+   */
+  readonly resolveMcpServers?: (senderId: number) => Readonly<Record<string, unknown>> | undefined
 }
 
 export class AgentService {
@@ -84,9 +91,16 @@ export class AgentService {
       const apiKey = await this.deps.loadApiKey()
       if (apiKey === null) return null
       const { cwd, configDir } = this.deps.resolvePaths()
+      const mcpServers = this.deps.resolveMcpServers?.(senderId)
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
-        options: { apiKey, model: this.model, cwd, configDir },
+        options: {
+          apiKey,
+          model: this.model,
+          cwd,
+          configDir,
+          ...(mcpServers !== undefined ? { mcpServers } : {}),
+        },
         emit,
       })
       this.sessions.set(senderId, session)
