@@ -231,6 +231,35 @@ describe('mapSdkMessage', () => {
     expect(events[1]).toMatchObject({ message: '' })
   })
 
+  it('deduplicates a repeated result by its uuid — a cost invariant, not a display one', () => {
+    // The accumulator downstream counts open turns, so it cannot tell a repeated `result` from a
+    // second turn's. Only this layer has the identity that can, so dedup belongs here.
+    const shared = seen()
+    const first = mapSdkMessage(
+      { type: 'result', uuid: 'r-1', subtype: 'success', total_cost_usd: 0.1 },
+      shared,
+    )
+    const repeat = mapSdkMessage(
+      { type: 'result', uuid: 'r-1', subtype: 'success', total_cost_usd: 0.1 },
+      shared,
+    )
+    const other = mapSdkMessage(
+      { type: 'result', uuid: 'r-2', subtype: 'success', total_cost_usd: 0.9 },
+      shared,
+    )
+    expect(first).toEqual([{ type: 'turn-end', costUsd: 0.1, subtype: 'success' }])
+    expect(repeat).toEqual([])
+    expect(other).toEqual([{ type: 'turn-end', costUsd: 0.9, subtype: 'success' }])
+  })
+
+  it('still maps a result that carries no uuid, rather than dropping the turn', () => {
+    // An older or partial runtime must not lose its turn-end just because it omits the field.
+    const shared = seen()
+    expect(
+      mapSdkMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.2 }, shared),
+    ).toEqual([{ type: 'turn-end', costUsd: 0.2, subtype: 'success' }])
+  })
+
   it('keeps the raw subtype only for `unknown`, where it is the best detail available', () => {
     const events = mapSdkMessage(
       { type: 'result', subtype: 'error_during_execution', total_cost_usd: 0 },

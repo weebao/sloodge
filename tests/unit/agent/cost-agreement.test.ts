@@ -342,6 +342,58 @@ describe('cost agreement — main and the renderer report the same session total
     expect(mainSpend).toBe(state.cost.totalUsd)
   })
 
+  it('agrees on OVERLAP **crossed with** DUPLICATION — the case neither mechanism handles alone', async () => {
+    // Round 1 fixed overlap with an open-turn counter. Round 2 found the same failure wearing a
+    // different hat: a counter knows how many turns are open, never *which* result belongs to which,
+    // so with two turns open a duplicated `result` consumed the second turn's fold. Both ledgers
+    // reported $0.20 for $1.10 spent — agreeing, again, while both were wrong.
+    //
+    // Overlap and duplication were each already tested. Their PRODUCT was not, and that is where the
+    // bug lived. Result identity (`uuid`, deduped in event-mapping) is what closes it; the counter
+    // alone cannot, and neither can dedup alone.
+    const messages = [
+      { type: 'result', uuid: 'r-A', subtype: 'success', total_cost_usd: 0.1 },
+      // The runtime repeats turn A's result — same uuid, so it is not a second turn.
+      { type: 'result', uuid: 'r-A', subtype: 'success', total_cost_usd: 0.1 },
+      { type: 'result', uuid: 'r-B', subtype: 'success', total_cost_usd: 1.0 },
+    ]
+    const SPENT = 1.1
+
+    const runtime = scriptedRuntime()
+    const queryFn = vi.fn(() => runtime.handle) as unknown as AgentQueryFn
+    const emitted: AgentEvent[] = []
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (event) => emitted.push(event),
+      log: () => {},
+    })
+    session.send('A')
+    runtime.deliver([INIT])
+    await session.interrupt()
+    session.send('B')
+    runtime.deliver(messages)
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    runtime.end()
+    const mainSpend = session.estimatedSpendUsd
+    await session.close()
+
+    const seen = new Set<string>()
+    let state: Transcript = initialTranscript
+    state = reduceTranscript(state, { type: 'user-send', text: 'A' })
+    state = reduceTranscript(state, { type: 'interrupt-requested' })
+    state = reduceTranscript(state, { type: 'user-send', text: 'B' })
+    for (const raw of messages) {
+      for (const event of mapSdkMessage(raw, seen)) {
+        state = reduceTranscript(state, { type: 'agent-event', event })
+      }
+    }
+
+    expect(mainSpend).toBeCloseTo(SPENT, 10)
+    expect(state.cost.totalUsd).toBeCloseTo(SPENT, 10)
+    expect(mainSpend).toBe(state.cost.totalUsd)
+  })
+
   it('agrees on an interrupted turn — the cost is folded, not discarded', async () => {
     // The SDK's post-interrupt `result` lands after the turn has settled to `interrupted`. Gating on
     // the fold flag rather than the turn state is what makes both sides count it.

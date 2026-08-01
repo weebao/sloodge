@@ -54,11 +54,21 @@ describe('evaluateBudget — the warn/block progression', () => {
     expect(canStartTurn(status)).toBe(true)
   })
 
-  it('degrades a malformed cap or spend to uncapped rather than locking the user out', () => {
-    // The failure mode of a guard must never be "nothing works".
-    expect(evaluateBudget(1, Number.NaN as unknown as number).level).toBe('off')
-    expect(evaluateBudget(1, 0).level).toBe('off')
-    expect(evaluateBudget(1, -5).level).toBe('off')
+  it('falls back to the default cap on a malformed one — fail-safe, not fail-open', () => {
+    // A malformed cap is not a choice anyone made, so reading it as "uncapped" would switch a spend
+    // control off exactly when its state is untrustworthy. It degrades to the documented default
+    // instead: capped, but never locked out of the chat box.
+    for (const bad of [Number.NaN as unknown as number, 0, -5, Number.POSITIVE_INFINITY]) {
+      const status = evaluateBudget(1, bad)
+      expect(status.level).not.toBe('off')
+      expect(status.capUsd).toBe(DEFAULT_BUDGET_CAP_USD)
+    }
+    // Explicit `null` is the user's own choice and is still honoured.
+    expect(evaluateBudget(1, null).level).toBe('off')
+  })
+
+  it('degrades a malformed SPEND to zero rather than declaring the user over budget', () => {
+    // The total is ours to compute, so a NaN in it is our bug — it must not refuse turns.
     expect(evaluateBudget(Number.NaN, 2).spentUsd).toBe(0)
     expect(evaluateBudget(Number.NaN, 2).level).toBe('ok')
   })

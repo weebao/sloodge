@@ -190,6 +190,82 @@ describe('AgentService', () => {
     await service.dispose(1)
   })
 
+  it('a LOWERED cap reaches the live query — a control that only loosens is not a control', async () => {
+    // `maxBudgetUsd` is per-query cumulative and cannot be changed on a running query, so arming
+    // only the *next* one left a query opened at $10 free to keep burning to $10 after the user cut
+    // their limit to $1. The turn-admission check runs between turns and cannot stop a turn already
+    // inside that allowance, so the live query has to be replaced.
+    const ceilings: (number | undefined)[] = []
+    const queryFn: AgentQueryFn = (params) => {
+      ceilings.push(params.options.maxBudgetUsd)
+      let release: (() => void) | null = null
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const gen = (async function* (): AsyncGenerator<unknown, void, unknown> {
+        yield {
+          type: 'result',
+          uuid: `r${String(ceilings.length)}`,
+          subtype: 'success',
+          total_cost_usd: 0.5,
+        }
+        await gate
+      })()
+      const handle = gen as unknown as AgentQueryHandle
+      handle.interrupt = async () => undefined
+      handle.setModel = async () => undefined
+      const originalReturn = gen.return.bind(gen)
+      handle.return = ((value?: void) => {
+        release?.()
+        return originalReturn(value)
+      }) as AgentQueryHandle['return']
+      return handle
+    }
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
+    }
+    let capUsd: number = 10
+    const service = new AgentService({
+      queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => capUsd,
+    })
+
+    expect(await service.send(1, 'first', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
+    expect(ceilings).toEqual([10])
+
+    // The user tightens the limit in Settings while the query is still live.
+    capUsd = 1
+    expect(await service.send(1, 'second', emit)).toEqual({ accepted: true })
+
+    // A replacement query, carrying what is left of the LOWER cap — not the $10 it was opened with.
+    await vi.waitFor(() => expect(ceilings).toHaveLength(2))
+    expect(ceilings[1]).toBeCloseTo(0.5)
+    await service.dispose(1)
+  })
+
+  it('does not churn the query when the cap is merely raised', async () => {
+    // Raising is safe to defer: the live query keeps its lower ceiling, stops early if it reaches it,
+    // and the re-arm gives the next one the raised cap. Replacing it here would throw away a live
+    // conversation for no safety gain.
+    const rec = recordingQueryFn()
+    let capUsd: number = 2
+    const service = new AgentService({
+      queryFn: rec.queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => capUsd,
+    })
+    expect(await service.send(1, 'first', NOOP)).toEqual({ accepted: true })
+    capUsd = 20
+    expect(await service.send(1, 'second', NOOP)).toEqual({ accepted: true })
+    expect(rec.starts()).toBe(1)
+    await service.dispose(1)
+  })
+
   it('keeps accepting turns while under the cap', async () => {
     const rec = recordingQueryFn()
     const service = new AgentService({

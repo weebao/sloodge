@@ -58,6 +58,18 @@ export type SkillStatus =
 /** How this session is loading its slide-craft knowledge. See `SkillStatus`. */
 export type SkillMode = 'skills' | 'fallback'
 
+/**
+ * Result subtypes that end the `query()` itself, not merely the turn.
+ *
+ * Knowing these lets the session mark itself dead at the *result*, which is strictly earlier than
+ * the generator draining. Anything not listed is still caught by the drain (`consume`'s `finally`),
+ * so an unlisted terminal subtype degrades to the old timing rather than to a wedged session.
+ */
+const TERMINAL_RESULT_SUBTYPES: ReadonlySet<string> = new Set([
+  'error_max_budget_usd',
+  'error_max_turns',
+])
+
 export class AgentSession {
   private readonly deps: AgentSessionDeps
   /**
@@ -110,10 +122,27 @@ export class AgentSession {
    */
   private pendingTexts: string[] = []
   /**
-   * The `maxBudgetUsd` handed to the next query opened (§10). Seeded from the session's options and
-   * refreshed by `AgentService` on every send, so a cap raised in Settings reaches the SDK.
+   * The `maxBudgetUsd` the next query will be opened with (§10). Seeded from the session's options
+   * and refreshed by `AgentService` before every send, so a cap changed in Settings reaches the SDK.
    */
   private budgetCeiling: number | undefined
+  /**
+   * The ceiling the **live** query was actually opened with, or `undefined` if it is uncapped.
+   * `maxBudgetUsd` is per-query cumulative and cannot be changed on a running query, so this is what
+   * the SDK is really enforcing right now — as opposed to `budgetCeiling`, which is only a promise
+   * about the next one. Lowering the cap has to compare against this or it changes nothing.
+   */
+  private activeCeiling: number | undefined
+  /**
+   * The live query is capped higher than the user now allows, so it must be replaced before another
+   * turn runs. See `setBudgetCeiling`.
+   */
+  private ceilingStale = false
+  /**
+   * The most recent `session_id` the runtime reported. Used to `resume` when we have to reopen a
+   * query mid-session, so replacing it for budget reasons does not also wipe the conversation.
+   */
+  private lastSessionId: string | null = null
   /**
    * The live query has ended (the SDK's `maxBudgetUsd` ceiling, `maxTurns`, or a fatal error) and the
    * session needs a new one before it can carry another turn. See `retireQuery`.
@@ -158,7 +187,7 @@ export class AgentSession {
    */
   send(text: string): void {
     if (this.closed) return
-    if (this.handle === null || this.queryFinished) this.start()
+    if (this.handle === null || this.queryFinished || this.ceilingStale) this.start()
     // Opens the cost turn on the same event the renderer opens its own on, which is what makes the
     // two accumulators agree rather than merely resemble each other (shared/agent/cost.ts).
     this.cost = beginTurn(this.cost)
@@ -167,15 +196,30 @@ export class AgentSession {
   }
 
   /**
-   * Set the in-flight spend ceiling for the **next** query this session opens (§10).
+   * Set the in-flight spend ceiling (§10). `AgentService` calls this before every send, so the
+   * ceiling is never staler than the last thing the user saved in Settings.
    *
-   * Load-bearing after a budget stop: that ends the query, `retireQuery` re-arms the session, and
-   * the next send opens a *fresh* query — which must be given the cap the user just raised, not the
-   * one that stopped it. `AgentService` recomputes this on every send, so the ceiling is never
-   * staler than the last thing the user saved in Settings.
+   * **Both directions matter, and they are not symmetric.**
+   *
+   * *Raising* is safe to defer: the live query keeps its lower ceiling, stops early if it reaches
+   * it, and `retireQuery` re-arms so the next send opens with the raised one. The user gets one
+   * extra query boundary and never overspends.
+   *
+   * *Lowering* cannot be deferred. `maxBudgetUsd` is per-query **cumulative** and the SDK offers no
+   * way to change it on a running query, so a live query opened at $10 keeps burning to $10 no
+   * matter what the user just saved — the turn-admission check runs *between* turns and cannot stop
+   * a turn already inside that allowance. A control that only moves in the permissive direction is
+   * not a safety control, so the live query is marked stale and replaced before another turn runs.
    */
   setBudgetCeiling(maxBudgetUsd: number | undefined): void {
     this.budgetCeiling = maxBudgetUsd
+    if (this.handle === null || this.queryFinished) return
+    // Uncapped -> capped, or capped -> lower: the running query is enforcing something laxer than
+    // the user now allows. (`undefined` is "no ceiling", i.e. larger than any number.)
+    const liveCeilingTooHigh =
+      maxBudgetUsd !== undefined &&
+      (this.activeCeiling === undefined || maxBudgetUsd < this.activeCeiling)
+    if (liveCeilingTooHigh) this.ceilingStale = true
   }
 
   /** The session's options with the current ceiling applied; omitted entirely when uncapped. */
@@ -189,18 +233,55 @@ export class AgentSession {
   }
 
   private start(): void {
+    // A live query whose ceiling the user has lowered must be *replaced*: `maxBudgetUsd` is fixed
+    // for a query's lifetime, so opening a new one is the only way to make the lower cap bind.
+    if (this.handle !== null && !this.queryFinished && this.ceilingStale) {
+      const superseded = this.handle
+      const supersededConsuming = this.consuming
+      // Mute whatever the outgoing query still emits, so one turn never ends twice.
+      this.generation += 1
+      this.handle = null
+      this.queryFinished = true
+      void this.closeSuperseded(superseded, supersededConsuming)
+    }
+
     if (this.queryFinished) {
-      // Re-arming after a terminated query. The old bridge's stream generator belongs to the dead
-      // query and nothing will ever drain it again, so the replacement gets a fresh one — the same
-      // repair `restartWithFallback` performs, for the same reason.
+      // Re-arming after a query ended. The old bridge's stream generator belongs to the dead query
+      // and nothing will ever drain it again, so the replacement gets a fresh one — the same repair
+      // `restartWithFallback` performs, for the same reason.
       this.bridge.close()
       this.bridge = createChatBridge()
-      // Nothing will answer these now; this send is a new turn, not a replay.
       this.pendingTexts = []
       this.queryFinished = false
     }
-    this.handle = this.deps.queryFn({ prompt: this.bridge.stream(), options: this.queryOptions() })
+
+    this.ceilingStale = false
+    // Record what the SDK is actually enforcing, as opposed to what we intend next time.
+    this.activeCeiling = this.budgetCeiling
+    // Reopening mid-session: carry the conversation across rather than making a budget edit cost the
+    // user their chat history. Best effort — if the runtime cannot resume, the session continues
+    // without prior context and the budget bound, which is the property that must not fail, holds
+    // either way. The §8 fallback restart deliberately does NOT resume: it replays the pending turn
+    // itself, and resuming would deliver that message twice.
+    const resume = this.lastSessionId
+    this.handle = this.deps.queryFn({
+      prompt: this.bridge.stream(),
+      options: this.queryOptions(resume === null ? undefined : { resumeSessionId: resume }),
+    })
     this.consuming = this.consume(this.handle, this.generation)
+  }
+
+  /** Drop a query we replaced. Its outcome cannot matter — the generation guard already muted it. */
+  private async closeSuperseded(
+    handle: AgentQueryHandle,
+    consuming: Promise<void> | null,
+  ): Promise<void> {
+    try {
+      await handle.return(undefined)
+      await consuming
+    } catch {
+      // Already settled, or settled by erroring; the replacement is the live session either way.
+    }
   }
 
   private async consume(handle: AgentQueryHandle, generation: number): Promise<void> {
@@ -214,11 +295,20 @@ export class AgentSession {
           if (event.type === 'turn-end') {
             this.cost = foldTurnCost(this.cost, event.costUsd)
             this.pendingTexts = []
+            // Mark the query dead the moment its *terminating* result is seen, rather than waiting
+            // for the generator to drain. Those are different instants, and a send landing between
+            // them used to be pushed into the dying bridge and silently swallowed while
+            // `AgentService.send` returned `accepted: true`.
+            if (TERMINAL_RESULT_SUBTYPES.has(event.subtype)) this.queryFinished = true
           }
           this.deps.emit(event)
-          // Handled *after* `ready` is emitted so the renderer has an open session before any
-          // notice or status lands.
-          if (event.type === 'ready') this.onReady(event.skills, generation)
+          if (event.type === 'ready') {
+            // Kept so a query we have to reopen mid-session can resume the conversation.
+            this.lastSessionId = event.sessionId
+            // Handled *after* `ready` is emitted so the renderer has an open session before any
+            // notice or status lands.
+            this.onReady(event.skills, generation)
+          }
         }
       }
     } catch (error) {
@@ -249,12 +339,22 @@ export class AgentSession {
    * and the "never orphan a subprocess" teardown path (§9) is unchanged. The actual re-arm happens
    * in `start()`, on the next send that needs a query.
    *
+   * This runs when the generator *drains*, which is strictly later than the moment the query decided
+   * to stop. For the terminating results we can name (`TERMINAL_RESULT_SUBTYPES`) `consume` sets the
+   * flag at the `result` itself, closing the window where a send would otherwise be pushed into a
+   * dying bridge and swallowed while `AgentService.send` reported `accepted: true`. A residual window
+   * remains for a query that dies *without* a recognised terminal result: it is either a throw (which
+   * surfaces as an `error` event, so the turn is not silently lost) or a runtime ending its stream
+   * unannounced. Draining `pendingTexts` into the replacement was tried and rejected — a query that
+   * ends while holding an unanswered turn is indistinguishable from one that simply had nothing more
+   * to say, so replaying spawns a subprocess every time a short session winds down.
+   *
    * The open-turn count is deliberately **not** cleared: the renderer's accumulator cannot see this
    * event, so zeroing it here would be the one thing that makes the two ledgers disagree. A turn
    * whose query died without a `result` stays open on both sides, symmetrically.
    */
   private retireQuery(generation: number): void {
-    // Superseded by the §8 restart: that path already installed a live handle and bridge.
+    // Superseded by the §8 restart or a ceiling replacement: that path installed a live handle.
     if (generation !== this.generation) return
     // `close()` owns teardown; re-arming a session the caller is disposing would resurrect it.
     if (this.closed) return

@@ -20,7 +20,7 @@ import {
   selectSessionSkills,
   useSessionMeterStore,
 } from '../stores/sessionMeterStore'
-import { evaluateBudget, type BudgetCap } from '../../../shared/agent/budget'
+import { evaluateBudget } from '../../../shared/agent/budget'
 import { useAgentDeckEditor } from './useAgentDeckEditor'
 import { useAgentDeckSync } from './useAgentDeckSync'
 import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
@@ -48,7 +48,7 @@ export function AppShell(): JSX.Element {
   // Derived in a memo, never in the selector — `evaluateBudget` returns a fresh object, which as a
   // selector result would make `getSnapshot` report a change on every call (createStore's contract).
   const budget = useMemo(
-    () => evaluateBudget(sessionCostUsd, budgetLoaded ? budgetCap : (null as BudgetCap)),
+    () => evaluateBudget(sessionCostUsd, budgetLoaded ? budgetCap : null),
     [sessionCostUsd, budgetCap, budgetLoaded],
   )
   const deck = useDeckStore((state) => state.deck)

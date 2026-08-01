@@ -42,6 +42,19 @@
  * `cost-agreement.test.ts` now also checks both totals against an independent model of the script
  * rather than only against each other.
  *
+ * ## What this module deliberately cannot do
+ *
+ * A counter knows *how many* turns are open, never *which* result belongs to which. So it cannot
+ * tell a duplicated `result` from a second turn's `result` — and if it tries, it gets one of them
+ * wrong. That is exactly how the first counter was still broken: with two turns open, a duplicate
+ * consumed the second turn's fold and a whole turn's money disappeared, in the same direction on
+ * both sides, so the cross-check stayed green again.
+ *
+ * **Result identity is therefore established upstream**, in `event-mapping.ts`, which drops a
+ * repeated `result` by its `uuid` before it ever reaches this arithmetic. The two mechanisms are not
+ * redundant: dedup handles *repetition*, the counter handles *overlap*, and neither can substitute
+ * for the other. Removing either one reds `cost-agreement.test.ts`.
+ *
  * `openTurns: 0` is "no turn is open": a stray `turn-end` before anything was sent contributes
  * nothing rather than opening the total on an event we cannot attribute.
  */
@@ -81,6 +94,20 @@ export function foldTurnCost(state: CostState, costUsd: number): CostState {
   if (state.openTurns === 0) return state
   const delta = Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0
   return { totalUsd: state.totalUsd + delta, openTurns: state.openTurns - 1 }
+}
+
+/**
+ * Close an opened turn that will never produce a `result`, without adding cost.
+ *
+ * The renderer opens its turn optimistically, before main has accepted the send — that is what makes
+ * the assistant bubble appear the instant you hit Send. When main then *refuses* (its own budget
+ * check, or a credential that vanished), main never opened a matching turn, so the renderer would be
+ * left one turn ahead forever: a later stray `result` would fold into the phantom, and the two
+ * ledgers the guard depends on would disagree permanently. This is the rollback for that.
+ */
+export function abandonTurn(state: CostState): CostState {
+  if (state.openTurns === 0) return state
+  return { ...state, openTurns: state.openTurns - 1 }
 }
 
 /**

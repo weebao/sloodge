@@ -94,14 +94,28 @@ function sanitizeSpend(spentUsd: number): number {
 }
 
 /**
- * Classify the session against its cap. Total: any pairing of numbers produces a status, so a
- * malformed persisted cap or a `NaN` total degrades to "uncapped" rather than blocking the user out
- * of their own chat box — the failure mode of a guard should never be "nothing works".
+ * Classify the session against its cap. Total: any pairing of numbers produces a status.
+ *
+ * **The two failure directions are not treated alike.** `null` is the user's explicit "no limit" and
+ * is honoured. A cap that is *malformed* — `NaN`, negative, zero — is not a choice anyone made, and
+ * reading it as "uncapped" would silently disable a spend control at exactly the moment its state is
+ * untrustworthy, so it falls back to `DEFAULT_BUDGET_CAP_USD` instead. That is fail-safe without
+ * being unusable: the user is capped at the documented default rather than either overspending or
+ * being locked out of their own chat box.
+ *
+ * It should be unreachable — `isBudgetCap` gates the IPC and the file, `parseBudgetCap` gates the
+ * form — and it is defence for the day someone adds a fourth path that forgets to validate.
+ *
+ * A malformed *spend* still reads as 0: the total is ours to compute, and a `NaN` meter must not
+ * decide anyone is over budget.
  */
 export function evaluateBudget(spentUsd: number, capUsd: BudgetCap): BudgetStatus {
   const spent = sanitizeSpend(spentUsd)
-  if (capUsd === null || !Number.isFinite(capUsd) || capUsd <= 0) {
+  if (capUsd === null) {
     return { level: 'off', capUsd: null, spentUsd: spent, remainingUsd: null, fraction: 0 }
+  }
+  if (!Number.isFinite(capUsd) || capUsd <= 0) {
+    return evaluateBudget(spent, DEFAULT_BUDGET_CAP_USD)
   }
   const fraction = Math.min(1, spent / capUsd)
   const level: BudgetLevel =

@@ -33,6 +33,7 @@
 
 import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../../../shared/agent/types'
 import {
+  abandonTurn,
   beginTurn,
   foldTurnCost,
   INITIAL_COST_STATE,
@@ -106,6 +107,12 @@ export type TranscriptAction =
   | { readonly type: 'user-send'; readonly text: string }
   /** The user pressed Stop: reflect the interrupt locally (the hook calls `bridge.interrupt`). */
   | { readonly type: 'interrupt-requested' }
+  /**
+   * Main refused the turn we optimistically opened (its own budget check, or a credential that
+   * vanished). Rolls the optimism back: the bubbles come out, the open-turn count is released, and
+   * the composer takes the text back — see the reducer for why each of those matters.
+   */
+  | { readonly type: 'turn-refused' }
   /** One event off the `agent:event` feed. */
   | { readonly type: 'agent-event'; readonly event: AgentEvent }
 
@@ -350,6 +357,38 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
       // Only meaningful mid-stream; a Stop pressed when idle is a no-op the button also guards.
       if (state.turnState !== 'streaming') return state
       return { ...state, turnState: 'interrupted', messages: settleLive(state.messages) }
+
+    case 'turn-refused': {
+      // The renderer opens a turn the instant the user hits Send — that is what makes the assistant
+      // bubble appear immediately — but main is the one that decides whether it runs. When main says
+      // no, all three parts of that optimism have to come back:
+      //
+      //  - the **open turn**, or the renderer stays one ahead of main's ledger forever and a later
+      //    stray `result` folds into a turn that never existed (the two counts feed the same guard);
+      //  - the **bubbles**, because a user message shown in the transcript reads as sent, and this
+      //    one never was;
+      //  - the **text**, which `ChatPanel` restores to the composer so the turn can be retried.
+      const messages = [...state.messages]
+      // Drop the optimistic pair from the tail, and only while it is still untouched: if anything
+      // streamed into that bubble the turn plainly did run, so leave the transcript alone.
+      const last = messages.at(-1)
+      const prior = messages.at(-2)
+      if (
+        last?.kind === 'assistant' &&
+        last.streaming &&
+        last.text.length === 0 &&
+        last.tools.length === 0 &&
+        prior?.kind === 'user'
+      ) {
+        messages.splice(-2, 2)
+      }
+      return {
+        ...state,
+        turnState: state.turnState === 'streaming' ? 'idle' : state.turnState,
+        messages,
+        cost: abandonTurn(state.cost),
+      }
+    }
 
     case 'agent-event':
       return applyAgentEvent(state, action.event)

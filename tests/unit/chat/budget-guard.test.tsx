@@ -191,6 +191,51 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     expect(screen.queryByText(/authentication failed/i)).toBeNull()
   })
 
+  it('a MAIN refusal leaves no phantom open turn — the two ledgers must not drift', async () => {
+    // The renderer opens its turn optimistically so the bubble appears instantly, but main decides
+    // whether it runs. When main says no it never opened a matching turn, so without a rollback the
+    // renderer stays one ahead forever and a later stray result folds into a turn that never was —
+    // the same class of drift the shared accumulator exists to prevent.
+    const fake = makeFakeBridge(null, { accepted: false, reason: 'budget' })
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('hello')
+    await screen.findByText(/budget reached for this session/i)
+
+    // A stray result now must not fold: no turn is open.
+    fake.emit({ type: 'turn-end', costUsd: 5, subtype: 'success' })
+    await waitFor(() => expect(useSessionMeterStore.getState().costUsd).toBe(0))
+  })
+
+  it('a MAIN refusal keeps the draft in the composer and takes the bubble back', async () => {
+    // `send` is awaited, so the draft is cleared only for a turn genuinely on its way. Clearing
+    // optimistically is how a main-refused message used to disappear with nothing sent.
+    const fake = makeFakeBridge(null, { accepted: false, reason: 'budget' })
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('a message worth keeping')
+    await screen.findByText(/budget reached for this session/i)
+
+    expect(composer().value).toBe('a message worth keeping')
+    // And it is not *also* sitting in the transcript looking as though it was sent.
+    expect(screen.queryByText('a message worth keeping', { selector: 'p' })).toBeNull()
+  })
+
+  it('keeps the draft when main refuses for a missing credential too', async () => {
+    const fake = makeFakeBridge(null, { accepted: false, reason: 'no-credential' })
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('still mine')
+    await screen.findByText(/authentication failed/i)
+    expect(composer().value).toBe('still mine')
+  })
+
   it('still renders the auth gate for a no-credential refusal', async () => {
     const fake = makeFakeBridge(null, { accepted: false, reason: 'no-credential' })
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }

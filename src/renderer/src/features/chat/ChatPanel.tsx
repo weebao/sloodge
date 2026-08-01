@@ -59,13 +59,17 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
 
   const submit = useCallback(() => {
     if (draft.trim().length === 0) return
-    // A turn the guard refused (M2.5's budget cap) never opened, so the composer keeps the user's
-    // words to retry once they raise the limit — and the context chip stays attached to them.
-    // Clearing on a refusal would silently eat a message that was never sent.
-    if (!send(draft, attachment)) return
-    // Consume the pending element context with this turn, then clear the chip.
-    if (attachment !== null) clearContext()
-    setDraft('')
+    // A refused turn never runs, so the composer keeps the user's words to retry — and the context
+    // chip stays attached to them. Clearing on a refusal would silently eat a message that was never
+    // sent. `send` is **awaited** because the refusal can come from main (its own budget check, or a
+    // credential that vanished), which is only known a round trip later; clearing optimistically was
+    // exactly how a main-refused message used to disappear.
+    void send(draft, attachment).then((accepted) => {
+      if (!accepted) return
+      // Consume the pending element context with this turn, then clear the chip.
+      if (attachment !== null) clearContext()
+      setDraft('')
+    })
   }, [draft, send, attachment, clearContext])
 
   const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -159,7 +163,9 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
             // shows the same number from the same accumulator (M2.5); this one stays because it sits
             // next to the composer where the spending actually happens.
             <span className="text-[11px] text-chrome-muted dark:text-ink-muted">
-              <span aria-hidden="true">≈</span> {formatCostUsd(transcript.cost.totalUsd)} session
+              <span aria-hidden="true">≈</span>
+              <span className="sr-only">approximately </span>{' '}
+              {formatCostUsd(transcript.cost.totalUsd)} session
             </span>
           ) : null}
 

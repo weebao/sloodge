@@ -15,8 +15,13 @@ import type { BudgetCap } from '../../../src/shared/agent/budget'
 
 const setBudgetCap = vi.fn(async (cap: BudgetCap) => cap)
 
+const getBudgetCap = vi.fn(async (): Promise<BudgetCap> => 2)
+
 vi.mock('../../../src/renderer/src/features/chat/agentClient', () => ({
-  getAgentBridge: () => ({ setBudgetCap: (cap: BudgetCap) => setBudgetCap(cap) }),
+  getAgentBridge: () => ({
+    setBudgetCap: (cap: BudgetCap) => setBudgetCap(cap),
+    getBudgetCap: () => getBudgetCap(),
+  }),
 }))
 
 const reset = (): void => {
@@ -29,6 +34,8 @@ const reset = (): void => {
 beforeEach(() => {
   reset()
   setBudgetCap.mockClear()
+  getBudgetCap.mockClear()
+  getBudgetCap.mockResolvedValue(2)
 })
 
 afterEach(() => {
@@ -125,11 +132,29 @@ describe('BudgetTab — setting the cap', () => {
     expect(useBudgetStore.getState().capUsd).toBe(2)
   })
 
-  it('turns the limit off as an explicit null, not as a blank field', async () => {
+  it('asks before removing the limit — one stray click must not uncap a session', async () => {
     loaded(2)
     render(<BudgetTab />)
 
     fireEvent.click(limitToggle())
+
+    // Nothing saved yet, and the limit is still on until the user says so.
+    expect(await screen.findByTestId('budget-confirm-uncap')).toBeTruthy()
+    expect(setBudgetCap).not.toHaveBeenCalled()
+    expect(useBudgetStore.getState().capUsd).toBe(2)
+    expect(limitToggle().checked).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /keep the limit/i }))
+    expect(screen.queryByTestId('budget-confirm-uncap')).toBeNull()
+    expect(setBudgetCap).not.toHaveBeenCalled()
+  })
+
+  it('turns the limit off as an explicit null once confirmed, not as a blank field', async () => {
+    loaded(2)
+    render(<BudgetTab />)
+
+    fireEvent.click(limitToggle())
+    fireEvent.click(await screen.findByRole('button', { name: /remove it/i }))
 
     await waitFor(() => expect(setBudgetCap).toHaveBeenCalledWith(null))
     expect(useBudgetStore.getState().capUsd).toBeNull()
@@ -149,12 +174,47 @@ describe('BudgetTab — setting the cap', () => {
     expect(stored).toBeGreaterThan(0)
   })
 
-  it('stays disabled until the cap has actually been loaded from main', () => {
+  it('stays disabled while the probe is still pending, and says so', () => {
     // Before the probe resolves the renderer does not know the user's cap; offering an editable
     // field would let them overwrite it with the placeholder they were shown.
+    getBudgetCap.mockReturnValue(new Promise<BudgetCap>(() => {}))
     render(<BudgetTab />)
     expect(limitToggle().disabled).toBe(true)
     expect(amount().disabled).toBe(true)
+    expect(screen.getByTestId('budget-unloaded').textContent).toMatch(/reading your saved limit/i)
+  })
+
+  it('re-probes on open and enables itself once the cap arrives', async () => {
+    // `useChatSession` probes once at startup and swallows failures. Opening Settings is the natural
+    // place to retry, and without it a single early failure disabled this tab for the whole run.
+    getBudgetCap.mockResolvedValue(6)
+    render(<BudgetTab />)
+
+    await waitFor(() => expect(limitToggle().disabled).toBe(false))
+    expect(amount().value).toBe('6.00')
+    expect(screen.queryByTestId('budget-unloaded')).toBeNull()
+  })
+
+  it('a failed probe explains itself and still lets the user set a limit', async () => {
+    getBudgetCap.mockRejectedValue(new Error('EIO'))
+    render(<BudgetTab />)
+
+    expect((await screen.findByTestId('budget-unloaded')).textContent).toMatch(/could not be read/i)
+    // Editable rather than dead: main validates the save independently, so the worst case is the
+    // user setting the limit they wanted anyway.
+    await waitFor(() => expect(limitToggle().disabled).toBe(false))
+    fireEvent.change(amount(), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setBudgetCap).toHaveBeenCalledWith(3))
+  })
+
+  it('does not claim the guard is refusing messages before the cap is known', async () => {
+    // The store's placeholder default is not the user's cap. Reading it as one let this tab announce
+    // "messages are being refused" while the guard was in fact switched off.
+    getBudgetCap.mockReturnValue(new Promise<BudgetCap>(() => {}))
+    act(() => useSessionMeterStore.getState().setCostUsd(9))
+    render(<BudgetTab />)
+    expect(screen.queryByTestId('budget-blocked')).toBeNull()
   })
 
   it('reports a failed save instead of leaving the user believing it stuck', async () => {
@@ -166,5 +226,7 @@ describe('BudgetTab — setting the cap', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/could not be saved/i)
+    // Rolled back: the guard is enforced against main's number, so the screen must not show another.
+    expect(useBudgetStore.getState().capUsd).toBe(2)
   })
 })

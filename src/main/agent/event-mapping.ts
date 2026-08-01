@@ -7,6 +7,10 @@
  *  - assistant content is nested at `message.message.content`, never `message.content`;
  *  - assistant usage must be deduplicated by `message.message.id`, because parallel tool calls emit
  *    several assistant messages sharing one id with identical usage.
+ *
+ * `result` messages are deduplicated the same way, by their `uuid`. That is a *cost* invariant
+ * rather than a display one: the accumulator downstream counts open turns, so it cannot distinguish
+ * a repeated `result` from a second turn's `result`, and only this layer has the identity that can.
  */
 
 import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../shared/agent/types'
@@ -211,6 +215,17 @@ export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
   }
 
   if (type === 'result') {
+    // Deduplicate the result itself by its `uuid` (present on `SDKResultSuccess`), reusing the same
+    // `seen` set the assistant-id dedup uses. Without this the cost accumulator cannot tell a
+    // *duplicated* `result` from a *second turn's* `result` — it only counts open turns — so a
+    // duplicate arriving while two turns are open (Stop, retype, Send) silently consumed the second
+    // turn's fold and its money vanished from the meter and the guard. Dedup belongs here, where the
+    // identity actually is, rather than in the arithmetic downstream that cannot see it.
+    const resultId = asString(message['uuid'])
+    if (resultId !== null) {
+      if (seen.has(resultId)) return []
+      seen.add(resultId)
+    }
     const subtype = asString(message['subtype']) ?? 'unknown'
     const costUsd = asFiniteNumber(message['total_cost_usd'])
     const events: AgentEvent[] = [{ type: 'turn-end', costUsd, subtype }]

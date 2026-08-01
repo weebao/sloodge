@@ -95,9 +95,10 @@ export class AgentService {
    * is configured — none means `{ accepted: false, reason: 'no-credential' }`, which the renderer renders
    * as the composer's "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
    *
-   * The budget check (§10, M2.5) runs **before** `ensureSession`, against the session that already
-   * exists. Two consequences worth stating: a first turn is never refused on budget (a session with
-   * no spend cannot have exhausted a positive cap), and a blocked send never spawns a subprocess.
+   * The budget check (§10, M2.5) runs against the session that **already exists**, which is read
+   * synchronously before anything is awaited. Creation is kicked off first but only *awaited* after
+   * the check, so a blocked send never spawns a subprocess — and a first turn is never refused on
+   * budget, because a session with no spend cannot have exhausted a positive cap.
    *
    * This is the *authoritative* turn-admission check. The renderer performs the same one so the
    * composer can explain itself without a round trip, but a guard that only exists in the renderer is
