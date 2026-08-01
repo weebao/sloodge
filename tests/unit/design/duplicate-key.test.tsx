@@ -55,4 +55,20 @@ describe('useDuplicateKey', () => {
     fireEvent.keyDown(document.body, { key: 'd' })
     expect(duplicate).not.toHaveBeenCalled()
   })
+
+  it('does not steal Ctrl+D from a focused text field (editable-target guard)', () => {
+    const duplicate = vi.fn()
+    const toggle = vi.fn()
+    window.addEventListener('keydown', toggle)
+    const input = document.createElement('input')
+    document.body.append(input)
+    input.focus()
+    renderHook(() => useDuplicateKey(duplicate, true))
+    fireEvent.keyDown(input, { key: 'd', ctrlKey: true })
+    // The field keeps the chord; the event even falls through (not preempted).
+    expect(duplicate).not.toHaveBeenCalled()
+    expect(toggle).toHaveBeenCalledTimes(1)
+    window.removeEventListener('keydown', toggle)
+    input.remove()
+  })
 })

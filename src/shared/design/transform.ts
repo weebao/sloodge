@@ -42,6 +42,16 @@ function serialize(functions: readonly TransformFunction[]): string {
  * Stable-sort a function list into canonical order. Known functions lead in `translate, rotate,
  * scale` order; every unrecognised function keeps its original relative position after them (a
  * stable sort keyed on `(rank, originalIndex)`), which is §5.3's "preserved and appended verbatim".
+ *
+ * ## One-time normalization of non-canonical author order (accepted per §5.3)
+ *
+ * 40-design-mode.md §5.3 makes Sloodge the owner of the transform and mandates this
+ * `translate → rotate → scale` emit order. That means an author-supplied transform in a *different*
+ * order — e.g. `rotate(90deg) translate(100px)`, which is not commutative — is normalized to canonical
+ * order the first time any transform edit touches the element, which can shift a rotated-and-translated
+ * element once. This is a deliberate, bounded cost of owning the transform (the plan's fidelity
+ * guarantee is about not re-serializing the *document*, not about preserving a non-canonical function
+ * order), and it only ever fires on the first edit; subsequent edits are already canonical.
  */
 function canonicalize(functions: readonly TransformFunction[]): TransformFunction[] {
   return functions
@@ -50,15 +60,30 @@ function canonicalize(functions: readonly TransformFunction[]): TransformFunctio
     .map((entry) => entry.fn)
 }
 
-/** Replace `name`'s args in place (or append it), then re-emit in canonical order. */
+/**
+ * Replace `name`'s args in place (or append it), then re-emit in canonical order.
+ *
+ * A transform may legally carry the *same* function more than once (`translate(10px) translate(5px)`
+ * composes to a 15px net offset in CSS). Sloodge writes exactly one instance of each function it
+ * owns, so on an upsert repeated same-named instances are **collapsed to one** — the first is
+ * replaced with the new args and any further copies are dropped. This normalizes a multi-instance
+ * author transform to a single composed instance (the edited value); it is the same "we own the
+ * transform" stance as the canonical reorder, and reading via `readRotation`/`readScale` (which use
+ * the first match) agrees with it.
+ */
 function upsert(transform: string | null, name: string, args: string): string {
   const functions = parseTransform(transform ?? '')
   let replaced = false
-  const next = functions.map((fn) => {
-    if (fn.name !== name) return fn
+  const next: TransformFunction[] = []
+  for (const fn of functions) {
+    if (fn.name !== name) {
+      next.push(fn)
+      continue
+    }
+    if (replaced) continue // collapse a repeated same-named function to the single instance above
     replaced = true
-    return { name, args }
-  })
+    next.push({ name, args })
+  }
   if (!replaced) next.push({ name, args })
   return serialize(canonicalize(next))
 }

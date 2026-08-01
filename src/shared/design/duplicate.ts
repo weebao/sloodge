@@ -19,6 +19,21 @@
  * the clone subtree is rewritten to a value not present anywhere in the slide — so the clone is a
  * genuinely distinct element rather than a second node claiming an existing identity.
  *
+ * ## References must follow the ids they point at
+ *
+ * Freshening a *definition* id is only half the job: an element inside the clone that **references**
+ * a definition also inside the clone (`<use href="#grad">`, `fill="url(#grad)"`, `<label for="fld">`,
+ * `aria-labelledby="hdr"`) must be repointed at the fresh id, or the clone silently cross-links back
+ * into the original and breaks the moment the original is edited or deleted. So after freshening we
+ * build a remap of every `id` we changed and rewrite, in a second pass, only the references that
+ * resolve **within** the clone — a reference to an id defined *outside* the clone is left untouched,
+ * because it legitimately still points outside. The rewrite is anchored to parse5 attribute-value
+ * spans (never a blind text replace over the markup), so it keeps the same span-safety as the insert.
+ * The reference carriers covered are the ones slide markup actually uses: SVG `href`/`xlink:href`,
+ * `url(#…)` in `style` and in the presentation attributes (`fill`/`stroke`/`clip-path`/`mask`/
+ * `filter`/`marker-*`/`cursor`), `for`, `list`, and the space-separated id lists
+ * (`aria-labelledby`/`-describedby`/`-controls`/`-owns`, `headers`).
+ *
  * ## Why the insert keeps every other span valid
  *
  * The clone is a single insertion at the original's `outer.end` — a pure insertion, no deletion — so
@@ -65,6 +80,91 @@ function collectAuthorIds(map: SlideMap): Set<string> {
   return taken
 }
 
+/** Attributes whose whole value is a single `#id` fragment reference (SVG). */
+const HASH_REF_ATTRS: ReadonlySet<string> = new Set(['href', 'xlink:href'])
+/** Attributes whose whole value is a single bare id. */
+const SINGLE_ID_ATTRS: ReadonlySet<string> = new Set(['for', 'list'])
+/** Attributes whose value is a space-separated list of ids. */
+const ID_LIST_ATTRS: ReadonlySet<string> = new Set([
+  'aria-labelledby',
+  'aria-describedby',
+  'aria-controls',
+  'aria-owns',
+  'headers',
+])
+/** Attributes (and `style`) whose value may embed one or more `url(#id)` references. */
+const URL_REF_ATTRS: ReadonlySet<string> = new Set([
+  'style',
+  'fill',
+  'stroke',
+  'clip-path',
+  'mask',
+  'filter',
+  'marker',
+  'marker-start',
+  'marker-mid',
+  'marker-end',
+  'cursor',
+])
+
+/** Rewrite a `#id` fragment reference, or `null` if it does not resolve within the clone. */
+function remapHashRef(value: string, remap: ReadonlyMap<string, string>): string | null {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('#')) return null
+  const next = remap.get(trimmed.slice(1))
+  return next === undefined ? null : `#${next}`
+}
+
+/** Rewrite a bare single-id reference (`for`, `list`), or `null` when it points outside the clone. */
+function remapSingleId(value: string, remap: ReadonlyMap<string, string>): string | null {
+  const next = remap.get(value.trim())
+  return next === undefined ? null : next
+}
+
+/** Rewrite the in-clone ids of a space-separated id list, preserving spacing; `null` if none change. */
+function remapIdList(value: string, remap: ReadonlyMap<string, string>): string | null {
+  let changed = false
+  const out = value.split(/(\s+)/).map((token) => {
+    const next = remap.get(token)
+    if (next === undefined) return token
+    changed = true
+    return next
+  })
+  return changed ? out.join('') : null
+}
+
+/** Rewrite every in-clone `url(#id)` in a value (style or presentation attr); `null` if none change. */
+function remapUrlRefs(value: string, remap: ReadonlyMap<string, string>): string | null {
+  let changed = false
+  const out = value.replace(
+    /url\(\s*(['"]?)#([^'")\s]+)\1\s*\)/g,
+    (whole, quote: string, id: string) => {
+      const next = remap.get(id)
+      if (next === undefined) return whole
+      changed = true
+      return `url(${quote}#${next}${quote})`
+    },
+  )
+  return changed ? out : null
+}
+
+/**
+ * The rewritten value of one reference-carrying attribute, or `null` when it carries no in-clone
+ * reference (leave it byte-identical). Dispatches on the attribute's role; anything not a reference
+ * carrier — `id`, `data-sl-id`, ordinary attributes — returns `null` and is never touched here.
+ */
+function rewriteReference(
+  key: string,
+  value: string,
+  remap: ReadonlyMap<string, string>,
+): string | null {
+  if (HASH_REF_ATTRS.has(key)) return remapHashRef(value, remap)
+  if (SINGLE_ID_ATTRS.has(key)) return remapSingleId(value, remap)
+  if (ID_LIST_ATTRS.has(key)) return remapIdList(value, remap)
+  if (URL_REF_ATTRS.has(key)) return remapUrlRefs(value, remap)
+  return null
+}
+
 /** A fresh id derived from `base` that is not in `taken`; the chosen value is added to `taken`. */
 function uniquify(base: string, taken: Set<string>): string {
   let counter = 2
@@ -83,20 +183,44 @@ function uniquify(base: string, taken: Set<string>): string {
  * attribute-value spans (never a blind text replace that could hit element content).
  */
 function freshenClone(cloneText: string, taken: Set<string>, offset: DuplicateOffset): string {
-  // Pass 1: freshen ids. Each op targets a distinct attribute-value span, so they never overlap.
   const idMap = buildSlideMap('dup', cloneText)
   const ops: SourceOp[] = []
+  // Pass 1: freshen definition ids. Build the `id` remap (references target `id`, not `data-sl-id`)
+  // so pass 2 can repoint intra-clone references at the fresh ids. Each op targets a distinct
+  // attribute-value span, so none overlap.
+  const remap = new Map<string, string>()
   for (const element of idMap.byId.values()) {
-    for (const key of ['id', SL_ID_ATTR]) {
-      const attr = element.attrs[key]
-      if (attr === undefined || attr.value === null) continue
-      const current = cloneText.slice(attr.value.start, attr.value.end)
-      ops.push({ kind: 'replaceSpan', span: attr.value, text: uniquify(current, taken) })
+    const idAttr = element.attrs['id']
+    if (idAttr !== undefined && idAttr.value !== null) {
+      const current = cloneText.slice(idAttr.value.start, idAttr.value.end)
+      const fresh = uniquify(current, taken)
+      remap.set(current, fresh)
+      ops.push({ kind: 'replaceSpan', span: idAttr.value, text: fresh })
+    }
+    const slAttr = element.attrs[SL_ID_ATTR]
+    if (slAttr !== undefined && slAttr.value !== null) {
+      const current = cloneText.slice(slAttr.value.start, slAttr.value.end)
+      ops.push({ kind: 'replaceSpan', span: slAttr.value, text: uniquify(current, taken) })
     }
   }
+
+  // Pass 2: repoint references that resolve WITHIN the clone at the fresh ids. A reference to an id
+  // defined outside the clone is not in `remap`, so it is left untouched. Distinct attribute spans
+  // from pass 1 (id/data-sl-id are never reference carriers), so the two op sets never overlap.
+  if (remap.size > 0) {
+    for (const element of idMap.byId.values()) {
+      for (const [key, attr] of Object.entries(element.attrs)) {
+        if (attr.value === null) continue
+        const raw = cloneText.slice(attr.value.start, attr.value.end)
+        const next = rewriteReference(key, raw, remap)
+        if (next !== null) ops.push({ kind: 'replaceSpan', span: attr.value, text: next })
+      }
+    }
+  }
+
   let text = ops.length > 0 ? applyOps(cloneText, ops) : cloneText
 
-  // Pass 2: offset the root, rebuilt against the freshened text so its style span is live.
+  // Pass 3: offset the root, rebuilt against the freshened text so its style span is live.
   const offsetMap = buildSlideMap('dup', text)
   const rootId = offsetMap.order[0]
   const root = rootId === undefined ? undefined : offsetMap.byId.get(rootId)

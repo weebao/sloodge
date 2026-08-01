@@ -12,6 +12,11 @@ import { CORPUS, SLIDE_ID } from './corpus'
 
 const OFFSET = { dx: 16, dy: 16 }
 
+/** The first addressable element's sl-id in a slide source. */
+function firstId(source: string): string {
+  return buildSlideMap(SLIDE_ID, source).order[0]!
+}
+
 /** Every author `id` value in a map, in document order — for collision assertions. */
 function authorIds(map: SlideMap): string[] {
   const out: string[] = []
@@ -98,16 +103,86 @@ describe('buildDuplicatePatch — fresh ids (no collision)', () => {
   })
 })
 
+describe('buildDuplicatePatch — reference rewriting (refs follow the fresh ids)', () => {
+  /** Split the patched source into [before-original-end, clone] at the reported clone start. */
+  function parts(source: string, slId = firstId(source)): { original: string; clone: string } {
+    const result = buildDuplicatePatch(SLIDE_ID, source, slId, OFFSET)!
+    return {
+      original: result.source.slice(0, result.cloneStart),
+      clone: result.source.slice(result.cloneStart),
+    }
+  }
+
+  it('rewrites url(#id) in a presentation attribute to the fresh gradient id', () => {
+    const source = '<svg><linearGradient id="grad"></linearGradient><rect fill="url(#grad)"/></svg>'
+    const { original, clone } = parts(source)
+    expect(original).toContain('id="grad"')
+    expect(original).toContain('fill="url(#grad)"')
+    // Clone's fill points at the FRESH gradient, not back at the original. Skipping the rewrite reds.
+    expect(clone).toContain('id="grad-2"')
+    expect(clone).toContain('fill="url(#grad-2)"')
+    expect(clone).not.toContain('url(#grad)"')
+  })
+
+  it('rewrites url(#id) embedded in a style attribute', () => {
+    const source =
+      '<svg><linearGradient id="g"></linearGradient><rect style="fill: url(#g)"/></svg>'
+    const { clone } = parts(source)
+    expect(clone).toContain('id="g-2"')
+    expect(clone).toContain('url(#g-2)')
+  })
+
+  it('rewrites SVG href="#id" (use → its cloned target)', () => {
+    const source = '<svg><rect id="r"></rect><use href="#r"></use></svg>'
+    const { clone } = parts(source)
+    expect(clone).toContain('id="r-2"')
+    expect(clone).toContain('href="#r-2"')
+  })
+
+  it('rewrites label for="id" → the cloned input', () => {
+    const source = '<div><label for="fld">L</label><input id="fld"></div>'
+    const { clone } = parts(source)
+    // Mutation guard: skipping reference rewrite leaves for="fld" (points at the original) and reds.
+    expect(clone).toContain('for="fld-2"')
+    expect(clone).toContain('id="fld-2"')
+  })
+
+  it('rewrites in-clone ids inside a space-separated aria-labelledby, leaving external tokens', () => {
+    const source = '<div><h2 id="t">T</h2><section aria-labelledby="t external">x</section></div>'
+    const { clone } = parts(source)
+    // `t` is defined in the clone → freshened; `external` is not → untouched.
+    expect(clone).toContain('aria-labelledby="t-2 external"')
+    expect(clone).toContain('id="t-2"')
+  })
+
+  it('leaves a reference that resolves OUTSIDE the clone untouched', () => {
+    // Duplicate only the <svg>; `#ext` is defined by the sibling <rect>, outside the clone.
+    const source = '<svg id="s1"><use href="#ext"></use></svg><rect id="ext"></rect>'
+    const { clone } = parts(source, buildSlideMap(SLIDE_ID, source).order[0]!)
+    expect(clone).toContain('id="s1-2"')
+    // The external reference still points outside — it must NOT be rewritten.
+    expect(clone).toContain('href="#ext"')
+    expect(clone).not.toContain('href="#ext-2"')
+  })
+
+  it('keeps every id globally unique after a reference-carrying clone', () => {
+    const source = '<svg><linearGradient id="grad"></linearGradient><rect fill="url(#grad)"/></svg>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    const ids = authorIds(buildSlideMap(SLIDE_ID, result.source))
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
 describe('buildDuplicatePatch — hostile corpus', () => {
   for (const entry of CORPUS) {
     it(`duplicates the first element and keeps ids unique + prior source intact: ${entry.name}`, () => {
       const map = buildSlideMap(SLIDE_ID, entry.html)
-      const firstId = map.order[0]
-      if (firstId === undefined) return // some fragments map nothing addressable
-      const element = map.byId.get(firstId)!
+      const firstSlId = map.order[0]
+      if (firstSlId === undefined) return // some fragments map nothing addressable
+      const element = map.byId.get(firstSlId)!
       const before = entry.html.slice(0, element.outer.end)
 
-      const result = buildDuplicatePatch(SLIDE_ID, entry.html, firstId, OFFSET)
+      const result = buildDuplicatePatch(SLIDE_ID, entry.html, firstSlId, OFFSET)
       if (result === null) return
       // Everything up to and including the original's subtree is byte-identical (pure insertion).
       expect(result.source.slice(0, element.outer.end)).toBe(before)

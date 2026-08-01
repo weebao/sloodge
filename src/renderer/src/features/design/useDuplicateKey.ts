@@ -18,6 +18,7 @@
  */
 
 import { useEffect } from 'react'
+import { isEditableTarget } from '../../app/useUndoRedoKeys'
 import { matchDesignModeKey } from './useDesignModeKey'
 
 /**
@@ -29,6 +30,11 @@ export function useDuplicateKey(duplicate: () => void, enabled: boolean): void {
     if (!enabled) return
     const handler = (event: KeyboardEvent): void => {
       if (!matchDesignModeKey(event)) return
+      // Never steal the chord from a focused text field — a `Ctrl/⌘+D` there is the browser's own
+      // edit (or nothing), and duplicating the slide element under the user's cursor would surprise
+      // them. Same rule (and shared predicate) as the undo/redo keys (§5 of 10-architecture.md); the
+      // event falls through to the Design Mode toggle untouched.
+      if (isEditableTarget(event.target)) return
       // Preempt the Design Mode toggle (bubble phase) and the browser bookmark accelerator.
       event.preventDefault()
       event.stopImmediatePropagation()

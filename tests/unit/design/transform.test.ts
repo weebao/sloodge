@@ -48,6 +48,19 @@ describe('setRotation', () => {
   it('accepts negative angles', () => {
     expect(setRotation(null, -90)).toBe('rotate(-90deg)')
   })
+
+  it('collapses repeated instances of the edited function to a single one', () => {
+    // Upserting a function that appears more than once normalizes it to ONE instance (the edited
+    // value), rather than leaving a duplicate that would double the net transform.
+    expect(setRotation('rotate(10deg) rotate(20deg)', 45)).toBe('rotate(45deg)')
+  })
+
+  it('leaves repeats of a DIFFERENT function alone (only the edited one collapses)', () => {
+    // setRotation touches `rotate`, so two author translates are preserved verbatim (canonicalized).
+    expect(setRotation('translate(10px, 0) translate(5px, 0)', 45)).toBe(
+      'translate(10px, 0) translate(5px, 0) rotate(45deg)',
+    )
+  })
 })
 
 describe('readRotation', () => {
