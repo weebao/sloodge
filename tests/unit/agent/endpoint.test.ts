@@ -14,6 +14,7 @@ import {
   describeAgentEndpoint,
   describeEndpoint,
   describeEndpointWarning,
+  readEnvVar,
 } from '../../../src/shared/agent/endpoint'
 
 describe('describeEndpoint', () => {
@@ -140,5 +141,72 @@ describe('describeAgentEndpoint', () => {
 
   it('ignores an empty socket value', () => {
     expect(describeAgentEndpoint({ ANTHROPIC_UNIX_SOCKET: '  ' })).toEqual(DEFAULT_ENDPOINT)
+  })
+})
+
+/**
+ * Admission and consumption must agree about casing.
+ *
+ * `allowedEnv` matches the allow-list case-insensitively (Windows names vary) and preserves the
+ * caller's original casing, so an ambient `anthropic_base_url` is admitted and handed to the child —
+ * where Windows, whose env lookup is case-insensitive, honours it. Round 3 read it back
+ * case-sensitively, so the child was redirected while the UI reported the default and rendered no
+ * warning: the exact invariant the design rests on (admitted ONLY because disclosed), broken.
+ *
+ * Mutation check: revert either read in `describeAgentEndpoint` to `env['NAME']` and the lowercase
+ * and mixed-case cases red.
+ */
+describe('describeAgentEndpoint — casing', () => {
+  it.each([
+    ['canonical (control)', 'ANTHROPIC_BASE_URL'],
+    ['lowercase', 'anthropic_base_url'],
+    ['mixed case', 'Anthropic_Base_Url'],
+  ])('discloses a redirect declared in %s', (_label, key) => {
+    const info = describeAgentEndpoint({ [key]: 'https://evil.test' })
+    expect(info).toEqual({ custom: true, host: 'https://evil.test', transport: 'network' })
+    expect(describeEndpointWarning(info)).toContain('https://evil.test')
+  })
+
+  it.each(['ANTHROPIC_UNIX_SOCKET', 'anthropic_unix_socket', 'Anthropic_Unix_Socket'])(
+    'discloses a socket declared as %s',
+    (key) => {
+      expect(describeAgentEndpoint({ [key]: '/tmp/s.sock' }).transport).toBe('unix-socket')
+    },
+  )
+
+  /**
+   * Two keys differing only in case are distinct on Linux and both survive admission. Reporting the
+   * first would let a harmless canonical value mask a hostile lowercase one.
+   */
+  it('reports the alarming variant when two casings disagree', () => {
+    const info = describeAgentEndpoint({
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      anthropic_base_url: 'https://evil.test',
+    })
+    expect(info.custom).toBe(true)
+    expect(info.host).toBe('https://evil.test')
+  })
+
+  it('stays quiet when every casing is the default endpoint', () => {
+    expect(
+      describeAgentEndpoint({
+        ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+        anthropic_base_url: 'https://api.anthropic.com/',
+      }),
+    ).toEqual(DEFAULT_ENDPOINT)
+  })
+})
+
+describe('readEnvVar', () => {
+  it('finds a canonical key directly', () => {
+    expect(readEnvVar({ PATH: '/usr/bin' }, 'PATH')).toBe('/usr/bin')
+  })
+
+  it('finds a differently-cased key', () => {
+    expect(readEnvVar({ Path: 'C:\\Windows' }, 'PATH')).toBe('C:\\Windows')
+  })
+
+  it('returns undefined when absent', () => {
+    expect(readEnvVar({ HOME: '/home/u' }, 'PATH')).toBeUndefined()
   })
 })

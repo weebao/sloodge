@@ -143,6 +143,28 @@ describe('getAuthStatus', () => {
     }
   })
 
+  /**
+   * NIT 2: the `allowedEnv(...)` wrapper was unpinned — swapping it for raw `process.env` passed the
+   * whole suite. The drift can only over-warn, but "documented and unpinned" is how the earlier
+   * regressions shipped.
+   *
+   * Mutation check: use `process.env` directly in `getAuthStatus` and this fails, because the
+   * ambient socket would reach the disclosure.
+   */
+  it('derives the endpoint from the ALLOW-LISTED env, not raw process.env', async () => {
+    withFiles({ [KEY_FILE]: 'sk-ant-key-wxyz' })
+    const before = process.env['ANTHROPIC_UNIX_SOCKET']
+    try {
+      process.env['ANTHROPIC_UNIX_SOCKET'] = '/tmp/ambient.sock'
+      // The socket is excluded by the allow-list, so it never reaches the child and must not be
+      // reported as the transport.
+      expect((await vault.getAuthStatus()).endpoint.transport).toBe('network')
+    } finally {
+      if (before === undefined) delete process.env['ANTHROPIC_UNIX_SOCKET']
+      else process.env['ANTHROPIC_UNIX_SOCKET'] = before
+    }
+  })
+
   it('carries no plaintext toward the renderer', async () => {
     withFiles({ [KEY_FILE]: 'sk-ant-key-wxyz', [TOKEN_FILE]: 'sk-ant-oat01-abcd' })
     const serialized = JSON.stringify(await vault.getAuthStatus())

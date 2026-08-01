@@ -80,7 +80,67 @@ export function describeEndpoint(baseUrl: string | undefined | null): EndpointIn
 }
 
 /**
+ * Read a variable out of an environment **case-insensitively**.
+ *
+ * This exists because admission and consumption must agree about casing, and round 3 shipped a
+ * version where they did not. `allowedEnv` matches the allow-list case-insensitively — correctly,
+ * since Windows environment names vary in the wild (`Path`, `TeMp`, `SystemRoot`) — and preserves
+ * the caller's original casing so a Linux `Path` is not silently promoted to `PATH`. Reading the
+ * result back with a case-*sensitive* `env['ANTHROPIC_BASE_URL']` therefore missed an admitted
+ * `anthropic_base_url`: the variable reached the child and Windows, whose env lookup is
+ * case-insensitive, honoured it — while the UI reported the default endpoint and rendered no
+ * warning. That breaks the single invariant this whole design rests on, namely that
+ * `ANTHROPIC_BASE_URL` is admitted **only because it is disclosed**.
+ *
+ * Worth recording plainly: the previous round read `process.env` directly and, precisely because
+ * Windows lookup is case-insensitive, would have warned correctly. The change sold as making the
+ * UI text and the child's bytes "the same data" so they "cannot drift" is what introduced the drift.
+ * The fix is not to go back — deriving from the built env is still right — it is to make the read
+ * as case-insensitive as the admission.
+ *
+ * Direct hit first so the common path is a single property access.
+ */
+export function readEnvVar(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string | undefined {
+  const direct = env[name]
+  if (direct !== undefined) return direct
+  const target = name.toUpperCase()
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === target) return value
+  }
+  return undefined
+}
+
+/**
+ * Every value whose key matches `name` case-insensitively.
+ *
+ * A parent process can legitimately carry two keys differing only in case — on Linux they are two
+ * distinct variables, and a JS object holds both. If disclosure read only the first, a parent with
+ * `ANTHROPIC_BASE_URL=https://api.anthropic.com` *and* `anthropic_base_url=https://evil.test` would
+ * report the harmless one and render no warning, while Windows honours whichever its own lookup
+ * picks. So the endpoint check inspects all of them and reports the alarming one.
+ */
+export function readEnvVarAll(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+): string[] {
+  const target = name.toUpperCase()
+  const found: string[] = []
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === target && value !== undefined) found.push(value)
+  }
+  return found
+}
+
+/**
  * Classify the endpoint from the **built subprocess environment** — the authoritative disclosure.
+ *
+ * Both reads are case-insensitive, matching how the allow-list admits (see `readEnvVar`). On Linux
+ * this can over-warn — an admitted `anthropic_base_url` is not read by the CLI there — and that is
+ * the correct direction to be wrong in: a warning the user did not strictly need costs them nothing,
+ * a missing one costs them their credential.
  *
  * Transport wins over the URL: when a socket is in play the base URL is not consulted by the CLI, so
  * reporting the URL would be actively misleading.
@@ -88,13 +148,15 @@ export function describeEndpoint(baseUrl: string | undefined | null): EndpointIn
 export function describeAgentEndpoint(
   env: Readonly<Record<string, string | undefined>>,
 ): EndpointInfo {
-  const socket = env['ANTHROPIC_UNIX_SOCKET']
-  if (typeof socket === 'string' && socket.trim() !== '') {
-    // Reachable only if a future allow-list entry admits it; today the allow-list excludes it, so
-    // this branch is the guard that keeps the UI honest if that ever changes.
+  const sockets = readEnvVarAll(env, 'ANTHROPIC_UNIX_SOCKET')
+  if (sockets.some((value) => value.trim() !== '')) {
+    // Reachable only if a future allow-list entry admits it; today the allow-list excludes it under
+    // every casing, so this branch is the guard that keeps the UI honest if that ever changes.
     return { custom: true, host: null, transport: 'unix-socket' }
   }
-  return describeEndpoint(env['ANTHROPIC_BASE_URL'])
+  // Report the alarming variant when casings disagree — see `readEnvVarAll`.
+  const described = readEnvVarAll(env, 'ANTHROPIC_BASE_URL').map(describeEndpoint)
+  return described.find((info) => info.custom) ?? DEFAULT_ENDPOINT
 }
 
 /** The warning shown above the credential inputs. Pure, so the wording is asserted in tests. */

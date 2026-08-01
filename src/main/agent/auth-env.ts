@@ -93,10 +93,16 @@ const WINDOWS_ENV_ALLOW = [
  * anything admitted needs a reason.
  *
  * Without these Sloodge cannot reach the API from behind a corporate proxy or a TLS-inspecting
- * gateway — the app is dead for those users with no setting of ours to fix it. The residual risk is
- * real but materially smaller than the application-layer redirects we exclude: a non-MITM proxy sees
- * only `CONNECT` and never the bearer token, whereas `ANTHROPIC_BASE_URL` and `ANTHROPIC_UNIX_SOCKET`
- * hand it the credential in full. Revisit if Sloodge ever grows its own proxy setting.
+ * gateway — the app is dead for those users with no setting of ours to fix it.
+ *
+ * The residual risk is real, and stating it precisely: a plain `CONNECT` proxy sees only the tunnel
+ * and never the bearer token, **but a TLS-inspecting gateway trusted via `NODE_EXTRA_CA_CERTS` does
+ * see it in full** — that is what TLS interception means. So this is not a "the proxy cannot read the
+ * credential" guarantee. The reason it is still materially weaker than the application-layer
+ * redirects we exclude is attack *cost*: reading the token this way needs a CA the machine already
+ * trusts plus an interception appliance in path, whereas `ANTHROPIC_BASE_URL` or
+ * `ANTHROPIC_UNIX_SOCKET` need one stray environment variable. Revisit if Sloodge ever grows its own
+ * proxy setting.
  */
 const NETWORK_ENV_ALLOW = [
   'HTTP_PROXY',

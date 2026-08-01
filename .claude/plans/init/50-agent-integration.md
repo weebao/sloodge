@@ -275,11 +275,34 @@ So the entries are not "what it needs to boot" — that set is empty. They are:
 |---|---|---|
 | OS essentials | `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ` | Behave like a normal child process. `HOME` additionally keys the macOS Keychain lookup (see the caveat below). |
 | Windows runtime | `SystemRoot`, `windir`, `SystemDrive`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `ProgramData`, `NUMBER_OF_PROCESSORS` | Node/bun break without these — DNS and spawn fail with no `SystemRoot`. Not verified on a Windows host (none available); omitting them would break Windows, admitting them cannot redirect a request. |
-| Network reachability | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` | **Deliberate, with stated residual risk.** Without them Sloodge cannot reach the API from behind a corporate proxy or TLS-inspecting gateway, and we offer no setting to fix that. A non-MITM proxy sees only `CONNECT`, never the bearer token — materially weaker exposure than the application-layer redirects we exclude. Revisit if Sloodge grows its own proxy setting. |
+| Network reachability | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` | **Deliberate, with stated residual risk.** Without them Sloodge cannot reach the API from behind a corporate proxy or TLS-inspecting gateway, and we offer no setting to fix that. See the note below — this is *not* a "the proxy cannot read the credential" guarantee. |
 | Disclosed redirect | `ANTHROPIC_BASE_URL` | Admitted **only because it is surfaced in the UI** — see below. |
 
 Matching is case-insensitive (Windows names vary: `Path`, `TEMP`, `SystemRoot`) while the caller's
 original casing is preserved in the output.
+
+**On the proxy group specifically.** A plain `CONNECT` proxy sees only the tunnel and never the
+bearer token — but a TLS-inspecting gateway trusted via `NODE_EXTRA_CA_CERTS` **does** see it in
+full; that is what interception means. The reason this group is still materially weaker than the
+application-layer redirects we exclude is attack *cost*, not impossibility: reading the token this
+way requires a CA the machine already trusts plus an interception appliance in path, whereas
+`ANTHROPIC_BASE_URL` or `ANTHROPIC_UNIX_SOCKET` require one stray environment variable. Recorded
+this way so the section cannot be read as a guarantee it is not making.
+
+**Admission and consumption must agree about casing.** The case-insensitive match above is correct,
+but it created a regression worth recording: the disclosure originally read the built environment
+*case-sensitively*, so an ambient `anthropic_base_url` was admitted, preserved in its own casing, and
+handed to the child — where Windows (whose env lookup is case-insensitive) honoured it — while the
+UI reported the default endpoint and rendered no warning. That is the one invariant this design rests
+on, broken: `ANTHROPIC_BASE_URL` is admitted **only because it is disclosed**. Both reads now go
+through a case-insensitive helper, and where two casings disagree the *alarming* one is reported, so
+a harmless canonical value cannot mask a hostile lowercase one. On Linux this can over-warn, which is
+the correct direction to be wrong in.
+
+The sharper lesson: the round before had read `process.env` directly and, precisely because Windows
+lookup is case-insensitive, would have warned correctly. The refactor sold as making the UI text and
+the child's bytes "the same data" so they "cannot drift" is what introduced the drift. Deriving from
+the built environment is still right; it just has to be read the same way it was written.
 
 The boundary is tested the way M4.3's safe-pptx test is: a parent environment seeded with every
 hostile name we can enumerate — all 14 of the CLI's provider-sanitisation array, the transport
