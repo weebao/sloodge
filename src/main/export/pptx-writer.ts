@@ -14,6 +14,7 @@
 
 import PptxGenJS from 'pptxgenjs'
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
+import { sanitizeXmlText } from '../../shared/export/pptx/sanitize'
 import type {
   DeckPptxPlan,
   ShapeSpec,
@@ -49,7 +50,7 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
     ...(run.fontFace !== undefined ? { fontFace: run.fontFace } : {}),
     ...(run.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
     ...(run.bullet !== undefined ? { bullet: run.bullet } : {}),
-    ...(run.hyperlink !== undefined ? { hyperlink: { url: run.hyperlink } } : {}),
+    ...(run.hyperlink !== undefined ? { hyperlink: { url: sanitizeXmlText(run.hyperlink) } } : {}),
   }
 }
 
@@ -81,7 +82,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       ...(shape.charSpacing !== undefined ? { charSpacing: shape.charSpacing } : {}),
     }
     slide.addText(
-      shape.runs.map((run) => ({ text: run.text, options: runOptions(run) })),
+      shape.runs.map((run) => ({ text: sanitizeXmlText(run.text), options: runOptions(run) })),
       opts,
     )
     return
@@ -136,7 +137,7 @@ function addSlideToDeck(pptx: PptxGenJS, plan: SlidePlan): void {
     for (const shape of plan.shapes) addShape(slide, shape)
   }
 
-  if (plan.notes !== '') slide.addNotes(plan.notes)
+  if (plan.notes !== '') slide.addNotes(sanitizeXmlText(plan.notes))
 }
 
 /**

@@ -114,6 +114,40 @@ describe('chooseTier', () => {
   })
 })
 
+describe('the raster threshold is pinned to concrete scores (not the constant)', () => {
+  // A slide computed at 72 — just ABOVE 70 — must stay structured. Mutating the threshold to 90
+  // reds this (72 < 90 → raster). Score = 100 − 12 (gradient) − 16 (2 inset shadows) = 72.
+  const justAbove = [
+    makeNode({ tag: 'h1', isLeaf: true, text: 'Title' }),
+    makeNode({ isLeaf: false, style: { backgroundImage: 'linear-gradient(red, blue)' } }),
+    makeNode({ isLeaf: false, style: { boxShadow: 'inset 0 0 4px rgb(0, 0, 0)' } }),
+    makeNode({ isLeaf: false, style: { boxShadow: 'inset 0 0 8px rgb(0, 0, 0)' } }),
+  ]
+
+  // A slide computed at 63 — just BELOW 70 — must route to raster. Mutating the threshold to 60
+  // reds this (63 ≥ 60 → structured). Score = 100 − 25 (filter) − 12 (gradient) = 63.
+  const justBelow = [
+    makeNode({ tag: 'h1', isLeaf: true, text: 'Title' }),
+    makeNode({ isLeaf: false, style: { filter: 'blur(2px)' } }),
+    makeNode({ isLeaf: false, style: { backgroundImage: 'linear-gradient(red, blue)' } }),
+  ]
+
+  it('computes the straddling scores exactly (pins the scorer weights)', () => {
+    expect(scoreSlide(justAbove).score).toBe(72)
+    expect(scoreSlide(justBelow).score).toBe(63)
+  })
+
+  it('a 72-score slide stays structured; moving the threshold to 90 would wrongly raster it', () => {
+    const { score, hardBlocker } = scoreSlide(justAbove)
+    expect(chooseTier(score, 'auto', hardBlocker)).toBe('structured')
+  })
+
+  it('a 63-score slide routes to raster; moving the threshold to 60 would wrongly keep it structured', () => {
+    const { score, hardBlocker } = scoreSlide(justBelow)
+    expect(chooseTier(score, 'auto', hardBlocker)).toBe('raster')
+  })
+})
+
 describe('classifyTransform', () => {
   it('classifies none/translate/rotate/other', () => {
     expect(classifyTransform('none')).toBe('none')

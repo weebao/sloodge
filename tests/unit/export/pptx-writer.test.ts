@@ -91,4 +91,39 @@ describe('writeDeckPptx (OPC validity)', () => {
       true,
     )
   })
+
+  it('sanitizes XML-1.0-illegal control characters out of slide text AND notes (no corrupt .pptx)', async () => {
+    const bell = String.fromCharCode(0x07)
+    const soh = String.fromCharCode(0x01)
+    const dirty: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 6, h: 1 },
+          runs: [{ text: `Title${bell} here${soh}` }],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+      notes: `Notes${bell} body${soh} 日本語`,
+      confidence: 100,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [dirty] })
+    const slideXml = strFromU8(files['ppt/slides/slide1.xml']!)
+    const notesXml = strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)
+
+    // The legal text survives...
+    expect(slideXml).toContain('Title here')
+    expect(notesXml).toContain('Notes body')
+    expect(notesXml).toContain('日本語')
+
+    // ...and NO XML-1.0-illegal C0 control char (other than tab/LF/CR) remains anywhere in either
+    // part. This is the mutation signal: drop the sanitizer and the bell/0x01 reappear here.
+    // oxlint-disable-next-line no-control-regex -- deliberately scanning for illegal control chars.
+    const illegal = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]')
+    expect(illegal.test(slideXml)).toBe(false)
+    expect(illegal.test(notesXml)).toBe(false)
+  })
 })

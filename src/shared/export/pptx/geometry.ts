@@ -26,7 +26,12 @@ export function pxToInches(px: number): number {
   return px / CSS_PX_PER_INCH
 }
 
-/** CSS px → EMU. `px * 9525`, integer-exact. The OOXML-native form of {@link pxToInches}. */
+/**
+ * CSS px → EMU. `px * 9525`, integer-exact. The OOXML-native form of {@link pxToInches}, kept as the
+ * canonical statement that the mapping is exact. Note: the *emission path* is {@link pxToInches} /
+ * {@link boxToInches} (pptxgenjs positions in inches), which the writer uses and which its own tests
+ * pin — this function documents and proves the underlying exactness, it is not on the write path.
+ */
 export function pxToEmu(px: number): number {
   return px * EMU_PER_CSS_PX
 }

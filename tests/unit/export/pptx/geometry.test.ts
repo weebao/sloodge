@@ -37,7 +37,16 @@ describe('pptx geometry', () => {
     expect(pxToPoints(720)).toBe(540)
   })
 
-  it('maps a measured px box into an inch box', () => {
+  it('maps a measured px box into an inch box (the production emission path)', () => {
     expect(boxToInches({ x: 96, y: 48, w: 192, h: 96 })).toEqual({ x: 1, y: 0.5, w: 2, h: 1 })
+    // The full-slide box the writer hands pptxgenjs for a raster fill — pinned exactly, since this is
+    // the conversion the .pptx actually uses (not pxToEmu). A wrong factor mis-sizes every slide.
+    expect(boxToInches({ x: 0, y: 0, w: 1280, h: 720 })).toEqual({
+      x: 0,
+      y: 0,
+      w: SLIDE_WIDTH_INCHES,
+      h: SLIDE_HEIGHT_INCHES,
+    })
+    expect(pxToInches(1)).toBe(1 / 96)
   })
 })

@@ -53,6 +53,11 @@ export function useExportPptx(args: UseExportPptxArgs): (fidelity: PptxFidelity)
     const bridge = getBridge()
     if (bridge?.exportPptx === undefined) return
     if (slides.length === 0) return
+    // DEFERRED (§3.8): the dialog exposes fidelity only, so the whole deck is exported. The
+    // range/per-slide-override controls are out of scope for M4.3 — but the range pipeline is complete
+    // end to end (SlideRange, resolveRange, request validation, the orchestrator all honour it), so
+    // this is the one line to change when the dialog grows an All/Current/`1-4` control: pass the
+    // chosen SlideRange here instead of the hardcoded `all`. Delete this note when that lands.
     const request = buildExportPptxRequest(
       slides,
       currentIndex,

@@ -1,8 +1,10 @@
 /**
  * The confidence scorer and per-slide tier decision (M4.3 / 60-export.md §3.4). Pure and
- * table-driven, so every signal's deduction, every cap, and the raster threshold are asserted by unit
- * tests — and a mutation to the threshold reds a test, because a hard slide (an animated SVG scene, a
- * gradient/blur panel) *must* route to raster while a plain-text slide *must* stay structured.
+ * table-driven, so every signal's deduction and every cap are asserted by unit tests. The raster
+ * threshold is pinned by two fixtures whose *computed* scores straddle it — one at 72 (must stay
+ * structured) and one at 63 (must route to raster) — so moving the threshold to 90 reds the first and
+ * to 60 reds the second (`confidence.test.ts`), rather than the self-referential check a
+ * threshold-vs-constant assertion would give.
  *
  * The score starts at 100 and loses points for features PowerPoint cannot represent. It is computed
  * from the measurement pass alone — no rendering comparison at decision time. Separately, a small set
