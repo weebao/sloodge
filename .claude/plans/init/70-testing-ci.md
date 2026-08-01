@@ -281,6 +281,7 @@ Minute-saving measures, each deliberate:
 | `cache: pnpm` in setup-node | ~30 s once warm |
 | ubuntu-latest only | 1× billing (macOS is 10×, Windows 2×) |
 | `timeout-minutes: 10` | Caps the worst case |
+| No `paths` filter | Intentionally omitted — path-filtered required checks turn "skipped" into "pending" and block merges; the job is cheap enough that always running it is simpler and safer |
 
 **One deliberate exception, added in M5.2.** `pnpm-workspace.yaml`'s `supportedArchitectures` makes
 every cold install — CI's included — fetch `@anthropic-ai/claude-agent-sdk-win32-x64`, a ~254 MB
@@ -290,7 +291,6 @@ its presence so it is mandatory rather than opportunistic. This is knowingly aga
 installer with **no `claude.exe` and a dead chat panel, while every build step reports success**.
 The cost lands only on cache-miss runs, under a 10-minute cap for a ~7-second suite. Do not delete
 `supportedArchitectures` to reclaim it without first re-reading docs/windows-smoke-runbook.md §8.
-| No `paths` filter | Intentionally omitted — path-filtered required checks turn "skipped" into "pending" and block merges; the job is cheap enough that always running it is simpler and safer |
 
 `pnpm test:unit` maps to `vitest run` (never `vitest` watch — a watch-mode invocation in CI hangs until the timeout and bills for it).
 

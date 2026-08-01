@@ -310,10 +310,21 @@ pack:dir` on this dev box produced a 63.7 MB asar with 184 `src/`, 145 `tests/` 
   | platform only, full list    | 37.7 MB  | 0   | 0     | 0    | 0           |
   | both carrying the full list | 401.9 MB | 0   | 0     | 0    | 0           |
 
-  Once a platform block exists, the app-source matcher takes the platform list and the top-level
-  list is routed to the _node_modules_ matcher instead — `release/builder-debug.yml` prints both
-  (`firstOrDefaultFilePatterns` vs `nodeModuleFilePatterns`) and shows the split. So the exclusions
-  are duplicated across `win`/`mac`/`linux` on purpose; `build-config.test.ts` guards the shape.
+  Why: `util/config/config.js:91 normalizeFiles` (via `doMergeConfigs`, :169) rewrites a
+  **top-level** `files` string array into object FileSet form `[{filter:[…]}]`. Object patterns take
+  `fileMatcher.js:246`'s `fileMatchers.push(new FileMatcher(…))` branch rather than
+  `defaultMatcher.addPattern` (:238), so the top-level list becomes a _second_ app-source matcher.
+  The platform's `files` are still strings, so they land in `defaultMatcher`, which is unshifted to
+  index 0 (:254-256) — and `getMainFileMatchers` grants the permissive `**/*` plus the default
+  `!**/node_modules/**` to `matchers[0]` **only** (:111-121). That matcher then copies everything
+  the platform list does not exclude, `src/` included. The `:250-253` "both go to one matcher"
+  reading is real, but it governs the string branch and the node_modules matcher (:209-210) — which
+  is why `builder-debug.yml` shows the hoisted patterns under `nodeModuleFilePatterns`. It also
+  explains row 4: only `matchers[0]` ever receives `!**/node_modules/**`, so the asar stays huge
+  even when the source tree is clean.
+
+  So the exclusions are duplicated across `win`/`mac`/`linux` on purpose; `build-config.test.ts`
+  guards the shape and reds on a hoist.
 
 - Icons are **deferred**: `directories.buildResources: "build"` names a dir that does not exist yet
   and no `icon` is set, so every artifact carries the default Electron icon. M9.1 must add

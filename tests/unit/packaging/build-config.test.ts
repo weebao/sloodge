@@ -119,13 +119,28 @@ function expandBraces(pattern: string): string[] {
 /**
  * The pattern list that actually filters **app source** for a platform.
  *
- * This is the platform's own `files` and nothing else, which is not what the source reads like:
- * `fileMatcher.js:250-253` adds `config.files` and then `customBuildOptions.files` to the same
- * `FileMatcher`, so they look like they merge. They do merge for the *node_modules* matcher
- * (`getNodeModuleFileMatcher`, :209-210) — but the app-source matcher observably ends up with only
- * the platform list whenever a platform block is present. `release/builder-debug.yml` shows it
- * directly: with both set, `firstOrDefaultFilePatterns` carries the platform entries and none of the
- * top-level ones, while `nodeModuleFilePatterns` carries both.
+ * This is the platform's own `files` and nothing else — a top-level `files` does not filter app
+ * source at all once a platform block exists. The mechanism, which is not what `fileMatcher.js`
+ * reads like at first glance:
+ *
+ * 1. `util/config/config.js:91 normalizeFiles` (via `doMergeConfigs`, :169) rewrites a **top-level**
+ *    `files` string array into object FileSet form — `[{ filter: [...] }]`.
+ * 2. In `getFileMatchers`, an object pattern takes the `fileMatchers.push(new FileMatcher(...))`
+ *    branch (`fileMatcher.js:246`) instead of `defaultMatcher.addPattern` (:238). So the top-level
+ *    list becomes a **second, separate app-source matcher** rather than joining the first.
+ * 3. The platform's `files` are still plain strings, so they land in `defaultMatcher`, which is then
+ *    unshifted to index 0 (:254-256).
+ * 4. `getMainFileMatchers` grants the permissive `**\/*` and the default exclusions (including
+ *    `!**\/node_modules/**`) to `matchers[0]` only (:111-121) — the platform-only one. It therefore
+ *    copies everything the *platform* list does not exclude, `src/` included, and the two matchers
+ *    union together.
+ *
+ * The `:250-253` "both lists go to the same matcher" reading is real, but it governs the *string*
+ * branch and `getNodeModuleFileMatcher` (:209-210) — which is exactly why `builder-debug.yml` shows
+ * the hoisted patterns under `nodeModuleFilePatterns` and not under `firstOrDefaultFilePatterns`.
+ *
+ * This also explains the fourth row below: with both lists full, source is clean but the asar is
+ * still huge, because only `matchers[0]` ever received `!**\/node_modules/**`.
  *
  * Measured on real `electron-builder --win --dir` runs, counting entries in the produced asar:
  *
@@ -149,8 +164,8 @@ function effectiveFiles(platform: PlatformKey): readonly string[] {
  *
  * Models electron-builder's ordering: later patterns win, and a list containing only negations gets
  * an implicit `**\/*` prepended (`fileMatcher.js:285-287`, `containsOnlyIgnore`). Modelling the order
- * rather than just "is it mentioned" is what lets this catch a platform block that *re-includes*
- * `src/**` after the top-level list excluded it.
+ * rather than just "is it mentioned" is what lets this catch a platform block that excludes `src/**`
+ * and then *re-includes* it with a later positive pattern.
  */
 function isPackagedFile(file: string, patterns: readonly string[]): boolean {
   let included = patterns.every((pattern) => pattern.startsWith('!'))
@@ -341,9 +356,9 @@ describe('what must survive into the packaged app', () => {
   it('keeps the exclusions on the platform blocks, where they measurably work', () => {
     // Not a style preference. Hoisting the shared list to a top-level `files` is the obvious
     // refactor — it was built and measured, and it does NOT filter app source once platform blocks
-    // exist: 427.9MB with 151 `src/`, 131 `tests/` and 34 `docs/` entries, because the app-source
-    // matcher takes the platform list while the top-level list is routed to the node_modules
-    // matcher (`release/builder-debug.yml` shows both lists side by side). See `effectiveFiles`.
+    // exist: 427.9MB with 151 `src/`, 131 `tests/` and 34 `docs/` entries, because `normalizeFiles`
+    // turns a top-level list into a second FileSet matcher while the permissive `**/*` is granted
+    // only to the platform-only `matchers[0]`. See `effectiveFiles` for the trace and the numbers.
     expect(
       build.files,
       'a top-level files does NOT filter app source once platform blocks exist — measured at ' +
