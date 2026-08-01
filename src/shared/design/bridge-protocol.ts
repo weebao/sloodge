@@ -111,7 +111,20 @@ export interface SlHit {
   readonly tag: string
   readonly id: string | null
   readonly classes: readonly string[]
+  /**
+   * The element's **rendered** bounding box in frame coords — the axis-aligned box a rotated element
+   * inflates to, used for hover outlines and as the overlay fallback.
+   */
   readonly rect: SlRect
+  /**
+   * The element's **unrotated** border box in frame coords (its rendered size with its own rotation
+   * removed, centred on the rendered box), when the frame could measure it. The M3.6 rotation
+   * overlay renders *this* box turned by the element's source rotation, so the selection outline
+   * hugs a rotated element instead of showing its inflated axis-aligned bounds. Optional: an older
+   * frame, or a node the frame could not measure untransformed, omits it and the overlay falls back
+   * to `rect`.
+   */
+  readonly box?: SlRect
   /** Nearest-first ancestor chain (excludes the hit element itself), for the breadcrumb bar. */
   readonly ancestors: readonly SlCrumb[]
 }
@@ -218,6 +231,7 @@ function isCrumb(value: unknown): value is SlCrumb {
 
 function isHit(value: unknown): value is SlHit {
   const ancestors = isRecord(value) ? value['ancestors'] : undefined
+  const box = isRecord(value) ? value['box'] : undefined
   return (
     isRecord(value) &&
     typeof value['slId'] === 'string' &&
@@ -225,6 +239,7 @@ function isHit(value: unknown): value is SlHit {
     (value['id'] === null || typeof value['id'] === 'string') &&
     isStringArray(value['classes']) &&
     isRect(value['rect']) &&
+    (box === undefined || isRect(box)) &&
     Array.isArray(ancestors) &&
     ancestors.every(isCrumb)
   )

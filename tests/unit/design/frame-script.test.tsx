@@ -118,6 +118,8 @@ describe('designBridgeFrameMain', () => {
     expect(hit.tag).toBe('div')
     expect(hit.classes).toEqual(['chart'])
     expect(hit.rect).toEqual({ x: 40, y: 60, width: 320, height: 84 })
+    // The unrotated box (M3.6): with no rotation it coincides with the rendered rect.
+    expect(hit.box).toEqual({ x: 40, y: 60, width: 320, height: 84 })
     // The .slide section is the one addressable ancestor.
     expect(hit.ancestors.map((a) => a.slId)).toEqual(['s_x:0'])
   })

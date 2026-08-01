@@ -35,6 +35,7 @@ import {
 import type { SlideView } from '../../stores/deckStore'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
+import { useElementActions } from './useElementActions'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   text: 'Text',
@@ -115,6 +116,7 @@ const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', '
 
 function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
+  const actions = useElementActions(slide.id)
   const textDisabled = values.text === null
 
   // One controlled value per field, seeded from source. The component is remounted (via `key`) on
@@ -180,6 +182,10 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
     [commit],
   )
 
+  const flipH = useCallback((): void => actions.flip('x'), [actions])
+  const flipV = useCallback((): void => actions.flip('y'), [actions])
+  const duplicate = useCallback((): void => actions.duplicate(), [actions])
+
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
     const disabled = name === 'text' && textDisabled
     return (
@@ -218,6 +224,33 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
         {field('y', false)}
         {field('width', false)}
         {field('height', false)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-chrome-muted dark:text-ink-muted">Transform</span>
+        <button
+          type="button"
+          data-testid="transform-flip-h"
+          onClick={flipH}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+        >
+          Flip H
+        </button>
+        <button
+          type="button"
+          data-testid="transform-flip-v"
+          onClick={flipV}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+        >
+          Flip V
+        </button>
+        <button
+          type="button"
+          data-testid="transform-duplicate"
+          onClick={duplicate}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+        >
+          Duplicate
+        </button>
       </div>
     </div>
   )

@@ -182,6 +182,40 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     return { x: left, y: top, width: right - left, height: bottom - top }
   }
 
+  // The element's UNROTATED border box, in frame coords — its rendered size with its own rotation
+  // removed, centred on the rendered box. `offsetWidth/offsetHeight` are the border-box size ignoring
+  // the element's transform, so combined with the rendered box's centre (which rotation about centre
+  // leaves fixed) this is the box the M3.6 overlay turns by the source rotation. Unioned across every
+  // node sharing the id (adoption-agency clones). Falls back to the rendered rect for a node with no
+  // usable offset size (an SVG child), which the parent then treats as "no tighter box available".
+  const boxForId = (slId: string) => {
+    const nodes = doc.querySelectorAll('[' + ID_ATTR + '="' + slId + '"]')
+    if (nodes.length === 0) return { x: 0, y: 0, width: 0, height: 0 }
+    let left = Infinity
+    let top = Infinity
+    let right = -Infinity
+    let bottom = -Infinity
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i] as HTMLElement
+      const r = node.getBoundingClientRect()
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      const w =
+        typeof node.offsetWidth === 'number' && node.offsetWidth > 0 ? node.offsetWidth : r.width
+      const h =
+        typeof node.offsetHeight === 'number' && node.offsetHeight > 0
+          ? node.offsetHeight
+          : r.height
+      const nodeLeft = cx - w / 2
+      const nodeTop = cy - h / 2
+      if (nodeLeft < left) left = nodeLeft
+      if (nodeTop < top) top = nodeTop
+      if (nodeLeft + w > right) right = nodeLeft + w
+      if (nodeTop + h > bottom) bottom = nodeTop + h
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top }
+  }
+
   const describe = (el: Element) => {
     const slId = el.getAttribute(ID_ATTR) ?? ''
     return {
@@ -209,7 +243,7 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     const target = climb(deepest, alt)
     if (!target) return null
     const d = describe(target)
-    return { ...d, ancestors: ancestorsOf(target) }
+    return { ...d, box: boxForId(d.slId), ancestors: ancestorsOf(target) }
   }
 
   const send = (env: unknown): void => {

@@ -83,6 +83,52 @@ export function frameRectToOverlay(rect: SlRect, scale: number): SlRect {
 }
 
 /**
+ * The centre of a frame-space rect in **client** pixels — the pivot the rotation gesture measures
+ * pointer angles about (M3.6). `box` is the on-screen bounding rect of the scaled frame (its
+ * `left`/`top`), `scale` the same `z` the frame is painted at. A non-usable scale yields the box
+ * origin rather than `NaN`, so a gesture started before first paint aims at a defined point.
+ */
+export function frameRectCentreClient(rect: SlRect, box: ScreenBox, scale: number): Point {
+  if (!isUsableScale(scale)) return { x: box.left, y: box.top }
+  return {
+    x: box.left + (rect.x + rect.width / 2) * scale,
+    y: box.top + (rect.y + rect.height / 2) * scale,
+  }
+}
+
+/** An overlay box plus the CSS `transform` that rotates it about its own centre. */
+export interface RotatedOverlayBox {
+  readonly left: number
+  readonly top: number
+  readonly width: number
+  readonly height: number
+  /** `rotate(Ndeg)`, or `'none'` when upright — so an unrotated box costs no compositor layer. */
+  readonly transform: string
+}
+
+/**
+ * Place a frame-space rect on the overlay as a box rotated `angleDeg` about its centre (M3.6). The
+ * box is the element's **unrotated** extent scaled to overlay pixels; the CSS `rotate` (with the
+ * default `transform-origin: center`) then turns it so the selection outline tracks the element's
+ * rotation. `0°` emits `transform: 'none'`. Pure so the rotated-overlay geometry is tested without a
+ * layout engine, exactly as `frameRectToOverlay` is.
+ */
+export function rotatedOverlayStyle(
+  rect: SlRect,
+  scale: number,
+  angleDeg: number,
+): RotatedOverlayBox {
+  const box = frameRectToOverlay(rect, scale)
+  return {
+    left: box.x,
+    top: box.y,
+    width: box.width,
+    height: box.height,
+    transform: angleDeg === 0 ? 'none' : `rotate(${String(angleDeg)}deg)`,
+  }
+}
+
+/**
  * The smallest rect containing all of `rects`, or `null` for an empty list.
  *
  * A single source element can render as several DOM nodes — the adoption-agency clones documented on
