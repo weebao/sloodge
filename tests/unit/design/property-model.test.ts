@@ -135,6 +135,15 @@ describe('buildFieldOps — style fields insert when absent, upsert when present
     expect(edit('<div>x</div>', 0, 'width', '50%')).toBe('<div style="width: 50%">x</div>')
   })
 
+  it('a value with a ; (or { }) never injects a second declaration', () => {
+    const { source, element } = at('<div>x</div>', 0)
+    // The panel edit path rejects the write; the source is left untouched (no sibling property).
+    expect(buildFieldOps(source, element, 'color', 'red;background:url(x)')).toEqual([])
+    expect(edit('<div>x</div>', 0, 'color', 'red;background:url(x)')).toBe('<div>x</div>')
+    // Sanity: the same field with a safe value writes exactly one declaration.
+    expect(edit('<div>x</div>', 0, 'color', 'red')).toBe('<div style="color: red">x</div>')
+  })
+
   it('empty values are no-ops', () => {
     const { source, element } = at('<div>x</div>', 0)
     for (const f of ['fontSize', 'color', 'fill', 'width', 'x'] as PropertyField[]) {

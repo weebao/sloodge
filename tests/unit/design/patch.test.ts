@@ -4,6 +4,7 @@ import {
   applyOps,
   escapeAttrValue,
   escapeText,
+  isSafeStyleValue,
   PatchOverlapError,
   readAttr,
   readStyleProp,
@@ -152,6 +153,28 @@ describe('setStyleProp', () => {
     const { source, element } = only('<div style="color: red">x</div>')
     const patched = applyOps(source, setStyleProp(source, element, 'font-size', '20px'))
     expect(patched).toBe('<div style="color: red; font-size: 20px">x</div>')
+  })
+
+  it('rejects a value that would inject a sibling declaration (; or { or })', () => {
+    const { source, element } = only('<div>x</div>')
+    // Without the guard, this serializes to `color: red;background:url(x)` — two declarations.
+    expect(setStyleProp(source, element, 'color', 'red;background:url(x)')).toEqual([])
+    expect(setStyleProp(source, element, 'color', 'red}')).toEqual([])
+    expect(setStyleProp(source, element, 'color', 'red{')).toEqual([])
+    // A safe value still writes exactly one declaration.
+    expect(applyOps(source, setStyleProp(source, element, 'color', 'red'))).toBe(
+      '<div style="color: red">x</div>',
+    )
+  })
+})
+
+describe('isSafeStyleValue', () => {
+  it('rejects declaration/block terminators, accepts everything else', () => {
+    expect(isSafeStyleValue('red')).toBe(true)
+    expect(isSafeStyleValue('url("a.png")')).toBe(true)
+    expect(isSafeStyleValue('red;x:1')).toBe(false)
+    expect(isSafeStyleValue('a{b')).toBe(false)
+    expect(isSafeStyleValue('a}')).toBe(false)
   })
 })
 

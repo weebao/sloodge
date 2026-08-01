@@ -23,7 +23,7 @@
  * deferred — each committed field edit is its own clean undo unit, which is the safe default.
  */
 
-import { useMemo, useState, type JSX } from 'react'
+import { useCallback, useMemo, useState, type JSX } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
 import {
@@ -131,23 +131,54 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
     height: values.height ?? '',
   }))
 
-  const commit = (field: PropertyField): void => {
-    // Re-derive from the store's *current* bytes at commit time, not from the `slide.html` prop
-    // captured at render — a blur that fires after some other edit landed must patch the source
-    // that is actually live, closing the staleness window §1.4 warns about (there is no async gap:
-    // read, compute and commit all happen synchronously here). The element is still resolved from
-    // the parent-owned map keyed by the parent-tracked `slId` (§2.2), never a message payload.
-    const current = getSlideHtml(useDeckStore.getState().slideHtml, slide.id)
-    if (current === undefined) return
-    const map = buildSlideMap(slide.id, current)
-    const element = resolveElement(map, slId)
-    if (element === null) return
-    const ops = buildFieldOps(map.source, element, field, draft[field])
-    if (ops.length === 0) return
-    const patched = applyOps(map.source, ops)
-    if (patched === map.source) return
-    setSlideHtml(slide.id, patched, slId, editLabel(field, draft[field]))
-  }
+  // The three input handlers are hoisted to stable `useCallback`s (not recreated per input per
+  // render), which keeps the panel warning-clean under react-perf and means the field factory below
+  // allocates only JSX, no fresh function props. Each handler reads *which* field fired from the
+  // input's `name` and the current value from the event, so `commit` needs no `draft` dependency —
+  // it works off the value the DOM already holds.
+  const commit = useCallback(
+    (fieldName: PropertyField, value: string): void => {
+      // Re-derive from the store's *current* bytes at commit time, not from the `slide.html` prop
+      // captured at render — a blur that fires after some other edit landed must patch the source
+      // that is actually live, closing the staleness window §1.4 warns about (there is no async
+      // gap: read, compute and commit all happen synchronously). The element is still resolved from
+      // the parent-owned map keyed by the parent-tracked `slId` (§2.2), never a message payload.
+      const current = getSlideHtml(useDeckStore.getState().slideHtml, slide.id)
+      if (current === undefined) return
+      const map = buildSlideMap(slide.id, current)
+      const element = resolveElement(map, slId)
+      if (element === null) return
+      const ops = buildFieldOps(map.source, element, fieldName, value)
+      if (ops.length === 0) return
+      const patched = applyOps(map.source, ops)
+      if (patched === map.source) return
+      setSlideHtml(slide.id, patched, slId, editLabel(fieldName, value))
+    },
+    [slide.id, slId, setSlideHtml],
+  )
+
+  const handleChange = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
+    const name = event.target.name as PropertyField
+    const { value } = event.target
+    setDraft((prev) => ({ ...prev, [name]: value }))
+  }, [])
+
+  const handleBlur = useCallback(
+    (event: React.FocusEvent<HTMLInputElement>): void => {
+      commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
+    },
+    [commit],
+  )
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
+      event.currentTarget.blur()
+    },
+    [commit],
+  )
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
     const disabled = name === 'text' && textDisabled
@@ -157,25 +188,16 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
       >
         <span className="text-chrome-muted dark:text-ink-muted">{FIELD_LABELS[name]}</span>
         <input
+          name={name}
           aria-label={FIELD_LABELS[name]}
           data-testid={`prop-${name}`}
           value={draft[name]}
           disabled={disabled}
           placeholder={disabled ? 'mixed' : ''}
           inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
-          onChange={(event) => {
-            setDraft((prev) => ({ ...prev, [name]: event.target.value }))
-          }}
-          onBlur={() => {
-            commit(name)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              commit(name)
-              event.currentTarget.blur()
-            }
-          }}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
           className={`${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink-bg dark:text-ink-fg`}
         />
       </label>

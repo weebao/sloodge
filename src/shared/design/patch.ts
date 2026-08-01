@@ -165,9 +165,25 @@ export function setAttr(
 }
 
 /**
+ * `;`, `{` and `}` are the characters that end a declaration (or open/close a block) in CSS. A
+ * single-property write must never contain one in its *value*: `color` = `red;background:url(x)`
+ * would serialize to `color: red;background:url(x)`, which reparses as **two** declarations —
+ * silently injecting a sibling property the user did not choose. `isSafeStyleValue` is the guard
+ * that keeps a single-property write to a single property.
+ */
+export function isSafeStyleValue(value: string): boolean {
+  return !/[;{}]/.test(value)
+}
+
+/**
  * Ops to upsert one inline-`style` declaration on `element`, preserving every other declaration.
  * Reads the current `style` value from source (via the map), upserts `prop`, and either replaces
  * the existing `style` value span or inserts a whole new `style` attribute when there is none.
+ *
+ * A `value` that could terminate the declaration (contains `;`, `{` or `}`) is **rejected** — the
+ * function returns `[]` (a no-op the caller does not commit) rather than let the write inject a
+ * second declaration. That is the only way this helper can be misused to change a property the
+ * caller did not name, so it is closed here at the one chokepoint every style write funnels through.
  */
 export function setStyleProp(
   source: string,
@@ -175,6 +191,7 @@ export function setStyleProp(
   prop: string,
   value: string,
 ): SourceOp[] {
+  if (!isSafeStyleValue(value)) return []
   const styleAttr = element.attrs['style']
   const styleValue = styleAttr?.value ?? null
   const current = styleValue === null ? '' : source.slice(styleValue.start, styleValue.end)
