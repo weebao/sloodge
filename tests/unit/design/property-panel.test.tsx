@@ -7,11 +7,12 @@
  * field↔source mapping is proven exhaustively in `property-model.test.ts`.
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
+import { useChatContextStore } from '../../../src/renderer/src/features/chat/chatContextStore'
 import { PropertyPanel } from '../../../src/renderer/src/features/design/PropertyPanel'
 import {
   createStarterDeck,
@@ -204,5 +205,22 @@ describe('PropertyPanel — transform actions (M3.6)', () => {
     expect(patched.match(/<h1/g)?.length).toBe(2)
     expect(useDeckStore.getState().undo()).toBe(true)
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('“Ask Claude about this element” attaches the element context bundle (§6.1) without a frame', async () => {
+    useChatContextStore.getState().clear()
+    select()
+    // No `inspect` prop (no live frame): the bundle still builds from the parent-owned source map and
+    // the selection's rect hint — computed styles are an enrichment, not a requirement.
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('ask-claude-element'))
+
+    await waitFor(() => expect(useChatContextStore.getState().attachment).not.toBeNull())
+    const bundle = useChatContextStore.getState().attachment!
+    // Authoritative HTML is re-derived from the store's current bytes (§2.2), not any bridge payload.
+    expect(bundle.element.outerHtml).toBe(SOURCE)
+    expect(bundle.element.tag).toBe('h1')
+    expect(bundle.element.rect).toEqual({ x: 0, y: 0, width: 100, height: 40 })
+    useChatContextStore.getState().clear()
   })
 })

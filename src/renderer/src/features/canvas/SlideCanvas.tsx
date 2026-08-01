@@ -6,6 +6,7 @@ import { useDesignStore } from '../design/designStore'
 import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
+import { useElementInspect } from '../design/useElementInspect'
 import { SlideFrame } from './SlideFrame'
 import { fitSlide } from './slideFit'
 import { useElementSize } from './useElementSize'
@@ -41,6 +42,15 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
   const frameRef = useRef<HTMLIFrameElement>(null)
 
   const designModeActive = designEnabled && slide !== null
+
+  // The computed-styles bridge client, shared with the property panel's "Ask Claude about this
+  // element" affordance. Armed only in Design Mode; the frameRef and slide id are the ones the
+  // instrumented frame is showing.
+  const { inspect } = useElementInspect({
+    frameRef,
+    slideId: slide?.id ?? '',
+    enabled: designModeActive,
+  })
 
   // Only pay for the parse + instrument + inject while Design Mode is on for this slide.
   const html = useMemo(() => {
@@ -95,7 +105,7 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
       </div>
       {/* Docked bottom-of-canvas (wireframe §20): the local property panel, only in Design Mode
           and only when an element is selected (the panel returns null otherwise). */}
-      {designModeActive && slide ? <PropertyPanel slide={slide} /> : null}
+      {designModeActive && slide ? <PropertyPanel slide={slide} inspect={inspect} /> : null}
     </main>
   )
 }

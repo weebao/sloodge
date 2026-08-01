@@ -10,14 +10,18 @@ import {
   isMessageFromFrame,
   makeHittestRequest,
   makeHittestResponse,
+  makeInspectRequest,
+  makeInspectResponse,
   makeReadyEvent,
   parseFrameMessage,
   parseParentMessage,
   SL_HITTEST,
+  SL_INSPECT,
   SL_MAGIC,
   SL_PROTOCOL_VERSION,
   SL_READY,
   type SlHit,
+  type SlInspect,
 } from '../../../src/shared/design/bridge-protocol'
 
 const SLIDE = 's_01H8XQZ4P7K2M9NB3VYRTC6FDA'
@@ -197,7 +201,9 @@ describe('parseParentMessage — what the frame will accept from the parent', ()
   it('accepts a well-formed hit-test request', () => {
     const message = parseParentMessage(request, SLIDE)
     expect(message?.dir).toBe('req')
-    expect(message?.payload.mode).toBe('hover')
+    expect(message?.type).toBe(SL_HITTEST)
+    // `BridgeRequest` is a union (SL_HITTEST | SL_INSPECT); narrow by type before reading `mode`.
+    if (message?.type === SL_HITTEST) expect(message.payload.mode).toBe('hover')
   })
 
   it('rejects a response direction — the frame never receives responses', () => {
@@ -243,5 +249,77 @@ describe('factories round-trip through the validators', () => {
   it('createEnvelopeIdSource is monotonic from 1', () => {
     const next = createEnvelopeIdSource()
     expect([next(), next(), next()]).toEqual([1, 2, 3])
+  })
+})
+
+describe('SL_INSPECT — the computed-styles bridge message (M3.4)', () => {
+  const inspect: SlInspect = {
+    slId: `${SLIDE}:3`,
+    computed: { color: 'rgb(1, 2, 3)', 'font-size': '20px' },
+    rect,
+  }
+
+  it('parseFrameMessage accepts a well-formed inspect response', () => {
+    const env = makeInspectResponse(11, SLIDE, inspect)
+    const message = parseFrameMessage(env, SLIDE)
+    expect(message?.type).toBe(SL_INSPECT)
+    expect(message?.dir).toBe('res')
+    if (message?.type === SL_INSPECT && message.payload !== null) {
+      expect(message.payload.computed['font-size']).toBe('20px')
+      expect(message.payload.rect).toEqual(rect)
+    }
+  })
+
+  it('parseFrameMessage accepts a null inspect payload (stale id in the frame)', () => {
+    const env = makeInspectResponse(12, SLIDE, null)
+    const message = parseFrameMessage(env, SLIDE)
+    expect(message?.type).toBe(SL_INSPECT)
+    if (message?.type === SL_INSPECT) expect(message.payload).toBeNull()
+  })
+
+  it('parseFrameMessage rejects a computed map with a non-string value', () => {
+    const env = makeInspectResponse(13, SLIDE, inspect)
+    const bad = { ...env, payload: { slId: `${SLIDE}:3`, computed: { color: 5 }, rect } }
+    expect(parseFrameMessage(bad, SLIDE)).toBeNull()
+  })
+
+  it('parseFrameMessage rejects an inspect response with a malformed rect', () => {
+    const bad = {
+      ...makeInspectResponse(14, SLIDE, inspect),
+      payload: { slId: `${SLIDE}:3`, computed: {}, rect: { x: 1, y: 2, width: 'no', height: 4 } },
+    }
+    expect(parseFrameMessage(bad, SLIDE)).toBeNull()
+  })
+
+  it('parseFrameMessage rejects an inspect response for a different slide', () => {
+    const env = makeInspectResponse(15, SLIDE, inspect)
+    expect(parseFrameMessage({ ...env, slide: 's_other' }, SLIDE)).toBeNull()
+  })
+
+  it('parseParentMessage accepts a well-formed inspect request', () => {
+    const env = makeInspectRequest(16, SLIDE, { slId: `${SLIDE}:3` })
+    const message = parseParentMessage(env, SLIDE)
+    expect(message?.type).toBe(SL_INSPECT)
+    if (message?.type === SL_INSPECT) expect(message.payload.slId).toBe(`${SLIDE}:3`)
+  })
+
+  it('parseParentMessage rejects an inspect request with no slId', () => {
+    const bad = { ...makeInspectRequest(17, SLIDE, { slId: 'x' }), payload: { slId: 5 } }
+    expect(parseParentMessage(bad, SLIDE)).toBeNull()
+  })
+
+  it('SOURCE-VALIDATION: an inspect reply is gated by isMessageFromFrame, not its content', () => {
+    // The renderer's inspect client only reads event.data after isMessageFromFrame passes. A reply
+    // from any window that is not the frame's contentWindow is dropped regardless of how well-formed
+    // it is — the opaque-origin guard, mirrored from the hit-test path.
+    const frameWindow = { name: 'frame' }
+    const attacker = { name: 'attacker' }
+    const env = makeInspectResponse(18, SLIDE, inspect)
+    expect(isMessageFromFrame({ source: attacker }, frameWindow)).toBe(false)
+    // Same well-formed reply is only trusted-as-a-hint when it comes from the frame window itself
+    // (a co-resident forged reply passes shape+source, which is why the bundle never derives its
+    // authoritative HTML from it — see element-context.test.ts §2.2 re-derivation).
+    expect(isMessageFromFrame({ source: frameWindow }, frameWindow)).toBe(true)
+    expect(parseFrameMessage(env, SLIDE)?.type).toBe(SL_INSPECT)
   })
 })
