@@ -17,7 +17,7 @@ Three export targets, three fidelity contracts:
 |---|---|---|---|
 | **PDF** | Pixel-exact, vector text where possible | No (by design) | `webContents.printToPDF` per slide + `pdf-lib` merge |
 | **PPTX** | Best-effort editable, guaranteed-visual fallback | Yes, per-slide-dependent | `pptxgenjs` structured DOM walk **or** full-slide PNG raster |
-| **HTML** | Byte-exact (it *is* the source) | Yes, trivially | zip of slide files + generated presenter shell |
+| **HTML** | Byte-exact (it *is* the source), **animation and interactivity preserved** | Yes, trivially | zip of slide files + generated presenter shell |
 
 **Design rule that governs all three:** the export pipeline never re-implements layout. Chromium is the layout engine; we either ask it to print, ask it to screenshot, or ask it (via injected script, in its own context) to *report* the boxes it already computed. We never parse CSS ourselves.
 
@@ -472,43 +472,79 @@ A `.zip` (or an unzipped folder — user choice):
 
 ```
 <deck-name>/
-  index.html            # generated presenter shell
+  index.html            # generated presenter shell, manifest inlined
   slides/
-    001-title.html      # byte-identical to the stored slide source
+    001-title.html      # the wrapped slide document (see below)
     002-agenda.html
     ...
-  assets/               # images/fonts referenced by slides, deduplicated
-  deck.json             # ordered manifest: id, file, title, notes, hasAnimation, hasInteractivity
+  deck.json             # ordered manifest: formatVersion, title, slideCount, slides[{index,id,title,file}]
 ```
 
-Slide files are **byte-identical** to the `.sloodge` document's stored HTML — no rewriting, no minification, no injected script. That guarantee is what makes HTML export trustworthy and also makes it round-trippable: re-importing the folder reconstructs the deck exactly.
+The `NNN-` prefix makes filenames **structurally collision-free** (two slides titled "Agenda" become `003-agenda.html` and `007-agenda.html`) and makes `slides/` sort in presentation order in any file manager. Uniqueness comes from the counter, so the slug half can be lossy — it is stripped to lowercase ASCII alphanumerics, because it becomes a path on the recipient's filesystem.
 
-Assets are rewritten only in the sense that the deck's asset store is materialized into `assets/` with the same relative paths the slides already use.
+**As shipped (M4.4), two things differ from the sketch above. Both are deliberate.**
+
+**1. Slide files are the *wrapped* document, not byte-identical source.** This is the most important decision in the milestone and it is a security trade, not an oversight.
+
+Inside the app a slide's CSP arrives twice: injected into the document by `wrapSlideHtml` (layer 3) *and* sent as a `slide://` response header. In an exported bundle **there is no response header and no host CSP** — the file is opened from `file://` by a browser that has never heard of us. The injected meta is the only policy that survives. A bundle of raw author source would ship documents that run with no CSP at all: free network egress, deck contents exfiltrated, remote code fetched on the viewer's machine. Byte-identity is a nice property; handing a third party an unpoliced document is a vulnerability.
+
+The trade costs less than it looks, because `wrapSlideHtml` is a *constant-length prefix inserted at a computed offset* that rewrites no author byte. The original source is recoverable exactly by removing that known prefix, so re-import still round-trips losslessly and the fidelity-oracle role of §5.4 survives under the same subtraction — the comparison is `exported == wrap(source)` instead of `exported == source`.
+
+**2. No `assets/` directory.** The slide CSP is `img-src data: blob:` / `font-src data:` (`SLIDE_CSP`). A slide therefore *cannot* reference a sibling file — the policy travelling in its own bytes forbids it — so every image and font it uses is already a `data:` URI inside the document. An `assets/` folder would hold files no slide is permitted to load. When the deck model grows an asset store whose files slides may reference, the CSP has to change first; this layout follows that change rather than anticipating it.
+
+### 5.1a The `file://` threat model
+
+The exported bundle carries untrusted, model-authored content and is opened **outside our app**, so the four-layer sandbox of [10-architecture.md](10-architecture.md) §7 is cut in half. Stating precisely what is left:
+
+| Layer | In the app | In an exported bundle |
+|---|---|---|
+| 1. Host renderer CSP + `contextIsolation` | Yes | **Gone** — the host is the user's browser |
+| 2. `sandbox="allow-scripts"` iframe, no `allow-same-origin` | Yes | **Yes — emitted by the presenter shell** |
+| 3. Slide's own injected CSP meta | Yes | **Yes — travels in the slide bytes** |
+| 4. `slide://` response header | Yes | **Gone** — no protocol handler, no server |
+
+Layers 2 and 3 are the entire remaining defence, and each is now load-bearing in a way it was not before, because neither has a backstop.
+
+**The attack that layer 2 stops.** `file://` documents have historically been granted same-origin access to other `file://` URLs under some browser configurations. A shell that framed slides *with* `allow-same-origin` — or that inlined slide markup into the top-level document — would let a hostile slide read the viewer's local files and the shell's own DOM. `allow-scripts` **without** `allow-same-origin` forces the slide into an opaque origin: its scripts run (they must; that is the product), but it cannot reach `parent`, sibling slides, or the filesystem.
+
+The two tokens fail in opposite directions and both are pinned by tests: dropping `allow-scripts` silently kills every animated slide, and adding `allow-same-origin` silently dissolves the sandbox — the HTML standard documents that pair as equivalent to no sandbox at all. A test asserts the exact token string, a second asserts `allow-same-origin` appears nowhere in the emitted document, and a third asserts no frame uses `srcdoc` (which would run the slide in the shell's own origin). All three are mutation-verified.
+
+The shell additionally opens **no channel** to the frames: no `postMessage`, no `contentWindow` access, nothing injected into a slide. A sandbox with no hole needs no hole guarded.
+
+**Injected text.** The deck title reaches three contexts in the shell — the `<title>`, several attributes, and the inlined JSON manifest. All three use **HTML escaping**, which is the opposite operation from the PPTX path's XML sanitizing: XML has characters it cannot represent, so that sanitizer *strips*; HTML can represent everything, so this one *escapes* and never strips, and a deck legitimately titled `Q1 & Q2 <2026>` survives readable. The JSON block escapes `<` as the JSON escape `\u003c`, which is still valid JSON (it parses back to the identical string) and makes a `</script` terminator unconstructible.
 
 ### 5.2 The presenter shell (`index.html`)
 
-A single self-contained file, no build step, no dependencies:
+A single self-contained file, no build step, no dependencies. **Shipped in M4.4:**
 
-- Renders the current slide in an `<iframe sandbox="allow-scripts">` sized 1280×720 and CSS-scaled with `transform: scale()` to fit the viewport, letterboxed — the same scaling strategy the editor canvas uses, so behaviour is identical.
-- Keyboard: `→`/`Space`/`PageDown` next, `←`/`PageUp` prev, `Home`/`End`, `F` fullscreen, `S` speaker window, `O` overview grid, `Esc` exit.
+- Renders the current slide in an `<iframe sandbox="allow-scripts">` sized 1280×720 and CSS-scaled with `transform: scale()` to fit the viewport, letterboxed — the same scaling strategy the editor canvas uses, so behaviour is identical. The frame stays exactly 1280×720 and only the transform changes, so a slide's own layout is never re-run at a different viewport.
+- Keyboard: `→`/`Space`/`PageDown` next, `←`/`PageUp` prev, `Home`/`End`, `B` blank, `F` fullscreen, `Esc` drops fullscreen. Keys the shell does not claim fall through untouched, so an interactive chart keeps its own shortcuts.
+- Auto-hiding controls (prev / counter / next) on the same 2.5 s idle beat as in-app Present mode — `PRESENT_CONTROLS_HIDE_MS` is one shared constant, not two copies.
 - **Preloads the next slide** into a hidden second iframe and swaps on advance, so transitions are instant and slide JS starts warm.
-- **Speaker view** (`S`): `window.open` a second window rendering current slide, next-slide thumbnail, notes from `deck.json`, elapsed timer, and slide counter. Sync via `BroadcastChannel('sloodge-present')` — works from `file://` with no server, unlike `postMessage` to a cross-origin child.
 - Deep links via `#/3` hash so a specific slide is shareable and reload-stable.
-- Overview grid: all slides as scaled iframes, click to jump. Lazily instantiated (iframes created on first open) so a 60-slide deck doesn't spawn 60 iframes at load.
-- Works from `file://` — no server required. Verified explicitly in tests, since `fetch('deck.json')` from `file://` is blocked; `deck.json` is therefore **inlined into `index.html`** as a `<script type="application/json">` block rather than fetched.
+- Works from `file://` — no server required. `fetch('deck.json')` from `file://` is blocked by the opaque-origin rule, so `deck.json` is **inlined into `index.html`** as a `<script type="application/json">` block rather than fetched. A shell that fetched would be a blank page for the user who did exactly what we told them and double-clicked the file.
+
+**How the shell shares Present mode's logic.** The shell is *emitted* JavaScript — it cannot import `keyToPresentIntent`. Rather than retype the semantics (which drift the first time a key is added), M4.1's pure machine moved to `src/shared/present/machine.ts` and the shell's key→intent table is **generated** by calling the real function over an exported `PRESENT_KEYS` list. The clamp and reducer are emitted as a small chunk that a test `eval`s and cross-checks against `clampSlideIndex` / `reducePresent` for every intent from every position. Semantics have one source; only the transport differs.
+
+**Deferred to a later milestone** (the shell is structured for each, none is stubbed):
+
+- **Speaker view** (`S`): a second window synced via `BroadcastChannel('sloodge-present')`, showing notes, next-slide thumbnail, and a timer. Waits on the deck model exposing notes through the export request.
+- **Overview grid** (`O`): all slides as lazily-instantiated scaled iframes, click to jump.
 
 ### 5.3 Options
 
-| Option | Default | Notes |
+Shipped in M4.4: **slide range** (All / Current / `1-4`), plumbed end to end and unit-tested, though the menu path currently sends `all` because the Export dialog is its own milestone. Package-as-zip is the only packaging, and the presenter shell and manifest are always included.
+
+| Option | Default | Status |
 |---|---|---|
-| Package as | zip | or plain folder |
-| Include presenter shell | on | off = just the slide files |
-| Include speaker notes | on | embedded in the inlined manifest |
-| Slide range | All | |
+| Slide range | All | Shipped (pipeline); dialog pending |
+| Package as | zip | Zip only; plain folder deferred |
+| Include presenter shell | on | Always on |
+| Include speaker notes | on | Deferred with speaker view — notes are not yet in the export request |
 
 ### 5.4 Why this also serves as the fidelity oracle
 
-HTML export is the only export whose correctness is definitionally checkable: the slide files must be byte-identical to the source. That makes it a cheap, strong regression test (§6.3) and the reference point against which PDF/PPTX fidelity is measured.
+HTML export is the only export whose correctness is definitionally checkable: the slide files must equal `wrapSlideHtml(source)` — byte-identity modulo the known constant-length prefix of §5.1. That makes it a cheap, strong regression test (§6.3) and the reference point against which PDF/PPTX fidelity is measured.
 
 ---
 
@@ -583,6 +619,12 @@ Everything below is pure functions over the `SlideNode[]` measurement output, wi
 - Text-run building: bold/italic/underline, bullets from `<ul>`/`<ol>`, hyperlink runs, `text-transform` application.
 - Font mapping against the system-safe list, and the warning it emits.
 - `deck.json` manifest generation and slide filename slugging (collisions, unicode, very long titles).
+- **HTML bundle builder (M4.4), exhaustively** — it is pure (`deck + range → {path: bytes}`), so all of it is CI-testable: emitted paths, manifest/slide-count/embedded-list agreement (including when a slide fails mid-range), range selection, per-slide error isolation, and HTML escaping of injected text in all three contexts, each probed with a real breakout payload asserted against a *parsed* document.
+- **Presenter-shell sandboxing** — the exact `sandbox` token string, `allow-same-origin` absent from the whole emitted document, no `srcdoc`, no `postMessage`/`contentWindow` channel.
+- **Emitted-logic parity** — the shell's generated key table, clamp, and reducer are `eval`'d and cross-checked against `keyToPresentIntent` / `clampSlideIndex` / `reducePresent` for every key and every intent from every position.
+- **Zip round trip** — build → `zipSync` → `unzipSync` → assert the file map is byte-identical and `index.html` still parses with its manifest intact. Output is byte-deterministic (fixed `mtime`), so the archive itself can be asserted on.
+
+All of the above are mutation-verified: adding `allow-same-origin`, dropping a single `.replace` from the escaper, counting the range instead of the survivors, ignoring the range, removing the clamp, and dropping the zip root prefix each turn a test red.
 - Report assembly: statuses, notes, and warnings from a synthetic job trace.
 
 ### 7.3 Integration tests (Playwright — local, not CI)
@@ -619,6 +661,9 @@ Automated pixel diffing catches regressions but not "does this look right in Pow
 3. **PPTX is two-tier with a per-slide automatic choice** driven by a transparent confidence score, always user-overridable, with sub-region rasterization as the common hybrid outcome.
 4. **SVG is rasterized, never mapped to autoshapes** (except single flat primitives) — silently-wrong geometry is worse than an image.
 5. **Animations export as the settled final frame**, looping ones pinned at 25 % phase; interactivity exports in its default state; both are disclosed in the dialog, the file's speaker notes, and the report.
-6. **HTML export is byte-identical to source** plus a generated dependency-free presenter shell — the fidelity oracle and the answer for animated decks.
-7. **All export runs in a hidden main-process `BrowserWindow`** with `backgroundThrottling: false`, sequentially, behind an explicit readiness barrier, writing atomically via `.partial` + rename.
-8. **Export fidelity is tested at three levels**: pure-function unit tests in CI, a Playwright harness (extending the experiment harness) locally, and an Electron smoke + real-PowerPoint manual review before release.
+6. **HTML export ships the *wrapped* slide document** — source plus the constant-length CSP prefix — not raw source, because the injected meta is the only policy that survives into a `file://` bundle (§5.1). Byte-identity is recoverable by subtracting that known prefix, so the fidelity-oracle and round-trip roles hold.
+7. **The exported presenter shell frames every slide in `sandbox="allow-scripts"` with no `allow-same-origin`** and opens no channel to it. Outside the app only two of the four sandbox layers survive (§5.1a); this is one of them, and it is what stops an exported slide reaching the viewer's filesystem over `file://`.
+8. **The shell's navigation semantics are generated from M4.1's pure machine**, not retyped: the key→intent table is produced by calling `keyToPresentIntent` over `PRESENT_KEYS` at build time, and a test evaluates the emitted clamp/reducer against the module it came from.
+9. **HTML export needs no offscreen window at all** — no Chromium, no `slide://` registry, no readiness barrier. The slides already *are* the output, which is why it is both the highest-fidelity target and the fastest.
+10. **All *rendering* export runs in a hidden main-process `BrowserWindow`** with `backgroundThrottling: false`, sequentially, behind an explicit readiness barrier; all three formats write atomically via `.partial` + rename.
+11. **Export fidelity is tested at three levels**: pure-function unit tests in CI, a Playwright harness (extending the experiment harness) locally, and an Electron smoke + real-PowerPoint manual review before release. HTML adds a fourth that is cheap and total: build → zip → **unzip** → compare the file map, then open `index.html` in a real browser from `file://` and navigate it.

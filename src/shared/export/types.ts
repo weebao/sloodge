@@ -47,6 +47,12 @@ export const PDF_PAGE_SIZE_TOLERANCE_PT = 2
 export type SlideExportInput = {
   title: string
   html: string
+  /**
+   * The deck slide id, optional because PDF has no use for it — a PDF page has no identity to carry.
+   * HTML export records it in the bundle manifest (M4.4) so a re-import can match each exported file
+   * back to the slide it came from rather than guessing from the filename slug.
+   */
+  id?: string
 }
 
 /**
@@ -100,3 +106,34 @@ export type ExportReport = {
  */
 export type ExportPdfResponse =
   { canceled: true } | { canceled: false; report: ExportReport | null }
+
+/**
+ * The request to start an HTML export (M4.4). Structurally identical to the PDF request — same
+ * slides, same range semantics, same current index — because the two pipelines differ only in what
+ * they do with the slides, not in what they need to be told. Kept as a distinct named type rather
+ * than an alias so the two can diverge (HTML options: package-as-folder, include-shell) without a
+ * rename, and so the IPC map reads honestly.
+ */
+export type ExportHtmlRequest = ExportPdfRequest
+
+/**
+ * What an HTML export produced. Parallel to `ExportReport` but with `fileCount` where PDF has
+ * `pageCount`: the proof-of-work for a zip is the number of members written, and a passing export has
+ * `fileCount` equal to the number of `ok` slides plus the two generated files (`index.html`,
+ * `deck.json`). A separate type rather than a widened `ExportReport` because `pageCount` is
+ * meaningless here and an always-zero field is worse than no field.
+ */
+export type ExportHtmlReport = {
+  format: 'html'
+  outPath: string
+  /** Slides in the resolved range (attempted). */
+  slideCount: number
+  /** Members in the written bundle. */
+  fileCount: number
+  slides: SlideExportOutcome[]
+  warnings: string[]
+}
+
+/** The bridge response for HTML export; `canceled` is the save-dialog dismissal, not an error. */
+export type ExportHtmlResponse =
+  { canceled: true } | { canceled: false; report: ExportHtmlReport | null }

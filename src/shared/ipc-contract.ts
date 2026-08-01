@@ -10,7 +10,12 @@
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
-import type { ExportPdfRequest, ExportPdfResponse } from './export/types'
+import type {
+  ExportHtmlRequest,
+  ExportHtmlResponse,
+  ExportPdfRequest,
+  ExportPdfResponse,
+} from './export/types'
 import type { ExportPptxRequest, ExportPptxResponse } from './export/pptx/types'
 
 /**
@@ -109,6 +114,7 @@ export type IpcRequests = {
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
   'file:exportPdf': { req: ExportPdfRequest; res: ExportPdfResponse }
   'file:exportPptx': { req: ExportPptxRequest; res: ExportPptxResponse }
+  'file:exportHtml': { req: ExportHtmlRequest; res: ExportHtmlResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
@@ -199,6 +205,14 @@ export const FILE_EXPORT_PDF_CHANNEL = 'file:exportPdf' satisfies IpcRequestChan
 export const FILE_EXPORT_PPTX_CHANNEL = 'file:exportPptx' satisfies IpcRequestChannel
 
 /**
+ * HTML export (M4.4). Same shape as the PDF channel and for the same reasons — main owns the save
+ * dialog and the write, the renderer hands over wrapped slide HTML and gets back a report. Separate
+ * from `file:exportPdf` rather than a `format` field on one channel because the two resolve with
+ * different report types, and a union return would push a discriminant check into every caller.
+ */
+export const FILE_EXPORT_HTML_CHANNEL = 'file:exportHtml' satisfies IpcRequestChannel
+
+/**
  * The deck hot-update channel (§9). Main pushes a full deck snapshot after every agent-driven
  * mutation; the renderer adopts it into its deck store so the slides appear as they are written.
  */
@@ -238,6 +252,7 @@ export const IPC_REQUEST_CHANNELS = [
   PRESENT_SET_FULLSCREEN_CHANNEL,
   FILE_EXPORT_PDF_CHANNEL,
   FILE_EXPORT_PPTX_CHANNEL,
+  FILE_EXPORT_HTML_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]
 
 export const IPC_EVENT_CHANNELS = [

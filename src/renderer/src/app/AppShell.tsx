@@ -8,6 +8,7 @@ import { PresentSurface } from '../features/present/PresentSurface'
 import { useExportPdf } from '../features/export/useExportPdf'
 import { useExportPptx } from '../features/export/useExportPptx'
 import { ExportPptxDialog } from '../features/export/ExportPptxDialog'
+import { useExportHtml } from '../features/export/useExportHtml'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
@@ -68,6 +69,15 @@ export function AppShell(): JSX.Element {
     currentIndex: Math.max(0, currentIndex),
     deckTitle: deck.title,
   })
+
+  // HTML export (M4.4): File ▸ Export ▸ HTML. Same deck, same wrapped slide HTML, but main zips a
+  // presenter shell + the slide documents instead of printing — so animation and interactivity
+  // survive the export. See useExportHtml.ts.
+  const exportHtml = useExportHtml({
+    slides,
+    currentIndex: Math.max(0, currentIndex),
+    deckTitle: deck.title,
+  })
   const [pptxDialogOpen, setPptxDialogOpen] = useState(false)
   const openPptxDialog = useCallback(() => {
     setPptxDialogOpen(true)
@@ -87,7 +97,7 @@ export function AppShell(): JSX.Element {
   // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
   // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
   const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
-  useMenuActions(editHandlers, exportPdf, openPptxDialog)
+  useMenuActions(editHandlers, exportPdf, openPptxDialog, exportHtml)
   useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
