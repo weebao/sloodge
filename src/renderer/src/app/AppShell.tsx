@@ -1,9 +1,10 @@
-import { useMemo, type JSX } from 'react'
+import { useCallback, useMemo, useRef, useState, type JSX } from 'react'
 import { SlideCanvas } from '../features/canvas/SlideCanvas'
 import { ChatPanel } from '../features/chat/ChatPanel'
 import { ThumbnailRail } from '../features/deck/ThumbnailRail'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
+import { PresentSurface } from '../features/present/PresentSurface'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
@@ -45,6 +46,7 @@ export function AppShell(): JSX.Element {
 
   const toggleDesign = useDesignStore((state) => state.toggle)
   useDesignModeKey(toggleDesign)
+  const setDesignEnabled = useDesignStore((state) => state.setEnabled)
 
   // Agent tool edits (M2.6) apply through the authoritative history so they are undoable by the same
   // Ctrl/⌘+Z as a manual edit; the full-snapshot `deck:updated` sync is doc:open/full-reload only.
@@ -54,6 +56,26 @@ export function AppShell(): JSX.Element {
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
   const currentSlide = currentIndex === -1 ? null : (slides[currentIndex] ?? null)
+
+  // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
+  // persisted or undone, and it has its own navigation cursor so advancing the talk does not move the
+  // editor's selection. `null` = not presenting; a number is the slide index Present opened on.
+  const [presentFrom, setPresentFrom] = useState<number | null>(null)
+  // Design Mode is force-disabled while presenting (40-design-mode.md §: "Present always forces
+  // Design Mode off"), but the default idle state is Design-Mode-on, so leaving it off after a talk
+  // would silently drop the user out of the mode they were editing in. Capture it on entry and
+  // restore it on exit, so Present is transparent to the editing session it interrupts.
+  const designWasEnabledRef = useRef(false)
+  const startPresent = useCallback(() => {
+    designWasEnabledRef.current = useDesignStore.getState().enabled
+    setDesignEnabled(false)
+    setPresentFrom(currentIndex === -1 ? 0 : currentIndex)
+  }, [currentIndex, setDesignEnabled])
+  const exitPresent = useCallback(() => {
+    setPresentFrom(null)
+    setDesignEnabled(designWasEnabledRef.current)
+  }, [setDesignEnabled])
+  const canPresent = slides.length > 0
 
   return (
     <div
@@ -81,7 +103,11 @@ export function AppShell(): JSX.Element {
         themeName="Ocean"
         issueCount={0}
         sessionCost="$0.00"
+        {...(canPresent ? { onPresent: startPresent } : {})}
       />
+      {presentFrom !== null ? (
+        <PresentSurface slides={slides} startIndex={presentFrom} onExit={exitPresent} />
+      ) : null}
     </div>
   )
 }

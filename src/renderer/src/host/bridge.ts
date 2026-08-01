@@ -29,6 +29,11 @@ export type SloodgeBridge = {
   revokeSlide?: (id: string) => Promise<boolean>
   /** M2.1: the agent surface — key management, turns, streaming events, deck hot-updates. */
   agent?: AgentBridge
+  /**
+   * M4.1: toggle real OS fullscreen for Present mode; resolves with the window's actual state after
+   * the call. Absent in a plain-browser host, where the surface falls back to a maximized overlay.
+   */
+  setPresentFullscreen?: (fullscreen: boolean) => Promise<boolean>
 }
 
 declare global {

@@ -6,11 +6,16 @@ export type StatusBarProps = {
   themeName: string
   issueCount: number
   sessionCost: string
+  /**
+   * Enter Present mode (M4.1). Optional: without it the button stays the disabled placeholder it was
+   * through M0.4, so the status bar is still renderable in isolation without standing up Present.
+   */
+  onPresent?: () => void
 }
 
 /**
- * Bottom status bar: deck position, theme, slide-contract issues, session cost
- * and Present. All values are placeholders in M0.4 and Present is a no-op.
+ * Bottom status bar: deck position, theme, slide-contract issues, session cost and Present. The
+ * metric values are still placeholders; Present is wired in M4.1 when `onPresent` is supplied.
  */
 export function StatusBar({
   currentSlide,
@@ -18,6 +23,7 @@ export function StatusBar({
   themeName,
   issueCount,
   sessionCost,
+  onPresent,
 }: StatusBarProps): JSX.Element {
   return (
     <footer
@@ -38,8 +44,9 @@ export function StatusBar({
 
       <button
         type="button"
-        aria-disabled="true"
-        title="Present (not wired up yet)"
+        aria-disabled={onPresent ? undefined : 'true'}
+        title={onPresent ? 'Present (fullscreen)' : 'Present (not wired up yet)'}
+        onClick={onPresent}
         className="ml-auto inline-flex items-center gap-1.5 rounded border border-chrome-line bg-white px-2.5 py-0.5 text-[11px] font-medium text-shell-fg transition-colors hover:border-accent hover:text-accent dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg"
       >
         <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="none">

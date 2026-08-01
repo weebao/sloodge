@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
 import { installAgentIpc } from './ipc/agent'
 import { installAppMenu } from './menu/appMenu'
+import { installPresentIpc } from './present/install'
 import { isAllowedNavigation, toSafeExternalUrl } from './security/externalUrls'
 import { installSlideProtocol, registerSlideSchemePrivileges } from './slide/protocol'
 
@@ -88,6 +89,8 @@ if (!gotSingleInstanceLock) {
     const slideRegistry = installSlideProtocol()
     // The agent service owns the CLI subprocesses; keep a handle so quit can tear them down (§9).
     const agentService = installAgentIpc()
+    // Present mode's fullscreen toggle (M4.1); acts on the requesting window's `event.sender`.
+    installPresentIpc()
     app.on('before-quit', () => {
       void agentService.disposeAll()
     })

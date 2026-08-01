@@ -540,7 +540,43 @@ isolation — a slide that hangs its JS must not freeze the app during a talk.
 
 ## 8. Presenter / fullscreen flow
 
-`src/main/present/PresentService.ts` owns it.
+> **Status (M4.1 shipped a same-window overlay, not the separate-window PresentService below).**
+>
+> **What shipped in M4.1** is a *same-window React overlay* in the editor renderer
+> (`src/renderer/src/features/present/PresentSurface.tsx`), not a main-owned `PresentService`. It
+> renders the active slide through the **same** sandboxed `SlideFrame` / `slide://` delivery the
+> editor canvas uses (no second render path — the `allow-scripts` sandbox and per-document CSP hold
+> exactly as in edit view, so animations and interactive JS run live), scaled to fill the window
+> letterboxed at 16:9 in CSS via `fitSlide`. Real, borderless OS fullscreen is the one main-process
+> capability the renderer cannot do for itself, so it is reached through a single typed,
+> runtime-validated IPC seam — `present:setFullscreen` → `BrowserWindow.setFullScreen` on the
+> requesting `event.sender` (`src/main/present/{presentFullscreen,install}.ts`). A host without that
+> bridge (a plain browser, the static-preview screen recording, unit tests) degrades to a maximized
+> black overlay. The pure navigation/blank state machine and the auto-hiding controls live in
+> `src/renderer/src/features/present/{presentMachine,controlsAutoHide}.ts`.
+>
+> **Why the overlay for M4.1.** The v1 wireframe (20-ui-wireframes.md § Present mode) imposes *no*
+> window-model requirement — it asks only for a scaled slide with live animations/interactivity,
+> keyboard nav, and auto-hiding controls, all of which the overlay meets. Keeping presentation logic
+> in the renderer as pure, Electron-free modules is what makes the state machine, the clamp, the key
+> map, the blank toggle and the auto-hide timer unit-testable in CI (which cannot render Electron),
+> and reusing `SlideFrame` verbatim is what keeps the sandbox/CSP a single reviewable boundary
+> instead of a second, weaker one.
+>
+> **Tradeoffs accepted.** The overlay shares the editor's renderer process, so it does **not** give
+> the process-level fault isolation §7 wanted (a slide that hangs its own JS can still stall the app
+> during a talk); there is **no presenter console**, **no multi-display targeting**, no build-step
+> (`data-sl-build`) advancement, no `powerSaveBlocker`, and no `.`-to-black. Present forces Design
+> Mode off on entry (`designStore.setEnabled(false)`) and restores the prior Design-Mode state on
+> exit.
+>
+> **Deferred to M4.7 (`feat: present hardening`)** — the separate-window design described below:
+> the main-owned `PresentService`, the per-slide `WebContentsView` for fault isolation, the
+> presenter console, multi-display targeting, off-screen preload of the next slide, `powerSaveBlocker`,
+> and the `present:start`/`present:goto`/`present:state` IPC surface. The text below is the target for
+> that milestone, retained verbatim so it is not lost.
+
+**[DEFERRED to M4.7 — target design, not yet built]** `src/main/present/PresentService.ts` owns it.
 
 `present:start` →
 1. Create a borderless, `fullscreen: true`, `alwaysOnTop` (during present) `BrowserWindow` on the
