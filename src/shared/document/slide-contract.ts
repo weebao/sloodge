@@ -16,13 +16,16 @@
  *  - **Self-containment** SL-S01..S04 (no external subresources, no `@font-face`, no network /
  *    storage / eval APIs). These are the security-load-bearing rules: a slide that phones home or
  *    reaches `localStorage` is rejected outright. SL-S01 is enforced over the **parse5 tree**, not
- *    regex, and covers every referencing element/attribute — `<link>` of any rel, `<script src>`,
- *    `<iframe src>`, `<video>/<audio>/<source src>`, `<object data>`, `<embed src>`, `<track src>`,
- *    `srcset` candidates, and SVG `<use href|xlink:href>` — plus the two CSS-level vectors
- *    (`@import`, remote `url()`). `data:` / `blob:` / `sloodge-asset:` payloads and `#` fragments are
- *    permitted. Doing this on the real tree is deliberate (the wrapSlideHtml saga): attribute-order,
- *    case, whitespace, and entity tricks cannot slip a vector past a parser the way they slip past a
- *    regex.
+ *    regex, and covers every referencing element/attribute — `<link>` of any rel (incl.
+ *    `imagesrcset`), `<script src>`, `<iframe src>`, `<video src|poster>`, `<audio src>`,
+ *    `<source src>`, `<object data>`, `<embed src>`, `<track src>`, `<input src>` (type=image),
+ *    `srcset` candidates, SVG `<use href|xlink:href>`, and the obsolete presentational `background=`
+ *    attribute — plus the two CSS-level vectors (`@import`, remote `url()`). `data:` / `blob:` /
+ *    `sloodge-asset:` payloads and `#` fragments are permitted (including inside `srcset`, whose
+ *    grammar is parsed properly so a `data:` candidate's internal commas are not misread as candidate
+ *    separators and a legit inline candidate is not rejected). Doing this on the real tree is
+ *    deliberate (the wrapSlideHtml saga): attribute-order, case, whitespace, and entity tricks cannot
+ *    slip a vector past a parser the way they slip past a regex.
  *  - **Geometry** SL-G01/G03/G05 (the 1280x720 `.slide` root, the mandatory resets, no
  *    `position:fixed` / viewport units).
  *  - **Capabilities** SL-I01/I02, SL-A01, SL-H01 (testing hooks and animation present iff declared;
@@ -135,12 +138,13 @@ const SUBRESOURCE_ATTRS_BY_TAG: Readonly<Record<string, readonly string[]>> = {
   link: ['href'], // any rel: no <link> may pull an off-document resource
   script: ['src'], // inline <script> is handled by SL-H01/SL-I02; this catches remote src
   iframe: ['src'],
-  video: ['src'],
+  video: ['src', 'poster'],
   audio: ['src'],
   source: ['src'],
   object: ['data'],
   embed: ['src'],
   track: ['src'],
+  input: ['src'], // <input type=image src> fetches; a non-image input ignores src, so flagging is safe
 }
 
 /**
@@ -158,13 +162,45 @@ function isExternalUrl(value: string): boolean {
   return !(v.startsWith('data:') || v.startsWith('blob:') || v.startsWith('sloodge-asset:'))
 }
 
-/** True when any candidate URL in a `srcset` is off-document. */
-function srcsetHasExternal(value: string): boolean {
-  for (const candidate of value.split(',')) {
-    const url = candidate.trim().split(/\s+/)[0]
-    if (url !== undefined && isExternalUrl(url)) return true
+const HTML_WS = new Set([' ', '\t', '\n', '\f', '\r'])
+
+/**
+ * Extract the URL tokens from a `srcset` / `imagesrcset` value, per the HTML srcset grammar rather
+ * than a naive comma-split. A candidate is a URL token (a run of non-whitespace) optionally followed
+ * by a descriptor, and candidates are comma-separated — but a `data:` URL contains commas of its own
+ * (`data:image/png;base64,AAAA`, `data:image/svg+xml,...`), and those must NOT be read as candidate
+ * separators or a legit inline candidate is misparsed as external and a valid slide is rejected.
+ *
+ * The algorithm: skip leading whitespace/commas, take the URL as the next non-whitespace run
+ * (which keeps a base64 data URI's internal comma inside the token), then either strip trailing
+ * commas (a candidate with no descriptor) or skip its descriptor up to the next comma.
+ */
+function srcsetUrls(value: string): string[] {
+  const urls: string[] = []
+  const n = value.length
+  let i = 0
+  while (i < n) {
+    while (i < n && (HTML_WS.has(value[i]!) || value[i] === ',')) i += 1
+    if (i >= n) break
+    const start = i
+    while (i < n && !HTML_WS.has(value[i]!)) i += 1
+    let url = value.slice(start, i)
+    if (url.endsWith(',')) {
+      // Trailing commas terminate a descriptor-less candidate and are separators, not part of it.
+      url = url.replace(/,+$/, '')
+      if (url !== '') urls.push(url)
+      continue
+    }
+    if (url !== '') urls.push(url)
+    while (i < n && HTML_WS.has(value[i]!)) i += 1
+    while (i < n && value[i] !== ',') i += 1 // skip this candidate's descriptor
   }
-  return false
+  return urls
+}
+
+/** True when any candidate URL in a `srcset` / `imagesrcset` is off-document. */
+function srcsetHasExternal(value: string): boolean {
+  return srcsetUrls(value).some(isExternalUrl)
 }
 
 type Collected = {
@@ -230,6 +266,17 @@ function collect(document: DefaultTreeAdapterTypes.Document): Collected {
       if (tag === 'img' || tag === 'source') {
         const srcset = attr(child, 'srcset')
         if (srcset !== undefined && srcsetHasExternal(srcset)) out.external.push(`<${tag} srcset>`)
+      }
+      if (tag === 'link') {
+        const imagesrcset = attr(child, 'imagesrcset')
+        if (imagesrcset !== undefined && srcsetHasExternal(imagesrcset)) {
+          out.external.push('<link imagesrcset>')
+        }
+      }
+      // The obsolete presentational `background=` attribute (body/table/td/…) fetches an image.
+      const background = attr(child, 'background')
+      if (background !== undefined && isExternalUrl(background)) {
+        out.external.push(`<${tag} background>`)
       }
 
       const style = attr(child, 'style')

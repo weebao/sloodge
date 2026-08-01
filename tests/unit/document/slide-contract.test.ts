@@ -104,6 +104,39 @@ describe('validateSlideContract — Tier 1 static gate', () => {
       expect(rules(bad)).toContain('SL-S01')
     })
 
+    it.each([
+      ['input[type=image] src', '<input type="image" src="https://evil/btn.png">'],
+      ['video poster', '<video poster="https://evil/p.jpg"></video>'],
+      ['link imagesrcset', '<link rel="preload" as="image" imagesrcset="https://evil/a.png 1x">'],
+      ['legacy background=', '<table background="https://evil/bg.png"><tr><td>x</td></tr></table>'],
+    ])('SL-S01 rejects %s', (_label, markup) => {
+      expect(rules(inject(markup))).toContain('SL-S01')
+    })
+
+    // The MINOR-1 false-positive: a data: URI contains commas and srcset is comma-separated.
+    it('SL-S01 allows a srcset whose candidate is a comma-bearing data: URI', () => {
+      const plain = inject('<img srcset="data:image/svg+xml,%3Csvg%3E%3C/svg%3E 1x">')
+      expect(rules(plain)).not.toContain('SL-S01')
+      const base64 = inject(
+        '<img srcset="data:image/png;base64,iVBORw0KGgoAAAA= 1x, data:image/png;base64,BBBB 2x">',
+      )
+      expect(rules(base64)).not.toContain('SL-S01')
+      expect(validateSlideContract(base64).ok).toBe(true)
+    })
+
+    it('SL-S01 rejects only the external candidate when a srcset mixes data: and http:', () => {
+      const mixed = inject('<img srcset="data:image/png;base64,AAAA 1x, https://evil/b.png 2x">')
+      expect(rules(mixed)).toContain('SL-S01')
+    })
+
+    it('SL-S01 allows a link imagesrcset of data: candidates', () => {
+      const ok = starter.replace(
+        '<style>',
+        '<link rel="preload" as="image" imagesrcset="data:image/png;base64,AAAA 1x, data:image/png;base64,BBBB 2x"><style>',
+      )
+      expect(rules(ok)).not.toContain('SL-S01')
+    })
+
     it('SL-S01 allows inline/local controls (data:, blob:, sloodge-asset:, # fragment)', () => {
       const ok = inject(
         '<img src="data:image/png;base64,AAAA">' +
