@@ -15,7 +15,14 @@
  *
  *  - **Self-containment** SL-S01..S04 (no external subresources, no `@font-face`, no network /
  *    storage / eval APIs). These are the security-load-bearing rules: a slide that phones home or
- *    reaches `localStorage` is rejected outright.
+ *    reaches `localStorage` is rejected outright. SL-S01 is enforced over the **parse5 tree**, not
+ *    regex, and covers every referencing element/attribute — `<link>` of any rel, `<script src>`,
+ *    `<iframe src>`, `<video>/<audio>/<source src>`, `<object data>`, `<embed src>`, `<track src>`,
+ *    `srcset` candidates, and SVG `<use href|xlink:href>` — plus the two CSS-level vectors
+ *    (`@import`, remote `url()`). `data:` / `blob:` / `sloodge-asset:` payloads and `#` fragments are
+ *    permitted. Doing this on the real tree is deliberate (the wrapSlideHtml saga): attribute-order,
+ *    case, whitespace, and entity tricks cannot slip a vector past a parser the way they slip past a
+ *    regex.
  *  - **Geometry** SL-G01/G03/G05 (the 1280x720 `.slide` root, the mandatory resets, no
  *    `position:fixed` / viewport units).
  *  - **Capabilities** SL-I01/I02, SL-A01, SL-H01 (testing hooks and animation present iff declared;
@@ -34,12 +41,23 @@
  * it. Enforcing SL-D01 here would reject every clean agent slide. The stamping pass
  * (`buildSlideMap` / `instrument`) owns that attribute downstream; this gate must not pre-empt it.
  *
- * ## Conservatism
+ * ## Conservatism, and the deliberate JS-obfuscation boundary
  *
- * The API/subresource scans (SL-S01, SL-S04) run over the raw source, so a slide whose *visible
- * text* contains the literal `fetch(` or `localStorage` is flagged. That is the §6.1 definition
- * ("Source contains none of …") and the safe direction: a false-positive is an actionable message
- * the agent can rephrase around; a false-negative is a slide that escaped the sandbox.
+ * SL-S04 runs a best-effort scan for the *plaintext* forbidden-API tokens over the raw source, so a
+ * slide whose visible text contains the literal `fetch(` or `localStorage` is flagged. That is the
+ * §6.1 definition ("Source contains none of …") and the safe direction: a false-positive is an
+ * actionable message the agent can rephrase around.
+ *
+ * It does **not** chase JavaScript obfuscation such as `window['fetch']()` or computed member
+ * access — deciding those statically is a JS-parse problem, not an HTML one, and pretending a regex
+ * can is exactly the wrapSlideHtml anti-pattern. Network egress from a running slide is instead
+ * stopped at runtime by the still-load-bearing second layer: the `slide://` response CSP
+ * (`connect-src 'none'`, `default-src 'none'`, `frame-src 'none'`) plus the injected socket-API
+ * guard (`SLIDE_RUNTIME_GUARD`), both applied to every slide regardless of what this linter saw. So
+ * SL-S01 statically rejects **subresources declared in the markup** (comprehensive, tree-based)
+ * while the CSP is what neutralises a script that reconstructs `fetch` at runtime. Belt and braces:
+ * this gate keeps a malformed slide out of the deck and hands the agent an actionable error; the CSP
+ * keeps a slipped-through slide from reaching the network.
  */
 
 import { parse } from 'parse5'
@@ -108,12 +126,57 @@ function hasClassToken(element: Element, token: string): boolean {
   return value.split(/\s+/).includes(token)
 }
 
+/**
+ * Element/attribute pairs that reference a subresource. Any external value on one of these is an
+ * SL-S01 violation. `<img>`/`<image>` `src`/`href` are handled by SL-S02 (image-specific), and
+ * `srcset` + SVG `<use>` are handled specially in the walk (comma-list / fragment semantics).
+ */
+const SUBRESOURCE_ATTRS_BY_TAG: Readonly<Record<string, readonly string[]>> = {
+  link: ['href'], // any rel: no <link> may pull an off-document resource
+  script: ['src'], // inline <script> is handled by SL-H01/SL-I02; this catches remote src
+  iframe: ['src'],
+  video: ['src'],
+  audio: ['src'],
+  source: ['src'],
+  object: ['data'],
+  embed: ['src'],
+  track: ['src'],
+}
+
+/**
+ * Values the contract permits as "in-document" for a subresource attribute: an inline payload or a
+ * same-document fragment (`<use href="#gradient">`). Everything else — an absolute URL, a
+ * protocol-relative `//host`, or a bare relative path like `logo.png` — points off-document and is
+ * an external subresource. `blob:` is allowed here because the host loader may rewrite an asset to a
+ * blob URL before parse (§3.5); stored slide *images* are separately held to data:/sloodge-asset:
+ * by SL-S02 (`isInlineSource`).
+ */
+function isExternalUrl(value: string): boolean {
+  const v = value.trim().toLowerCase()
+  if (v === '') return false
+  if (v.startsWith('#')) return false
+  return !(v.startsWith('data:') || v.startsWith('blob:') || v.startsWith('sloodge-asset:'))
+}
+
+/** True when any candidate URL in a `srcset` is off-document. */
+function srcsetHasExternal(value: string): boolean {
+  for (const candidate of value.split(',')) {
+    const url = candidate.trim().split(/\s+/)[0]
+    if (url !== undefined && isExternalUrl(url)) return true
+  }
+  return false
+}
+
 type Collected = {
   slideRoots: Element[]
   scripts: Element[]
   hoverTargets: number
   clickTargets: number
   badImages: string[]
+  /** Human-readable descriptors of external-subresource references (SL-S01), e.g. `<iframe src>`. */
+  external: string[]
+  /** Every inline `style="…"` value, so geometry rules (SL-G05) see them, not just <style>. */
+  inlineStyles: string[]
   smilAnimated: boolean
   body: Element | null
 }
@@ -125,6 +188,8 @@ function collect(document: DefaultTreeAdapterTypes.Document): Collected {
     hoverTargets: 0,
     clickTargets: 0,
     badImages: [],
+    external: [],
+    inlineStyles: [],
     smilAnimated: false,
     body: null,
   }
@@ -139,6 +204,8 @@ function collect(document: DefaultTreeAdapterTypes.Document): Collected {
       if (hasAttr(child, 'data-hover-target')) out.hoverTargets += 1
       if (hasAttr(child, 'data-click-target')) out.clickTargets += 1
       if (SMIL_TAGS.has(tag)) out.smilAnimated = true
+
+      // SL-S02: images must be inline (data:) or a sloodge-asset: reference.
       if (tag === 'img') {
         const src = attr(child, 'src')
         if (src !== undefined && !isInlineSource(src)) out.badImages.push(src)
@@ -147,6 +214,27 @@ function collect(document: DefaultTreeAdapterTypes.Document): Collected {
         const href = attr(child, 'href') ?? attr(child, 'xlink:href')
         if (href !== undefined && !isInlineSource(href)) out.badImages.push(href)
       }
+
+      // SL-S01: external subresources across every referencing element/attribute.
+      const attrs = SUBRESOURCE_ATTRS_BY_TAG[tag]
+      if (attrs) {
+        for (const name of attrs) {
+          const value = attr(child, name)
+          if (value !== undefined && isExternalUrl(value)) out.external.push(`<${tag} ${name}>`)
+        }
+      }
+      if (tag === 'use') {
+        const href = attr(child, 'href') ?? attr(child, 'xlink:href')
+        if (href !== undefined && isExternalUrl(href)) out.external.push('<use href>')
+      }
+      if (tag === 'img' || tag === 'source') {
+        const srcset = attr(child, 'srcset')
+        if (srcset !== undefined && srcsetHasExternal(srcset)) out.external.push(`<${tag} srcset>`)
+      }
+
+      const style = attr(child, 'style')
+      if (style !== undefined) out.inlineStyles.push(style)
+
       walk(child)
     }
   }
@@ -155,6 +243,7 @@ function collect(document: DefaultTreeAdapterTypes.Document): Collected {
   return out
 }
 
+/** Whether an *image* source is inline per §3.5 (data: or sloodge-asset:). Stricter than SL-S01. */
 function isInlineSource(value: string): boolean {
   const v = value.trim().toLowerCase()
   return v.startsWith('data:') || v.startsWith('sloodge-asset:')
@@ -207,18 +296,25 @@ export function validateSlideContract(
   const source = html
   const sourcePacked = source.replace(/\s+/g, '').toLowerCase()
 
+  // Parse once, up front: the subresource and geometry rules below are decided over the parse5 tree
+  // and the inline styles it carries, not over regex, so attribute-order / case / whitespace /
+  // entity tricks cannot slip a vector past (the wrapSlideHtml lesson — a scan is not a parser).
+  const document = parse(html)
+  const collected = collect(document)
+
   // --- SL-S01: no external subresources -------------------------------------------------------
-  if (
-    /<link\b[^>]*\bhref\s*=/i.test(source) ||
-    /<script\b[^>]*\bsrc\s*=/i.test(source) ||
-    cssPacked.includes('@import') ||
-    /url\(\s*['"]?\s*(?:https?:)?\/\//i.test(source)
-  ) {
+  // Element-level vectors (link of any rel, script/iframe/media/object/embed/track src, srcset,
+  // SVG <use>) come from the tree walk; the two genuinely CSS-level vectors (@import, remote url())
+  // are decided over the style text. `data:`/`blob:`/`sloodge-asset:` and `#` fragments are allowed.
+  const externalReasons = [...new Set(collected.external)]
+  if (cssPacked.includes('@import')) externalReasons.push('@import')
+  if (/url\(\s*['"]?\s*(?:https?:)?\/\//i.test(source)) externalReasons.push('remote url()')
+  if (externalReasons.length > 0) {
     issues.push(
       issue(
         'SL-S01',
         'error',
-        'external subresource (link/script src, @import, or remote url()) is forbidden; inline everything',
+        `external subresource(s) forbidden; inline everything — ${externalReasons.join(', ')}`,
       ),
     )
   }
@@ -243,12 +339,20 @@ export function validateSlideContract(
   }
 
   // --- SL-G05: no position:fixed, no viewport units -------------------------------------------
-  if (cssPacked.includes('position:fixed')) {
+  // Scanned over BOTH the <style> text and every inline style="…" (an inline position:fixed or a
+  // 100vh height breaks the self-contained 1280x720 frame exactly as a stylesheet one does).
+  const geomText = `${css}\n${collected.inlineStyles.join('\n')}`
+  const geomPacked = geomText.replace(/\s+/g, '').toLowerCase()
+  if (geomPacked.includes('position:fixed')) {
     issues.push(issue('SL-G05', 'error', 'position:fixed is forbidden (breaks the print pass)'))
   }
-  if (/\b\d*\.?\d+(?:vh|vw|dvh)\b/i.test(css)) {
+  if (/\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|svw|lvh|lvw)\b/i.test(geomText)) {
     issues.push(
-      issue('SL-G05', 'error', 'viewport units (vh/vw/dvh) are forbidden; use px against 1280x720'),
+      issue(
+        'SL-G05',
+        'error',
+        'viewport units (vh/vw/vmin/vmax/…) are forbidden; size in px against 1280x720',
+      ),
     )
   }
 
@@ -266,9 +370,7 @@ export function validateSlideContract(
     )
   }
 
-  // --- Structural rules (parse5) --------------------------------------------------------------
-  const document = parse(html)
-  const collected = collect(document)
+  // --- Structural rules (from the parse5 tree collected above) --------------------------------
 
   // SL-G01: exactly one .slide root, sized 1280x720.
   if (collected.slideRoots.length === 0) {

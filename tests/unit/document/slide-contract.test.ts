@@ -71,6 +71,57 @@ describe('validateSlideContract — Tier 1 static gate', () => {
     expect(rules(bad)).toContain('SL-S02')
   })
 
+  describe('SL-S01 external-subresource vectors (parse5 tree, hostile input)', () => {
+    // Each vector is injected inside the slide body and must be rejected by SL-S01.
+    const inject = (markup: string): string => starter.replace('</div>', `${markup}</div>`)
+
+    it.each([
+      ['iframe src', '<iframe src="https://evil/x"></iframe>'],
+      ['video src', '<video src="//evil/v.mp4"></video>'],
+      ['audio src', '<audio src="http://evil/a.mp3"></audio>'],
+      ['source src', '<video><source src="https://evil/v.webm"></video>'],
+      ['object data', '<object data="https://evil/o.svg"></object>'],
+      ['embed src', '<embed src="https://evil/e.swf">'],
+      ['track src', '<video><track src="https://evil/c.vtt"></video>'],
+      ['img srcset', '<img srcset="https://evil/a.png 1x, //evil/b.png 2x">'],
+      ['relative src is off-document', '<iframe src="local.html"></iframe>'],
+      // Attribute-order / case / whitespace tricks a regex might miss — parse5 normalizes them.
+      ['uppercase + reordered attrs', '<IFRAME title="t"  SRC = "https://evil/x"></IFRAME>'],
+    ])('SL-S01 rejects %s', (_label, markup) => {
+      expect(rules(inject(markup))).toContain('SL-S01')
+    })
+
+    it('SL-S01 rejects a <link> of any rel with a remote href', () => {
+      const bad = starter.replace(
+        '<style>',
+        '<link rel="preload" href="https://evil/x.css"><style>',
+      )
+      expect(rules(bad)).toContain('SL-S01')
+    })
+
+    it('SL-S01 rejects an external SVG <use>', () => {
+      const bad = inject('<svg><use href="https://evil/sprite.svg#i"></use></svg>')
+      expect(rules(bad)).toContain('SL-S01')
+    })
+
+    it('SL-S01 allows inline/local controls (data:, blob:, sloodge-asset:, # fragment)', () => {
+      const ok = inject(
+        '<img src="data:image/png;base64,AAAA">' +
+          '<video src="blob:abc"></video>' +
+          '<svg><use href="#gradient"></use></svg>',
+      )
+      expect(rules(ok)).not.toContain('SL-S01')
+      expect(validateSlideContract(ok).ok).toBe(true)
+    })
+  })
+
+  it('SL-G05 rejects position:fixed and viewport units in an INLINE style attribute', () => {
+    const fixed = starter.replace('<div class="slide"', '<div style="position:fixed" class="slide"')
+    expect(rules(fixed)).toContain('SL-G05')
+    const vmax = starter.replace('<h1', '<h1 style="width:50vmax"')
+    expect(rules(vmax)).toContain('SL-G05')
+  })
+
   it('SL-G01 rejects wrong slide geometry', () => {
     const bad = starter.replace('width: 1280px', 'width: 1024px')
     expect(rules(bad)).toContain('SL-G01')
