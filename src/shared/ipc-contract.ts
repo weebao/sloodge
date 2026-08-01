@@ -11,6 +11,7 @@ import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } fro
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
 import type { ExportPdfRequest, ExportPdfResponse } from './export/types'
+import type { ExportPptxRequest, ExportPptxResponse } from './export/pptx/types'
 
 /**
  * Native-menu action ids, and the single source of truth for them: the main
@@ -107,6 +108,7 @@ export type IpcRequests = {
   'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
   'file:exportPdf': { req: ExportPdfRequest; res: ExportPdfResponse }
+  'file:exportPptx': { req: ExportPptxRequest; res: ExportPptxResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
@@ -185,6 +187,14 @@ export const PRESENT_SET_FULLSCREEN_CHANNEL = 'present:setFullscreen' satisfies 
 export const FILE_EXPORT_PDF_CHANNEL = 'file:exportPdf' satisfies IpcRequestChannel
 
 /**
+ * PPTX export (M4.3). Same discipline as the PDF channel: main owns the save dialog and the file
+ * write, so the renderer hands over slide HTML plus the fidelity choice and gets back a report, never a
+ * filesystem path. A typo in either literal would compile and ship as "Export as PowerPoint does
+ * nothing", invisible to a suite that never crosses a real IPC boundary.
+ */
+export const FILE_EXPORT_PPTX_CHANNEL = 'file:exportPptx' satisfies IpcRequestChannel
+
+/**
  * The deck hot-update channel (§9). Main pushes a full deck snapshot after every agent-driven
  * mutation; the renderer adopts it into its deck store so the slides appear as they are written.
  */
@@ -223,6 +233,7 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_INTERRUPT_CHANNEL,
   PRESENT_SET_FULLSCREEN_CHANNEL,
   FILE_EXPORT_PDF_CHANNEL,
+  FILE_EXPORT_PPTX_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]
 
 export const IPC_EVENT_CHANNELS = [

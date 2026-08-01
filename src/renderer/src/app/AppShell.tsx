@@ -6,6 +6,8 @@ import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { PresentSurface } from '../features/present/PresentSurface'
 import { useExportPdf } from '../features/export/useExportPdf'
+import { useExportPptx } from '../features/export/useExportPptx'
+import { ExportPptxDialog } from '../features/export/ExportPptxDialog'
 import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
@@ -59,11 +61,33 @@ export function AppShell(): JSX.Element {
     deckTitle: deck.title,
   })
 
+  // PPTX export (M4.3): File ▸ Export ▸ PowerPoint opens the fidelity dialog (structured vs raster),
+  // then hands the wrapped slide HTML + fidelity to main. See useExportPptx.ts / ExportPptxDialog.tsx.
+  const runExportPptx = useExportPptx({
+    slides,
+    currentIndex: Math.max(0, currentIndex),
+    deckTitle: deck.title,
+  })
+  const [pptxDialogOpen, setPptxDialogOpen] = useState(false)
+  const openPptxDialog = useCallback(() => {
+    setPptxDialogOpen(true)
+  }, [])
+  const closePptxDialog = useCallback(() => {
+    setPptxDialogOpen(false)
+  }, [])
+  const confirmPptxExport = useCallback(
+    (fidelity: Parameters<typeof runExportPptx>[0]) => {
+      setPptxDialogOpen(false)
+      runExportPptx(fidelity)
+    },
+    [runExportPptx],
+  )
+
   // Undo/redo has one owner per host, never two: the native Edit menu in Electron (its items own
   // the accelerators, and their intent arrives here as `app:menu`), the window keydown handler in a
   // menu-less browser host. See useMenuActions.ts for why that is a static choice, not a race.
   const editHandlers = useMemo(() => ({ undo, redo }), [undo, redo])
-  useMenuActions(editHandlers, exportPdf)
+  useMenuActions(editHandlers, exportPdf, openPptxDialog)
   useUndoRedoKeys(undo, redo, !menuOwnsEditAccelerators())
 
   // Present mode (M4.1) lives beside the shell rather than in the deck store: it is view state, never
@@ -117,6 +141,12 @@ export function AppShell(): JSX.Element {
       {presentFrom !== null ? (
         <PresentSurface slides={slides} startIndex={presentFrom} onExit={exitPresent} />
       ) : null}
+      <ExportPptxDialog
+        open={pptxDialogOpen}
+        slideCount={slides.length}
+        onCancel={closePptxDialog}
+        onExport={confirmPptxExport}
+      />
     </div>
   )
 }

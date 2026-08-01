@@ -19,7 +19,7 @@ import type { MenuAction } from '../../shared/ipc-contract'
 export type MenuDelivery = 'renderer' | 'log'
 
 /**
- * `edit.*` and `file.export.pdf` cross to the renderer; the rest of File still logs.
+ * `edit.*`, `file.export.pdf` and `file.export.pptx` cross to the renderer; the rest of File still logs.
  *
  * The renderer is the authoritative owner of the live deck and its slide HTML (there is no
  * main-process document store — the deck lives in `deckStore`, exactly as Present mode found in
@@ -30,7 +30,7 @@ export type MenuDelivery = 'renderer' | 'log'
  * flips here when its milestone lands.
  */
 export function menuActionTarget(action: MenuAction): MenuDelivery {
-  if (action === 'file.export.pdf') return 'renderer'
+  if (action === 'file.export.pdf' || action === 'file.export.pptx') return 'renderer'
   return action.startsWith('edit.') ? 'renderer' : 'log'
 }
 

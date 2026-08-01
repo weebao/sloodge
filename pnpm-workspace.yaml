@@ -9,6 +9,11 @@ catalog:
   # Pure JS, no native deps (11-tech-stack.md R10). Pinned exact rather than ^1.17 so a patch
   # cannot change PDF byte output under us.
   pdf-lib: 1.17.1
+  # Exact-pinned (M4.3): the only maintained JS library that emits standards-compliant OOXML .pptx,
+  # giving both the structured (text/shape/image) path and the raster fallback via addImage
+  # (11-tech-stack.md R11, 60-export.md §3). Pinned exact rather than ^4.0 so a patch cannot change
+  # OOXML byte output — the OPC-structure tests assert on the emitted parts.
+  pptxgenjs: 4.0.1
   zod: ^4.4.3
   react: ^19.2.8
   react-dom: ^19.2.8

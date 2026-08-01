@@ -8,22 +8,37 @@
  */
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
-import { FILE_EXPORT_PDF_CHANNEL } from '../../shared/ipc-contract'
+import { FILE_EXPORT_PDF_CHANNEL, FILE_EXPORT_PPTX_CHANNEL } from '../../shared/ipc-contract'
 import type { ExportPdfResponse } from '../../shared/export/types'
+import type { ExportPptxResponse } from '../../shared/export/pptx/types'
 import { parseExportPdfRequest } from '../../shared/export/request'
+import { parseExportPptxRequest } from '../../shared/export/pptx/request'
 import { buildSlidesPdf } from './pdf-export'
+import { buildSlidesPptx } from './pptx-export'
 import { createOffscreenPdfRenderer } from './electron-renderer'
+import { createOffscreenPptxRenderer } from './pptx-renderer'
+import { createPptxWriter } from './pptx-writer'
 import { writePdfAtomic } from './write'
 import type { SlideRegistry } from '../slide/registry'
 
-/** A filesystem-safe default filename stem from the deck title. */
-export function defaultPdfFileName(deckTitle: string): string {
+/** A filesystem-safe default filename stem from the deck title, with the given extension. */
+function defaultFileName(deckTitle: string, ext: string): string {
   const stem = deckTitle
     .trim()
     .replace(/[^\p{L}\p{N} _-]+/gu, '')
     .replace(/\s+/g, '-')
     .slice(0, 80)
-  return `${stem === '' ? 'deck' : stem}.pdf`
+  return `${stem === '' ? 'deck' : stem}.${ext}`
+}
+
+/** A filesystem-safe default PDF filename stem from the deck title. */
+export function defaultPdfFileName(deckTitle: string): string {
+  return defaultFileName(deckTitle, 'pdf')
+}
+
+/** A filesystem-safe default PPTX filename stem from the deck title. */
+export function defaultPptxFileName(deckTitle: string): string {
+  return defaultFileName(deckTitle, 'pptx')
 }
 
 export function installExportIpc(registry: SlideRegistry): void {
@@ -67,6 +82,52 @@ export function installExportIpc(registry: SlideRegistry): void {
           return { canceled: false, report }
         }
         await writePdfAtomic(outPath, pdfBytes)
+        return { canceled: false, report }
+      } finally {
+        renderer.dispose()
+      }
+    },
+  )
+
+  ipcMain.handle(
+    FILE_EXPORT_PPTX_CHANNEL,
+    async (event, payload: unknown): Promise<ExportPptxResponse> => {
+      const request = parseExportPptxRequest(payload)
+      if (request === null) {
+        throw new Error('file:exportPptx requires a well-formed export request')
+      }
+
+      const senderWindow = BrowserWindow.fromWebContents(event.sender)
+      const saveOptions = {
+        defaultPath: defaultPptxFileName(request.deckTitle),
+        filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
+      }
+      const saveResult = await (senderWindow === null
+        ? dialog.showSaveDialog(saveOptions)
+        : dialog.showSaveDialog(senderWindow, saveOptions))
+
+      if (saveResult.canceled || saveResult.filePath === undefined || saveResult.filePath === '') {
+        return { canceled: true }
+      }
+      const outPath = saveResult.filePath
+
+      const renderer = createOffscreenPptxRenderer(registry)
+      try {
+        const { pptxBytes, report } = await buildSlidesPptx({
+          slides: request.slides,
+          range: request.range,
+          currentIndex: request.currentIndex,
+          fidelity: request.fidelity,
+          outPath,
+          deckTitle: request.deckTitle,
+          renderer,
+          writer: createPptxWriter(),
+        })
+        // Nothing to write: an empty range, or every slide failed. No file is created.
+        if (pptxBytes === null) {
+          return { canceled: false, report }
+        }
+        await writePdfAtomic(outPath, pptxBytes)
         return { canceled: false, report }
       } finally {
         renderer.dispose()
