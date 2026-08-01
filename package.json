@@ -20,9 +20,24 @@
     "format": "prettier --write .",
     "check": "pnpm lint && pnpm typecheck",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pack:dir": "pnpm build && electron-builder --dir",
+    "pack:win": "pnpm build && electron-builder --win",
+    "pack:win:zip": "pnpm build && electron-builder --win zip",
+    "pack:mac": "pnpm build && electron-builder --mac"
   },
   "build": {
+    "appId": "dev.sloodge.app",
+    "productName": "Sloodge",
+    "copyright": "Copyright © 2026 Sloodge",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "artifactName": "${name}-${version}-${os}-${arch}.${ext}",
+    "toolsets": {
+      "wine": "1.0.1"
+    },
     "asar": true,
     "asarUnpack": [
       "**/node_modules/@anthropic-ai/claude-agent-sdk/**",
@@ -33,7 +48,104 @@
         "from": "resources/skills",
         "to": "skills"
       }
-    ]
+    ],
+    "win": {
+      "files": [
+        "!**/.vscode/**",
+        "!.git",
+        "!src/**",
+        "!tests/**",
+        "!docs/**",
+        "!resources/**",
+        "!.claude/**",
+        "!experiments/**",
+        "!electron.vite.config.{js,ts,mjs,cjs}",
+        "!vitest.config.{js,ts,mjs,cjs}",
+        "!{.editorconfig,.prettierignore,.oxlintrc.json,README.md}",
+        "!{.env,.env.*,.npmrc,pnpm-lock.yaml,pnpm-workspace.yaml}",
+        "!{tsconfig.json,tsconfig.base.json,tsconfig.node.json,tsconfig.web.json}",
+        "!**/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,linux}-*/**"
+      ],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sloodge",
+      "artifactName": "${name}-${version}-setup.${ext}"
+    },
+    "mac": {
+      "files": [
+        "!**/.vscode/**",
+        "!.git",
+        "!src/**",
+        "!tests/**",
+        "!docs/**",
+        "!resources/**",
+        "!.claude/**",
+        "!experiments/**",
+        "!electron.vite.config.{js,ts,mjs,cjs}",
+        "!vitest.config.{js,ts,mjs,cjs}",
+        "!{.editorconfig,.prettierignore,.oxlintrc.json,README.md}",
+        "!{.env,.env.*,.npmrc,pnpm-lock.yaml,pnpm-workspace.yaml}",
+        "!{tsconfig.json,tsconfig.base.json,tsconfig.node.json,tsconfig.web.json}",
+        "!**/node_modules/@anthropic-ai/claude-agent-sdk-{linux,win32}-*/**"
+      ],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "files": [
+        "!**/.vscode/**",
+        "!.git",
+        "!src/**",
+        "!tests/**",
+        "!docs/**",
+        "!resources/**",
+        "!.claude/**",
+        "!experiments/**",
+        "!electron.vite.config.{js,ts,mjs,cjs}",
+        "!vitest.config.{js,ts,mjs,cjs}",
+        "!{.editorconfig,.prettierignore,.oxlintrc.json,README.md}",
+        "!{.env,.env.*,.npmrc,pnpm-lock.yaml,pnpm-workspace.yaml}",
+        "!{tsconfig.json,tsconfig.base.json,tsconfig.node.json,tsconfig.web.json}",
+        "!**/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,win32}-*/**"
+      ]
+    },
+    "dmg": {
+      "artifactName": "${name}-${version}-${arch}.${ext}"
+    }
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",
@@ -54,6 +166,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "^5.2",
     "electron": "43.2.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "happy-dom": "^20.11",
     "oxlint": "^1.76",

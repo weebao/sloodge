@@ -27,14 +27,18 @@ cd /home/baoro/stuff/random/sloodge
 pnpm build     # typecheck + electron-vite build -> out/{main,preload,renderer}
 ```
 
-The built output is platform-neutral JS. Confirm the main bundle has no external deps:
+The built output is platform-neutral JS. Inspect what the main bundle expects to resolve at runtime:
 
 ```bash
 grep -n "^import\|require(" out/main/index.js
-# expect only: node:url, electron
 ```
 
-If that ever shows real npm deps, they must be installed in the Windows staging dir too.
+> **Stale as of M5.2.** This once printed only `node:url` and `electron`. It now also lists
+> `@anthropic-ai/claude-agent-sdk`, `zod`, `parse5`, `pdf-lib`, `fflate` and `pptxgenjs` —
+> electron-vite keeps `dependencies` external rather than bundling them. So the hand-staged
+> `out/` + bare `package.json` approach in §2–§4 **no longer produces a runnable app**: it has no
+> `node_modules`. Use the packaged build (§8) instead; that is what M5.2 exists for. §2–§4 are kept
+> only as the historical record of how the launch/screenshot mechanics were first established.
 
 ## 2. Stage a Windows-runnable app dir
 
@@ -157,6 +161,121 @@ Full script kept at `C:\sloodge-smoke\click2.ps1`.
 cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA SilentlyContinue | Stop-Process -Force"
 ```
 
+## 8. Packaged build (M5.2) — the supported path
+
+Verified 2026-08-01: NSIS installer built, silently installed to
+`%LOCALAPPDATA%\Programs\Sloodge`, launched, and driven through slide switch → Design Mode →
+Present on the real Windows host. Screenshot: `docs/media/m52-packaged-app.png`.
+
+### 8.1 What builds where
+
+| Artifact                                  | Buildable in WSL?                                | Why                                                                                 |
+| ----------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `win-unpacked/` + `sloodge-*-win-x64.zip` | **Yes** — `pnpm exec electron-builder --win zip` | Pure file copying + 7z, no Windows tooling                                          |
+| `sloodge-*-setup.exe` (NSIS)              | **No**                                           | NSIS **executes the built installer** to generate the uninstaller, which needs Wine |
+| mac `.zip` (arm64 + x64)                  | **Partly** — they build, but see below           | Unsigned, and **CLI-less** on this host (no `darwin` in `supportedArchitectures`)   |
+| `.dmg`                                    | **No**                                           | `electron-builder --mac` dies on `spawn sips ENOENT` — macOS-only image tooling     |
+
+**The macOS artifacts this box can produce are not shippable.** `--mac` does emit
+`sloodge-0.0.0-mac-{arm64,x64}.zip`, then fails at the dmg step on `sips`. Worse, those zips
+contain `@anthropic-ai/claude-agent-sdk` but **no `claude-agent-sdk-darwin-*`** — the CLI is an
+`os`-gated optionalDependency and `supportedArchitectures` here names only `current` + `win32`, so
+the mac app would launch with a dead chat panel. M9.2 must build macOS on real hardware, where
+`current` _is_ darwin. Adding `darwin` to `supportedArchitectures` would fix the payload but not
+the dmg, and costs another ~275 MB per variant on every install.
+
+#### Where Wine actually comes in — and what is still unexplained
+
+Only **one** step needs it. `makensis` compiling the installer does not:
+`~/.cache/electron-builder/nsis-3.0.4.1/**/linux/makensis` is an `ELF 64-bit LSB executable,
+x86-64`, run natively. Wine is invoked once, to **execute the freshly built installer so it can
+emit its own uninstaller** (`app-builder-lib/out/targets/NsisTarget.js`). That single invocation is
+what fails here.
+
+`build.toolsets.wine: "1.0.1"` is set so electron-builder downloads its own Wine rather than
+needing a system one (there is no sudo on this box). The download succeeds and
+`wine --version` prints `wine-11.0`, but running any exe fails:
+
+```bash
+W=~/.cache/electron-builder/wine@1.0.1/wine-11.0-linux-x86_64-*
+WINEPREFIX=$W/wine-home $W/bin/wine cmd /c "echo hello"
+# wine: failed to load .../lib/wine/x86_64-unix/ntdll.dll error c0000135
+# 0024:err:environ:run_wineboot failed to start wineboot 1
+```
+
+**The root cause is not identified.** Do not repeat this earlier guess, which was wrong: an earlier
+revision of this runbook claimed the bundle "ships no `x86_64-windows/` PE directory". That was an
+inference from `tar -tJf … | grep -c x86_64-windows` → `0`, which only says a directory of that
+_name_ is absent. The tarball does ship the Windows side — 191 entries under
+`wine-home/drive_c/windows/system32/`, including a `PE32+ executable (console) x86-64`
+`wineboot.exe` — at exactly the prefix `toolsets/wine.js:79` resolves (`<toolset>/wine-home`), and
+that path is validated at `:80-84`. So the bundle is not obviously incomplete, and why this one
+`wine` call fails under WSL2 remains an open question. Plausible unexplored leads: the WSL2 kernel,
+the `LD_LIBRARY_PATH` electron-builder injects, or a missing 32-bit/loader dependency.
+
+The `toolsets` key is kept regardless: it is a real electron-builder option, and it is inert on a
+Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`).
+
+### 8.2 Building the NSIS installer on the Windows host
+
+Build the app dir in WSL, then let Windows do the NSIS step from the _prepackaged_ output:
+
+```bash
+# WSL
+pnpm exec electron-builder --win zip           # -> release/win-unpacked + release/*.zip
+cp release/sloodge-0.0.0-win-x64.zip /mnt/c/sloodge-m52/
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Expand-Archive -Path 'C:\sloodge-m52\sloodge-0.0.0-win-x64.zip' -DestinationPath 'C:\sloodge-m52\win-unpacked' -Force"
+```
+
+Copy the **zip** (≈230 MB), not `win-unpacked/` (≈665 MB) — the 9p mount is slow.
+
+`C:\sloodge-m52\builder\` holds a throwaway `package.json` (`name: sloodge`, `version`, and
+`electron-builder` as the only devDependency) plus an `electron-builder.yml` mirroring the repo's
+`build.win`/`build.nsis` block. **`electronVersion: 43.2.0` must be set explicitly** — with
+`--prepackaged` there is no electron in `node_modules` to infer it from.
+
+```bash
+cd /mnt/c && cmd.exe /c "cd /d C:\sloodge-m52\builder && npm install --ignore-scripts --no-audit"
+cd /mnt/c && cmd.exe /c "cd /d C:\sloodge-m52\builder && set NODE_OPTIONS=--experimental-require-module && npx electron-builder --win nsis --prepackaged C:\sloodge-m52\win-unpacked"
+```
+
+`NODE_OPTIONS=--experimental-require-module` is **required** on this machine: Windows node is
+v22.11.0 and electron-builder 26 `require()`s the ESM-only `@noble/hashes` (`ERR_REQUIRE_ESM`).
+`require(esm)` is unflagged only from node 22.12. Upgrading Windows node removes the need.
+
+### 8.3 Install, launch, drive
+
+```bash
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Start-Process -FilePath 'C:\sloodge-m52\builder\release\sloodge-0.0.0-setup.exe' -ArgumentList '/S' -Wait"
+```
+
+`/S` silently installs the assisted (`oneClick: false`) installer to
+`%LOCALAPPDATA%\Programs\Sloodge` (`perMachine: false`, so no UAC prompt). Then:
+
+```bash
+cd /mnt/c && powershell.exe -NoProfile -Command \
+  "Start-Process \"\$env:LOCALAPPDATA\Programs\Sloodge\Sloodge.exe\"; Start-Sleep -Seconds 15; Get-Process Sloodge | Select Id,MainWindowTitle"
+```
+
+The process is now **`Sloodge`**, not `electron` — the §5/§6 scripts hardcoded `Get-Process electron`
+and silently find nothing against a packaged build. `C:\sloodge-m52\shot.ps1` and `click.ps1` are
+parameterised versions (`-ProcName`, `-X/-Y`, `-Out`) of those.
+
+### 8.4 What the packaged app must contain (M2.4 + M5.2 hazards)
+
+```bash
+D="/mnt/c/Users/baoro/AppData/Local/Programs/Sloodge"
+find "$D/resources/skills" -type f                                  # 3x SKILL.md + icons.md
+ls "$D/resources/app.asar.unpacked/node_modules/@anthropic-ai/"      # sdk + sdk-win32-x64, SIBLINGS
+```
+
+The sibling layout is load-bearing: the SDK finds its CLI via
+`require.resolve('@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe')` anchored at `sdk.mjs`'s
+own realpath, with no PATH fallback. Both packages must be `asarUnpack`ed (a binary cannot be
+spawned from inside an archive) and must stay siblings.
+
 ## Gotchas summary
 
 - `cmd.exe` invoked while cwd is a WSL UNC path warns "UNC paths are not supported" and defaults to
@@ -170,3 +289,43 @@ cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA Silent
 - Renderer DPI/zoom may differ between captures (window was rendered at a larger scale after the
   interaction); this is cosmetic, not a failure.
 - No firewall prompt appeared (the app makes no network listen).
+- A packaged app's process is `Sloodge`, not `electron` — `Get-Process electron` finds nothing.
+- pnpm installs only the host's variant of an `os`-gated optionalDependency. Cross-packing Windows
+  from Linux needs `supportedArchitectures` in `pnpm-workspace.yaml`, or the installer ships with
+  no `claude.exe` and **nothing in the build fails**.
+- electron-builder does _not_ filter those platform packages by their own `os`/`cpu` fields — the
+  275 MB Linux CLI rode along inside the Windows app until `win.files` excluded it explicitly.
+- **Every** platform needs its own complete `files` list. A platform with no block falls through to
+  electron-builder's default `**/*` and packages the whole repo — that was `linux`, so `pnpm
+pack:dir` on this dev box produced a 63.7 MB asar with 184 `src/`, 145 `tests/` and 36 `docs/`
+  entries plus a foreign 254 MB `claude.exe`, against 37.7 MB for the shipped Windows one.
+- **Do not hoist the shared exclusions to a top-level `files`.** It reads like the obvious fix and
+  `fileMatcher.js:250-253` looks like it supports it (`addPatterns(config.files)` then
+  `addPatterns(customBuildOptions.files)` into one matcher). Measured on real `--win --dir` runs:
+
+  | `files` shape               | asar     | src | tests | docs | foreign CLI |
+  | --------------------------- | -------- | --- | ----- | ---- | ----------- |
+  | top-level only              | 37.7 MB  | 0   | 0     | 0    | 3           |
+  | top-level + platform        | 427.9 MB | 151 | 131   | 34   | 0           |
+  | platform only, full list    | 37.7 MB  | 0   | 0     | 0    | 0           |
+  | both carrying the full list | 401.9 MB | 0   | 0     | 0    | 0           |
+
+  Why: `util/config/config.js:91 normalizeFiles` (via `doMergeConfigs`, :169) rewrites a
+  **top-level** `files` string array into object FileSet form `[{filter:[…]}]`. Object patterns take
+  `fileMatcher.js:246`'s `fileMatchers.push(new FileMatcher(…))` branch rather than
+  `defaultMatcher.addPattern` (:238), so the top-level list becomes a _second_ app-source matcher.
+  The platform's `files` are still strings, so they land in `defaultMatcher`, which is unshifted to
+  index 0 (:254-256) — and `getMainFileMatchers` grants the permissive `**/*` plus the default
+  `!**/node_modules/**` to `matchers[0]` **only** (:111-121). That matcher then copies everything
+  the platform list does not exclude, `src/` included. The `:250-253` "both go to one matcher"
+  reading is real, but it governs the string branch and the node_modules matcher (:209-210) — which
+  is why `builder-debug.yml` shows the hoisted patterns under `nodeModuleFilePatterns`. It also
+  explains row 4: only `matchers[0]` ever receives `!**/node_modules/**`, so the asar stays huge
+  even when the source tree is clean.
+
+  So the exclusions are duplicated across `win`/`mac`/`linux` on purpose; `build-config.test.ts`
+  guards the shape and reds on a hoist.
+
+- Icons are **deferred**: `directories.buildResources: "build"` names a dir that does not exist yet
+  and no `icon` is set, so every artifact carries the default Electron icon. M9.1 must add
+  `build/icon.png` (electron-builder auto-discovers it) before the release.

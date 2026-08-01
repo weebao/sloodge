@@ -30,6 +30,36 @@ allowBuilds:
   electron: true
   esbuild: true
   '@tailwindcss/oxide': true
+  # Pulled in by electron-builder for the Squirrel.Windows target, which Sloodge does not use (we
+  # ship NSIS). Its postinstall downloads the Squirrel bundle — dead weight. Explicitly denied
+  # rather than left undecided: an undecided build script makes `pnpm install` exit 1, and
+  # electron-builder shells out to `pnpm install` as its dependency check, so leaving this
+  # unanswered fails the packaging run itself.
+  electron-winstaller: false
+
+# Cross-build support (M5.2). The Agent SDK ships its ~275MB native `claude` CLI as per-platform
+# optionalDependencies (`@anthropic-ai/claude-agent-sdk-<os>-<cpu>`), each guarded by `os`/`cpu`.
+# By default pnpm installs ONLY the host's variant — so packaging a Windows app on this Linux/WSL
+# dev machine would produce an installer with no Windows CLI in it and a dead chat panel, with
+# nothing failing at build time. Naming `win32` here makes pnpm fetch `claude-agent-sdk-win32-x64`
+# alongside the host's, which is what electron-builder then packs for `--win`.
+#
+# Deliberately NOT `darwin`: each variant is another 275MB, and macOS artifacts cannot be validly
+# produced from Linux anyway (M9.2 builds them on real hardware, where `current` IS darwin).
+#
+# NOTE for M9.2: this is a **cartesian product** of `os` x `cpu`, not a list of pairs. On this
+# linux/x64 host it expands to exactly linux-x64 + win32-x64. On the arm64 Mac M9.2 anticipates,
+# `current` becomes darwin/arm64 and the same four lines expand to darwin-arm64, darwin-x64,
+# win32-arm64 AND win32-x64 (~1GB), and each mac arch bundle would then carry both darwin CLIs.
+# There, pin `cpu` to the host's own arch and add a
+# `!**/node_modules/@anthropic-ai/claude-agent-sdk-darwin-<other-arch>/**` line to `build.mac.files`.
+supportedArchitectures:
+  os:
+    - current
+    - win32
+  cpu:
+    - current
+    - x64
 
 # Supply-chain guard: don't adopt an npm publish younger than 3 days
 minimumReleaseAge: 4320
