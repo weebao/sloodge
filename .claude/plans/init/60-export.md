@@ -17,7 +17,7 @@ Three export targets, three fidelity contracts:
 |---|---|---|---|
 | **PDF** | Pixel-exact, vector text where possible | No (by design) | `webContents.printToPDF` per slide + `pdf-lib` merge |
 | **PPTX** | Best-effort editable, guaranteed-visual fallback | Yes, per-slide-dependent | `pptxgenjs` structured DOM walk **or** full-slide PNG raster |
-| **HTML** | Byte-exact (it *is* the source), **animation and interactivity preserved** | Yes, trivially | zip of slide files + generated presenter shell |
+| **HTML** | Byte-exact modulo the constant-length CSP prefix (§5.1), **animation and interactivity preserved** | Yes, trivially | zip of slide files + generated presenter shell |
 
 **Design rule that governs all three:** the export pipeline never re-implements layout. Chromium is the layout engine; we either ask it to print, ask it to screenshot, or ask it (via injected script, in its own context) to *report* the boxes it already computed. We never parse CSS ourselves.
 

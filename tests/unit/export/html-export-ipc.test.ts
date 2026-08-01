@@ -82,6 +82,21 @@ describe('installExportIpc — HTML channel', () => {
     expect(await handler({ sender: {} }, request())).toEqual({ canceled: true })
   })
 
+  it('treats an empty filePath as a cancel, and writes nothing', async () => {
+    // `showSaveDialog` can resolve `canceled: false` with an empty path. Without the empty-string
+    // check in `chooseSavePath` that becomes an export written to `''` — and since M4.4 folded the
+    // PDF, PPTX and HTML handlers onto that one helper, this guard now protects all three formats.
+    const handler = installedHandler()
+    mocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: '' })
+    expect(await handler({ sender: {} }, request())).toEqual({ canceled: true })
+  })
+
+  it('treats an undefined filePath as a cancel', async () => {
+    const handler = installedHandler()
+    mocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: undefined })
+    expect(await handler({ sender: {} }, request())).toEqual({ canceled: true })
+  })
+
   it('defaults the save dialog to a .zip named for the deck', async () => {
     const handler = installedHandler()
     mocks.showSaveDialog.mockResolvedValueOnce({ canceled: true, filePath: undefined })

@@ -94,6 +94,15 @@ describe('encodeJsonForScriptBlock', () => {
     expect(doc.querySelector('img')).toBeNull()
   })
 
+  it('reports a cyclic value as a diagnosable error, not a TypeError from a regex', () => {
+    // Narrowing to `JsonValue` rules out `undefined`/function/symbol/bigint at compile time, but it
+    // cannot express acyclicity — so the one runtime failure left must name its own cause rather
+    // than surfacing as "Cannot read properties of undefined" from inside an escaper.
+    const cyclic: Record<string, unknown> = { title: 'Deck' }
+    cyclic['self'] = cyclic
+    expect(() => encodeJsonForScriptBlock(cyclic as never)).toThrow(/non-serializable/)
+  })
+
   it('escapes the JavaScript line terminators U+2028 / U+2029', () => {
     const value = { t: 'a\u2028b\u2029c' }
     const encoded = encodeJsonForScriptBlock(value)

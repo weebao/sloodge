@@ -25,6 +25,17 @@
  */
 
 /**
+ * Anything `JSON.stringify` is guaranteed to turn into a string.
+ *
+ * Deliberately excludes `undefined`, functions and symbols — the three inputs for which
+ * `JSON.stringify` returns `undefined` rather than a string — and `bigint`, for which it throws.
+ * Declared here rather than imported so `html-escape.ts` stays a leaf module with no dependency on
+ * the bundle types that happen to be its only caller today.
+ */
+export type JsonValue =
+  string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue }
+
+/**
  * Escape for HTML **text** context (between tags).
  *
  * `&` first — always — or a later replacement's own `&` would be double-escaped into `&amp;lt;`.
@@ -71,9 +82,33 @@ export function escapeHtmlAttribute(value: string): string {
  * U+2028 / U+2029 are escaped because they are literal line terminators in JavaScript source; JSON
  * itself tolerates them, but a downstream tool that hands this block to a JS parser would break on
  * them. Cheap insurance for a string that has already left our process.
+ *
+ * ## Why the parameter is `JsonValue` and not `unknown`
+ *
+ * `JSON.stringify` does not return a string for every input: `undefined`, a function, and a symbol
+ * all serialize to `undefined`, so an `unknown` parameter let a caller reach `.replace()` on
+ * `undefined` and get an opaque `TypeError` thrown from inside an escaper. Nothing in the codebase
+ * does that \u2014 the only call site passes a `BundleManifest` \u2014 but a parameter typed `unknown` is an
+ * open invitation to the call that breaks it, so the type now says what the function actually
+ * accepts and the compiler refuses the rest.
+ *
+ * Narrowing cannot express *acyclicity*, so the one runtime failure left is a cyclic object. That is
+ * a programmer error rather than bad user data (the manifest is built here, not received), so it
+ * fails loudly with a message naming the cause instead of a `TypeError` from a regex call.
  */
-export function encodeJsonForScriptBlock(value: unknown): string {
-  return JSON.stringify(value)
+export function encodeJsonForScriptBlock(value: JsonValue): string {
+  let json: string
+  try {
+    json = JSON.stringify(value)
+  } catch (error) {
+    throw new Error(
+      `cannot embed a non-serializable value in a script block: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    )
+  }
+  return json
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026')

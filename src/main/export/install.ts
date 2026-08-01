@@ -55,9 +55,11 @@ export function defaultPptxFileName(deckTitle: string): string {
  * a free-floating dialog; falls back to an unparented dialog when the sender has no window (which
  * only happens in teardown races, but throwing there would surface as a broken menu item).
  *
- * Factored out at M4.4: PDF and HTML need the identical flow with a different filename and filter,
- * and duplicating it would be two places to forget the empty-`filePath` check that stands between a
- * dismissed dialog and an export written to `''`.
+ * Factored out at M4.4 and now used by all three formats: each needs the identical flow with only a
+ * different default filename and filter. Duplicating it would be three places to forget the
+ * empty-`filePath` check that stands between a dismissed dialog and an export written to `''` —
+ * `showSaveDialog` can report `canceled: false` with an empty path, so the check is load-bearing
+ * rather than defensive.
  */
 async function chooseSavePath(
   sender: Electron.WebContents,
@@ -120,19 +122,11 @@ export function installExportIpc(registry: SlideRegistry): void {
         throw new Error('file:exportPptx requires a well-formed export request')
       }
 
-      const senderWindow = BrowserWindow.fromWebContents(event.sender)
-      const saveOptions = {
-        defaultPath: defaultPptxFileName(request.deckTitle),
-        filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
-      }
-      const saveResult = await (senderWindow === null
-        ? dialog.showSaveDialog(saveOptions)
-        : dialog.showSaveDialog(senderWindow, saveOptions))
-
-      if (saveResult.canceled || saveResult.filePath === undefined || saveResult.filePath === '') {
-        return { canceled: true }
-      }
-      const outPath = saveResult.filePath
+      const outPath = await chooseSavePath(event.sender, defaultPptxFileName(request.deckTitle), {
+        name: 'PowerPoint',
+        extensions: ['pptx'],
+      })
+      if (outPath === null) return { canceled: true }
 
       const renderer = createOffscreenPptxRenderer(registry)
       try {
