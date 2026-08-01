@@ -4,6 +4,7 @@ import { instrument } from '../../../../shared/design/instrument'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
 import { injectDesignBridge } from '../design/frameScript'
+import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
 import { SlideFrame } from './SlideFrame'
 import { fitSlide } from './slideFit'
@@ -58,9 +59,12 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
   return (
     <main
       aria-label="Slide canvas"
-      className="flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-canvas-mat/25 p-6 dark:bg-black/40"
+      className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas-mat/25 dark:bg-black/40"
     >
-      <div ref={matRef} className="flex h-full w-full items-center justify-center">
+      <div
+        ref={matRef}
+        className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6"
+      >
         {slide ? (
           <div className="relative" style={stageStyle}>
             <SlideFrame
@@ -89,6 +93,9 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
           </div>
         )}
       </div>
+      {/* Docked bottom-of-canvas (wireframe §20): the local property panel, only in Design Mode
+          and only when an element is selected (the panel returns null otherwise). */}
+      {designModeActive && slide ? <PropertyPanel slide={slide} /> : null}
     </main>
   )
 }

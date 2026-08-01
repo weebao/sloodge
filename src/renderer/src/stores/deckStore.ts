@@ -97,6 +97,13 @@ export type DeckState = DeckSnapshot & {
   duplicateSlide: (id: SlideId) => boolean
   /** Move the slide at `fromIndex` to `toIndex` (absolute, post-move) and keep it selected. */
   moveSlide: (fromIndex: number, toIndex: number) => boolean
+  /**
+   * Replace one slide's HTML source with an already-patched string, as a single undoable command
+   * with a `design` origin (§7.1). The Properties panel is the producer: it computes the patched
+   * source from the current bytes and the parent-tracked sl-id, so the id keying `elementId` is a
+   * source-map id, not a message payload. `label` is the Edit-menu text ("Font size 44 -> 46").
+   */
+  setSlideHtml: (id: SlideId, html: string, elementId: string, label: string) => boolean
   undo: () => boolean
   redo: () => boolean
 }
@@ -373,6 +380,20 @@ export const useDeckStore = createStore<DeckState>((set, get) => {
       // an entry whose inverse is also a no-op.
       if (fromIndex === toIndex) return false
       return dispatch([{ t: 'slide.move', id, to: toIndex }], 'Move slide', id)
+    },
+
+    setSlideHtml: (id, html, elementId, label) => {
+      const state = get()
+      // Re-derive nothing from a message here: the caller passes the patched source it computed
+      // from `state.slideHtml[id]` and the parent-tracked sl-id. The funnel rejects an unknown id.
+      const result = state.history.apply([{ t: 'slide.setHtml', id, html }], {
+        kind: 'design',
+        label,
+        elementId,
+      })
+      if (!result.ok) return false
+      set({ ...published(state.history), currentSlideId: state.currentSlideId })
+      return true
     },
 
     undo: () => {
