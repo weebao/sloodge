@@ -10,6 +10,16 @@
  * The layout is defined to the exact 16:9 slide box (13.333in × 7.5in = the 1280×720 slide at 96 dpi),
  * so positions handed over in inches by the walker land pixel-for-pixel. No slide master is used
  * (§3.7): Sloodge slides are independently authored and carry their own backgrounds.
+ *
+ * ## XML sanitization — EVERY inbound string, not just slide text
+ *
+ * OOXML parts are XML 1.0, and pptxgenjs writes our strings through verbatim apart from the five
+ * metacharacters. So **every** value that originates from agent- or user-authored text is passed
+ * through `sanitizeXmlText` here: text runs, hyperlink URLs, speaker notes, *and the deck metadata*
+ * (`pptx.title` / `pptx.author` → `docProps/core.xml`). Round 1 covered only the slide/notes parts,
+ * which left the metadata path able to produce the identical silent corruption; the writer test now
+ * scans **every** `.xml`/`.rels` part in the produced zip so a newly-added property cannot regress
+ * this class unnoticed. If you add another pptxgenjs property fed from our data, sanitize it here.
  */
 
 import PptxGenJS from 'pptxgenjs'
@@ -148,8 +158,12 @@ export async function writeDeckPptx(plan: DeckPptxPlan): Promise<Uint8Array> {
   const pptx = new PptxGenJS()
   pptx.defineLayout({ name: LAYOUT_NAME, width: SLIDE_WIDTH_INCHES, height: SLIDE_HEIGHT_INCHES })
   pptx.layout = LAYOUT_NAME
-  pptx.author = plan.author
-  pptx.title = plan.title
+  // Deck METADATA is agent-settable text too (the deck title comes from the agent's `set_title`
+  // tool), and pptxgenjs writes it verbatim into `docProps/core.xml` (`<dc:title>`/`<dc:creator>`).
+  // An unsanitized control char there malforms that part and PowerPoint calls the whole file corrupt
+  // — the same silent failure as slide text, just via a part the first fix did not cover.
+  pptx.author = sanitizeXmlText(plan.author)
+  pptx.title = sanitizeXmlText(plan.title)
 
   for (const slidePlan of plan.slides) addSlideToDeck(pptx, slidePlan)
 

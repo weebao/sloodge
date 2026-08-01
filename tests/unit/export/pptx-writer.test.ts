@@ -92,16 +92,23 @@ describe('writeDeckPptx (OPC validity)', () => {
     )
   })
 
-  it('sanitizes XML-1.0-illegal control characters out of slide text AND notes (no corrupt .pptx)', async () => {
+  it('sanitizes XML-1.0-illegal control characters out of EVERY part (no corrupt .pptx)', async () => {
     const bell = String.fromCharCode(0x07)
     const soh = String.fromCharCode(0x01)
+    // Control chars are seeded into every agent-settable text field the writer can reach: deck title
+    // and author (→ docProps/core.xml), slide body text, a bulleted run, a hyperlink's text AND its
+    // URL (→ slide rels), and the speaker notes.
     const dirty: SlidePlan = {
       tier: 'structured',
       shapes: [
         {
           kind: 'text',
           box: { x: 1, y: 1, w: 6, h: 1 },
-          runs: [{ text: `Title${bell} here${soh}` }],
+          runs: [
+            { text: `Heading${bell} one${soh}` },
+            { text: `Bullet${bell} two${soh}`, bullet: true },
+            { text: `Link${bell} three${soh}`, hyperlink: `https://x.test/a${bell}b${soh}` },
+          ],
           align: 'left',
           valign: 'top',
         },
@@ -110,20 +117,41 @@ describe('writeDeckPptx (OPC validity)', () => {
       confidence: 100,
       reasons: [],
     }
-    const files = await build({ title: 'D', author: 'Sloodge', slides: [dirty] })
-    const slideXml = strFromU8(files['ppt/slides/slide1.xml']!)
-    const notesXml = strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)
+    const files = await build({
+      title: `Deck${bell} Q3${soh}`,
+      author: `Sloodge${bell}${soh}`,
+      slides: [dirty],
+    })
 
-    // The legal text survives...
-    expect(slideXml).toContain('Title here')
-    expect(notesXml).toContain('Notes body')
-    expect(notesXml).toContain('日本語')
-
-    // ...and NO XML-1.0-illegal C0 control char (other than tab/LF/CR) remains anywhere in either
-    // part. This is the mutation signal: drop the sanitizer and the bell/0x01 reappear here.
+    // The widened oracle, asserted FIRST so it is the primary mutation signal: NO XML-1.0-illegal C0
+    // char (other than tab/LF/CR) may appear in ANY xml or rels part of the package — not just the
+    // slide/notes ones a targeted assertion would check. This is what makes the class
+    // un-regressable: a newly-added pptxgenjs property fed from our text is caught here even if
+    // nobody thinks to assert on its part. Mutation signal: un-sanitize `pptx.title`/`pptx.author`
+    // and this reds on `docProps/core.xml`.
     // oxlint-disable-next-line no-control-regex -- deliberately scanning for illegal control chars.
     const illegal = new RegExp('[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]')
-    expect(illegal.test(slideXml)).toBe(false)
-    expect(illegal.test(notesXml)).toBe(false)
+    const scanned: string[] = []
+    const offenders: string[] = []
+    for (const [name, data] of Object.entries(files)) {
+      if (!/\.(xml|rels)$/.test(name)) continue
+      scanned.push(name)
+      if (illegal.test(strFromU8(data))) offenders.push(name)
+    }
+    expect(offenders).toEqual([])
+
+    // Guard the guard: the scan must actually have covered the parts that carry our text.
+    expect(scanned).toContain('ppt/slides/slide1.xml')
+    expect(scanned).toContain('ppt/notesSlides/notesSlide1.xml')
+    expect(scanned).toContain('docProps/core.xml')
+    expect(scanned).toContain('ppt/slides/_rels/slide1.xml.rels')
+    expect(scanned.length).toBeGreaterThan(10)
+
+    // And the legal text survives, in the slide, the notes, and the deck metadata.
+    expect(strFromU8(files['ppt/slides/slide1.xml']!)).toContain('Heading one')
+    expect(strFromU8(files['ppt/slides/slide1.xml']!)).toContain('Bullet two')
+    expect(strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)).toContain('Notes body')
+    expect(strFromU8(files['ppt/notesSlides/notesSlide1.xml']!)).toContain('日本語')
+    expect(strFromU8(files['docProps/core.xml']!)).toContain('Deck Q3')
   })
 })
