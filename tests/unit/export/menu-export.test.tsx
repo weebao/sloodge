@@ -18,12 +18,12 @@ afterEach(() => {
 })
 
 describe('menuActionTarget', () => {
-  it('forwards file.export.pdf to the renderer (the deck lives there)', () => {
+  it('forwards file.export.pdf and file.export.pptx to the renderer (the deck lives there)', () => {
     expect(menuActionTarget('file.export.pdf')).toBe('renderer')
+    expect(menuActionTarget('file.export.pptx')).toBe('renderer')
   })
 
   it('still logs the not-yet-wired File exports', () => {
-    expect(menuActionTarget('file.export.pptx')).toBe('log')
     expect(menuActionTarget('file.export.html')).toBe('log')
     expect(menuActionTarget('file.new')).toBe('log')
   })
@@ -46,8 +46,14 @@ function fakeBridge(): SloodgeBridge & { emit: (action: MenuAction) => void } {
   }
 }
 
-function Harness({ onExportPdf }: { onExportPdf: () => void }): React.JSX.Element {
-  useMenuActions({ undo: vi.fn(), redo: vi.fn() }, onExportPdf)
+function Harness({
+  onExportPdf,
+  onExportPptx,
+}: {
+  onExportPdf: () => void
+  onExportPptx?: () => void
+}): React.JSX.Element {
+  useMenuActions({ undo: vi.fn(), redo: vi.fn() }, onExportPdf, onExportPptx)
   return <div />
 }
 
@@ -60,6 +66,18 @@ describe('useMenuActions — export', () => {
 
     bridge.emit('file.export.pdf')
     expect(onExportPdf).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires the pptx trigger on file.export.pptx and not on pdf', () => {
+    const bridge = fakeBridge()
+    window.sloodge = bridge
+    const onExportPdf = vi.fn()
+    const onExportPptx = vi.fn()
+    render(<Harness onExportPdf={onExportPdf} onExportPptx={onExportPptx} />)
+
+    bridge.emit('file.export.pptx')
+    expect(onExportPptx).toHaveBeenCalledTimes(1)
+    expect(onExportPdf).not.toHaveBeenCalled()
   })
 
   it('does not fire the export trigger on other actions', () => {

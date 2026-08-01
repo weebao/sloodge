@@ -24,19 +24,15 @@ describe('menuActionTarget', () => {
     expect(menuActionTarget('edit.redo')).toBe('renderer')
   })
 
-  it('forwards file.export.pdf to the renderer (the deck lives there — M4.2)', () => {
+  it('forwards file.export.pdf and file.export.pptx to the renderer (the deck lives there — M4.2/M4.3)', () => {
     expect(menuActionTarget('file.export.pdf')).toBe('renderer')
+    expect(menuActionTarget('file.export.pptx')).toBe('renderer')
   })
 
   it('does not forward the actions nothing consumes yet', () => {
     // A channel that delivers ids no one handles reads as though File ▸ New
     // were already wired; later milestones flip these when they claim them.
-    for (const action of [
-      'file.new',
-      'file.open',
-      'file.export.pptx',
-      'file.export.html',
-    ] as const) {
+    for (const action of ['file.new', 'file.open', 'file.export.html'] as const) {
       expect(menuActionTarget(action)).toBe('log')
     }
   })
@@ -44,6 +40,7 @@ describe('menuActionTarget', () => {
   it('classifies every id in the shared union, so a new one cannot be forgotten', () => {
     const routed = MENU_ACTIONS.map((action) => [action, menuActionTarget(action)] as const)
     expect(routed.filter(([, target]) => target === 'renderer').map(([action]) => action)).toEqual([
+      'file.export.pptx',
       'file.export.pdf',
       'edit.undo',
       'edit.redo',

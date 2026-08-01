@@ -40,6 +40,7 @@
  */
 
 import { BrowserWindow } from 'electron'
+import type { WebContents } from 'electron'
 import { slideDocumentUrl } from '../../shared/slide-protocol'
 import { EXPORT_READINESS_TIMEOUT_MS, slideReadinessScript } from '../../shared/export/readiness'
 import { slidePrintToPdfOptions } from '../../shared/export/page-size'
@@ -51,7 +52,12 @@ export type OffscreenPdfRenderer = SlidePdfRenderer & {
   dispose: () => void
 }
 
-function createExportWindow(): BrowserWindow {
+/**
+ * The one locked, secure hidden window used by every export path (PDF and PPTX). Exported so the PPTX
+ * renderer reuses the *identical* sandbox rather than standing up a second, weaker one — the whole
+ * point of the containment discussion in the module docstring. See there for why each setting matters.
+ */
+export function createExportWindow(): BrowserWindow {
   const win = new BrowserWindow({
     show: false,
     width: 1280,
@@ -78,6 +84,27 @@ function createExportWindow(): BrowserWindow {
 }
 
 /**
+ * Load a published slide and run the readiness + animation-settle barrier, bounded by
+ * `EXPORT_READINESS_TIMEOUT_MS`. On timeout the caller proceeds anyway (a degraded still beats a hung
+ * export), and a slide whose own script throws inside the barrier does not reject. Shared verbatim by
+ * the PDF (`printToPDF`) and PPTX (`capturePage` + measurement) paths so both settle identically.
+ */
+export async function loadAndSettleSlide(contents: WebContents, url: string): Promise<void> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  try {
+    await contents.loadURL(url)
+    await Promise.race([
+      contents.executeJavaScript(slideReadinessScript(), true).catch(() => undefined),
+      new Promise((resolve) => {
+        timeoutHandle = setTimeout(resolve, EXPORT_READINESS_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
+  }
+}
+
+/**
  * Build an offscreen renderer bound to `registry`. The window is created lazily on the first render
  * and reused for the rest of the job; `dispose()` tears it down. Documents are published with the
  * export window's `webContents.id` as owner so `dispose` can `revokeOwner` anything a mid-print
@@ -101,24 +128,12 @@ export function createOffscreenPdfRenderer(registry: SlideRegistry): OffscreenPd
       }
       const id = published.id
       const contents = window.webContents
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined
       try {
-        await contents.loadURL(slideDocumentUrl(id))
-        // The barrier settles fonts/images/animations and injects the defensive @page. Bounded: on
-        // timeout we print the slide anyway (a degraded still beats a hung export), and a slide whose
-        // own script throws inside the barrier must not fail the whole slide either. The timer is
-        // cleared once the race settles so it never outlives it (a stray 6 s timer per slide would
-        // keep the event loop alive well past the print).
-        await Promise.race([
-          contents.executeJavaScript(slideReadinessScript(), true).catch(() => undefined),
-          new Promise((resolve) => {
-            timeoutHandle = setTimeout(resolve, EXPORT_READINESS_TIMEOUT_MS)
-          }),
-        ])
+        // The barrier settles fonts/images/animations and injects the defensive @page (shared helper).
+        await loadAndSettleSlide(contents, slideDocumentUrl(id))
         const pdf = await contents.printToPDF(slidePrintToPdfOptions())
         return new Uint8Array(pdf)
       } finally {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
         registry.revoke(id, ownerId)
       }
     },
