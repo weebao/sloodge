@@ -17,10 +17,11 @@
  */
 
 import { app, safeStorage } from 'electron'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ApiKeyStatus } from '../../shared/agent/types'
 import { deriveAuthStatus, type AuthStatus } from '../../shared/agent/auth'
+import { describeEndpoint } from '../../shared/agent/endpoint'
 import type { AgentCredential } from './auth-env'
 import { InvalidApiKeyError, isPlausibleApiKey, keyStatus, normalizeApiKey } from './key-store'
 
@@ -61,7 +62,15 @@ export async function saveSecret(slot: VaultSlot, raw: string): Promise<ApiKeySt
   if (!isPlausibleApiKey(raw)) throw new InvalidApiKeyError()
   if (!isEncryptionAvailable()) throw new KeychainUnavailableError()
   const normalized = normalizeApiKey(raw)
-  await writeFile(slotPath(slot), safeStorage.encryptString(normalized))
+  // Write-then-rename. The two-slot design is justified on corruption resistance — a bad write to one
+  // credential must not cost the user the other — and a torn in-place write would undercut that for
+  // the slot being written. `rename` within the same directory is atomic on POSIX and on Windows
+  // (MoveFileEx semantics), so a crash mid-save leaves either the old credential or the new one,
+  // never a half-file that decrypts to garbage.
+  const target = slotPath(slot)
+  const scratch = `${target}.tmp`
+  await writeFile(scratch, safeStorage.encryptString(normalized))
+  await rename(scratch, target)
   return keyStatus(normalized)
 }
 
@@ -103,13 +112,19 @@ export const getSubscriptionTokenStatus = (): Promise<ApiKeyStatus> =>
   getSecretStatus('subscription')
 export const clearSubscriptionToken = (): Promise<ApiKeyStatus> => clearSecret('subscription')
 
-/** The masked, renderer-facing view of both slots — backs `agent:authStatus`. */
+/**
+ * The masked, renderer-facing view of both slots — backs `agent:authStatus`.
+ *
+ * Reads `ANTHROPIC_BASE_URL` on every call rather than caching it: the agent subprocess reads the
+ * live environment too, so a cached value could tell the user their credential goes to Anthropic
+ * while the next spawn sends it elsewhere.
+ */
 export async function getAuthStatus(): Promise<AuthStatus> {
   const [apiKey, subscription] = await Promise.all([
     getApiKeyStatus(),
     getSubscriptionTokenStatus(),
   ])
-  return deriveAuthStatus(apiKey, subscription)
+  return deriveAuthStatus(apiKey, subscription, describeEndpoint(process.env['ANTHROPIC_BASE_URL']))
 }
 
 /**

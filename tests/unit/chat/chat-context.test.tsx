@@ -18,6 +18,7 @@ import { useAuthStore } from '../../../src/renderer/src/stores/authStore'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
 import type { ApiKeyStatus } from '../../../src/shared/agent/types'
 import type { AuthStatus } from '../../../src/shared/agent/auth'
+import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import {
   buildElementContextBundle,
@@ -30,6 +31,7 @@ const AUTHED: AuthStatus = {
   mode: 'api-key',
   apiKey: CONFIGURED,
   subscription: { configured: false, last4: null },
+  endpoint: DEFAULT_ENDPOINT,
 }
 const NOW = 1_700_000_000_000
 

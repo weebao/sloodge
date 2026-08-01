@@ -21,6 +21,7 @@ import {
   SETUP_TOKEN_COMMAND,
   type AuthStatus,
 } from '../../../../shared/agent/auth'
+import { describeEndpointWarning } from '../../../../shared/agent/endpoint'
 import { getAgentBridge } from '../chat/agentClient'
 import { useAuthStore } from '../../stores/authStore'
 
@@ -116,6 +117,9 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
   }, [])
 
   const subscriptionActive = status.mode === 'subscription'
+  // Non-null only when ANTHROPIC_BASE_URL redirects requests away from Anthropic. Rendered ABOVE
+  // both inputs, because the point is to be seen *before* a credential is pasted, not after.
+  const endpointWarning = describeEndpointWarning(status.endpoint)
 
   return (
     <div className="flex flex-col gap-6">
@@ -143,6 +147,16 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
       {error !== null ? (
         <p role="alert" className="text-[12px] text-red-600 dark:text-red-400">
           {error}
+        </p>
+      ) : null}
+
+      {endpointWarning !== null ? (
+        <p
+          role="alert"
+          data-testid="auth-endpoint-warning"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200"
+        >
+          {endpointWarning}
         </p>
       ) : null}
 
@@ -253,8 +267,8 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
       </section>
 
       <p className="text-[11px] text-chrome-muted dark:text-ink-muted">
-        Credentials are encrypted with your OS keychain and never leave this machine except as
-        requests to Anthropic.
+        Credentials are encrypted with your OS keychain and leave this machine only as requests to
+        the configured Anthropic endpoint.
       </p>
     </div>
   )

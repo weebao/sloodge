@@ -23,6 +23,7 @@
  */
 
 import type { ApiKeyStatus } from './types'
+import { DEFAULT_ENDPOINT, type EndpointInfo } from './endpoint'
 
 /**
  * Which credential the agent subprocess will actually use next. A single value rather than two
@@ -41,6 +42,12 @@ export type AuthStatus = {
   readonly mode: AuthMode
   readonly apiKey: ApiKeyStatus
   readonly subscription: ApiKeyStatus
+  /**
+   * Where the credential will actually be sent (M2.7 round 2). Carried alongside the slots because
+   * "which credential" and "to whom" are equally load-bearing, and the Auth tab must warn about the
+   * second before the user pastes anything. See `endpoint.ts`.
+   */
+  readonly endpoint: EndpointInfo
 }
 
 export const UNCONFIGURED: ApiKeyStatus = { configured: false, last4: null }
@@ -49,6 +56,7 @@ export const NOT_CONFIGURED: AuthStatus = {
   mode: 'not-configured',
   apiKey: UNCONFIGURED,
   subscription: UNCONFIGURED,
+  endpoint: DEFAULT_ENDPOINT,
 }
 
 /**
@@ -61,13 +69,17 @@ export const NOT_CONFIGURED: AuthStatus = {
  * and a key left over from before must not silently keep charging the user's console account.
  * Clearing the token falls back to the key, which is why the two are cleared independently.
  */
-export function deriveAuthStatus(apiKey: ApiKeyStatus, subscription: ApiKeyStatus): AuthStatus {
+export function deriveAuthStatus(
+  apiKey: ApiKeyStatus,
+  subscription: ApiKeyStatus,
+  endpoint: EndpointInfo = DEFAULT_ENDPOINT,
+): AuthStatus {
   const mode: AuthMode = subscription.configured
     ? 'subscription'
     : apiKey.configured
       ? 'api-key'
       : 'not-configured'
-  return { mode, apiKey, subscription }
+  return { mode, apiKey, subscription, endpoint }
 }
 
 /** True when the agent has a usable credential — the chat composer's enable/disable gate. */

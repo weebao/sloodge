@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   readFile: vi.fn(),
   writeFile: vi.fn(async (_path: string, _data: unknown) => undefined),
   rm: vi.fn(async (_path: string, _options: unknown) => undefined),
+  rename: vi.fn(async (_from: string, _to: string) => undefined),
 }))
 
 vi.mock('electron', () => ({
@@ -30,6 +31,7 @@ vi.mock('node:fs/promises', () => ({
   readFile: mocks.readFile,
   writeFile: mocks.writeFile,
   rm: mocks.rm,
+  rename: mocks.rename,
 }))
 
 const vault = await import('../../../src/main/agent/vault')
@@ -53,9 +55,16 @@ beforeEach(() => {
 })
 
 describe('the subscription token slot', () => {
-  it('writes to its own file, so clearing one credential cannot disturb the other', () => {
-    void vault.saveSubscriptionToken('sk-ant-oat01-abcd')
-    expect(mocks.writeFile.mock.calls[0]?.[0]).toBe(TOKEN_FILE)
+  it('writes to its own file, so clearing one credential cannot disturb the other', async () => {
+    await vault.saveSubscriptionToken('sk-ant-oat01-abcd')
+    expect(mocks.rename).toHaveBeenCalledWith(`${TOKEN_FILE}.tmp`, TOKEN_FILE)
+  })
+
+  it('writes to a scratch file and renames, so a crash cannot leave a torn credential', async () => {
+    await vault.saveSubscriptionToken('sk-ant-oat01-abcd')
+    expect(mocks.writeFile.mock.calls[0]?.[0]).toBe(`${TOKEN_FILE}.tmp`)
+    // The target is never opened for writing directly.
+    expect(mocks.writeFile).not.toHaveBeenCalledWith(TOKEN_FILE, expect.anything())
   })
 
   it('encrypts before writing', async () => {

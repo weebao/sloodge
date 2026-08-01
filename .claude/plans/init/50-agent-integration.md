@@ -251,11 +251,82 @@ subprocess — which it must, or the child loses `PATH` and `HOME` (§16) — so
 or one left in a user's shell profile, would silently outrank a token the user deliberately pasted,
 billing their console account while the UI reads "using your Claude subscription".
 
-So `buildAuthEnv` (`src/main/agent/auth-env.ts`) **deletes** every credential variable and then sets
-exactly one. Deleting, not merely declining to set, is the whole point; it is pinned by a test that
-puts an ambient `ANTHROPIC_API_KEY` in the base environment and asserts it is absent from the result.
-`ANTHROPIC_BASE_URL` is deliberately *not* stripped — a proxy endpoint is configuration, not a
-credential.
+So `buildAuthEnv` (`src/main/agent/auth-env.ts`) **deletes** two distinct classes of variable and
+then sets exactly one credential:
+
+1. **Credential variables** — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, the two
+   `*_FILE_DESCRIPTOR` variants, and `ANTHROPIC_CUSTOM_HEADERS` (which is parsed into outbound
+   request headers and is named by the CLI's own retry message as a carrier of the gateway token, so
+   it can inject an `Authorization` header behind our back).
+2. **Provider-selection variables** — see the next subsection.
+
+Deleting, not merely declining to set, is the whole point; it is pinned by a test that puts an
+ambient `ANTHROPIC_API_KEY` in the base environment and asserts it is absent from the result.
+
+### Sloodge pins the firstParty provider
+
+Credential precedence is only the *second* decision the CLI makes. Provider selection runs first, and
+it is env-only:
+
+```js
+function Hn(){ if(Cy()) return "gateway";
+  return Z.CLAUDE_CODE_USE_BEDROCK ? "bedrock"
+       : Z.CLAUDE_CODE_USE_FOUNDRY ? "foundry"
+       : Z.CLAUDE_CODE_USE_ANTHROPIC_AWS ? "anthropicAws"
+       : Z.CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD ? "anthropicGoogleCloud"
+       : Z.CLAUDE_CODE_USE_MANTLE ? "mantle"
+       : Z.CLAUDE_CODE_USE_VERTEX ? "vertex" : "firstParty" }
+function Dc(){ return Hn() === "firstParty" }   // gates the OAuth path
+```
+
+Nothing in it consults `CLAUDE_CODE_OAUTH_TOKEN`, and `Dc()` forces the OAuth path **off** under any
+third-party provider — the Bedrock branch nulls `Authorization` outright and authenticates with AWS
+credentials instead. So a user with `CLAUDE_CODE_USE_BEDROCK=1` in their shell profile (a standard
+enterprise Claude Code setup) could paste a subscription token into Settings, see "Using your Claude
+subscription", and have that token never used: their AWS account billed, or an opaque failure.
+
+**`buildAuthEnv` therefore deletes all six switches**, pinning `firstParty`. This is a product
+decision, not just a code detail: a user's ambient third-party provider config is completely
+invisible from inside Sloodge — we render no UI that reveals it — so if we did not pin, the app could
+silently disagree with its own Settings screen and the user would have no way to see why.
+
+- The six names are the CLI's own exported `THIRD_PARTY_PROVIDER_ENV_VARS` map, not a guess.
+- `gateway` needs no entry: its predicate is `Cy(){return Ot.gatewayAuth}` — in-memory login state,
+  not an environment variable — so ambient config cannot select it.
+- The per-provider `CLAUDE_CODE_SKIP_*_AUTH` flags and third-party base URLs
+  (`ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_VERTEX_BASE_URL`, …) are cleared on the same pass. With
+  the provider pinned they are inert; leaving inert credential-adjacent state around is what invited
+  this bug in the first place.
+- **Deletion, not `"0"`.** The switches are zod-coerced booleans accepting only `1/true/yes/on`, so
+  `"0"` would work today — but deletion does not depend on that parser staying as it is, and it
+  matches the CLI's own sibling-disabling helper, which uses `void 0`.
+
+### `ANTHROPIC_BASE_URL` is surfaced, not stripped
+
+`ANTHROPIC_BASE_URL` is the one redirecting variable deliberately left in place. It decides *where*
+the credential is sent — the CLI resolves the firstParty endpoint as
+`process.env.ANTHROPIC_BASE_URL || BASE_API_URL` and attaches the bearer token with no host
+allow-list — so a stale value from a LiteLLM proxy or corporate gateway would receive a long-lived
+subscription token.
+
+Stripping it is the obvious reflex and it is wrong: corporate-gateway routing is a deployment shape
+this section plans for, and deleting the variable would turn a working enterprise setup into an
+opaque connection failure with no way to re-enable it from our UI — trading a visible risk for an
+invisible breakage.
+
+The real defect was that the passthrough was *invisible* while the Auth tab promised, at the moment
+of credential entry, that credentials "never leave this machine except as requests to Anthropic".
+That sentence was false under a custom base URL. So:
+
+- main reads the variable on every status read (never cached — the subprocess reads the live
+  environment too) and reports it as a masked `EndpointInfo` (`src/shared/agent/endpoint.ts`);
+- the value is reduced to an **origin**, because a base URL may legitimately carry userinfo
+  (`https://user:pass@proxy/`) and echoing that into the renderer would leak a credential through the
+  very channel this milestone exists to keep clean;
+- the Auth tab renders a warning naming the host **above both credential inputs**, so it is read
+  before anything is pasted, not after;
+- the footnote now says credentials "leave this machine only as requests to the configured Anthropic
+  endpoint" — true in both configurations.
 
 ### Storage
 

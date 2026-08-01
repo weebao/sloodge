@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentService } from '../../../src/main/agent/service'
 import type { AuthStatus } from '../../../src/shared/agent/auth'
+import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 import type { ApiKeyStatus } from '../../../src/shared/agent/types'
 
 const mocks = vi.hoisted(() => ({ ipcHandle: vi.fn(), ipcOn: vi.fn() }))
@@ -39,8 +40,18 @@ function handlerFor(channel: string): Handler {
 
 const MASKED: ApiKeyStatus = { configured: true, last4: 'abcd' }
 const UNSET: ApiKeyStatus = { configured: false, last4: null }
-const SUBSCRIBED: AuthStatus = { mode: 'subscription', apiKey: UNSET, subscription: MASKED }
-const NOTHING: AuthStatus = { mode: 'not-configured', apiKey: UNSET, subscription: UNSET }
+const SUBSCRIBED: AuthStatus = {
+  mode: 'subscription',
+  apiKey: UNSET,
+  subscription: MASKED,
+  endpoint: DEFAULT_ENDPOINT,
+}
+const NOTHING: AuthStatus = {
+  mode: 'not-configured',
+  apiKey: UNSET,
+  subscription: UNSET,
+  endpoint: DEFAULT_ENDPOINT,
+}
 
 /**
  * A vault stub that records what it was handed, so we can prove the secret went *in*. The return type

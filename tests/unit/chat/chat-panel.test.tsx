@@ -14,6 +14,7 @@ import { useAuthStore } from '../../../src/renderer/src/stores/authStore'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
 import type { AgentEvent, ApiKeyStatus } from '../../../src/shared/agent/types'
 import type { AuthStatus } from '../../../src/shared/agent/auth'
+import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 
 type Emit = (event: AgentEvent) => void
 
@@ -21,9 +22,19 @@ const KEY_SET: ApiKeyStatus = { configured: true, last4: 'aXY9' }
 const KEY_UNSET: ApiKeyStatus = { configured: false, last4: null }
 
 /** Configured through the API-key slot — the composer is open. */
-const CONFIGURED: AuthStatus = { mode: 'api-key', apiKey: KEY_SET, subscription: KEY_UNSET }
+const CONFIGURED: AuthStatus = {
+  mode: 'api-key',
+  apiKey: KEY_SET,
+  subscription: KEY_UNSET,
+  endpoint: DEFAULT_ENDPOINT,
+}
 /** Neither vault slot filled — the composer is gated behind the Settings link. */
-const NO_AUTH: AuthStatus = { mode: 'not-configured', apiKey: KEY_UNSET, subscription: KEY_UNSET }
+const NO_AUTH: AuthStatus = {
+  mode: 'not-configured',
+  apiKey: KEY_UNSET,
+  subscription: KEY_UNSET,
+  endpoint: DEFAULT_ENDPOINT,
+}
 
 function makeFakeBridge(status: AuthStatus): {
   bridge: AgentBridge

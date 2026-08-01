@@ -16,6 +16,7 @@ import { createStarterSlideHtml } from '../../../src/shared/document/starter-sli
 import type { DeckUpdate } from '../../../src/shared/document/deck-update'
 import type { AgentBridge } from '../../../src/preload/agentBridge'
 import type { AuthStatus } from '../../../src/shared/agent/auth'
+import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 
 const NOW = 1_781_000_000_000
 
@@ -24,6 +25,7 @@ const AUTHED: AuthStatus = {
   mode: 'api-key',
   apiKey: { configured: true, last4: 'aXY9' },
   subscription: { configured: false, last4: null },
+  endpoint: DEFAULT_ENDPOINT,
 }
 
 let deckListener: ((u: DeckUpdate) => void) | null = null

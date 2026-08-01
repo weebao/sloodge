@@ -25,6 +25,7 @@ import {
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
 import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
+import { DEFAULT_ENDPOINT, type EndpointInfo } from '../shared/agent/endpoint'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
 import {
   isAgentEditRequest,
@@ -76,7 +77,11 @@ function readStatus(response: unknown): ApiKeyStatus {
   if (rec === null || typeof rec !== 'object' || typeof rec.configured !== 'boolean') {
     throw new TypeError('agent key channel returned a malformed status')
   }
-  const last4 = typeof rec.last4 === 'string' ? rec.last4 : null
+  // Truncated HERE, not merely trusted from main. `authStore`'s docstring promises the renderer
+  // never holds plaintext; that guarantee should be structural at the masking boundary rather than
+  // contingent on main's `keyStatus()` happening to slice — the same argument `readAuthStatus` makes
+  // for `mode`.
+  const last4 = typeof rec.last4 === 'string' ? rec.last4.slice(-4) : null
   return { configured: rec.configured, last4 }
 }
 
@@ -88,14 +93,27 @@ function readStatus(response: unknown): ApiKeyStatus {
  */
 function readAuthStatus(response: unknown): AuthStatus {
   const status = (response as { status?: unknown } | null)?.status
-  const rec = status as { apiKey?: unknown; subscription?: unknown } | null
+  const rec = status as { apiKey?: unknown; subscription?: unknown; endpoint?: unknown } | null
   if (rec === null || typeof rec !== 'object') {
     throw new TypeError('agent auth channel returned a malformed status')
   }
   return deriveAuthStatus(
     readStatus({ status: rec.apiKey }),
     readStatus({ status: rec.subscription }),
+    readEndpoint(rec.endpoint),
   )
+}
+
+/**
+ * Narrow the endpoint report. Falls back to "default" only when the field is absent or malformed —
+ * never inventing a host, and never letting a non-string `host` through to be rendered.
+ */
+function readEndpoint(value: unknown): EndpointInfo {
+  const rec = value as { custom?: unknown; host?: unknown } | null
+  if (rec === null || typeof rec !== 'object' || typeof rec.custom !== 'boolean') {
+    return DEFAULT_ENDPOINT
+  }
+  return { custom: rec.custom, host: typeof rec.host === 'string' ? rec.host : null }
 }
 
 export function createAgentBridge(
