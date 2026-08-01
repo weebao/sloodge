@@ -33,11 +33,14 @@ import {
   resolveElement,
   type PropertyField,
 } from '../../../../shared/design/property-model'
+import { themeColorSwatches, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import { useChatContextStore } from '../chat/chatContextStore'
 import type { SlideView } from '../../stores/deckStore'
 import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
+import { ColorControls, type ColorTarget } from './ColorControls'
+import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
 import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
@@ -46,6 +49,7 @@ const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   fontWeight: 'Weight',
   color: 'Color',
   fill: 'Fill',
+  stroke: 'Stroke',
   x: 'X',
   y: 'Y',
   width: 'W',
@@ -69,6 +73,12 @@ export interface PropertyPanelProps {
    * enrichment, not a requirement (§6.2). Absent in tests and in a no-frame host.
    */
   readonly inspect?: ElementInspectApi['inspect']
+  /**
+   * The eyedropper seam (M3.8). Omitted in production, where the panel feature-detects the Chromium
+   * `EyeDropper` API and builds the real picker; passed explicitly by tests (a fake pick) and the
+   * recorded demo, or `null` to force the eyedropper button hidden.
+   */
+  readonly picker?: ColorPicker | null
 }
 
 /**
@@ -76,9 +86,23 @@ export interface PropertyPanelProps {
  * from the editable fields so the fields remount (via `key`) whenever the source or selection
  * changes, resetting every input to the freshly-patched source value after a commit.
  */
-export function PropertyPanel({ slide, inspect }: PropertyPanelProps): JSX.Element | null {
+export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): JSX.Element | null {
   const selection = useDesignStore((state) => state.selection)
   const attachContext = useChatContextStore((state) => state.attach)
+
+  // The theme-token quick row surfaces the deck's palette (§4.1 "the color picker offers theme swatches
+  // first"). `theme` lives on the document; it changes rarely and only via a full doc replace, so a
+  // selector read is enough. When there is no theme, the default palette keeps the row populated.
+  const theme = useDeckStore((state) => state.history.doc.theme)
+  const swatches = useMemo<readonly ThemeSwatch[]>(() => themeColorSwatches(theme), [theme])
+
+  // The eyedropper: an injected picker when the caller supplied one (tests, the demo), otherwise the
+  // real `EyeDropper`-backed picker when the API is present, else `null` (button hidden). `undefined`
+  // means "decide for me"; an explicit `null` means "no eyedropper".
+  const resolvedPicker = useMemo<ColorPicker | null>(
+    () => (picker !== undefined ? picker : hasEyeDropper() ? createEyeDropperPicker() : null),
+    [picker],
+  )
 
   // The parent-owned map, rebuilt from the *current* slide bytes. Memoized on (id, source) so a
   // re-render that changed neither does not re-parse.
@@ -144,6 +168,8 @@ export function PropertyPanel({ slide, inspect }: PropertyPanelProps): JSX.Eleme
             slide={slide}
             slId={selection.slId}
             values={values}
+            swatches={swatches}
+            picker={resolvedPicker}
           />
           <div className="mt-2">
             <button
@@ -165,11 +191,19 @@ interface PropertyFieldsProps {
   readonly slide: SlideView
   readonly slId: string
   readonly values: ReturnType<typeof readPropertyValues>
+  readonly swatches: readonly ThemeSwatch[]
+  readonly picker: ColorPicker | null
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
 
-function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Element {
+function PropertyFields({
+  slide,
+  slId,
+  values,
+  swatches,
+  picker,
+}: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
   const textDisabled = values.text === null
@@ -182,6 +216,7 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
     fontWeight: values.fontWeight ?? '',
     color: values.color ?? '',
     fill: values.fill ?? '',
+    stroke: values.stroke ?? '',
     x: values.x ?? '',
     y: values.y ?? '',
     width: values.width ?? '',
@@ -241,6 +276,18 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
   const flipV = useCallback((): void => actions.flip('y'), [actions])
   const duplicate = useCallback((): void => actions.duplicate(), [actions])
 
+  // The three colour targets for M3.8's swatch/eyedropper/theme controls, each carrying its current
+  // source value so a pick can preserve the source's alpha. Memoised so `ColorControls` gets a stable
+  // array prop (react-perf) that changes only when a colour value does.
+  const colorTargets = useMemo<readonly ColorTarget[]>(
+    () => [
+      { field: 'color', label: 'Text', current: values.color },
+      { field: 'fill', label: 'Fill', current: values.fill },
+      { field: 'stroke', label: 'Stroke', current: values.stroke },
+    ],
+    [values.color, values.fill, values.stroke],
+  )
+
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
     const disabled = name === 'text' && textDisabled
     return (
@@ -275,11 +322,13 @@ function PropertyFields({ slide, slId, values }: PropertyFieldsProps): JSX.Eleme
       <div className="flex flex-wrap items-center gap-2">
         {field('color', false)}
         {field('fill', false)}
+        {field('stroke', false)}
         {field('x', false)}
         {field('y', false)}
         {field('width', false)}
         {field('height', false)}
       </div>
+      <ColorControls targets={colorTargets} swatches={swatches} picker={picker} onApply={commit} />
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-chrome-muted dark:text-ink-muted">Transform</span>
         <button

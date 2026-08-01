@@ -191,12 +191,31 @@ export function setStyleProp(
   prop: string,
   value: string,
 ): SourceOp[] {
-  if (!isSafeStyleValue(value)) return []
+  return setStyleProps(source, element, [[prop, value]])
+}
+
+/**
+ * Upsert several inline-`style` declarations in **one** span rewrite. A field whose edit touches more
+ * than one property — HTML "stroke", which is `border-color` plus a `border-style` so the border
+ * actually renders — cannot call `setStyleProp` twice: each call rewrites the whole `style` value span,
+ * so two would produce overlapping ops and `applyOps` would (correctly) throw. This folds every upsert
+ * into a single declaration list and emits one op, preserving order and every untouched declaration.
+ *
+ * The whole batch is rejected (`[]`) if *any* value could terminate a declaration (`;`, `{`, `}`),
+ * same guard as `setStyleProp` — a single unsafe value must not sneak in beside safe ones.
+ */
+export function setStyleProps(
+  source: string,
+  element: ElementSpan,
+  entries: readonly (readonly [prop: string, value: string])[],
+): SourceOp[] {
+  if (entries.some(([, value]) => !isSafeStyleValue(value))) return []
   const styleAttr = element.attrs['style']
   const styleValue = styleAttr?.value ?? null
   const current = styleValue === null ? '' : source.slice(styleValue.start, styleValue.end)
-  const next = serializeDeclarations(upsertDeclaration(parseDeclarations(current), prop, value))
-  return setAttr(element, 'style', 'style', next)
+  let declarations = parseDeclarations(current)
+  for (const [prop, value] of entries) declarations = upsertDeclaration(declarations, prop, value)
+  return setAttr(element, 'style', 'style', serializeDeclarations(declarations))
 }
 
 /**

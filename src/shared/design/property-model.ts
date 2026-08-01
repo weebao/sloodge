@@ -38,15 +38,19 @@ import {
   readStyleProp,
   setAttr,
   setStyleProp,
+  setStyleProps,
   setTextContent,
   type SourceOp,
 } from './patch'
 import { parseTransform } from './style'
 import type { ElementSpan, SlideMap } from './types'
 
-/** The fields M3.3's panel edits — the wireframe's Text / Size / Weight / Color / Fill / X/Y/W/H. */
+/**
+ * The fields the panel edits — the wireframe's Text / Size / Weight / Color / Fill / X/Y/W/H, plus
+ * M3.8's `stroke` (the third colour target, §5.1 APPEARANCE: Fill / Stroke / Text colour).
+ */
 export type PropertyField =
-  'text' | 'fontSize' | 'fontWeight' | 'color' | 'fill' | 'x' | 'y' | 'width' | 'height'
+  'text' | 'fontSize' | 'fontWeight' | 'color' | 'fill' | 'stroke' | 'x' | 'y' | 'width' | 'height'
 
 /** Current source values for every field, `null` where the source declares nothing. */
 export interface PropertyValues {
@@ -56,6 +60,7 @@ export interface PropertyValues {
   readonly fontWeight: string | null
   readonly color: string | null
   readonly fill: string | null
+  readonly stroke: string | null
   readonly x: string | null
   readonly y: string | null
   readonly width: string | null
@@ -95,6 +100,12 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
     ? (readAttr(source, element, 'fill') ?? readStyleProp(source, element, 'fill'))
     : readStyleProp(source, element, 'background-color')
 
+  // Stroke (§5.2): the SVG paint (`stroke` attribute preferred, else the style) or, for HTML, the
+  // box's `border-color` — the closest "outline" channel a block element has.
+  const stroke = svg
+    ? (readAttr(source, element, 'stroke') ?? readStyleProp(source, element, 'stroke'))
+    : readStyleProp(source, element, 'border-color')
+
   let x: string | null
   let y: string | null
   if (svg) {
@@ -129,6 +140,7 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
     fontWeight: readStyleProp(source, element, 'font-weight'),
     color: readStyleProp(source, element, 'color'),
     fill,
+    stroke,
     x,
     y,
     width,
@@ -219,6 +231,23 @@ export function buildFieldOps(
           : setStyleProp(source, element, 'fill', value)
       }
       return setStyleProp(source, element, 'background-color', value)
+
+    case 'stroke': {
+      if (value.length === 0) return []
+      if (svg) {
+        // Prefer the channel the source already uses: a `stroke` attribute if present, else style.
+        return element.attrs['stroke'] !== undefined
+          ? setAttr(element, 'stroke', 'stroke', value)
+          : setStyleProp(source, element, 'stroke', value)
+      }
+      // HTML: `border-color`, plus a `border-style` so the border actually renders — but only when the
+      // source has not already set one, so an author's `dashed`/`dotted` border keeps its style.
+      const entries: [string, string][] = [['border-color', value]]
+      if (readStyleProp(source, element, 'border-style') === null) {
+        entries.push(['border-style', 'solid'])
+      }
+      return setStyleProps(source, element, entries)
+    }
 
     case 'width':
     case 'height': {

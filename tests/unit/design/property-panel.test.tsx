@@ -24,6 +24,10 @@ import {
 const NOW = 1_700_000_000_000
 const SOURCE = '<h1 style="color: #111; font-size: 44px">Hello</h1>'
 
+/** Injected eyedropper seams (M3.8) — module-scoped so they are stable object props (react-perf). */
+const SAMPLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resolve('#00ff00') }
+const CANCELLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resolve(null) }
+
 let slideId: string
 
 /** The SlideView the canvas would pass, reflecting the store's current bytes for the slide. */
@@ -222,5 +226,79 @@ describe('PropertyPanel — transform actions (M3.6)', () => {
     expect(bundle.element.tag).toBe('h1')
     expect(bundle.element.rect).toEqual({ x: 0, y: 0, width: 100, height: 40 })
     useChatContextStore.getState().clear()
+  })
+})
+
+describe('PropertyPanel — colour controls (M3.8)', () => {
+  it('a native swatch pick commits a colour hex as one undoable command, byte-exact undo', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: #ff0000')
+    // Mutation guard: the other declaration survives the colour write.
+    expect(patched).toContain('font-size: 44px')
+    expect(useDeckStore.getState().canUndo).toBe(true)
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a swatch pick preserves the source alpha (does not silently drop it)', () => {
+    const alphaSource = '<h1 style="color: rgba(0, 0, 0, 0.5)">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-alpha')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #ff000080')
+  })
+
+  it('a theme-token swatch writes a var() reference, re-themeable, one undoable command', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    // The default palette (no deck theme) offers accent; it applies to the Text target.
+    fireEvent.click(screen.getByTestId('theme-color-accent'))
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: var(--sl-accent, #4c8dff)')
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('the eyedropper samples via the injected picker and applies to the target', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={SAMPLING_PICKER} />)
+    fireEvent.click(screen.getByTestId('eyedrop-fill'))
+    await waitFor(() =>
+      expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain(
+        'background-color: #00ff00',
+      ),
+    )
+  })
+
+  it('a cancelled eyedropper pick (null) writes nothing', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={CANCELLING_PICKER} />)
+    fireEvent.click(screen.getByTestId('eyedrop-color'))
+    // Give the microtask a chance; the source must remain the seeded one.
+    await Promise.resolve()
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('the eyedropper button is hidden when no picker is available (feature-detect)', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    expect(screen.queryByTestId('eyedrop-color')).toBeNull()
+    // The swatches and theme row are still present without an eyedropper.
+    expect(screen.getByTestId('swatch-color')).toBeTruthy()
+    expect(screen.getByTestId('theme-color-accent')).toBeTruthy()
+  })
+
+  it('the stroke swatch writes border-color plus border-style for an HTML element', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    fireEvent.change(screen.getByTestId('swatch-stroke'), { target: { value: '#123456' } })
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('border-color: #123456')
+    expect(patched).toContain('border-style: solid')
   })
 })
