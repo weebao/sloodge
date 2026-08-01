@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -166,7 +168,10 @@ function parseBlock(
 
     if (BLOCK_SCALAR_RE.test(value)) {
       const [body, afterBody] = takeDeeper(i, line.indent)
-      scalars.set(key, body.map((entry) => entry.text).join('\n'))
+      // Relative indentation is preserved, because the `run:` bodies are not just inspected —
+      // `describe('the tag/version guard, executed')` runs one of them under bash.
+      const base = body.length === 0 ? 0 : Math.min(...body.map((entry) => entry.indent))
+      scalars.set(key, body.map((entry) => ' '.repeat(entry.indent - base) + entry.text).join('\n'))
       i = afterBody
       continue
     }
@@ -276,14 +281,36 @@ describe('release workflow — CI budget guard', () => {
     }
   })
 
-  it('keeps packaging out of the unit-test workflow', () => {
-    // The budget rule from the other direction: test.yml runs on every PR, so it must never grow a
-    // packaging or build step.
-    const testWorkflow = readFileSync(
-      path.join(REPO_ROOT, '.github', 'workflows', 'test.yml'),
-      'utf8',
-    )
-    expect(testWorkflow).not.toMatch(/electron-builder|pnpm (run )?pack/)
+  it('lets no workflow package outside a tag trigger', () => {
+    // The budget rule from the other direction, and deliberately NOT written as "test.yml must not
+    // package". Naming the two files that exist today would leave a third one — added next month,
+    // by someone who never read §6.5 — completely unguarded. So: enumerate every workflow, and
+    // whichever ones package must be tag-triggered only. That holds for files nobody has written yet.
+    const dir = path.join(REPO_ROOT, '.github', 'workflows')
+    const files = readdirSync(dir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+    expect(
+      files.length,
+      'no workflow files found — the guard would pass vacuously',
+    ).toBeGreaterThan(0)
+
+    const packagers: string[] = []
+    for (const file of files) {
+      const source = readFileSync(path.join(dir, file), 'utf8')
+      // Comments stripped so prose *about* packaging does not count as packaging.
+      const code = source.replace(/^\s*#.*$/gm, '')
+      if (!/electron-builder|pnpm (run |exec )?pack|pack:win/.test(code)) continue
+      packagers.push(file)
+      const triggers = keysOf(
+        parseBlock(readLines(source), 0, 0)[0].blocks.get('on') ?? EMPTY_BLOCK,
+      )
+      expect(
+        triggers,
+        `${file} runs a packaging command, so it must be triggered by tag pushes only`,
+      ).toEqual(['push'])
+    }
+
+    // And the one that does package is the one we think it is.
+    expect(packagers).toEqual(['release.yml'])
   })
 })
 
@@ -376,6 +403,105 @@ describe('release workflow — build correctness', () => {
     const packAt = names.indexOf('Build and package')
     expect(guardAt).toBeGreaterThanOrEqual(0)
     expect(packAt).toBeGreaterThan(guardAt)
+  })
+})
+
+describe('the tag/version guard, executed', () => {
+  /**
+   * The previous revision tested this guard the weak way: assert a step with the right `name:`
+   * exists, sits before the build, and contains three substrings. Review showed that leaves four
+   * actionlint-valid neuterings GREEN — `continue-on-error: true`, inverting `!=` to `==`, an env
+   * escape hatch, and deleting the `-<suffix>` arm. The one about `continue-on-error` was the
+   * damning one, because the substring test's own comment claimed the step "must actually fail the
+   * job, not just warn" while checking nothing of the sort.
+   *
+   * So this block extracts the step's real `run:` body and EXECUTES it under bash against a matrix
+   * of (package version, tag) pairs, asserting the exit status. A guard that is only ever read is
+   * not tested; one that is run is.
+   */
+  const guardStep = (): YamlBlock => {
+    const step = allSteps().find((entry) => entry.scalars.get('name') === TAG_VERSION_STEP)
+    if (step === undefined) throw new Error(`no "${TAG_VERSION_STEP}" step in release.yml`)
+    return step
+  }
+
+  /** Runs the guard's shell in a scratch dir whose package.json carries `version`. */
+  const runGuard = (version: string, tag: string | undefined): number => {
+    const script = guardStep().scalars.get('run') ?? ''
+    const dir = mkdtempSync(path.join(tmpdir(), 'sloodge-tag-guard-'))
+    try {
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'sloodge', version }))
+      const env = { ...process.env }
+      if (tag === undefined) delete env['GITHUB_REF_NAME']
+      else env['GITHUB_REF_NAME'] = tag
+      execFileSync('bash', ['-c', script], { cwd: dir, env, stdio: 'pipe' })
+      return 0
+    } catch (error) {
+      const status = (error as { status?: unknown }).status
+      if (typeof status === 'number') return status
+      // NOT a rejection by the guard — bash never ran (ENOENT, or EAGAIN under fork pressure).
+      // Reporting that as a non-zero exit would make every "rejects ..." case pass for the wrong
+      // reason, and would turn a flaky machine into a green suite. Fail loudly and say why.
+      throw new Error(
+        'could not execute the tag/version guard under bash — this is a harness failure, ' +
+          'not a guard result',
+        { cause: error },
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it.each([
+    { version: '0.0.1', tag: 'v0.0.1', why: 'exact match' },
+    { version: '0.0.1', tag: 'v0.0.1-preview', why: 'documented pre-release suffix' },
+    { version: '0.0.0', tag: 'v0.0.0-preview', why: 'the suffix form already on origin' },
+    { version: '1.2.3', tag: 'v1.2.3-rc.1', why: 'a dotted suffix' },
+  ])('accepts $tag against $version ($why)', ({ version, tag }) => {
+    expect(runGuard(version, tag)).toBe(0)
+  })
+
+  it.each([
+    { version: '0.0.1', tag: 'v0.0.2', why: 'plain mismatch' },
+    { version: '0.0.1', tag: 'v0.0.10', why: 'prefix extension, not a suffix' },
+    { version: '0.0.1', tag: '0.0.1', why: 'missing the v prefix' },
+    { version: '0.0.1', tag: 'v0.0.1x', why: 'trailing junk without the - separator' },
+    { version: '0.0.1', tag: 'release-0.0.1', why: 'unrelated tag shape' },
+    { version: '0.0.0', tag: 'v0.0.1-preview', why: 'the exact collision seen on origin' },
+  ])('rejects $tag against $version ($why)', ({ version, tag }) => {
+    expect(runGuard(version, tag)).not.toBe(0)
+  })
+
+  it('fails rather than passing when the tag variable is absent entirely', () => {
+    // `set -u` must turn a missing GITHUB_REF_NAME into a failure, not an empty-string pass.
+    expect(runGuard('0.0.1', undefined)).not.toBe(0)
+  })
+
+  it('is not neutered by continue-on-error', () => {
+    // A step that fails but does not fail the job is decoration. This is the key the old
+    // substring-only test never looked at, while its comment claimed otherwise.
+    expect(
+      guardStep().scalars.get('continue-on-error'),
+      'the tag/version guard must not set continue-on-error — it has to fail the job',
+    ).toBeUndefined()
+  })
+
+  it('is not bypassable by any step-level conditional', () => {
+    // `if:` on the guard step would let a releaser skip it from the workflow rather than fix the
+    // version, which is the same hole in a different spelling.
+    expect(guardStep().scalars.get('if')).toBeUndefined()
+  })
+
+  it('reads the tag from the runner, with no step-level env to override it', () => {
+    // Executing the `run:` body proves the logic, but not that the step is fed real inputs: a
+    // step-level `env: { GITHUB_REF_NAME: ... }` would pin the comparison to a constant and the
+    // matrix above would never notice, because it supplies the variable itself. Nothing legitimate
+    // needs env here — the runner already provides GITHUB_REF_NAME.
+    expect(
+      guardStep().blocks.get('env'),
+      'the tag/version guard must take GITHUB_REF_NAME from the runner, not from a step env block',
+    ).toBeUndefined()
+    expect(guardStep().scalars.get('run')).toContain('GITHUB_REF_NAME')
   })
 })
 

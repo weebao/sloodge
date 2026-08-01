@@ -322,10 +322,18 @@ then tag.
 
 **`.gitattributes` is load-bearing here.** `windows-latest` installs Git for Windows with no
 `/o:CRLFOption`, so `core.autocrlf=true` applies and `actions/checkout` does not override it. Without
-the repo-root `* text=auto eol=lf`, 375 files check out CRLF and `skills-contract.test.ts` reds
+the repo-root `* text=auto eol=lf`, 340 files check out CRLF and `skills-contract.test.ts` reds
 (`skill.startsWith('---\n')` is false for `---\r\n`), aborting the job before packaging. Measured on
 a `core.autocrlf=true` clone: 8 failed / 2664 passed without it, fully green with it. Every other
 suite — including the byte-exact export and round-trip tests — was unaffected.
+
+If you re-measure this and get **375**, you counted a different thing. 340 is what git converts
+(`git ls-files --eol | grep -c w/crlf`): 376 tracked files, minus 35 binaries, minus 1 empty
+placeholder. Grepping the working tree for a CR byte instead returns 375, because the 35 binaries
+contain CR bytes natively and always did — before the fix and after it. Reproduce it with a
+`--no-checkout` clone followed by `git checkout <ref>`; a plain clone-then-checkout only rewrites
+files that differ between the two commits, so most keep whatever line endings the first checkout
+gave them and the count comes out far too low.
 
 **Tag-triggered and nothing else.** No `pull_request`, no `push: branches`, no `workflow_dispatch`.
 The repo's CI budget rule is unit-tests-only (70-testing-ci.md §6.1) and this does not weaken it:

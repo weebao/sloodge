@@ -206,7 +206,7 @@ Checklist it automates:
 8. Export cancel mid-job leaves no output file and no temp dir.
 9. Clean shutdown: no orphaned hidden `BrowserWindow`, no lingering temp dir, exit code 0.
 
-Requires a built app (`pnpm build`), which is why it cannot be CI. Run before release, and on any PR touching main-process code, IPC, or export. Takes ~2 minutes.
+Requires a built app (`pnpm build`) *and* a real Electron process, which is why it cannot run on the development path. Run before release, and on any PR touching main-process code, IPC, or export. Takes ~2 minutes. (Note the rationale is narrower than it used to read: since M9.0 the release workflow *does* run `pnpm build` in CI — §6.5 — so "needs a build" is no longer by itself a reason something cannot be automated. What still rules this layer out is launching Electron, on every PR, for two minutes a run.)
 
 ---
 
@@ -266,7 +266,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
         env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1    # ~120 MB and ~40 s we never use in CI
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1    # ~120 MB and ~40 s this job never uses
+                                              # (the §6.5 release job DOES need it — do not
+                                              #  copy this line into that workflow)
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1 # ~150 MB likewise
 
       - run: pnpm lint
@@ -339,7 +341,7 @@ Deliberate differences from the unit-test workflow, each the *opposite* of the c
 
 **Drift note (unresolved, pre-existing).** §6.2's fenced example does not match the shipped file: it is headed `ci.yml` (the real file is `test.yml`), it specifies `--ignore-scripts` and `node-version-file: .nvmrc` (the real file uses neither — it runs a plain `pnpm install --frozen-lockfile` and pins `node-version: 24`), and it calls `pnpm typecheck:core` and `pnpm test:unit`, neither of which exists in `package.json`. M9.0 did not introduce this and does not fix it; it is flagged here so the table above is not read as describing §6.2. Reconciling §6.2 with `test.yml` is its own small chore.
 
-**The CRLF dependency is not incidental.** GitHub's `windows-latest` image installs Git for Windows with no `/o:CRLFOption`, so the installer default `core.autocrlf=true` applies, and `actions/checkout` never overrides it. Measured on a `core.autocrlf=true` clone of this branch: **375 files check out CRLF and 8 tests fail** — `tests/unit/agent/skills-contract.test.ts` asserts `skill.startsWith('---\n')` against `resources/skills/**/SKILL.md`, which is false for `---\r\n`. Because `pnpm test` runs *before* packaging with no `continue-on-error`, that alone would abort every release. The repo-root `.gitattributes` (`* text=auto eol=lf`) is therefore load-bearing for M9.0, not housekeeping. Notably, the other 2664 tests — including the byte-exact export and round-trip suites — pass even with the whole source tree in CRLF, so `skills-contract.test.ts` was the only sensitive suite.
+**The CRLF dependency is not incidental.** GitHub's `windows-latest` image installs Git for Windows with no `/o:CRLFOption`, so the installer default `core.autocrlf=true` applies, and `actions/checkout` never overrides it. Measured on a `core.autocrlf=true` clone of this branch: **340 files check out CRLF and 8 tests fail** — `tests/unit/agent/skills-contract.test.ts` asserts `skill.startsWith('---\n')` against `resources/skills/**/SKILL.md`, which is false for `---\r\n`. Because `pnpm test` runs *before* packaging with no `continue-on-error`, that alone would abort every release. The repo-root `.gitattributes` (`* text=auto eol=lf`) is therefore load-bearing for M9.0, not housekeeping. Notably, the other 2664 tests — including the byte-exact export and round-trip suites — pass even with the whole source tree in CRLF, so `skills-contract.test.ts` was the only sensitive suite.
 
 The workflow calls `pnpm pack:win:release`, **not** its own `electron-builder` command line. Targets (nsis + zip) and artifact names come from `package.json`'s `build.win` block, which `tests/unit/packaging/build-config.test.ts` already guards; a command line in the workflow would be a second source of truth that drifts silently — the same failure mode as the duplicate Windows-host config it replaces. The script passes `--publish never` so electron-builder does not detect the CI tag build and race the workflow's own upload step.
 
@@ -347,7 +349,9 @@ Artifacts are attached to the tag's GitHub release via the preinstalled `gh` CLI
 
 **Tag ↔ version is checked before anything expensive runs.** `build.nsis.artifactName` interpolates `package.json`'s `version`, so nothing except this step stops a `v0.0.2` tag from shipping a file named — and self-reporting — some other version. Origin already carries `v0.0.0-preview` and `v0.0.1-preview`, which would otherwise produce identically named artifacts that `--clobber` overwrites. **Convention: the tag is `v<version>` exactly, optionally with a `-<suffix>` for pre-releases (`v0.0.1-preview`).** Cutting a release therefore requires bumping `package.json` first — the step M9.1 describes and nothing previously enforced. The check runs before `pnpm install`, so a mismatch costs seconds rather than a 15-minute build, and its failure message names exactly what to change.
 
-**This rule is enforced by a test, not by discipline.** `tests/unit/packaging/release-workflow.test.ts` asserts the trigger set *exhaustively* — the only key permitted under `on` is `push`, and the only key under `push` is `tags`.
+That guard is itself **executed** by the test suite, not merely inspected. An earlier revision only asserted that a step with the right `name:` existed, sat before the build, and contained three substrings — which review showed leaves four actionlint-valid neuterings green, including `continue-on-error: true`, i.e. exactly the property the test's own comment claimed to be checking. The suite now extracts the step's real `run:` body and runs it under bash across a matrix of (version, tag) pairs, asserting exit status: exact match and `-<suffix>` forms accepted; plain mismatch, a missing `v` prefix, trailing junk, an absent `GITHUB_REF_NAME`, and the prefix-extension case (`v0.0.10` against `0.0.1`) all rejected. Six neuterings were mutation-verified red — `continue-on-error: true`, an inverted comparison, a step-level `env:` pinning the tag, a deleted `-<suffix>` arm, `exit 1` → `exit 0`, and `if: false` — every one of them actionlint-valid, which is what makes the result mean something.
+
+**This rule is enforced by a test, not by discipline.** `tests/unit/packaging/release-workflow.test.ts` asserts the trigger set *exhaustively* — the only key permitted under `on` is `push`, and the only key under `push` is `tags`. It applies that rule to **every** file in `.github/workflows/`, not to the two that exist today: any workflow containing a packaging command must be tag-triggered only, so a third workflow added next month is covered without anyone remembering to extend the test.
 
 That test's YAML reader **fails closed**: any line it cannot model throws rather than being skipped. This is the correction to a real hole. The first revision skipped unmatched lines, and review found three legal spellings — `"pull_request":`, `'workflow_dispatch':`, and the explicit-key form `? pull_request` / `:` — that GitHub honours as genuine triggers (actionlint resolves all three, and rejects them only when the event name is bogus) but that the reader silently ignored, leaving the suite green while the budget rule was being abandoned. A structural reader that skips what it does not understand cannot be a guard.
 

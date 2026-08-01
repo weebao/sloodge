@@ -41,8 +41,9 @@ Read, in this order, whichever exist:
 - `CLAUDE.md` (repo root) — binding conventions.
 - `.claude/plans/init/11-tech-stack.md` — dependency policy, pins, dependency direction,
   oxlint/Prettier decision, the "no native modules" rule.
-- `.claude/plans/init/70-testing-ci.md` — what CI actually runs (unit + lint only) and
-  why logic must be pushed into pure, Electron-free functions.
+- `.claude/plans/init/70-testing-ci.md` — what CI actually runs (unit + lint only on the
+  change you are reviewing; §6.5's release workflow also packages, but only on a `v*` tag)
+  and why logic must be pushed into pure, Electron-free functions.
 - The plan doc for the area being changed: `10-architecture.md`, `30-slide-format.md`
   (slide HTML contract), `40-design-mode.md` (iframe bridge), `50-agent-integration.md`,
   `60-export.md`.

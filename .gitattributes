@@ -3,7 +3,7 @@
 # This is load-bearing for M9.0's release workflow, not cosmetic. GitHub's windows-latest image
 # installs Git for Windows with no `/o:CRLFOption` argument, so the installer default
 # `core.autocrlf=true` applies, and actions/checkout never overrides it. Without this file the
-# release job checks out ~375 files as CRLF and `pnpm test` reds before packaging is ever reached:
+# release job checks out 340 files as CRLF and `pnpm test` reds before packaging is ever reached:
 # `tests/unit/agent/skills-contract.test.ts` asserts `skill.startsWith('---\n')` against
 # `resources/skills/**/SKILL.md`, which is false for `---\r\n`, and the ```html fence regex stops
 # matching too. Measured on a `core.autocrlf=true` clone of this branch: 8 failed / 2664 passed.
