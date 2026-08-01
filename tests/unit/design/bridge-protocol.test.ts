@@ -164,6 +164,18 @@ describe('parseFrameMessage — what the parent will accept from the frame', () 
     ).toBeNull()
   })
 
+  it('accepts the optional unrotated box (M3.6) and rejects a malformed one', () => {
+    const withBox = parseFrameMessage(
+      envelope({ payload: { ...hit, box: { x: 1, y: 2, width: 3, height: 4 } } }),
+      SLIDE,
+    )
+    expect(withBox?.dir).toBe('res')
+    // A present-but-malformed box is rejected, not silently dropped.
+    expect(
+      parseFrameMessage(envelope({ payload: { ...hit, box: { x: 1, y: 2 } } }), SLIDE),
+    ).toBeNull()
+  })
+
   it('rejects non-objects', () => {
     expect(parseFrameMessage(null, SLIDE)).toBeNull()
     expect(parseFrameMessage('SL_HITTEST', SLIDE)).toBeNull()

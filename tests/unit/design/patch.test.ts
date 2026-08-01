@@ -8,6 +8,7 @@ import {
   PatchOverlapError,
   readAttr,
   readStyleProp,
+  removeStyleProp,
   setAttr,
   setStyleProp,
   setTextContent,
@@ -215,5 +216,32 @@ describe('setTextContent', () => {
   it('returns null for a void element', () => {
     const { element } = only('<br>')
     expect(setTextContent(element, 'x')).toBeNull()
+  })
+})
+
+describe('removeStyleProp', () => {
+  it('removes one declaration, preserving the others', () => {
+    const { source, element } = only('<div style="color: red; transform: rotate(45deg)">x</div>')
+    const next = applyOps(source, removeStyleProp(source, element, 'transform'))
+    expect(next).toBe('<div style="color: red">x</div>')
+  })
+
+  it('deletes the whole style attribute (and its leading space) when nothing is left', () => {
+    const { source, element } = only('<div style="transform: rotate(45deg)">x</div>')
+    const next = applyOps(source, removeStyleProp(source, element, 'transform'))
+    // No `style=""` husk, no stray double space — the tag is exactly as it was without the attribute.
+    expect(next).toBe('<div>x</div>')
+  })
+
+  it('is a no-op when the property or the style attribute is absent', () => {
+    const withStyle = only('<div style="color: red">x</div>')
+    expect(removeStyleProp(withStyle.source, withStyle.element, 'transform')).toEqual([])
+    const noStyle = only('<div>x</div>')
+    expect(removeStyleProp(noStyle.source, noStyle.element, 'transform')).toEqual([])
+  })
+
+  it('is case-insensitive on the property name', () => {
+    const { source, element } = only('<div style="TRANSFORM: rotate(45deg)">x</div>')
+    expect(applyOps(source, removeStyleProp(source, element, 'transform'))).toBe('<div>x</div>')
   })
 })

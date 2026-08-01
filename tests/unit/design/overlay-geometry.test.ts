@@ -8,7 +8,9 @@ import { describe, expect, it } from 'vitest'
 import {
   clientDeltaToFrame,
   clientPointToFrame,
+  frameRectCentreClient,
   frameRectToOverlay,
+  rotatedOverlayStyle,
   unionRects,
 } from '../../../src/shared/design/overlay-geometry'
 
@@ -97,5 +99,32 @@ describe('unionRects', () => {
     const a = { x: 0, y: 0, width: 100, height: 50 }
     const b = { x: 200, y: 20, width: 100, height: 80 }
     expect(unionRects([a, b])).toEqual({ x: 0, y: 0, width: 300, height: 100 })
+  })
+})
+
+describe('frameRectCentreClient', () => {
+  it('places the rect centre in client pixels through the frame box + scale', () => {
+    // Frame painted at 0.5x with its box at (100, 50). A 200×100 rect at (40, 20) has its centre at
+    // frame (140, 70) → client (100 + 140*0.5, 50 + 70*0.5) = (170, 85).
+    const rect = { x: 40, y: 20, width: 200, height: 100 }
+    expect(frameRectCentreClient(rect, { left: 100, top: 50 }, 0.5)).toEqual({ x: 170, y: 85 })
+  })
+
+  it('falls back to the box origin for a non-usable scale', () => {
+    expect(
+      frameRectCentreClient({ x: 1, y: 2, width: 3, height: 4 }, { left: 9, top: 8 }, 0),
+    ).toEqual({ x: 9, y: 8 })
+  })
+})
+
+describe('rotatedOverlayStyle', () => {
+  it('scales the box and emits a rotate transform', () => {
+    const box = rotatedOverlayStyle({ x: 100, y: 200, width: 320, height: 84 }, 0.5, 45)
+    expect(box).toEqual({ left: 50, top: 100, width: 160, height: 42, transform: 'rotate(45deg)' })
+  })
+
+  it('emits transform: none when upright (no compositor layer for an unrotated box)', () => {
+    const box = rotatedOverlayStyle({ x: 0, y: 0, width: 10, height: 10 }, 1, 0)
+    expect(box.transform).toBe('none')
   })
 })

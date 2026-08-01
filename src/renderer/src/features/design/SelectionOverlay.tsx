@@ -34,12 +34,24 @@ import {
 } from 'react'
 import type { SlCrumb, SlHit, SlRect } from '../../../../shared/design/bridge-protocol'
 import type { DragHandle } from '../../../../shared/design/drag'
-import { clientPointToFrame, frameRectToOverlay } from '../../../../shared/design/overlay-geometry'
+import type { Point } from '../../../../shared/design/overlay-geometry'
+import {
+  clientPointToFrame,
+  frameRectCentreClient,
+  frameRectToOverlay,
+  rotatedOverlayStyle,
+} from '../../../../shared/design/overlay-geometry'
 import { buildDragPatch } from '../../../../shared/design/drag-commit'
+import { buildSlideMap } from '../../../../shared/design/slide-map'
+import { readStyleProp } from '../../../../shared/design/patch'
+import { readRotation } from '../../../../shared/design/transform'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 import { useDesignBridge, type HitMode } from './useDesignBridge'
 import { useDragGesture } from './useDragGesture'
+import { useRotateGesture } from './useRotateGesture'
+import { useElementActions } from './useElementActions'
+import { useDuplicateKey } from './useDuplicateKey'
 
 export type SelectionOverlayProps = {
   /** The slide iframe hosting the instrumented document and the agent script. */
@@ -86,6 +98,19 @@ const HANDLES: readonly { readonly key: string; readonly style: CSSProperties }[
   key,
   style: { left, top, pointerEvents: 'auto', cursor: HANDLE_CURSOR[key] } as CSSProperties,
 }))
+
+/** How far above the box's top edge the rotation handle floats, and the stalk that reaches it. */
+const ROTATE_OFFSET_PX = 24
+const ROTATE_STALK: CSSProperties = {
+  height: ROTATE_OFFSET_PX,
+  transform: `translate(-0.5px, -${String(ROTATE_OFFSET_PX)}px)`,
+  pointerEvents: 'none',
+}
+const ROTATE_HANDLE: CSSProperties = {
+  transform: `translate(-50%, calc(-100% - ${String(ROTATE_OFFSET_PX)}px))`,
+  pointerEvents: 'auto',
+  cursor: 'grab',
+}
 
 function label(hit: Pick<SlCrumb, 'tag' | 'id' | 'classes'>): string {
   const id = hit.id ? `#${hit.id}` : ''
@@ -143,11 +168,55 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     [selection, slideId, setSelection],
   )
 
+  // The move/resize gesture starts from the element's UNROTATED box (its `box`, falling back to the
+  // axis-aligned `rect`) so a translate/resize is expressed in the element's own frame.
+  const selectionBox = selection?.box ?? selection?.rect ?? null
   const { startDrag, previewRect, isDragging } = useDragGesture({
     scale,
-    selectionRect: selection?.rect ?? null,
+    selectionRect: selectionBox,
     onCommit: onCommitGeometry,
   })
+
+  // The element's rotation, read from the **source** (§2.2 — never a bridge payload), rebuilt from
+  // the store's current bytes so it reflects the last committed rotate. Memoized on (source, slId).
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const source = getSlideHtml(slideHtml, slideId)
+  const sourceAngle = useMemo<number>(() => {
+    if (selection === null || source === undefined) return 0
+    const element = buildSlideMap(slideId, source).byId.get(selection.slId)
+    if (element === undefined) return 0
+    return readRotation(readStyleProp(source, element, 'transform'))
+  }, [source, slideId, selection])
+
+  const actions = useElementActions(slideId)
+  useDuplicateKey(actions.duplicate, actions.hasSelection)
+
+  // The rotated box the overlay currently paints: the live move/resize preview if any, else the
+  // element's unrotated box. Rotation about centre keeps this box's centre fixed, so the pivot is its
+  // centre in client px.
+  const boxRect = previewRect ?? selectionBox
+  const getCentre = useCallback((): Point | null => {
+    if (boxRect === null) return null
+    const rootBox = rootRef.current?.getBoundingClientRect()
+    if (rootBox === undefined) return null
+    return frameRectCentreClient(boxRect, rootBox, scale)
+  }, [boxRect, scale])
+
+  const onCommitRotation = useCallback(
+    (startDeg: number, nextDeg: number): void => {
+      actions.rotateTo(startDeg, nextDeg)
+    },
+    [actions],
+  )
+
+  const { startRotate, previewAngle, isRotating } = useRotateGesture({
+    rotation: sourceAngle,
+    getCentre,
+    onCommit: onCommitRotation,
+  })
+
+  // The angle the overlay paints: the live preview while rotating, else the committed source angle.
+  const angle = isRotating && previewAngle !== null ? previewAngle : sourceAngle
 
   // rAF-throttle and coalesce pointer moves: at most one hover hit-test in flight, newest position
   // wins (§3.3). The queued point is kept in a ref so a burst of moves collapses to one request.
@@ -170,8 +239,8 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   const onMouseMove = useCallback(
     (event: React.MouseEvent): void => {
-      // No hover hit-tests while a drag is live — the pointer is committed to the gesture.
-      if (isDragging) return
+      // No hover hit-tests while a drag or rotation is live — the pointer is committed to the gesture.
+      if (isDragging || isRotating) return
       const point = framePoint(event)
       queued.current = { ...point, alt: event.altKey }
       if (raf.current !== 0) return
@@ -182,7 +251,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         if (next) requestHit(next.x, next.y, 'hover', next.alt)
       })
     },
-    [framePoint, requestHit, isDragging],
+    [framePoint, requestHit, isDragging, isRotating],
   )
 
   const onClick = useCallback(
@@ -213,6 +282,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     },
     [startDrag],
   )
+  const onRotatePointerDown = useCallback(
+    (event: React.PointerEvent): void => {
+      startRotate(event)
+    },
+    [startRotate],
+  )
   // A click on the selection box must not bubble to the root's select hit-test — the element is
   // already selected, and a post-drag click would fire a redundant round-trip.
   const stop = useCallback((event: React.MouseEvent): void => {
@@ -226,21 +301,23 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     return { left: box.x, top: box.y, width: box.width, height: box.height, pointerEvents: 'none' }
   }, [hover, scale])
 
-  // The box tracks the live preview while dragging, else the committed selection. The body captures
-  // pointer events so it is grabbable; a `move` cursor advertises the affordance.
-  const boxRect = previewRect ?? selection?.rect ?? null
+  // The box tracks the live preview while dragging, else the committed selection, and is turned by
+  // the element's rotation about its own centre (M3.6) so the outline hugs a rotated element. The
+  // body captures pointer events so it is grabbable; a `move` cursor advertises the affordance.
   const selectionStyle = useMemo<CSSProperties | null>(() => {
     if (!boxRect) return null
-    const box = frameRectToOverlay(boxRect, scale)
+    const box = rotatedOverlayStyle(boxRect, scale, angle)
     return {
-      left: box.x,
-      top: box.y,
+      left: box.left,
+      top: box.top,
       width: box.width,
       height: box.height,
+      transform: box.transform,
+      transformOrigin: 'center',
       pointerEvents: 'auto',
       cursor: 'move',
     }
-  }, [boxRect, scale])
+  }, [boxRect, scale, angle])
 
   // Root-first for the breadcrumb: the response gives ancestors nearest-first, and the selection is
   // the final crumb. `toReversed` leaves the source array untouched.
@@ -259,7 +336,10 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       onMouseLeave={onMouseLeave}
       onClick={onClick}
     >
-      {hoverStyle && !isDragging && (!selection || selection.slId !== hover?.slId) ? (
+      {hoverStyle &&
+      !isDragging &&
+      !isRotating &&
+      (!selection || selection.slId !== hover?.slId) ? (
         <div
           data-testid="design-hover"
           className="absolute border border-dashed border-accent"
@@ -295,6 +375,21 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
               onPointerDown={onHandlePointerDown}
             />
           ))}
+          {/* Rotation handle above top-centre, on a short stalk — a child of the box, so it turns
+              with it (PowerPoint convention). Grabbing it starts the rotate gesture. */}
+          <span
+            aria-hidden="true"
+            className="absolute left-1/2 top-0 -translate-x-1/2 border-l border-accent"
+            style={ROTATE_STALK}
+          />
+          <span
+            data-testid="design-handle-rotate"
+            data-handle="rotate"
+            aria-hidden="true"
+            className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-white"
+            style={ROTATE_HANDLE}
+            onPointerDown={onRotatePointerDown}
+          />
         </div>
       ) : null}
 

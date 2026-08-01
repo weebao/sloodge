@@ -199,6 +199,33 @@ export function setStyleProp(
   return setAttr(element, 'style', 'style', next)
 }
 
+/**
+ * Ops to remove one inline-`style` declaration from `element`, preserving every other declaration.
+ * Returns `[]` (a no-op) when the element has no `style` attribute or does not declare `prop`.
+ *
+ * When `prop` was the element's *only* declaration, the whole `style` attribute is deleted —
+ * including the single whitespace character before it, so the start tag round-trips to exactly what
+ * it was before the attribute ever existed rather than leaving a `style=""` husk. When other
+ * declarations remain, the value span is rewritten to just those. This is the counterpart
+ * `setStyleProp` needs so that a transform edit which resolves to identity (a rotation back to 0°, a
+ * double flip) removes the `transform` cleanly instead of writing an empty declaration.
+ */
+export function removeStyleProp(source: string, element: ElementSpan, prop: string): SourceOp[] {
+  const styleAttr = element.attrs['style']
+  if (styleAttr === undefined || styleAttr.value === null) return []
+  const key = prop.toLowerCase()
+  const declarations = parseDeclarations(source.slice(styleAttr.value.start, styleAttr.value.end))
+  const kept = declarations.filter((declaration) => declaration.prop !== key)
+  if (kept.length === declarations.length) return []
+  if (kept.length > 0) {
+    return [{ kind: 'replaceSpan', span: styleAttr.value, text: serializeDeclarations(kept) }]
+  }
+  // Nothing left — delete the attribute and its single leading space so the tag is as it was.
+  const hasLeadingSpace = styleAttr.whole.start > 0 && /\s/.test(source[styleAttr.whole.start - 1]!)
+  const start = hasLeadingSpace ? styleAttr.whole.start - 1 : styleAttr.whole.start
+  return [{ kind: 'deleteSpan', span: { start, end: styleAttr.whole.end } }]
+}
+
 /** The current source value of one inline-`style` declaration, or `null` if unset. */
 export function readStyleProp(source: string, element: ElementSpan, prop: string): string | null {
   const styleValue = element.attrs['style']?.value ?? null

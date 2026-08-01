@@ -174,3 +174,35 @@ describe('PropertyPanel', () => {
     expect(screen.queryByTestId('prop-fontSize')).toBeNull()
   })
 })
+
+describe('PropertyPanel — transform actions (M3.6)', () => {
+  it('Flip H composes scale(-1, 1) into the transform as one command', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-flip-h'))
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('transform: scale(-1, 1)')
+    // Mutation guard: clobbering the other declarations reds here.
+    expect(patched).toContain('color: #111')
+    expect(patched).toContain('font-size: 44px')
+  })
+
+  it('Flip V then Flip V again restores the source byte-exact (two undoable steps)', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-flip-v'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('scale(1, -1)')
+    fireEvent.click(screen.getByTestId('transform-flip-v'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('Duplicate clones the element as one command', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-duplicate'))
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched.match(/<h1/g)?.length).toBe(2)
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+})
