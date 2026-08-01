@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { elementContextLabel } from '../../../../shared/design/element-context'
+import { useDeckStore } from '../../stores/deckStore'
 import { useChatContextStore } from './chatContextStore'
 import type { ChatMessage, ToolChip } from './transcript'
 import { useChatSession } from './useChatSession'
@@ -27,11 +28,22 @@ export function ChatPanel(): JSX.Element {
   const { transcript, keyStatus, hasBridge, send, interrupt, submitKey } = useChatSession()
   const attachment = useChatContextStore((state) => state.attachment)
   const clearContext = useChatContextStore((state) => state.clear)
+  const currentSlideId = useDeckStore((state) => state.currentSlideId)
   const [draft, setDraft] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
 
   const streaming = transcript.turnState === 'streaming'
   const needsKey = hasBridge && keyStatus !== null && !keyStatus.configured
+
+  // Invalidate a stale context chip on slide switch: a bundle built for slide A must not ride a turn
+  // sent while looking at slide B (the element isn't the one on screen, and the agent would edit the
+  // wrong slide's element). The bundle records its own slide id, so drop it the moment the current
+  // slide moves off it. Guarded on a non-null current slide so a deckless test host never clears.
+  useEffect(() => {
+    if (attachment !== null && currentSlideId !== null && attachment.slide.id !== currentSlideId) {
+      clearContext()
+    }
+  }, [attachment, currentSlideId, clearContext])
 
   // Keep the newest message in view as the transcript grows or a turn streams in.
   useEffect(() => {
