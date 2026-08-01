@@ -349,6 +349,37 @@ describe('PropertyPanel — colour controls (M3.8)', () => {
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(namedSource)
   })
 
+  it('a restating change against a TRANSLUCENT source costs ZERO undo entries', () => {
+    // The write re-attaches the source's alpha, and a native colour input can never report alpha — so
+    // the no-op guard has to compare the MERGED value. Comparing the raw picked hex would always see a
+    // difference here (`#ff0000` vs `rgba(255,0,0,0.5)`) and spend an entry rewriting the declaration
+    // to `#ff000080`: same colour, same alpha, nothing to see.
+    const alphaSource = '<h1 style="color: rgba(255, 0, 0, 0.5); font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-translucent')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    expect(undoDepth()).toBe(before)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(alphaSource)
+  })
+
+  it('the no-op guard does not over-swallow: a new hue on a translucent source still commits', () => {
+    const alphaSource = '<h1 style="color: rgba(255, 0, 0, 0.5); font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-translucent')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#00ff00' } })
+
+    expect(undoDepth()).toBe(before + 1)
+    // The new hue landed AND the source's alpha survived.
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #00ff0080')
+  })
+
   it('a genuinely different colour still commits against a non-canonical source', () => {
     const namedSource = '<h1 style="color: red; font-size: 44px">Hello</h1>'
     useDeckStore.getState().setSlideHtml(slideId, namedSource, slideId, 'seed-named')

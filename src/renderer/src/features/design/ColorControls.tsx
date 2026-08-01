@@ -138,8 +138,15 @@ function ColorTargetRow({
       // Some pickers cancel by *reverting* the value and firing `change` with it. Compare colours, not
       // bytes: the source may hold `red` while the input reports the canonical `#ff0000`, and rewriting
       // one to the other would spend an undo entry on a gesture the user cancelled, with nothing to see.
-      if (sameColor(current, element.value)) return
-      onApply(field, applyPickedColor(current, element.value))
+      //
+      // Compare the **merged** value, not the raw input value. `applyPickedColor` re-attaches the
+      // source's alpha, and a native colour input can never report alpha — so against a translucent
+      // source the raw hex always differs from the source and the skip would never fire, leaving this
+      // guard closed for opaque colours and open for translucent ones. Comparing what we are actually
+      // about to write is the only comparison that answers "would this change the declaration?".
+      const next = applyPickedColor(current, element.value)
+      if (sameColor(current, next)) return
+      onApply(field, next)
     }
     element.addEventListener('change', onCommit)
     return (): void => {
