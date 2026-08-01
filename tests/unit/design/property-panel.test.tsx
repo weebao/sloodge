@@ -9,6 +9,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/history'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
@@ -23,6 +24,10 @@ import {
 
 const NOW = 1_700_000_000_000
 const SOURCE = '<h1 style="color: #111; font-size: 44px">Hello</h1>'
+
+/** Injected eyedropper seams (M3.8) — module-scoped so they are stable object props (react-perf). */
+const SAMPLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resolve('#00ff00') }
+const CANCELLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resolve(null) }
 
 let slideId: string
 
@@ -222,5 +227,227 @@ describe('PropertyPanel — transform actions (M3.6)', () => {
     expect(bundle.element.tag).toBe('h1')
     expect(bundle.element.rect).toEqual({ x: 0, y: 0, width: 100, height: 40 })
     useChatContextStore.getState().clear()
+  })
+})
+
+/** Current undo-stack depth — the thing a per-`input` commit would inflate one entry at a time. */
+function undoDepth(): number {
+  return useDeckStore.getState().history.summary().undoDepth
+}
+
+/**
+ * Simulate an OS colour-picker gesture: Chromium fires `input` continuously as the user drags, then
+ * exactly one `change` when the picker is confirmed. Only the `change` may reach the undo stack.
+ */
+function pickerDrag(element: HTMLElement, intermediates: readonly string[], final: string): void {
+  for (const value of intermediates) fireEvent.input(element, { target: { value } })
+  fireEvent.change(element, { target: { value: final } })
+}
+
+describe('PropertyPanel — colour controls (M3.8)', () => {
+  it('a native swatch pick commits a colour hex as one undoable command, byte-exact undo', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: #ff0000')
+    // Mutation guard: the other declaration survives the colour write.
+    expect(patched).toContain('font-size: 44px')
+    expect(undoDepth()).toBe(before + 1)
+    expect(useDeckStore.getState().canUndo).toBe(true)
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a whole picker DRAG is ONE undo entry — intermediates never touch the stack', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    // Many `input` events (the drag), then the single `change` Chromium fires on confirm.
+    pickerDrag(
+      screen.getByTestId('swatch-color'),
+      ['#000031', '#0000aa', '#00aa55', '#88bb00'],
+      '#ff0000',
+    )
+
+    // Exactly one entry, carrying the FINAL colour — not the intermediates.
+    expect(undoDepth()).toBe(before + 1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: #ff0000')
+    for (const mid of ['#000031', '#0000aa', '#00aa55', '#88bb00']) {
+      expect(patched).not.toContain(mid)
+    }
+    // One undo reverses it byte-exact.
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a 250-event drag does NOT evict the user’s pre-existing history (the 200-entry cap)', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    // A short real drag emits hundreds of `input` events. Committing per event would overflow
+    // history.ts's 200-entry cap and silently destroy everything the user did before this pick.
+    const intermediates = Array.from(
+      { length: 250 },
+      (_, index) => `#0000${(index % 100).toString().padStart(2, '0')}`,
+    )
+    pickerDrag(screen.getByTestId('swatch-color'), intermediates, '#ff0000')
+
+    expect(undoDepth()).toBe(before + 1)
+    expect(undoDepth()).toBeLessThan(DEFAULT_MAX_HISTORY_ENTRIES)
+    // The pre-existing history is intact: one undo still reaches the seeded source.
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a cancelled picker (input events, no change) leaves the document untouched', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+    const swatch = screen.getByTestId('swatch-color')
+    // The user dragged, then pressed Escape: `input` fired, `change` never did.
+    for (const value of ['#000031', '#0000aa']) {
+      fireEvent.input(swatch, { target: { value } })
+    }
+    expect(undoDepth()).toBe(before)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('an aborted gesture leaves the swatch showing the SOURCE colour, not the preview', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const swatch = screen.getByTestId('swatch-color') as HTMLInputElement
+    // The source is `color: #111`, which the native input renders as `#111111`.
+    expect(swatch.value).toBe('#111111')
+
+    // Drag to a colour, then dismiss without confirming (no `change`).
+    fireEvent.input(swatch, { target: { value: '#00ff00' } })
+    expect(swatch.value).toBe('#00ff00') // live preview during the gesture
+    fireEvent.blur(swatch)
+
+    // The abandoned preview is gone: the swatch reflects the source again.
+    expect(swatch.value).toBe('#111111')
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('a change that merely restates the source colour costs ZERO undo entries', () => {
+    // A non-canonical source colour: some pickers cancel by reverting and firing `change` with the
+    // canonicalized form, which must not rewrite `red` to `#ff0000` for a cancelled gesture.
+    const namedSource = '<h1 style="color: red; font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, namedSource, slideId, 'seed-named')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    expect(undoDepth()).toBe(before)
+    // The source keeps the author's spelling, byte-for-byte.
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(namedSource)
+  })
+
+  it('a restating change against a TRANSLUCENT source costs ZERO undo entries', () => {
+    // The write re-attaches the source's alpha, and a native colour input can never report alpha — so
+    // the no-op guard has to compare the MERGED value. Comparing the raw picked hex would always see a
+    // difference here (`#ff0000` vs `rgba(255,0,0,0.5)`) and spend an entry rewriting the declaration
+    // to `#ff000080`: same colour, same alpha, nothing to see.
+    const alphaSource = '<h1 style="color: rgba(255, 0, 0, 0.5); font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-translucent')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+
+    expect(undoDepth()).toBe(before)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(alphaSource)
+  })
+
+  it('the no-op guard does not over-swallow: a new hue on a translucent source still commits', () => {
+    const alphaSource = '<h1 style="color: rgba(255, 0, 0, 0.5); font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-translucent')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#00ff00' } })
+
+    expect(undoDepth()).toBe(before + 1)
+    // The new hue landed AND the source's alpha survived.
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #00ff0080')
+  })
+
+  it('a genuinely different colour still commits against a non-canonical source', () => {
+    const namedSource = '<h1 style="color: red; font-size: 44px">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, namedSource, slideId, 'seed-named')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    const before = undoDepth()
+
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#00ff00' } })
+
+    expect(undoDepth()).toBe(before + 1)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #00ff00')
+  })
+
+  it('a swatch pick preserves the source alpha (does not silently drop it)', () => {
+    const alphaSource = '<h1 style="color: rgba(0, 0, 0, 0.5)">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, alphaSource, slideId, 'seed-alpha')
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    fireEvent.change(screen.getByTestId('swatch-color'), { target: { value: '#ff0000' } })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('color: #ff000080')
+  })
+
+  it('a theme-token swatch writes a var() reference, re-themeable, one undoable command', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    // The default palette (no deck theme) offers accent; it applies to the Text target.
+    fireEvent.click(screen.getByTestId('theme-color-accent'))
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('color: var(--sl-accent, #4c8dff)')
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('the eyedropper samples via the injected picker and applies to the target', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={SAMPLING_PICKER} />)
+    fireEvent.click(screen.getByTestId('eyedrop-fill'))
+    await waitFor(() =>
+      expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain(
+        'background-color: #00ff00',
+      ),
+    )
+  })
+
+  it('a cancelled eyedropper pick (null) writes nothing', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={CANCELLING_PICKER} />)
+    fireEvent.click(screen.getByTestId('eyedrop-color'))
+    // Give the microtask a chance; the source must remain the seeded one.
+    await Promise.resolve()
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+  })
+
+  it('the eyedropper button is hidden when no picker is available (feature-detect)', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    expect(screen.queryByTestId('eyedrop-color')).toBeNull()
+    // The swatches and theme row are still present without an eyedropper.
+    expect(screen.getByTestId('swatch-color')).toBeTruthy()
+    expect(screen.getByTestId('theme-color-accent')).toBeTruthy()
+  })
+
+  it('the stroke swatch writes border-color plus border-style for an HTML element', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} picker={null} />)
+    fireEvent.change(screen.getByTestId('swatch-stroke'), { target: { value: '#123456' } })
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('border-color: #123456')
+    expect(patched).toContain('border-style: solid')
   })
 })

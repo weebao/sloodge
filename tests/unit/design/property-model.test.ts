@@ -172,6 +172,69 @@ describe('buildFieldOps — fill prefers the channel the source uses', () => {
   })
 })
 
+describe('readPropertyValues — stroke (M3.8)', () => {
+  it('reads border-color as stroke for HTML elements', () => {
+    const { source, element } = at('<div style="border-color: #38bdf8">x</div>', 0)
+    expect(readPropertyValues(source, element).stroke).toBe('#38bdf8')
+  })
+
+  it('reads the SVG stroke attribute', () => {
+    const { source, element } = at('<svg><rect stroke="#f00"/></svg>', 1)
+    expect(readPropertyValues(source, element).stroke).toBe('#f00')
+  })
+
+  it('is null when no stroke channel is set', () => {
+    const { source, element } = at('<div>x</div>', 0)
+    expect(readPropertyValues(source, element).stroke).toBeNull()
+  })
+})
+
+describe('buildFieldOps — stroke (M3.8)', () => {
+  it('HTML stroke writes border-color plus a border-style so it renders', () => {
+    expect(edit('<div>x</div>', 0, 'stroke', '#38bdf8')).toBe(
+      '<div style="border-color: #38bdf8; border-style: solid">x</div>',
+    )
+  })
+
+  it('HTML stroke keeps an author-set border-style (dashed stays dashed)', () => {
+    expect(edit('<div style="border-style: dashed">x</div>', 0, 'stroke', '#38bdf8')).toBe(
+      '<div style="border-style: dashed; border-color: #38bdf8">x</div>',
+    )
+  })
+
+  it('SVG stroke patches the existing stroke attribute', () => {
+    expect(edit('<svg><rect stroke="#000"/></svg>', 1, 'stroke', '#fff')).toBe(
+      '<svg><rect stroke="#fff"/></svg>',
+    )
+  })
+
+  it('SVG stroke falls back to a style declaration when no attribute exists', () => {
+    expect(edit('<svg><rect/></svg>', 1, 'stroke', '#fff')).toBe(
+      '<svg><rect style="stroke: #fff"/></svg>',
+    )
+  })
+
+  it('a stroke value with a ; never injects a second declaration', () => {
+    const { source, element } = at('<div>x</div>', 0)
+    expect(buildFieldOps(source, element, 'stroke', 'red;background:url(x)')).toEqual([])
+    expect(edit('<div>x</div>', 0, 'stroke', 'red;background:url(x)')).toBe('<div>x</div>')
+  })
+
+  it('a var() token reference is a valid stroke value (theme swatch write form)', () => {
+    expect(edit('<div>x</div>', 0, 'stroke', 'var(--sl-accent, #4c8dff)')).toBe(
+      '<div style="border-color: var(--sl-accent, #4c8dff); border-style: solid">x</div>',
+    )
+  })
+})
+
+describe('buildFieldOps — color accepts a theme var() token (M3.8)', () => {
+  it('writes a var() reference verbatim (it passes the safe-value guard)', () => {
+    expect(edit('<h1>x</h1>', 0, 'color', 'var(--sl-fg, #f0f0f5)')).toBe(
+      '<h1 style="color: var(--sl-fg, #f0f0f5)">x</h1>',
+    )
+  })
+})
+
 describe('buildFieldOps — position and size', () => {
   it('SVG width/height/x/y patch presentation attributes', () => {
     const html = '<svg><rect x="0" y="0" width="10" height="10"/></svg>'
