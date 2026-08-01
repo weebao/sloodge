@@ -33,6 +33,15 @@ function recordingQueryFn(): {
 const PATHS = () => ({ cwd: '/w', configDir: '/c' })
 const NOOP = (): void => {}
 
+/** A promise the test settles by hand, for asserting that a caller genuinely awaited it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = NOOP
+  const promise = new Promise<void>((r) => {
+    resolve = r
+  })
+  return { promise, resolve: () => resolve() }
+}
+
 describe('AgentService', () => {
   it('refuses to start a session when no key is configured', async () => {
     const rec = recordingQueryFn()
@@ -212,27 +221,72 @@ describe('AgentService', () => {
   describe('prepareWorkspace (M2.4 skill materialization)', () => {
     it('materializes the workspace before the query opens, with the session cwd', async () => {
       const rec = recordingQueryFn()
-      const order: string[] = []
-      const prepareWorkspace = vi.fn(async (cwd: string) => {
-        order.push(`prepare:${cwd}`)
+      // A *deferred* fake: `prepareWorkspace` does not settle until this test says so. A fake that
+      // resolves synchronously would record "prepare" before "query" even if the service dropped the
+      // await, which is exactly how the first version of this test passed against a `void` mutant.
+      // The real `materializeSkills` does four files of fs I/O, so async is also the honest shape.
+      const gate = deferred()
+      const cwdSeen: string[] = []
+      const prepareWorkspace = vi.fn((cwd: string) => {
+        cwdSeen.push(cwd)
+        return gate.promise
       })
-      const queryFn: AgentQueryFn = (params) => {
-        order.push('query')
-        return rec.queryFn(params)
-      }
       const service = new AgentService({
-        queryFn,
+        queryFn: rec.queryFn,
         loadApiKey: async () => 'sk-ant-live',
         resolvePaths: PATHS,
         prepareWorkspace,
       })
 
-      await service.send(1, 'hi', NOOP)
+      const send = service.send(1, 'hi', NOOP)
+      await Promise.resolve()
+      await Promise.resolve()
 
       // Skills are discovered from disk when the subprocess starts — a copy that lands afterwards
-      // is a session with no skills, silently.
-      expect(order).toEqual(['prepare:/w', 'query'])
+      // is a session with no skills, silently. So no subprocess may exist yet.
+      expect(cwdSeen).toEqual(['/w'])
+      expect(rec.starts()).toBe(0)
+
+      gate.resolve()
+      await send
+      expect(rec.starts()).toBe(1)
       expect(prepareWorkspace).toHaveBeenCalledTimes(1)
+    })
+
+    it('logs what was installed, and names the file when part of the copy failed', async () => {
+      const rec = recordingQueryFn()
+      const logged: string[] = []
+      const service = new AgentService({
+        queryFn: rec.queryFn,
+        loadApiKey: async () => 'sk-ant-live',
+        resolvePaths: PATHS,
+        prepareWorkspace: async () => ({
+          installed: ['svg-animation'],
+          failures: ['slide-deck: ENOENT icons.md'],
+        }),
+        log: (message) => logged.push(message),
+      })
+
+      await service.send(1, 'hi', NOOP)
+
+      expect(logged.join('\n')).toContain('svg-animation')
+      expect(logged.join('\n')).toContain('slide-deck: ENOENT icons.md')
+    })
+
+    it('logs the rejection rather than swallowing it silently', async () => {
+      const rec = recordingQueryFn()
+      const logged: string[] = []
+      const service = new AgentService({
+        queryFn: rec.queryFn,
+        loadApiKey: async () => 'sk-ant-live',
+        resolvePaths: PATHS,
+        prepareWorkspace: () => Promise.reject(new Error('EACCES')),
+        log: (message) => logged.push(message),
+      })
+
+      await service.send(1, 'hi', NOOP)
+
+      expect(logged.join('\n')).toContain('EACCES')
     })
 
     it('runs once per session, not once per turn', async () => {

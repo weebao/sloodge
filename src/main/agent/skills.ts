@@ -95,7 +95,16 @@ export type ResolveSkillsDirEnv = {
   readonly resourcesPath: string
 }
 
-/** Where the read-only skill sources live, in dev and in a packaged build. See the module docstring. */
+/**
+ * Where the read-only skill sources live, in dev and in a packaged build. See the module docstring.
+ *
+ * The packaged branch is pinned to `package.json`'s `build` block, which M2.4 populated with only
+ * what the agent needs — `extraResources` (this path) and `asarUnpack` for the Claude CLI binary,
+ * which cannot execute from inside an archive. M5.2 owns the rest of that block (appId, productName,
+ * per-platform targets, icons, signing/notarization, publish) and **must not drop these two keys**:
+ * without `extraResources` a packaged app has no skills and this function resolves to a directory
+ * that does not exist. `skills-contract.test.ts` asserts the two stay in agreement.
+ */
 export function resolveBundledSkillsDir(env: ResolveSkillsDirEnv): string {
   return env.isPackaged
     ? path.join(env.resourcesPath, 'skills')

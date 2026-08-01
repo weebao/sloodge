@@ -35,17 +35,17 @@ Produce ONE self-contained 1280x720 HTML slide with an inline SVG animation. Fol
 ## Sloodge slide contract (machine-checked before the slide is accepted)
 The `mcp__slides__*` tools reject HTML that breaks these — a rejection comes back as `SL-xxx: …`, fix and resend.
 
-- **Declare `capabilities`.** CSS `@keyframes` motion is `["css-animation"]`; SMIL (`<animate>`, `<animateTransform>`, `<animateMotion>`) is `["smil-animation"]`; both is both. An animation you did not declare is rejected, and a declared animation the slide does not actually contain is also rejected (SL-H01, SL-A01). If you use JS, add `"interactive-js"` — and then the slide needs exactly one `[data-hover-target]` and one `[data-click-target]` (SL-I01), which is why zero-JS is preferred here.
+- **Declare `capabilities` as a TOOL ARGUMENT.** `capabilities` is an argument to `mcp__slides__create_slide`, alongside `html` and `title` — it is **not** part of the HTML, and nothing reads it from a comment or a meta tag. An animated slide is NEVER `["static"]`: CSS `@keyframes` motion is `capabilities: ["css-animation"]`; SMIL (`<animate>`, `<animateTransform>`, `<animateMotion>`) is `["smil-animation"]`; both is both. An animation you did not declare is rejected, and a declared animation the slide does not actually contain is also rejected (SL-H01, SL-A01). If you use JS, add `"interactive-js"` — and then the slide needs exactly one `[data-hover-target]` and one `[data-click-target]` (SL-I01), which is why zero-JS is preferred here.
+- **Capabilities are fixed at creation — you cannot fix them later.** `mcp__slides__update_slide` validates your new HTML against the capabilities the slide *already* has and has no argument to change them, and there is no tool to delete a slide. So a slide created as `["static"]` can never be edited into an animated one: every `update_slide` will fail SL-H01 and retrying cannot help. If it happens, stop and ask the user to delete that slide so you can create it again — do not loop on `update_slide`, and do not create a second slide beside the broken one. Decide the capabilities BEFORE the first `create_slide` call.
 - **The 1280x720 sizing and the resets must be in a `<style>` block** — `width:1280px`, `height:720px`, `box-sizing:border-box`, and `margin:0`/`padding:0` are read from your stylesheet, not from `style="…"` attributes (SL-G01, SL-G03).
 - **No `position:fixed` and no viewport units** (`vh`/`vw`/`vmin`/`vmax`) anywhere — size in px against 1280x720 (SL-G05).
 - **No external subresources**: no `<link>`, no `<script src>`, no remote `url()`, no `@import`, no `@font-face`. Images must be `data:` URIs (SL-S01, SL-S02, SL-S03).
 - **No network, storage, or eval APIs** — `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage`, `document.cookie`, `alert`/`confirm`/`prompt`, `eval`, `new Function` are all rejected (SL-S04).
 - **A `<script>`, if present, is the last element of `<body>`** (SL-I02). **Nothing below 16px** anywhere (SL-C01) — and this skill's own 18px label floor is stricter, so follow that.
 
-Minimal contract-valid skeleton (zero JS, CSS keyframes, loops forever):
+Minimal contract-valid slide (zero JS, CSS keyframes, loops forever) — call `mcp__slides__create_slide` with `capabilities: ["css-animation"]`, a `title`, and this `html`:
 
 ```html
-<!-- capabilities: ["css-animation"] -->
 <!doctype html>
 <html>
   <head>

@@ -40,7 +40,8 @@ Produce ONE self-contained 1280x720 HTML slide (same layout/typography/contrast 
 ## Sloodge slide contract (machine-checked before the slide is accepted)
 The `mcp__slides__*` tools reject HTML that breaks these — a rejection comes back as `SL-xxx: …`, fix and resend.
 
-- **Declare `capabilities`.** A charted slide with a `<script>` is `["interactive-js"]`; add `"css-animation"` / `"smil-animation"` only if it also animates. An undeclared `<script>` or animation is rejected (SL-H01).
+- **Declare `capabilities` as a TOOL ARGUMENT.** `capabilities` is an argument to `mcp__slides__create_slide`, alongside `html` and `title` — it is **not** part of the HTML, and nothing reads it from a comment or a meta tag. A charted slide with a `<script>` is NEVER `["static"]`: it is `capabilities: ["interactive-js"]`; add `"css-animation"` / `"smil-animation"` only if it also animates. An undeclared `<script>` or animation is rejected (SL-H01).
+- **Capabilities are fixed at creation — you cannot fix them later.** `mcp__slides__update_slide` validates your new HTML against the capabilities the slide *already* has and has no argument to change them, and there is no tool to delete a slide. So a slide created as `["static"]` can never be edited into an interactive one: every `update_slide` will fail SL-H01 and retrying cannot help. If it happens, stop and ask the user to delete that slide so you can create it again — do not loop on `update_slide`, and do not create a second slide beside the broken one. Decide the capabilities BEFORE the first `create_slide` call.
 - **Exactly one `[data-hover-target]` and exactly one `[data-click-target]`** on an `interactive-js` slide — zero or two is a rejection (SL-I01), which is why the interactivity contract above says exactly one of each.
 - **The `<script>` must be the last element of `<body>`** (SL-I02) — the same rule as "attach listeners after DOM exists".
 - **The 1280x720 sizing and the resets must be in a `<style>` block** — `width:1280px`, `height:720px`, `box-sizing:border-box`, and `margin:0`/`padding:0` are read from your stylesheet, not from `style="…"` attributes (SL-G01, SL-G03).
@@ -49,10 +50,9 @@ The `mcp__slides__*` tools reject HTML that breaks these — a rejection comes b
 - **No network, storage, or eval APIs** — `fetch`, `XMLHttpRequest`, `WebSocket`, `localStorage`, `document.cookie`, `alert`/`confirm`/`prompt`, `eval`, `new Function` are all rejected (SL-S04). Chart data is a literal array in your script; there is nothing to fetch.
 - **Nothing below 16px** anywhere (SL-C01) — and this skill's 18px tooltip floor is stricter, so follow that.
 
-Minimal contract-valid skeleton (shape only — build the real chart to the rules above):
+Minimal contract-valid slide (shape only — build the real chart to the rules above) — call `mcp__slides__create_slide` with `capabilities: ["interactive-js"]`, a `title`, and this `html`:
 
 ```html
-<!-- capabilities: ["interactive-js"] -->
 <!doctype html>
 <html>
   <head>

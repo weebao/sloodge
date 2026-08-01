@@ -62,6 +62,12 @@ export type ChatMessage =
       readonly text: string
       readonly recoverable: boolean
     }
+  /**
+   * A neutral system line — not the assistant speaking and not a failure. Today this is only the
+   * degraded-skills notice (M2.4): the session works, so an error bubble would overstate it, but a
+   * silent skill-less session is the failure that notice exists to prevent.
+   */
+  | { readonly kind: 'notice'; readonly id: string; readonly text: string }
 
 export type Transcript = {
   readonly turnState: TurnState
@@ -200,6 +206,17 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
     case 'ready':
       // Session handshake — no transcript change (the user bubble already opened the turn).
       return state
+
+    case 'skills-degraded': {
+      // Appended *before* the live assistant bubble would settle, so the user sees the caveat
+      // alongside the answer it applies to. The turn is untouched: this is not a failure.
+      const message: ChatMessage = {
+        kind: 'notice',
+        id: `n${String(state.seq)}`,
+        text: `Slide skills unavailable (${event.missing.join(', ')}) — slides may not follow Sloodge's design rules.`,
+      }
+      return { ...state, messages: [...state.messages, message], seq: state.seq + 1 }
+    }
 
     case 'assistant-delta': {
       const index = liveAssistantIndex(state.messages)

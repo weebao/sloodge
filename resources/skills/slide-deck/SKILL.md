@@ -50,7 +50,8 @@ Produce ONE self-contained HTML document per slide. No external resources (no CD
 ## Sloodge slide contract (machine-checked before the slide is accepted)
 The `mcp__slides__*` tools reject HTML that breaks these — a rejection comes back as `SL-xxx: …`, fix and resend.
 
-- **Declare `capabilities`.** A plain slide is `["static"]`. Anything else must be declared: `"interactive-js"` for a `<script>`, `"css-animation"` / `"smil-animation"` for motion. An undeclared script or animation is rejected (SL-H01).
+- **Declare `capabilities` as a TOOL ARGUMENT.** `capabilities` is an argument to `mcp__slides__create_slide`, alongside `html` and `title` — it is **not** part of the HTML, and nothing reads it from a comment or a meta tag. A plain slide is `capabilities: ["static"]`. Anything else must be declared: `"interactive-js"` for a `<script>`, `"css-animation"` / `"smil-animation"` for motion. An undeclared script or animation is rejected (SL-H01).
+- **Capabilities are fixed at creation — you cannot fix them later.** `mcp__slides__update_slide` validates your new HTML against the capabilities the slide *already* has and has no argument to change them, and there is no tool to delete a slide. So a slide created as `["static"]` can never be edited into an animated or scripted one: every `update_slide` will fail SL-H01 and retrying cannot help. If it happens, stop and ask the user to delete that slide so you can create it again — do not loop on `update_slide`, and do not create a second slide beside the broken one. Decide the capabilities BEFORE the first `create_slide` call.
 - **The 1280x720 sizing and the resets must be in a `<style>` block** — `width:1280px`, `height:720px`, `box-sizing:border-box`, and `margin:0`/`padding:0` are read from your stylesheet, not from `style="…"` attributes (SL-G01, SL-G03).
 - **No `position:fixed` and no viewport units** (`vh`/`vw`/`vmin`/`vmax`) anywhere — size in px against 1280x720 (SL-G05).
 - **No external subresources**: no `<link>`, no `<script src>`, no remote `url()`, no `@import`, no `@font-face`. Images must be `data:` URIs (SL-S01, SL-S02, SL-S03).
@@ -58,10 +59,9 @@ The `mcp__slides__*` tools reject HTML that breaks these — a rejection comes b
 - **A `<script>`, if present, is the last element of `<body>`** (SL-I02), and an interactive slide carries exactly one `[data-hover-target]` and one `[data-click-target]` (SL-I01).
 - **Nothing below 16px** anywhere (SL-C01) — and this skill's own 18px floor is stricter, so follow that.
 
-Minimal contract-valid skeleton:
+Minimal contract-valid slide — call `mcp__slides__create_slide` with `capabilities: ["static"]`, a `title`, and this `html`:
 
 ```html
-<!-- capabilities: ["static"] -->
 <!doctype html>
 <html>
   <head>

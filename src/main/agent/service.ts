@@ -10,6 +10,7 @@
 
 import { DEFAULT_AGENT_MODEL, type AgentEvent, type AgentModelId } from '../../shared/agent/types'
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
+import { defaultAgentLog, type AgentLog } from './log'
 import { AgentSession } from './session'
 import type { AgentQueryFn } from './query-contract'
 
@@ -35,9 +36,19 @@ export type AgentServiceDeps = {
    *
    * It is deliberately allowed to fail: a rejection is swallowed and the session still starts, with
    * the agent degraded to its no-skill behaviour rather than the chat box being dead. `materializeSkills`
-   * already reports per-skill trouble in its result instead of throwing.
+   * already reports per-skill trouble in its result instead of throwing — and both that result and a
+   * rejection are logged here, because a copy that quietly did nothing is indistinguishable from a
+   * healthy session otherwise.
    */
-  readonly prepareWorkspace?: (cwd: string) => Promise<unknown>
+  readonly prepareWorkspace?: (cwd: string) => Promise<WorkspacePreparation | void>
+  /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
+  readonly log?: AgentLog
+}
+
+/** The part of `MaterializeSkillsResult` the service reports on. Structural, so the seam stays thin. */
+export type WorkspacePreparation = {
+  readonly installed: readonly string[]
+  readonly failures: readonly string[]
 }
 
 export class AgentService {
@@ -104,14 +115,26 @@ export class AgentService {
       const { cwd, configDir } = this.deps.resolvePaths()
       // Skills are discovered from disk when the subprocess starts, so the copy has to land first.
       // A failure here must not cost the user their chat box — see `prepareWorkspace`'s docstring.
+      // The *session* reports the user-visible degradation, on the runtime's own loaded-skill list
+      // (which is the truth); this log is the main-process half, and the only place a partial copy
+      // names the file that failed.
+      const log = this.deps.log ?? defaultAgentLog
       try {
-        await this.deps.prepareWorkspace?.(cwd)
-      } catch {
+        const prepared = await this.deps.prepareWorkspace?.(cwd)
+        if (prepared) {
+          log(
+            `[agent] workspace skills installed: [${prepared.installed.join(', ')}]` +
+              (prepared.failures.length > 0 ? ` — failed: ${prepared.failures.join('; ')}` : ''),
+          )
+        }
+      } catch (error) {
         // Degraded (no skills), not broken: the session below still opens.
+        log(`[agent] workspace preparation failed: ${String(error)}`)
       }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
+        log,
         options: {
           apiKey,
           model: this.model,

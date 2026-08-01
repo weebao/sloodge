@@ -257,6 +257,20 @@ describe('reduceTranscript — out-of-turn events are inert', () => {
     expect(assistant(after).text).toBe('')
   })
 
+  it('skills-degraded appends a neutral notice naming the missing skills', () => {
+    const state = run([sendTurn('hi')])
+    const after = reduceTranscript(
+      state,
+      ev({ type: 'skills-degraded', missing: ['svg-animation', 'interactive-graph'] }),
+    )
+    const notice = after.messages.at(-1)
+    expect(notice?.kind).toBe('notice')
+    expect(notice).toMatchObject({ text: expect.stringContaining('svg-animation') })
+    // Degraded, not failed: the turn keeps streaming and nothing becomes an error.
+    expect(after.turnState).toBe(state.turnState)
+    expect(after.messages.some((m) => m.kind === 'error')).toBe(false)
+  })
+
   it('ready is a no-op on the transcript', () => {
     const state = run([sendTurn('hi')])
     const after = reduceTranscript(

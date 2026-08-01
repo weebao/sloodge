@@ -42,8 +42,18 @@ function read(name: BundledSkillName, file: string): string {
 }
 
 /**
- * Full-document HTML examples in a SKILL.md, each with the capabilities it declares in a leading
- * `<!-- capabilities: [...] -->` marker (which is also how a reader knows what to pass the tool).
+ * Full-document HTML examples in a SKILL.md, paired with the `capabilities` the skill **instructs
+ * the model to pass to `create_slide`** — read out of the prose immediately before the fence, which
+ * is the same sentence the model reads.
+ *
+ * Reading the instruction rather than a marker inside the HTML is the whole point. Capabilities
+ * reach the validator only as the `create_slide` tool argument (`slide-tools.ts`: `args.capabilities
+ * ?? ['static']`); nothing parses the HTML for them. An earlier version of this guard took them from
+ * an `<!-- capabilities: … -->` comment in the example, which made the test pass while the skill
+ * taught a mechanism production ignores — the animated and interactive skeletons would have been
+ * created as `['static']` and rejected by SL-H01 on every attempt. So the capabilities used here must
+ * come from the instruction, or the test proves nothing about what the model will actually send.
+ *
  * Fragments — the icon `<svg>` wrapper, a one-line snippet — are skipped: the validator judges whole
  * documents, and a fragment would fail for reasons that say nothing about drift.
  */
@@ -54,12 +64,17 @@ function slideExamples(markdown: string): { capabilities: SlideCapability[]; htm
   while ((match = fence.exec(markdown)) !== null) {
     const html = match[1] ?? ''
     if (!html.includes('class="slide"')) continue
-    const declared = /<!--\s*capabilities:\s*(\[[^\]]*\])\s*-->/.exec(html)
-    expect(declared, 'a full-slide example must declare its capabilities').not.toBeNull()
-    out.push({
-      capabilities: JSON.parse(declared?.[1] ?? '[]') as SlideCapability[],
-      html,
-    })
+    // The nearest `create_slide` … `capabilities: [...]` instruction preceding this example.
+    const before = markdown.slice(0, match.index)
+    const instructions = [
+      ...before.matchAll(/mcp__slides__create_slide[^\n]*?`capabilities: (\[[^\]]*\])`/g),
+    ]
+    const declared = instructions.at(-1)?.[1]
+    expect(
+      declared,
+      'a full-slide example must be introduced by a create_slide call naming its capabilities',
+    ).toBeDefined()
+    out.push({ capabilities: JSON.parse(declared ?? '[]') as SlideCapability[], html })
   }
   return out
 }
@@ -81,7 +96,9 @@ describe.each(BUNDLED_SKILL_NAMES)('bundled skill: %s', (name) => {
   })
 
   it('instructs only tools the agent actually has (§7 denies Bash/Write/Edit/web tools)', () => {
-    for (const denied of ['Bash', 'WebFetch', 'WebSearch']) {
+    // The same seven names client.ts denies — not a sample. A skill that reintroduced "use Write to
+    // save the slide" (drift class #2) has to red this.
+    for (const denied of ['Bash', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Agent', 'Task']) {
       expect(skill).not.toContain(denied)
     }
     // The validated originals told the model to shell out to the eval harness; the shipped agent
@@ -92,6 +109,21 @@ describe.each(BUNDLED_SKILL_NAMES)('bundled skill: %s', (name) => {
     expect(skill).not.toContain('experiments/')
     expect(skill).toContain('mcp__slides__update_slide')
     expect(skill).toContain('mcp__slides__screenshot_slide')
+  })
+
+  it('teaches capabilities as the create_slide ARGUMENT, the only thing production reads', () => {
+    expect(skill).toContain('argument to `mcp__slides__create_slide`')
+    expect(skill).toContain('not** part of the HTML')
+    // The inert-comment convention this replaced: a marker in the HTML that nothing parses.
+    expect(skill).not.toContain('<!-- capabilities')
+  })
+
+  it('warns that capabilities cannot be changed after creation, with a recovery that works', () => {
+    // `update_slide` validates against the slide's *existing* capabilities and cannot change them,
+    // and there is no delete tool — so "fix it with update_slide" and "recreate it" are both dead
+    // ends. The only real escape is asking the user to delete the slide.
+    expect(skill).toContain('Capabilities are fixed at creation')
+    expect(skill).toContain('ask the user to delete that slide')
   })
 
   it('restates the Tier-1 rules a slide is actually judged against', () => {
@@ -106,11 +138,27 @@ describe.each(BUNDLED_SKILL_NAMES)('bundled skill: %s', (name) => {
   })
 
   it.each(slideExamples(skill).map((example, index) => [index, example] as const))(
-    'example %i passes the real Tier-1 validator',
+    'example %i passes the real Tier-1 validator with the capabilities the skill instructs',
     (_index, example) => {
       const result = validateSlideContract(example.html, example.capabilities)
       expect(result.issues.filter((issue) => issue.severity === 'error')).toEqual([])
       expect(result.ok).toBe(true)
+    },
+  )
+
+  it.each(slideExamples(skill).map((example, index) => [index, example] as const))(
+    'example %i is judged against the instructed capabilities, not the ["static"] default',
+    (_index, example) => {
+      // `create_slide` defaults to `['static']` when the argument is omitted. For a skill whose
+      // slides animate or run script, that default *must* fail — otherwise the instruction to pass
+      // `capabilities` is decorative and this suite could not tell the two apart.
+      const asDefault = validateSlideContract(example.html, ['static'])
+      const isStaticSkill =
+        example.capabilities.length === 1 && example.capabilities[0] === 'static'
+      expect(asDefault.ok).toBe(isStaticSkill)
+      if (!isStaticSkill) {
+        expect(asDefault.issues.map((issue) => issue.rule)).toContain('SL-H01')
+      }
     },
   )
 })

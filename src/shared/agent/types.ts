@@ -84,6 +84,13 @@ export type AgentEvent =
       readonly model: string
       readonly skills: readonly string[]
     }
+  /**
+   * The bundled skills did not load for this session (50-agent-integration.md §8). Emitted once per
+   * session, right after `ready`, and only when something is actually missing — the agent still
+   * works, but without the craft knowledge the skills carry, so this is a visible degradation
+   * notice rather than an error. A silent skill-less session is the failure M2.4 exists to prevent.
+   */
+  | { readonly type: 'skills-degraded'; readonly missing: readonly string[] }
   | { readonly type: 'assistant-delta'; readonly text: string }
   | { readonly type: 'assistant-message'; readonly text: string; readonly usage: AgentUsage }
   | { readonly type: 'tool-use'; readonly toolUseId: string; readonly label: string }
@@ -119,6 +126,7 @@ export const MAX_API_KEY_LENGTH = 512
 
 const AGENT_EVENT_TYPES = [
   'ready',
+  'skills-degraded',
   'assistant-delta',
   'assistant-message',
   'tool-use',
