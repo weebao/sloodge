@@ -82,6 +82,18 @@ export type AgentKeyStatusResponse = { status: ApiKeyStatus }
 export type AgentSendResponse = { accepted: boolean }
 export type AgentInterruptResponse = { interrupted: boolean }
 
+/**
+ * Present mode (M4.1). The renderer owns the presentation surface — it reuses the same `slide://`
+ * frame delivery the editor canvas does, so there is no second render path and the sandbox + CSP
+ * hold exactly as in edit view. What the renderer *cannot* do for itself is drive the OS window into
+ * real, borderless fullscreen: `BrowserWindow.setFullScreen` lives in main. This one request is that
+ * seam and nothing more. It is idempotent and reversible — `{ fullscreen: false }` restores the
+ * editor chrome — and the response reports the window's actual state after the call so the renderer
+ * never assumes a toggle it did not get (a headless/browser host has no window and reports `false`).
+ */
+export type PresentFullscreenRequest = { fullscreen: boolean }
+export type PresentFullscreenResponse = { fullscreen: boolean }
+
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
   'app:ping': { req: Record<string, never>; res: { pong: true } }
@@ -92,6 +104,7 @@ export type IpcRequests = {
   'agent:keyStatus': { req: Record<string, never>; res: AgentKeyStatusResponse }
   'agent:send': { req: AgentSendRequest; res: AgentSendResponse }
   'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
+  'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
 }
 
 /** One-way main -> renderer events, delivered on this fixed allow-list. */
@@ -154,6 +167,14 @@ export const AGENT_INTERRUPT_CHANNEL = 'agent:interrupt' satisfies IpcRequestCha
 export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
 
 /**
+ * Present mode's fullscreen toggle (M4.1). A constant for the same reason the others are: main
+ * registers the handler, preload invokes it, and a typo in either literal would compile and ship as
+ * "Present opens but the window never goes fullscreen", invisible to a suite that never crosses a
+ * real IPC boundary.
+ */
+export const PRESENT_SET_FULLSCREEN_CHANNEL = 'present:setFullscreen' satisfies IpcRequestChannel
+
+/**
  * The deck hot-update channel (§9). Main pushes a full deck snapshot after every agent-driven
  * mutation; the renderer adopts it into its deck store so the slides appear as they are written.
  */
@@ -190,6 +211,7 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_KEY_STATUS_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
+  PRESENT_SET_FULLSCREEN_CHANNEL,
 ] as const satisfies readonly IpcRequestChannel[]
 
 export const IPC_EVENT_CHANNELS = [

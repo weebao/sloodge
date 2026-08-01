@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
 import { createAgentBridge } from './agentBridge'
 import { createMenuActionHandler } from './menuActionHandler'
+import { createPresentBridge } from './presentBridge'
 import { createSlideBridge } from './slideBridge'
 
 /**
@@ -58,12 +59,21 @@ const agent = createAgentBridge(
   },
 )
 
+/**
+ * M4.1's Present surface. The renderer draws the fullscreen surface itself (reusing the `slide://`
+ * frames), but only main can drive the OS window into borderless fullscreen — this is that one seam.
+ */
+const { setPresentFullscreen } = createPresentBridge(async (channel, payload) =>
+  ipcRenderer.invoke(channel, payload),
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
   publishSlide,
   revokeSlide,
   agent,
+  setPresentFullscreen,
 } as const
 
 export type SloodgeApi = typeof api
