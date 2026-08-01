@@ -237,73 +237,87 @@ API-key path is unaffected either way.
 Branding rules are unchanged: "Powered by Claude" / "Claude Agent" is permitted; "Claude Code"
 branding is not. The chat panel says **"Powered by Claude"** in the footer, nowhere else.
 
-### Credential precedence — the trap this milestone had to close
+### The subprocess environment is an ALLOW-LIST
 
-The CLI resolves credentials in this order:
+Three review rounds found three separate hijack layers, each one a variable nobody had thought to
+delete. They are worth recording in order, because the pattern is the point:
+
+| Layer | Variable | What it does |
+|---|---|---|
+| 1. Credential | `ANTHROPIC_API_KEY` | Outranks `CLAUDE_CODE_OAUTH_TOKEN` in the CLI's precedence, so an ambient key silently beat the token the user pasted in Settings. |
+| 2. Provider | `CLAUDE_CODE_USE_*` | `getAPIProvider()` is env-only and runs **before** credential logic. Under `CLAUDE_CODE_USE_BEDROCK=1` the OAuth path is forced off entirely and the Bedrock branch nulls `Authorization`, authenticating with AWS instead. |
+| 3. Transport | `ANTHROPIC_UNIX_SOCKET` | Rewrites every `forAnthropicAPI` fetch to a local socket **below** the URL layer, and the bearer-enable check short-circuits to `true` under it — so the socket case *enables* the token. The resolved base URL is irrelevant. |
+
+Each round we deleted the newly-found names and shipped; each round the next layer surfaced. A
+deny-list is structurally the wrong shape here: it can only close instances someone has already
+enumerated, and it silently reopens whenever Anthropic ships a new variable — in a CLI that exposes
+well over a thousand of them.
+
+`buildAuthEnv` (`src/main/agent/auth-env.ts`) therefore **no longer inherits `process.env`**. It
+starts from nothing and adds only what Sloodge intends. Every provider switch, transport selector,
+header injector, gateway flag, and every variable that does not exist yet is excluded *because
+exclusion is the default*. Admitting a passthrough is now a deliberate, reviewable act with a reason
+attached.
+
+**What is admitted, and why.** The set was derived empirically against the bundled CLI 2.1.220, not
+guessed:
+
+- Under `env -i` (a completely empty environment) the CLI boots and answers `auth status --json`
+  correctly. **Nothing is required merely to start.**
+- With no `PATH` at all, `claude doctor` still reports `Search: OK (bundled)` — ripgrep ships inside
+  the binary rather than being resolved from `PATH`.
+- Sloodge already denies `Bash`, `Write`, and `Edit` (§7), so the child's tool surface is `Read` +
+  `Skill` + the in-process slide server. It has very little reason to shell out.
+
+So the entries are not "what it needs to boot" — that set is empty. They are:
+
+| Group | Entries | Reason |
+|---|---|---|
+| OS essentials | `PATH`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ` | Behave like a normal child process. `HOME` additionally keys the macOS Keychain lookup (see the caveat below). |
+| Windows runtime | `SystemRoot`, `windir`, `SystemDrive`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `ProgramData`, `NUMBER_OF_PROCESSORS` | Node/bun break without these — DNS and spawn fail with no `SystemRoot`. Not verified on a Windows host (none available); omitting them would break Windows, admitting them cannot redirect a request. |
+| Network reachability | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` | **Deliberate, with stated residual risk.** Without them Sloodge cannot reach the API from behind a corporate proxy or TLS-inspecting gateway, and we offer no setting to fix that. A non-MITM proxy sees only `CONNECT`, never the bearer token — materially weaker exposure than the application-layer redirects we exclude. Revisit if Sloodge grows its own proxy setting. |
+| Disclosed redirect | `ANTHROPIC_BASE_URL` | Admitted **only because it is surfaced in the UI** — see below. |
+
+Matching is case-insensitive (Windows names vary: `Path`, `TEMP`, `SystemRoot`) while the caller's
+original casing is preserved in the output.
+
+The boundary is tested the way M4.3's safe-pptx test is: a parent environment seeded with every
+hostile name we can enumerate — all 14 of the CLI's provider-sanitisation array, the transport
+variable, the credential carriers, the `SKIP_*_AUTH` set, the third-party endpoints, the mTLS
+material — **plus invented names like `ANTHROPIC_FUTURE_THING`** — must produce an environment
+containing only allow-listed keys. The invented names are the whole point: they are what a deny-list
+cannot fail.
+
+### Correction: the provider list has 14 entries, and gateway is env-driven
+
+An earlier round of this document claimed the six provider switches were "extracted from the binary's
+own exported `THIRD_PARTY_PROVIDER_ENV_VARS` map", and exempted `gateway` on the grounds that its
+predicate `Cy(){return Ot.gatewayAuth}` reads in-memory state so "ambient config cannot select it".
+
+**Both claims were wrong, and the second was the dangerous one.** The six-entry map is a *display*
+map (provider → label). The CLI's actual provider-sanitisation array has **fourteen** entries:
 
 ```
-Bedrock/Vertex/Foundry -> ANTHROPIC_AUTH_TOKEN -> ANTHROPIC_API_KEY -> apiKeyHelper
-  -> CLAUDE_CODE_OAUTH_TOKEN -> interactive subscription login
+CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX, CLAUDE_CODE_USE_FOUNDRY,
+CLAUDE_CODE_USE_ANTHROPIC_AWS, CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD, CLAUDE_CODE_USE_MANTLE,
+CLAUDE_CODE_USE_GATEWAY, ANTHROPIC_FOUNDRY_RESOURCE, ANTHROPIC_VERTEX_PROJECT_ID,
+ANTHROPIC_AWS_WORKSPACE_ID, ANTHROPIC_GOOGLE_CLOUD_PROJECT, ANTHROPIC_GOOGLE_CLOUD_LOCATION,
+ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID, CLOUD_ML_REGION
 ```
 
-**`ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN`.** M2.1 spreads `process.env` into the
-subprocess — which it must, or the child loses `PATH` and `HOME` (§16) — so a developer's ambient key,
-or one left in a user's shell profile, would silently outrank a token the user deliberately pasted,
-billing their console account while the UI reads "using your Claude subscription".
+`Ot.gatewayAuth` is **not** in-memory-only: it is populated from `CLAUDE_CODE_USE_GATEWAY` together
+with `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, and the CLI's own message says the session "is
+routed through a cloud gateway". It was not exploitable at the time only because
+`ANTHROPIC_AUTH_TOKEN` happened to be stripped as a credential variable — an accident, in a codebase
+whose §4 plans to *add* gateway support.
 
-So `buildAuthEnv` (`src/main/agent/auth-env.ts`) **deletes** two distinct classes of variable and
-then sets exactly one credential:
-
-1. **Credential variables** — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, the two
-   `*_FILE_DESCRIPTOR` variants, and `ANTHROPIC_CUSTOM_HEADERS` (which is parsed into outbound
-   request headers and is named by the CLI's own retry message as a carrier of the gateway token, so
-   it can inject an `Authorization` header behind our back).
-2. **Provider-selection variables** — see the next subsection.
-
-Deleting, not merely declining to set, is the whole point; it is pinned by a test that puts an
-ambient `ANTHROPIC_API_KEY` in the base environment and asserts it is absent from the result.
-
-### Sloodge pins the firstParty provider
-
-Credential precedence is only the *second* decision the CLI makes. Provider selection runs first, and
-it is env-only:
-
-```js
-function Hn(){ if(Cy()) return "gateway";
-  return Z.CLAUDE_CODE_USE_BEDROCK ? "bedrock"
-       : Z.CLAUDE_CODE_USE_FOUNDRY ? "foundry"
-       : Z.CLAUDE_CODE_USE_ANTHROPIC_AWS ? "anthropicAws"
-       : Z.CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD ? "anthropicGoogleCloud"
-       : Z.CLAUDE_CODE_USE_MANTLE ? "mantle"
-       : Z.CLAUDE_CODE_USE_VERTEX ? "vertex" : "firstParty" }
-function Dc(){ return Hn() === "firstParty" }   // gates the OAuth path
-```
-
-Nothing in it consults `CLAUDE_CODE_OAUTH_TOKEN`, and `Dc()` forces the OAuth path **off** under any
-third-party provider — the Bedrock branch nulls `Authorization` outright and authenticates with AWS
-credentials instead. So a user with `CLAUDE_CODE_USE_BEDROCK=1` in their shell profile (a standard
-enterprise Claude Code setup) could paste a subscription token into Settings, see "Using your Claude
-subscription", and have that token never used: their AWS account billed, or an opaque failure.
-
-**`buildAuthEnv` therefore deletes all six switches**, pinning `firstParty`. This is a product
-decision, not just a code detail: a user's ambient third-party provider config is completely
-invisible from inside Sloodge — we render no UI that reveals it — so if we did not pin, the app could
-silently disagree with its own Settings screen and the user would have no way to see why.
-
-- The six names are the CLI's own exported `THIRD_PARTY_PROVIDER_ENV_VARS` map, not a guess.
-- `gateway` needs no entry: its predicate is `Cy(){return Ot.gatewayAuth}` — in-memory login state,
-  not an environment variable — so ambient config cannot select it.
-- The per-provider `CLAUDE_CODE_SKIP_*_AUTH` flags and third-party base URLs
-  (`ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_VERTEX_BASE_URL`, …) are cleared on the same pass. With
-  the provider pinned they are inert; leaving inert credential-adjacent state around is what invited
-  this bug in the first place.
-- **Deletion, not `"0"`.** The switches are zod-coerced booleans accepting only `1/true/yes/on`, so
-  `"0"` would work today — but deletion does not depend on that parser staying as it is, and it
-  matches the CLI's own sibling-disabling helper, which uses `void 0`.
+This correction is left in the record rather than quietly edited away, because it is the clearest
+argument for why the allow-list replaced the audit: a confidently-worded, verifiable-sounding
+sentence about a binary can be wrong, and a deny-list built on it inherits the error silently.
 
 ### `ANTHROPIC_BASE_URL` is surfaced, not stripped
 
-`ANTHROPIC_BASE_URL` is the one redirecting variable deliberately left in place. It decides *where*
+`ANTHROPIC_BASE_URL` is the one application-layer redirect deliberately admitted. It decides *where*
 the credential is sent — the CLI resolves the firstParty endpoint as
 `process.env.ANTHROPIC_BASE_URL || BASE_API_URL` and attaches the bearer token with no host
 allow-list — so a stale value from a LiteLLM proxy or corporate gateway would receive a long-lived
@@ -318,15 +332,26 @@ The real defect was that the passthrough was *invisible* while the Auth tab prom
 of credential entry, that credentials "never leave this machine except as requests to Anthropic".
 That sentence was false under a custom base URL. So:
 
-- main reads the variable on every status read (never cached — the subprocess reads the live
-  environment too) and reports it as a masked `EndpointInfo` (`src/shared/agent/endpoint.ts`);
+- the disclosure is computed by `describeAgentEndpoint` from the **built subprocess environment**,
+  not from a second reading of `process.env`. The sentence shown to the user and the bytes handed to
+  the child are the same data, so they cannot drift — which is exactly how round 2 missed the socket
+  transport;
+- it is recomputed on **every** status read, never cached, because the child reads the live
+  environment at spawn time (pinned by a test — hoisting it to a module constant previously survived
+  the whole suite);
 - the value is reduced to an **origin**, because a base URL may legitimately carry userinfo
   (`https://user:pass@proxy/`) and echoing that into the renderer would leak a credential through the
-  very channel this milestone exists to keep clean;
-- the Auth tab renders a warning naming the host **above both credential inputs**, so it is read
-  before anything is pasted, not after;
-- the footnote now says credentials "leave this machine only as requests to the configured Anthropic
-  endpoint" — true in both configurations.
+  very channel this milestone exists to keep clean. Opaque-origin schemes (`file:`, `data:`) yield
+  the *string* `"null"` from `URL.origin` and are normalised to "host unknown" so the warning never
+  reads "routed to null";
+- transport outranks the URL in the report: under a socket the CLI never consults the base URL, so
+  naming the URL would be actively misleading. That branch is unreachable while the allow-list
+  excludes `ANTHROPIC_UNIX_SOCKET` — it exists so that if a socket or gateway is ever deliberately
+  admitted, the UI says so rather than silently lying;
+- the Auth tab renders the warning, naming the host, **above both credential inputs**, so it is read
+  before anything is pasted;
+- the footnote says credentials "leave this machine only as requests to the configured Anthropic
+  endpoint" — true in every configuration.
 
 ### Storage
 

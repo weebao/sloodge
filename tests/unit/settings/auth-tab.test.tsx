@@ -41,6 +41,7 @@ describe('AuthTab — endpoint disclosure', () => {
         status={deriveAuthStatus(UNCONFIGURED, UNCONFIGURED, {
           custom: true,
           host: 'https://proxy.internal',
+          transport: 'network',
         })}
         onDirtyChange={noop}
       />,
@@ -56,6 +57,7 @@ describe('AuthTab — endpoint disclosure', () => {
         status={deriveAuthStatus(UNCONFIGURED, UNCONFIGURED, {
           custom: true,
           host: 'https://proxy.internal',
+          transport: 'network',
         })}
         onDirtyChange={noop}
       />,

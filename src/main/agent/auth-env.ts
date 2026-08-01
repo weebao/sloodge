@@ -1,67 +1,44 @@
 /**
- * Building the agent subprocess's credential environment (M2.7).
+ * Building the agent subprocess's environment (M2.7).
  *
- * Small, pure, and load-bearing enough to deserve its own file: it is the single point where a
- * mistake silently bills the wrong account — or sends the user's credential somewhere they did not
- * choose.
+ * ## Why this is an allow-list
  *
- * There are **two** layers to get right, and the CLI evaluates them in this order:
+ * Three review rounds found three separate hijack layers in the same shape, each one a variable we
+ * had not thought to delete:
  *
- *   1. **Provider selection** — which backend the client talks to at all. Env-only, and it runs
- *      FIRST.
- *   2. **Credential selection** — which secret authenticates that call.
+ *   1. **Credential** — `ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN`, so an ambient key
+ *      silently outranked the token the user pasted in Settings.
+ *   2. **Provider** — `getAPIProvider()` is env-only and runs *before* credential logic; under
+ *      `CLAUDE_CODE_USE_BEDROCK=1` the OAuth path is forced off entirely and the Bedrock branch nulls
+ *      `Authorization` and authenticates with AWS instead.
+ *   3. **Transport** — `ANTHROPIC_UNIX_SOCKET` redirects every `forAnthropicAPI` fetch to a local
+ *      socket *before* any URL or proxy handling, and the bearer-enable check short-circuits to
+ *      `true` under it. The resolved base URL is irrelevant.
  *
- * M2.7's first draft closed layer 2 and left layer 1 open, which is the same hijack one tier up.
- * Both are closed here.
+ * Each round we deleted the newly-found names and shipped; each round the next layer surfaced. The
+ * deny-list is structurally the wrong shape: it can only close instances someone has already
+ * enumerated, and it silently reopens whenever Anthropic ships a new variable — in a CLI exposing
+ * well over a thousand of them.
  *
- * ## Layer 1: provider selection
+ * So this file no longer spreads `process.env` and subtracts. It **starts from nothing and adds only
+ * what Sloodge intends**. Every provider switch, transport selector, header injector, gateway flag,
+ * and every variable that does not exist yet is excluded, because exclusion is the default. Adding a
+ * passthrough is now a deliberate, reviewable act with a reason attached.
  *
- * Extracted verbatim from the bundled CLI 2.1.220:
+ * ## How the allow-list was derived
  *
- * ```js
- * function Hn(){ if(Cy()) return "gateway";
- *   return Z.CLAUDE_CODE_USE_BEDROCK ? "bedrock"
- *        : Z.CLAUDE_CODE_USE_FOUNDRY ? "foundry"
- *        : Z.CLAUDE_CODE_USE_ANTHROPIC_AWS ? "anthropicAws"
- *        : Z.CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD ? "anthropicGoogleCloud"
- *        : Z.CLAUDE_CODE_USE_MANTLE ? "mantle"
- *        : Z.CLAUDE_CODE_USE_VERTEX ? "vertex" : "firstParty" }
- * function Dc(){ return Hn() === "firstParty" }   // gates the OAuth path
- * ```
+ * Empirically, against the bundled CLI 2.1.220 — not guessed:
  *
- * Nothing in it consults `CLAUDE_CODE_OAUTH_TOKEN`. Under any third-party provider the OAuth path is
- * forced off, and the Bedrock branch nulls `Authorization` entirely and authenticates with AWS
- * instead. So a user with `CLAUDE_CODE_USE_BEDROCK=1` in their shell profile — a standard enterprise
- * Claude Code setup — could paste a subscription token into Settings, read "Using your Claude
- * subscription", and have that token never used: their AWS account billed, or an opaque failure.
+ * - Under `env -i` (a completely empty environment) the CLI boots and answers `auth status --json`
+ *   correctly. **Nothing is required merely to start.**
+ * - With no `PATH` at all, `claude doctor` still reports `Search: OK (bundled)` — ripgrep ships
+ *   inside the binary rather than being resolved from `PATH`.
+ * - Sloodge additionally denies `Bash`, `Write`, and `Edit` (client.ts), so the child's tool surface
+ *   is `Read` + `Skill` + the in-process slide server. It has very little reason to shell out.
  *
- * **Sloodge pins the firstParty provider** by deleting all six switches. The names are not guessed —
- * they are the CLI's own exported `THIRD_PARTY_PROVIDER_ENV_VARS` map. `gateway` needs no entry: its
- * predicate reads in-memory login state (`Cy(){return Ot.gatewayAuth}`), not the environment, so
- * ambient config cannot select it.
- *
- * Deleting rather than setting `"0"`: the CLI parses these through a zod boolean coercion accepting
- * only `1/true/yes/on`, so `"0"` would in fact work today — but deletion does not depend on a
- * truthiness parser staying as it is, it matches the CLI's own sibling-disabling helper (which uses
- * `void 0`), and it is the posture this file already argues for everywhere else.
- *
- * ## Layer 2: credential selection
- *
- * ```
- * ANTHROPIC_AUTH_TOKEN -> ANTHROPIC_API_KEY -> apiKeyHelper -> CLAUDE_CODE_OAUTH_TOKEN
- * ```
- *
- * **`ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN`.** We spread `process.env` — we must, or
- * the child loses `PATH` and `HOME` (§16) — so an ambient key would outrank a token the user
- * deliberately pasted. Hence: delete the losing variables, never merely decline to set them.
- *
- * ## What is deliberately NOT stripped
- *
- * `ANTHROPIC_BASE_URL` — see `endpoint.ts`. It redirects *where* the credential is sent, so it is a
- * real exposure, but stripping it would silently break the corporate-gateway deployments §4 plans
- * for, replacing a working setup with an opaque failure the user cannot fix from our UI. It is
- * **surfaced** instead: main reads it, the Auth tab warns before the user pastes anything, and the
- * copy no longer promises the credential only ever reaches Anthropic.
+ * The entries below are therefore *not* "what it needs to boot" — that set is empty. They are the OS
+ * facilities a child process needs to behave correctly (locale, temp, Windows runtime) plus network
+ * reachability, each justified individually. Anything unlisted does not reach the child.
  */
 
 /** The credential the vault resolved for this session. Plaintext — main-process only, never emitted. */
@@ -70,65 +47,112 @@ export type AgentCredential =
   | { readonly kind: 'subscription'; readonly value: string }
 
 /**
- * Layer 2. Every variable that can *supply* a credential. Cleared wholesale on every branch so a
- * variable added to the user's shell can never reach the subprocess unexamined.
+ * POSIX/general OS facilities. None is required for the CLI to start; each is admitted so the child
+ * behaves like a normal process of this OS.
  */
-const CREDENTIAL_ENV_VARS = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
-  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
-  // Parsed into outbound request headers, and named by the CLI's own retry message as a carrier of
-  // the gateway token ("refresh the gateway token provided via ANTHROPIC_AUTH_TOKEN/
-  // ANTHROPIC_CUSTOM_HEADERS") — i.e. it can inject an `Authorization` header behind our back.
-  'ANTHROPIC_CUSTOM_HEADERS',
+const OS_ENV_ALLOW = [
+  // Bundled ripgrep means search does not need this, but the runtime may still exec a helper, and an
+  // empty PATH is a strange environment to hand a child. Non-redirecting.
+  'PATH',
+  // Bun runtime paths, and — per §4 — the key the macOS Keychain lookup is derived from. Dropping or
+  // overriding HOME is exactly what breaks credential lookup on macOS.
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  // UTF-8 correctness in the output the event mapper parses.
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  // Timestamps in transcripts.
+  'TZ',
 ] as const
 
 /**
- * Layer 1. The CLI's exported `THIRD_PARTY_PROVIDER_ENV_VARS`, plus the per-provider auth-skip
- * siblings and third-party base URLs. The six switches are what actually select a provider; the rest
- * are cleared for the same "no ambient half-configuration survives" reason — with the provider pinned
- * they are inert, and leaving inert credential-adjacent state around invites exactly the kind of
- * reasoning error that produced this fix.
+ * Windows runtime essentials. Node/bun genuinely break without these — DNS resolution and process
+ * spawn fail with no `SystemRoot`, and `PATHEXT` decides what counts as executable. Admitted on every
+ * platform (the matcher is case-insensitive and these names do not exist elsewhere). Not verified on
+ * a Windows host — none was available — so this is deliberately the conservative direction: omitting
+ * them would break Windows, while admitting them cannot redirect a request.
  */
-const PROVIDER_ENV_VARS = [
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
-  'CLAUDE_CODE_USE_MANTLE',
-  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
-  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
-  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
-  'CLAUDE_CODE_SKIP_MANTLE_AUTH',
-  'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
-  'CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH',
-  'ANTHROPIC_BEDROCK_BASE_URL',
-  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
-  'ANTHROPIC_VERTEX_BASE_URL',
-  'ANTHROPIC_FOUNDRY_BASE_URL',
-  'ANTHROPIC_AWS_BASE_URL',
-  'ANTHROPIC_GOOGLE_CLOUD_BASE_URL',
+const WINDOWS_ENV_ALLOW = [
+  'SystemRoot',
+  'windir',
+  'SystemDrive',
+  'COMSPEC',
+  'PATHEXT',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'ProgramData',
+  'NUMBER_OF_PROCESSORS',
 ] as const
 
-/** The six switches that actually select a provider — exported so a test can pin each one. */
-export const THIRD_PARTY_PROVIDER_ENV_VARS: readonly string[] = [
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
-  'CLAUDE_CODE_USE_MANTLE',
+/**
+ * Network reachability. **A deliberate passthrough with a stated residual risk**, per the rule that
+ * anything admitted needs a reason.
+ *
+ * Without these Sloodge cannot reach the API from behind a corporate proxy or a TLS-inspecting
+ * gateway — the app is dead for those users with no setting of ours to fix it. The residual risk is
+ * real but materially smaller than the application-layer redirects we exclude: a non-MITM proxy sees
+ * only `CONNECT` and never the bearer token, whereas `ANTHROPIC_BASE_URL` and `ANTHROPIC_UNIX_SOCKET`
+ * hand it the credential in full. Revisit if Sloodge ever grows its own proxy setting.
+ */
+const NETWORK_ENV_ALLOW = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  // Corporate CA bundles; without it TLS interception fails closed and nothing connects at all.
+  'NODE_EXTRA_CA_CERTS',
+] as const
+
+/**
+ * The one application-layer redirect we admit — and only because it is **disclosed**. `endpoint.ts`
+ * reads it back out of the built environment and the Auth tab warns, naming the host, above both
+ * credential inputs. Promise and behaviour match by construction: remove it here and the warning
+ * stops firing; add anything else redirecting and it must be surfaced the same way.
+ */
+const DISCLOSED_REDIRECT_ENV_ALLOW = ['ANTHROPIC_BASE_URL'] as const
+
+/** Everything inherited from the parent process, in one list. */
+export const INHERITED_ENV_ALLOW: readonly string[] = [
+  ...OS_ENV_ALLOW,
+  ...WINDOWS_ENV_ALLOW,
+  ...NETWORK_ENV_ALLOW,
+  ...DISCLOSED_REDIRECT_ENV_ALLOW,
 ]
 
-/** Everything `buildAuthEnv` removes, in one list, so the sweep is assertable as a whole. */
-export const STRIPPED_ENV_VARS: readonly string[] = [...CREDENTIAL_ENV_VARS, ...PROVIDER_ENV_VARS]
+/**
+ * Windows environment names are case-insensitive (`Path`, `TEMP`, `SystemRoot` all vary in the wild),
+ * so matching is case-insensitive while the caller's original key casing is preserved in the output.
+ */
+const ALLOW_SET = new Set(INHERITED_ENV_ALLOW.map((name) => name.toUpperCase()))
+
+/** True when `name` may be inherited. Exported so the boundary test can enumerate against it. */
+export function isInheritedEnvVar(name: string): boolean {
+  return ALLOW_SET.has(name.toUpperCase())
+}
 
 /**
- * Copy `base`, strip every credential and provider variable, then set exactly the one credential this
- * session implies.
+ * The inherited half of the subprocess environment: `base` filtered to the allow-list.
+ *
+ * Exported separately from `buildAuthEnv` so `getAuthStatus` can ask "what would we actually send?"
+ * without needing a credential — which is what lets the endpoint disclosure be derived from the same
+ * environment the child receives, rather than from a parallel reading of `process.env`.
+ */
+export function allowedEnv(
+  base: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && isInheritedEnvVar(key)) env[key] = value
+  }
+  return env
+}
+
+/**
+ * Build the subprocess environment: the allow-listed inheritance plus exactly one credential.
  *
  * Returns a plain `Record<string, string>` (no `undefined` values) because the SDK hands `env`
  * straight to `spawn`, which stringifies `undefined` as the literal `"undefined"`.
@@ -137,19 +161,15 @@ export function buildAuthEnv(
   base: Readonly<Record<string, string | undefined>>,
   credential: AgentCredential,
 ): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined) env[key] = value
-  }
-  for (const name of STRIPPED_ENV_VARS) delete env[name]
-
+  const env = allowedEnv(base)
   switch (credential.kind) {
     case 'api-key':
       env['ANTHROPIC_API_KEY'] = credential.value
       break
     case 'subscription':
-      // With ANTHROPIC_API_KEY removed above and the provider pinned to firstParty by the
-      // PROVIDER_ENV_VARS sweep, this is now the credential the client will actually carry.
+      // No competing credential can be present: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, the
+      // apiKeyHelper descriptors and every provider switch are absent by construction, so this is
+      // unambiguously the credential the client carries, on the firstParty provider.
       env['CLAUDE_CODE_OAUTH_TOKEN'] = credential.value
       break
   }

@@ -116,6 +116,33 @@ describe('getAuthStatus', () => {
     expect((await vault.getAuthStatus()).mode).toBe('api-key')
   })
 
+  /**
+   * The endpoint must be recomputed per call. Hoisting `describeAgentEndpoint` to a module constant
+   * survived the entire round-2 suite, which is exactly the kind of "documented but unpinned"
+   * property that quietly regresses.
+   *
+   * Mutation check: cache the endpoint at module scope in vault.ts and this fails.
+   */
+  it('recomputes the endpoint on every call rather than caching it', async () => {
+    withFiles({ [KEY_FILE]: 'sk-ant-key-wxyz' })
+    const before = process.env['ANTHROPIC_BASE_URL']
+    try {
+      delete process.env['ANTHROPIC_BASE_URL']
+      expect((await vault.getAuthStatus()).endpoint.custom).toBe(false)
+
+      process.env['ANTHROPIC_BASE_URL'] = 'https://proxy.internal'
+      const after = await vault.getAuthStatus()
+      expect(after.endpoint).toEqual({
+        custom: true,
+        host: 'https://proxy.internal',
+        transport: 'network',
+      })
+    } finally {
+      if (before === undefined) delete process.env['ANTHROPIC_BASE_URL']
+      else process.env['ANTHROPIC_BASE_URL'] = before
+    }
+  })
+
   it('carries no plaintext toward the renderer', async () => {
     withFiles({ [KEY_FILE]: 'sk-ant-key-wxyz', [TOKEN_FILE]: 'sk-ant-oat01-abcd' })
     const serialized = JSON.stringify(await vault.getAuthStatus())

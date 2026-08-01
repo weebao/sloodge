@@ -1,77 +1,108 @@
 /**
- * Where the credential actually goes (M2.7, round 2).
+ * Where the credential actually goes (M2.7, rounds 2–3).
  *
- * `ANTHROPIC_BASE_URL` decides the host the bearer token is transmitted to. The CLI resolves the
- * firstParty endpoint as `process.env.ANTHROPIC_BASE_URL || BASE_API_URL` and builds the client with
- * `authToken: <the pasted CLAUDE_CODE_OAUTH_TOKEN>` — there is no host allow-list gating whether the
- * token is sent. A stale value left over from a LiteLLM proxy, an observability shim, or a corporate
- * gateway therefore receives a long-lived Claude subscription token.
+ * Two things can redirect a credential-bearing request, at different layers:
  *
- * ## Why this is surfaced rather than stripped
+ * - **`ANTHROPIC_BASE_URL`** (application layer) — the CLI resolves the firstParty endpoint as
+ *   `process.env.ANTHROPIC_BASE_URL || BASE_API_URL` and attaches the bearer token with no host
+ *   allow-list, so a stale proxy value receives a long-lived subscription token.
+ * - **`ANTHROPIC_UNIX_SOCKET`** (transport layer, *below* the URL) — it rewrites every
+ *   `forAnthropicAPI` fetch to a local socket before any URL or proxy handling, and the
+ *   bearer-enable check short-circuits to `true` under it, so the socket case *enables* the token
+ *   rather than suppressing it. The resolved base URL is irrelevant.
  *
- * Stripping is the obvious reflex and it is wrong here. Corporate-gateway routing is a deployment
- * shape 50-agent-integration.md §4 explicitly plans for, and silently deleting the variable would
- * turn a working enterprise setup into an opaque connection failure with **no way to re-enable it
- * from Sloodge's UI** — trading a visible risk for an invisible breakage.
+ * ## The disclosure is derived from the env we actually build
  *
- * The actual defect the review found was not the passthrough; it was that the passthrough was
- * *invisible* while the Auth tab promised, at the exact moment of credential entry, that credentials
- * "never leave this machine except as requests to Anthropic". That sentence was false under a custom
- * base URL. So: the override is now read in main, reported to the renderer, shown as a warning above
- * both credential inputs, and the copy tells the truth.
+ * Round 2 read `process.env.ANTHROPIC_BASE_URL` directly, which meant the UI's claim and the child's
+ * behaviour were two independent readings that could drift — and did: the socket variable was a
+ * redirect the disclosure could not see. `describeAgentEndpoint` now takes the **built subprocess
+ * environment**, so the sentence shown to the user is computed from the same bytes handed to the
+ * child. Anything the allow-list excludes cannot redirect the request *and* cannot be missing from
+ * the warning, because it is not in the environment at all.
  *
- * Pure and shared, so the "is this the default endpoint" decision is unit-tested rather than
- * eyeballed, and both sides agree on what counts as custom.
+ * Pure and shared, so both sides agree on what counts as custom.
  */
 
 /** The default first-party API host. A base URL equal to this is not an override. */
 export const DEFAULT_API_BASE_URL = 'https://api.anthropic.com'
 
+/** How the request leaves the machine. */
+export type EndpointTransport = 'network' | 'unix-socket'
+
 /**
  * Where requests will go, as the renderer is allowed to see it.
  *
- * `url` is a host origin, never a full URL with credentials or a path — see `describeEndpoint`. It is
+ * `host` is an origin, never a full URL with credentials or a path — see `describeEndpoint`. It is
  * safe to render.
  */
 export type EndpointInfo = {
-  /** True when an `ANTHROPIC_BASE_URL` override is in effect. */
+  /** True when anything redirects requests away from Anthropic's default HTTPS endpoint. */
   readonly custom: boolean
-  /** The origin requests are routed to, or `null` when the default applies. */
+  /** The origin requests are routed to, or `null` when the default applies or it cannot be named. */
   readonly host: string | null
+  /** `unix-socket` when a local socket intercepts the request below the URL layer. */
+  readonly transport: EndpointTransport
 }
 
-export const DEFAULT_ENDPOINT: EndpointInfo = { custom: false, host: null }
+export const DEFAULT_ENDPOINT: EndpointInfo = {
+  custom: false,
+  host: null,
+  transport: 'network',
+}
 
 /**
  * Classify an `ANTHROPIC_BASE_URL` value.
  *
  * Deliberately reduces to an **origin**: a base URL can legitimately carry userinfo
- * (`https://user:pass@proxy/`), and echoing that back into the renderer would leak a credential
- * through the very channel this milestone exists to keep clean. Anything unparseable is reported as
- * custom with no host — "we cannot tell you where this goes" is the honest answer, and it is the
- * safe default because it still triggers the warning.
+ * (`https://user:pass@proxy/`), and echoing that into the renderer would leak a credential through
+ * the very channel this milestone exists to keep clean. Anything unparseable is reported as custom
+ * with no host — "we cannot tell you where this goes" is the honest answer, and it still warns.
  */
 export function describeEndpoint(baseUrl: string | undefined | null): EndpointInfo {
   if (baseUrl === undefined || baseUrl === null) return DEFAULT_ENDPOINT
   const trimmed = baseUrl.trim()
   if (trimmed === '') return DEFAULT_ENDPOINT
 
-  let origin: string | null
+  let origin: string
   try {
     origin = new URL(trimmed).origin
   } catch {
     // Unparseable but present: the CLI will still use it, so the user must still be warned.
-    return { custom: true, host: null }
+    return { custom: true, host: null, transport: 'network' }
   }
-  // `new URL()` on a userinfo URL keeps the credentials out of `.origin`, which is why we report
-  // origin rather than href.
+  // Opaque-origin schemes (`file:`, `data:`, `javascript:`, `http+unix:`) make `URL.origin` return
+  // the *string* "null". Rendering "routed to null" reads as a bug rather than a warning, so it is
+  // normalised to "host unknown" — the warning still fires.
+  if (origin === 'null') return { custom: true, host: null, transport: 'network' }
+  // `new URL()` keeps userinfo out of `.origin`, which is why we report origin rather than href.
   if (origin === DEFAULT_API_BASE_URL) return DEFAULT_ENDPOINT
-  return { custom: true, host: origin }
+  return { custom: true, host: origin, transport: 'network' }
+}
+
+/**
+ * Classify the endpoint from the **built subprocess environment** — the authoritative disclosure.
+ *
+ * Transport wins over the URL: when a socket is in play the base URL is not consulted by the CLI, so
+ * reporting the URL would be actively misleading.
+ */
+export function describeAgentEndpoint(
+  env: Readonly<Record<string, string | undefined>>,
+): EndpointInfo {
+  const socket = env['ANTHROPIC_UNIX_SOCKET']
+  if (typeof socket === 'string' && socket.trim() !== '') {
+    // Reachable only if a future allow-list entry admits it; today the allow-list excludes it, so
+    // this branch is the guard that keeps the UI honest if that ever changes.
+    return { custom: true, host: null, transport: 'unix-socket' }
+  }
+  return describeEndpoint(env['ANTHROPIC_BASE_URL'])
 }
 
 /** The warning shown above the credential inputs. Pure, so the wording is asserted in tests. */
 export function describeEndpointWarning(endpoint: EndpointInfo): string | null {
   if (!endpoint.custom) return null
+  if (endpoint.transport === 'unix-socket') {
+    return 'Requests are routed through a local socket, not Anthropic’s API. Credentials you save here will be sent there.'
+  }
   const where = endpoint.host ?? 'a custom endpoint'
-  return `Requests are routed to ${where}, not Anthropic's API. Credentials you save here will be sent there.`
+  return `Requests are routed to ${where}, not Anthropic’s API. Credentials you save here will be sent there.`
 }

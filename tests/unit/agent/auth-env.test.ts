@@ -1,194 +1,224 @@
 /**
- * The credential-environment guard (M2.7).
+ * The subprocess environment boundary (M2.7, round 3).
  *
- * These are the tests that stop us silently billing the wrong account. The CLI's precedence puts
- * `ANTHROPIC_API_KEY` ABOVE `CLAUDE_CODE_OAUTH_TOKEN`, and `buildAuthEnv` spreads `process.env` —
- * so "set the token" without "delete the key" would leave an ambient key quietly winning while the
- * UI says "using your Claude subscription".
+ * Rounds 1–2 pinned a deny-list variable by variable, and both times the next review found a layer
+ * nobody had enumerated — credential, then provider, then transport. A test that asserts "these
+ * known-bad names are absent" cannot fail when the list is *incomplete*, which is exactly how each
+ * gap shipped green.
+ *
+ * So this file tests the boundary the way M4.3's safe-pptx test does: seed the parent environment
+ * with every hostile variable we can name **plus invented ones nobody has enumerated**, and assert
+ * the built environment contains *only* allow-listed keys. The invented names are the point — the
+ * guard has to reject what no list mentions.
  */
 
 import { describe, expect, it } from 'vitest'
 import {
+  allowedEnv,
   buildAuthEnv,
-  STRIPPED_ENV_VARS,
-  THIRD_PARTY_PROVIDER_ENV_VARS,
+  INHERITED_ENV_ALLOW,
+  isInheritedEnvVar,
   type AgentCredential,
 } from '../../../src/main/agent/auth-env'
 
 const SUBSCRIPTION: AgentCredential = { kind: 'subscription', value: 'sk-ant-oat01-test' }
 const API_KEY: AgentCredential = { kind: 'api-key', value: 'sk-ant-api-test' }
 
-describe('buildAuthEnv', () => {
-  it('keeps the ambient environment so the subprocess retains PATH and HOME', () => {
-    // The TS SDK's `env` REPLACES the environment; dropping the spread costs the child its PATH.
-    const env = buildAuthEnv({ PATH: '/usr/bin', HOME: '/home/u' }, API_KEY)
-    expect(env['PATH']).toBe('/usr/bin')
-    expect(env['HOME']).toBe('/home/u')
+/**
+ * The CLI's real provider-sanitisation array, extracted verbatim from the bundled binary 2.1.220.
+ * Fourteen entries — not the six-entry `THIRD_PARTY_PROVIDER_LABELS` display map an earlier round
+ * mistook for it. `CLAUDE_CODE_USE_GATEWAY` is the one that mattered.
+ */
+const CLI_PROVIDER_SANITISATION_ARRAY = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
+  'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_GATEWAY',
+  'ANTHROPIC_FOUNDRY_RESOURCE',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'ANTHROPIC_AWS_WORKSPACE_ID',
+  'ANTHROPIC_GOOGLE_CLOUD_PROJECT',
+  'ANTHROPIC_GOOGLE_CLOUD_LOCATION',
+  'ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID',
+  'CLOUD_ML_REGION',
+] as const
+
+/** Everything else known to redirect a request, carry a credential, or select a transport. */
+const OTHER_HOSTILE_VARS = [
+  // credential carriers
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  // transport — the round-3 blocker
+  'ANTHROPIC_UNIX_SOCKET',
+  // per-provider auth skips
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+  'CLAUDE_CODE_SKIP_MANTLE_AUTH',
+  'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
+  'CLAUDE_CODE_SKIP_ANTHROPIC_GOOGLE_CLOUD_AUTH',
+  // third-party and proxy endpoints
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_BEDROCK_MANTLE_BASE_URL',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ANTHROPIC_AWS_BASE_URL',
+  'ANTHROPIC_GOOGLE_CLOUD_BASE_URL',
+  'CLAUDE_GATEWAY_ALLOW_LOOPBACK',
+  'CLAUDE_CODE_PROXY_URL',
+  'CLAUDE_CODE_API_BASE_URL',
+  // mTLS material
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+  'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
+] as const
+
+/**
+ * Names nobody has enumerated. These stand in for whatever Anthropic ships next release, and they
+ * are the reason this is a boundary test rather than another audit: a deny-list cannot fail these.
+ */
+const UNENUMERATED_VARS = [
+  'ANTHROPIC_FUTURE_THING',
+  'CLAUDE_CODE_USE_SOMETHING_NEW',
+  'ANTHROPIC_SEND_CREDENTIAL_TO',
+  'CLAUDE_CODE_TRANSPORT_V2',
+  'TOTALLY_MADE_UP_VARIABLE',
+] as const
+
+const ALL_HOSTILE: readonly string[] = [
+  ...CLI_PROVIDER_SANITISATION_ARRAY,
+  ...OTHER_HOSTILE_VARS,
+  ...UNENUMERATED_VARS,
+]
+
+/** A parent environment seeded with every hostile name plus a plausible set of benign ones. */
+function hostileBaseEnv(): Record<string, string> {
+  const base: Record<string, string> = {
+    PATH: '/usr/bin:/bin',
+    HOME: '/home/u',
+    LANG: 'C.UTF-8',
+    TMPDIR: '/tmp',
+  }
+  for (const name of ALL_HOSTILE) base[name] = 'hostile-value'
+  return base
+}
+
+describe('the environment boundary', () => {
+  it('sanity: the fixture really does seed every hostile name', () => {
+    const base = hostileBaseEnv()
+    for (const name of ALL_HOSTILE) expect(base[name]).toBe('hostile-value')
+    expect(CLI_PROVIDER_SANITISATION_ARRAY).toHaveLength(14)
   })
 
-  it('drops undefined values rather than stringifying them', () => {
-    // `spawn` turns an `undefined` value into the literal string "undefined".
-    const env = buildAuthEnv({ PATH: '/usr/bin', EMPTY: undefined }, API_KEY)
-    expect('EMPTY' in env).toBe(false)
-  })
-
-  describe('api-key credential', () => {
-    it('sets ANTHROPIC_API_KEY', () => {
-      expect(buildAuthEnv({}, API_KEY)['ANTHROPIC_API_KEY']).toBe('sk-ant-api-test')
-    })
-
-    it('removes an inherited subscription token so the two cannot both be live', () => {
-      const env = buildAuthEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-ambient' }, API_KEY)
-      expect('CLAUDE_CODE_OAUTH_TOKEN' in env).toBe(false)
-    })
-  })
-
-  describe('subscription credential', () => {
-    it('sets CLAUDE_CODE_OAUTH_TOKEN', () => {
-      expect(buildAuthEnv({}, SUBSCRIPTION)['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-test')
-    })
-
-    /**
-     * The load-bearing one. `ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN`, so an ambient key
-     * inherited from the user's shell would hijack the session. Deleting it — not merely declining to
-     * set it — is what makes the subscription choice real.
-     *
-     * Mutation check: change `delete env[name]` in auth-env.ts to a no-op, or drop
-     * `ANTHROPIC_API_KEY` from `CREDENTIAL_ENV_VARS`, and this fails.
-     */
-    it('DELETES an ambient ANTHROPIC_API_KEY that would otherwise outrank the token', () => {
-      const env = buildAuthEnv(
-        { ANTHROPIC_API_KEY: 'sk-ant-ambient-from-shell', PATH: '/usr/bin' },
-        SUBSCRIPTION,
+  /**
+   * THE test. Everything not on the allow-list is absent — including names no list mentions.
+   *
+   * Mutation check: replace `allowedEnv`'s filter with a plain spread and this fails on dozens of
+   * keys at once.
+   */
+  it.each([
+    ['subscription', SUBSCRIPTION, 'CLAUDE_CODE_OAUTH_TOKEN'],
+    ['api-key', API_KEY, 'ANTHROPIC_API_KEY'],
+  ] as const)(
+    'admits ONLY allow-listed keys plus the %s credential',
+    (_label, credential, credentialVar) => {
+      const env = buildAuthEnv(hostileBaseEnv(), credential)
+      const unexpected = Object.keys(env).filter(
+        (key) => key !== credentialVar && !isInheritedEnvVar(key),
       )
-      expect('ANTHROPIC_API_KEY' in env).toBe(false)
-      expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-test')
-      // …and the rest of the environment is untouched.
-      expect(env['PATH']).toBe('/usr/bin')
-    })
+      expect(unexpected).toEqual([])
+      expect(env[credentialVar]).toBe(credential.value)
+    },
+  )
 
-    it('removes every other credential source the CLI would consult first', () => {
-      const env = buildAuthEnv(
-        {
-          ANTHROPIC_API_KEY: 'k',
-          ANTHROPIC_AUTH_TOKEN: 't',
-          CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: '3',
-        },
-        SUBSCRIPTION,
-      )
-      expect('ANTHROPIC_API_KEY' in env).toBe(false)
-      expect('ANTHROPIC_AUTH_TOKEN' in env).toBe(false)
-      expect('CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR' in env).toBe(false)
-    })
-
-    it('leaves ANTHROPIC_BASE_URL alone — a proxy endpoint is config, not a credential', () => {
-      const env = buildAuthEnv({ ANTHROPIC_BASE_URL: 'https://proxy.internal' }, SUBSCRIPTION)
-      expect(env['ANTHROPIC_BASE_URL']).toBe('https://proxy.internal')
-    })
+  it('drops every one of the CLI’s 14 provider-sanitisation variables', () => {
+    const env = buildAuthEnv(hostileBaseEnv(), SUBSCRIPTION)
+    for (const name of CLI_PROVIDER_SANITISATION_ARRAY) expect(name in env).toBe(false)
   })
 
-  it('never leaves both credential variables set at once, whichever mode is chosen', () => {
-    const ambient = { ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't' }
+  it('drops CLAUDE_CODE_USE_GATEWAY specifically — it is a real env-driven provider', () => {
+    // An earlier round exempted gateway on the false premise that its predicate was in-memory only.
+    const env = buildAuthEnv({ CLAUDE_CODE_USE_GATEWAY: '1' }, SUBSCRIPTION)
+    expect('CLAUDE_CODE_USE_GATEWAY' in env).toBe(false)
+  })
+
+  it('drops ANTHROPIC_UNIX_SOCKET — the transport layer below the URL', () => {
+    // It rewrites every request before URL handling AND short-circuits the bearer check to true, so
+    // it would receive the pasted token regardless of the base URL.
+    const env = buildAuthEnv({ ANTHROPIC_UNIX_SOCKET: '/tmp/evil.sock' }, SUBSCRIPTION)
+    expect('ANTHROPIC_UNIX_SOCKET' in env).toBe(false)
+  })
+
+  it('drops names nobody enumerated', () => {
+    const env = buildAuthEnv(hostileBaseEnv(), SUBSCRIPTION)
+    for (const name of UNENUMERATED_VARS) expect(name in env).toBe(false)
+  })
+
+  it('leaves no ambient credential able to outrank the pasted token', () => {
+    const env = buildAuthEnv(hostileBaseEnv(), SUBSCRIPTION)
+    // The original round-1 precedence bug, still pinned: ANTHROPIC_API_KEY outranks the OAuth token.
+    expect('ANTHROPIC_API_KEY' in env).toBe(false)
+    expect('ANTHROPIC_AUTH_TOKEN' in env).toBe(false)
+    expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-test')
+  })
+
+  it('never leaves both credential variables set at once', () => {
     for (const credential of [API_KEY, SUBSCRIPTION]) {
-      const env = buildAuthEnv(ambient, credential)
+      const env = buildAuthEnv(hostileBaseEnv(), credential)
       const present = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'].filter((n) => n in env)
       expect(present).toHaveLength(1)
     }
   })
 })
 
-/**
- * Layer 1: provider selection, which the CLI evaluates BEFORE any credential logic.
- *
- * `getAPIProvider()` in the bundled CLI 2.1.220 is env-only and never consults
- * `CLAUDE_CODE_OAUTH_TOKEN`; a sibling gate forces the OAuth path off under any third-party
- * provider, and the Bedrock branch nulls `Authorization` and authenticates with AWS instead. So an
- * ambient provider switch does not merely change routing — it makes the credential the user chose in
- * Settings unused, while the UI still says it is in use.
- */
-describe('provider pinning', () => {
-  it('exports exactly the six switches the CLI uses to select a provider', () => {
-    // Mirrors the CLI's own exported THIRD_PARTY_PROVIDER_ENV_VARS map. `gateway` is absent on
-    // purpose: its predicate reads in-memory login state, not the environment.
-    expect(THIRD_PARTY_PROVIDER_ENV_VARS.toSorted()).toEqual(
-      [
-        'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-        'CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD',
-        'CLAUDE_CODE_USE_BEDROCK',
-        'CLAUDE_CODE_USE_FOUNDRY',
-        'CLAUDE_CODE_USE_MANTLE',
-        'CLAUDE_CODE_USE_VERTEX',
-      ].toSorted(),
-    )
+describe('what the allow-list admits', () => {
+  it('keeps the OS essentials a child process needs', () => {
+    const env = buildAuthEnv(hostileBaseEnv(), SUBSCRIPTION)
+    expect(env['PATH']).toBe('/usr/bin:/bin')
+    expect(env['HOME']).toBe('/home/u')
+    expect(env['LANG']).toBe('C.UTF-8')
+    expect(env['TMPDIR']).toBe('/tmp')
   })
 
-  /**
-   * The blocker this round fixed, pinned per-variable and for BOTH credential kinds.
-   *
-   * Mutation check: drop any one name from PROVIDER_ENV_VARS and the matching case fails.
-   */
-  it.each([...THIRD_PARTY_PROVIDER_ENV_VARS])(
-    'deletes %s so an ambient switch cannot route the subscription token to a 3P provider',
-    (providerVar) => {
-      const env = buildAuthEnv({ [providerVar]: '1', PATH: '/usr/bin' }, SUBSCRIPTION)
-      expect(providerVar in env).toBe(false)
-      // …and the token is still the credential that survives.
-      expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-test')
-      expect(env['PATH']).toBe('/usr/bin')
-    },
-  )
-
-  it.each([...THIRD_PARTY_PROVIDER_ENV_VARS])(
-    'deletes %s for an api-key session too',
-    (providerVar) => {
-      const env = buildAuthEnv({ [providerVar]: 'true' }, API_KEY)
-      expect(providerVar in env).toBe(false)
-    },
-  )
-
-  it('routes firstParty even when every provider switch is set at once', () => {
-    const ambient: Record<string, string> = { PATH: '/usr/bin' }
-    for (const name of THIRD_PARTY_PROVIDER_ENV_VARS) ambient[name] = '1'
-    const env = buildAuthEnv(ambient, SUBSCRIPTION)
-    // Nothing left for getAPIProvider() to match on -> its final `: "firstParty"` branch.
-    for (const name of THIRD_PARTY_PROVIDER_ENV_VARS) expect(name in env).toBe(false)
-    expect(env['CLAUDE_CODE_OAUTH_TOKEN']).toBe('sk-ant-oat01-test')
+  it('matches case-insensitively, because Windows names vary in casing', () => {
+    const env = allowedEnv({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', TeMp: 'C:\\T' })
+    // Original casing is preserved — the child should see the names as the OS wrote them.
+    expect(env['Path']).toBe('C:\\Windows')
+    expect(env['SystemRoot']).toBe('C:\\Windows')
+    expect(env['TeMp']).toBe('C:\\T')
   })
 
-  it('deletes rather than neutralises — no provider switch is left set to a falsy string', () => {
-    // "0" would work against today's zod boolean coercion, but deletion does not depend on that
-    // parser staying as it is, and it matches the CLI's own sibling-disabling helper (`void 0`).
-    const ambient: Record<string, string> = {}
-    for (const name of THIRD_PARTY_PROVIDER_ENV_VARS) ambient[name] = '1'
-    const env = buildAuthEnv(ambient, SUBSCRIPTION)
-    for (const name of THIRD_PARTY_PROVIDER_ENV_VARS) expect(env[name]).toBeUndefined()
+  it('keeps proxy and CA settings, a deliberate entry for corporate reachability', () => {
+    const env = allowedEnv({
+      HTTPS_PROXY: 'http://proxy:8080',
+      NO_PROXY: 'localhost',
+      NODE_EXTRA_CA_CERTS: '/etc/ca.pem',
+    })
+    expect(env['HTTPS_PROXY']).toBe('http://proxy:8080')
+    expect(env['NO_PROXY']).toBe('localhost')
+    expect(env['NODE_EXTRA_CA_CERTS']).toBe('/etc/ca.pem')
   })
 
-  it('strips the per-provider auth-skip and third-party base-URL siblings', () => {
-    const ambient = {
-      CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
-      CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
-      ANTHROPIC_BEDROCK_BASE_URL: 'https://bedrock.internal',
-      ANTHROPIC_VERTEX_BASE_URL: 'https://vertex.internal',
-    }
-    const env = buildAuthEnv(ambient, SUBSCRIPTION)
-    for (const name of Object.keys(ambient)) expect(name in env).toBe(false)
+  it('keeps ANTHROPIC_BASE_URL — admitted only because it is disclosed in the UI', () => {
+    const env = allowedEnv({ ANTHROPIC_BASE_URL: 'https://proxy.internal' })
+    expect(env['ANTHROPIC_BASE_URL']).toBe('https://proxy.internal')
   })
 
-  it('strips ANTHROPIC_CUSTOM_HEADERS, which can inject an Authorization header', () => {
-    const env = buildAuthEnv(
-      { ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer attacker-token' },
-      SUBSCRIPTION,
-    )
-    expect('ANTHROPIC_CUSTOM_HEADERS' in env).toBe(false)
+  it('admits no credential, provider, or transport variable by inheritance', () => {
+    // The allow-list itself must stay clean: if one of these ever appeared in it, the boundary test
+    // above would keep passing while the hole reopened.
+    for (const name of ALL_HOSTILE) expect(INHERITED_ENV_ALLOW).not.toContain(name)
   })
 
-  it('removes every declared variable in one sweep', () => {
-    const ambient = Object.fromEntries(STRIPPED_ENV_VARS.map((name) => [name, 'x']))
-    const env = buildAuthEnv({ ...ambient, PATH: '/usr/bin' }, SUBSCRIPTION)
-    const survivors = STRIPPED_ENV_VARS.filter(
-      (name) => name in env && name !== 'CLAUDE_CODE_OAUTH_TOKEN',
-    )
-    expect(survivors).toEqual([])
+  it('drops undefined values rather than stringifying them', () => {
+    // `spawn` turns an `undefined` value into the literal string "undefined".
+    expect('PATH' in allowedEnv({ PATH: undefined })).toBe(false)
   })
 })

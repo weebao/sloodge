@@ -85,11 +85,12 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     settingSources: ['project'],
     strictMcpConfig: true,
     env: {
-      // `env` REPLACES the subprocess environment in the TS SDK — `buildAuthEnv` spreads
-      // `process.env` so the subprocess keeps PATH/HOME (§4, §16), and *deletes* every credential
-      // variable before setting the one this session actually uses. That deletion is the point:
-      // `ANTHROPIC_API_KEY` outranks `CLAUDE_CODE_OAUTH_TOKEN` in the CLI's precedence, so an
-      // ambient key would otherwise hijack a subscription session (see auth-env.ts).
+      // `env` REPLACES the subprocess environment in the TS SDK, which is exactly what we want:
+      // `buildAuthEnv` builds it from an ALLOW-LIST rather than inheriting `process.env` and
+      // subtracting. Ambient credential vars, provider switches (`CLAUDE_CODE_USE_*`), transport
+      // selectors (`ANTHROPIC_UNIX_SOCKET`), header injectors, and anything Anthropic ships next
+      // release simply never reach the child — see auth-env.ts for why three rounds of deny-listing
+      // was the wrong shape.
       ...buildAuthEnv(process.env, o.credential),
       CLAUDE_CONFIG_DIR: o.configDir,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',

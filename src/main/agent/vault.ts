@@ -21,7 +21,8 @@ import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ApiKeyStatus } from '../../shared/agent/types'
 import { deriveAuthStatus, type AuthStatus } from '../../shared/agent/auth'
-import { describeEndpoint } from '../../shared/agent/endpoint'
+import { describeAgentEndpoint } from '../../shared/agent/endpoint'
+import { allowedEnv } from './auth-env'
 import type { AgentCredential } from './auth-env'
 import { InvalidApiKeyError, isPlausibleApiKey, keyStatus, normalizeApiKey } from './key-store'
 
@@ -115,16 +116,21 @@ export const clearSubscriptionToken = (): Promise<ApiKeyStatus> => clearSecret('
 /**
  * The masked, renderer-facing view of both slots — backs `agent:authStatus`.
  *
- * Reads `ANTHROPIC_BASE_URL` on every call rather than caching it: the agent subprocess reads the
- * live environment too, so a cached value could tell the user their credential goes to Anthropic
- * while the next spawn sends it elsewhere.
+ * The endpoint is derived from the **same allow-listed environment the subprocess receives**, not
+ * from a parallel reading of `process.env`, so the sentence shown to the user and the bytes handed to
+ * the child cannot drift apart (round 2 read the variable directly and missed the socket transport
+ * entirely as a result).
+ *
+ * Recomputed on **every call** rather than hoisted to a module constant: the child reads the live
+ * environment at spawn time, so a cached value could tell the user their credential goes to Anthropic
+ * while the next spawn sends it somewhere else. This is pinned by a test.
  */
 export async function getAuthStatus(): Promise<AuthStatus> {
   const [apiKey, subscription] = await Promise.all([
     getApiKeyStatus(),
     getSubscriptionTokenStatus(),
   ])
-  return deriveAuthStatus(apiKey, subscription, describeEndpoint(process.env['ANTHROPIC_BASE_URL']))
+  return deriveAuthStatus(apiKey, subscription, describeAgentEndpoint(allowedEnv(process.env)))
 }
 
 /**

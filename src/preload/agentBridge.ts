@@ -25,7 +25,7 @@ import {
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
 import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
-import { DEFAULT_ENDPOINT, type EndpointInfo } from '../shared/agent/endpoint'
+import { type EndpointInfo } from '../shared/agent/endpoint'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
 import {
   isAgentEditRequest,
@@ -105,15 +105,24 @@ function readAuthStatus(response: unknown): AuthStatus {
 }
 
 /**
- * Narrow the endpoint report. Falls back to "default" only when the field is absent or malformed —
- * never inventing a host, and never letting a non-string `host` through to be rendered.
+ * Narrow the endpoint report.
+ *
+ * **Fails closed, unlike the slot narrowing above.** A malformed or absent endpoint becomes
+ * "custom, host unknown" — i.e. it *warns* — rather than "default". The two adjacent narrowers
+ * deliberately encode opposite postures: for `mode` the safe answer is the conservative claim
+ * (`not-configured`), whereas for a field whose entire purpose is to warn, silence is the dangerous
+ * answer. This matches how `describeEndpoint` already treats an unparseable base URL.
  */
 function readEndpoint(value: unknown): EndpointInfo {
-  const rec = value as { custom?: unknown; host?: unknown } | null
+  const rec = value as { custom?: unknown; host?: unknown; transport?: unknown } | null
   if (rec === null || typeof rec !== 'object' || typeof rec.custom !== 'boolean') {
-    return DEFAULT_ENDPOINT
+    return { custom: true, host: null, transport: 'network' }
   }
-  return { custom: rec.custom, host: typeof rec.host === 'string' ? rec.host : null }
+  return {
+    custom: rec.custom,
+    host: typeof rec.host === 'string' ? rec.host : null,
+    transport: rec.transport === 'unix-socket' ? 'unix-socket' : 'network',
+  }
 }
 
 export function createAgentBridge(

@@ -216,11 +216,32 @@ describe('createAgentBridge — auth channels', () => {
     expect(JSON.stringify(status)).not.toContain(secret)
   })
 
-  it('reports the default endpoint when main sends none', async () => {
+  /**
+   * Fails CLOSED, unlike the slot narrowing: a missing or malformed endpoint warns rather than
+   * silently claiming the default. For a field whose whole purpose is to warn, silence is the
+   * dangerous default.
+   */
+  it('warns when main sends no endpoint at all', async () => {
     const { bridge } = makeBridge(async () => ({
       status: { mode: 'not-configured', apiKey: UNSET, subscription: UNSET },
     }))
-    expect((await bridge.getAuthStatus()).endpoint).toEqual({ custom: false, host: null })
+    expect((await bridge.getAuthStatus()).endpoint).toEqual({
+      custom: true,
+      host: null,
+      transport: 'network',
+    })
+  })
+
+  it('carries the socket transport through so the UI can name it', async () => {
+    const { bridge } = makeBridge(async () => ({
+      status: {
+        mode: 'not-configured',
+        apiKey: UNSET,
+        subscription: UNSET,
+        endpoint: { custom: true, host: null, transport: 'unix-socket' },
+      },
+    }))
+    expect((await bridge.getAuthStatus()).endpoint.transport).toBe('unix-socket')
   })
 
   it('carries a custom endpoint through, and never a non-string host', async () => {
@@ -232,6 +253,10 @@ describe('createAgentBridge — auth channels', () => {
         endpoint: { custom: true, host: { evil: true } },
       },
     }))
-    expect((await bridge.getAuthStatus()).endpoint).toEqual({ custom: true, host: null })
+    expect((await bridge.getAuthStatus()).endpoint).toEqual({
+      custom: true,
+      host: null,
+      transport: 'network',
+    })
   })
 })
