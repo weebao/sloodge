@@ -12,6 +12,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../../src/renderer/src/app/AppShell'
+import { useDesignStore } from '../../src/renderer/src/features/design/designStore'
 import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
 import type { MenuAction } from '../../src/shared/ipc-contract'
 
@@ -212,6 +213,55 @@ describe('AppShell slide CRUD', () => {
  * page. These two tests are the pair that matters: with the bridge present the keydown path is
  * *gone* (so one keypress can never be handled twice), and the menu path works in its place.
  */
+/**
+ * M4.1 Present mode entry/exit at the shell: the status-bar button opens the fullscreen surface, and
+ * exiting restores the Design-Mode state Present force-disabled on entry (the transparency contract
+ * documented in AppShell and 10-architecture.md §8).
+ */
+const presentButton = (): HTMLElement =>
+  within(screen.getByRole('contentinfo', { name: 'Status bar' })).getByRole('button', {
+    name: /present/i,
+  })
+
+describe('AppShell present mode', () => {
+  it('opens the present surface and forces Design Mode off while presenting', () => {
+    render(<AppShell />)
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+
+    fireEvent.click(presentButton())
+
+    expect(screen.getByRole('dialog', { name: 'Presentation' })).toBeTruthy()
+    expect(useDesignStore.getState().enabled).toBe(false)
+  })
+
+  it('restores the prior Design-Mode state on exit (was on)', () => {
+    render(<AppShell />)
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+
+    fireEvent.click(presentButton())
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog', { name: 'Presentation' })).toBeNull()
+    expect(useDesignStore.getState().enabled).toBe(true)
+  })
+
+  it('leaves Design Mode off on exit when it was off before (no surprise re-enable)', () => {
+    render(<AppShell />)
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+
+    fireEvent.click(presentButton())
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    expect(useDesignStore.getState().enabled).toBe(false)
+  })
+})
+
 const menuListeners = new Set<(action: MenuAction) => void>()
 
 /**

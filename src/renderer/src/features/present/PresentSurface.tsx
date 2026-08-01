@@ -160,7 +160,13 @@ export function PresentSurface({ slides, startIndex, onExit }: PresentSurfacePro
       ) : null}
 
       {/* The black-screen toggle. The slide stays mounted underneath, so `B` twice returns to the
-          exact animation/interaction state — nothing reloads. */}
+          exact animation/interaction state — nothing reloads.
+
+          Deliberately painted above the controls (z-10 vs the controls' z-auto): a blanked screen is
+          meant to be *truly black* — the presenter's cue to look away from the screen — so the
+          on-screen chevrons are intentionally covered while blanked. Navigation is unaffected: the
+          window key handler still drives B (un-blank), the arrows, and Esc, none of which depend on
+          the controls being visible or clickable. */}
       {state.blank ? (
         <div aria-label="Blanked screen" className="absolute inset-0 z-10 bg-black" />
       ) : null}

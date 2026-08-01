@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type JSX } from 'react'
+import { useCallback, useMemo, useRef, useState, type JSX } from 'react'
 import { SlideCanvas } from '../features/canvas/SlideCanvas'
 import { ChatPanel } from '../features/chat/ChatPanel'
 import { ThumbnailRail } from '../features/deck/ThumbnailRail'
@@ -61,15 +61,20 @@ export function AppShell(): JSX.Element {
   // persisted or undone, and it has its own navigation cursor so advancing the talk does not move the
   // editor's selection. `null` = not presenting; a number is the slide index Present opened on.
   const [presentFrom, setPresentFrom] = useState<number | null>(null)
+  // Design Mode is force-disabled while presenting (40-design-mode.md §: "Present always forces
+  // Design Mode off"), but the default idle state is Design-Mode-on, so leaving it off after a talk
+  // would silently drop the user out of the mode they were editing in. Capture it on entry and
+  // restore it on exit, so Present is transparent to the editing session it interrupts.
+  const designWasEnabledRef = useRef(false)
   const startPresent = useCallback(() => {
-    // "Present always forces Design Mode off" (40-design-mode.md §): the picker and overlay must be
-    // inert during a talk, so it is disabled on entry rather than merely hidden.
+    designWasEnabledRef.current = useDesignStore.getState().enabled
     setDesignEnabled(false)
     setPresentFrom(currentIndex === -1 ? 0 : currentIndex)
   }, [currentIndex, setDesignEnabled])
   const exitPresent = useCallback(() => {
     setPresentFrom(null)
-  }, [])
+    setDesignEnabled(designWasEnabledRef.current)
+  }, [setDesignEnabled])
   const canPresent = slides.length > 0
 
   return (
