@@ -9,12 +9,17 @@ import { makeMeasure, makeNode } from './pptx/_fixtures'
 const PNG = 'data:image/png;base64,AAAA'
 
 /** A renderer that returns a plain-text measure per slide, and can be told to throw for one. */
-function fakeRenderer(options: { throwOn?: number } = {}): SlidePptxRenderer {
+function fakeRenderer(
+  options: { throwOn?: number; captureFailsOn?: number } = {},
+): SlidePptxRenderer {
   return {
     renderSlide: vi.fn((html: string, index: number): Promise<PptxSlideRender> => {
       if (options.throwOn === index) return Promise.reject(new Error('render boom'))
       const measure = makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: html })])
-      return Promise.resolve({ measure, rasterDataUrl: PNG })
+      // `capturePage` throwing surfaces as a null data URL (see `pptx-renderer.ts`), which is the
+      // real production path into the planner's capture-failed downgrade.
+      const rasterDataUrl = options.captureFailsOn === index ? null : PNG
+      return Promise.resolve({ measure, rasterDataUrl })
     }),
     dispose: vi.fn(),
   }
@@ -126,6 +131,46 @@ describe('buildSlidesPptx', () => {
       writer,
     })
     expect(writer.plans[0]!.slides.every((s) => s.tier === 'raster')).toBe(true)
+  })
+
+  it('warns the user when a capture failure downgrades a raster slide to structured', async () => {
+    // Real production path: `capturePage()` throws → `rasterDataUrl: null` → the planner keeps the
+    // structured shapes and flags `downgrade.kind === 'capture-failed'` → the orchestrator warns.
+    // Forced raster fidelity so the slide would otherwise certainly have been a picture.
+    const writer = recordingWriter()
+    const result = await buildSlidesPptx({
+      ...base,
+      fidelity: 'raster',
+      slides,
+      range: { kind: 'all' },
+      renderer: fakeRenderer({ captureFailsOn: 1 }),
+      writer,
+    })
+
+    // The planner set the discriminant on exactly the affected slide...
+    const planned = writer.plans[0]!.slides
+    expect(planned[1]!.downgrade).toEqual({ kind: 'capture-failed' })
+    expect(planned[1]!.tier).toBe('structured')
+    expect(planned[0]!.downgrade).toBeUndefined()
+
+    // ...and the user is told. Asserted by COUNT and by which slide it names, deliberately not by the
+    // message wording: the whole point of the discriminant is that prose stays free to change. A
+    // reworded reason must not red this test; deleting the warning branch must.
+    const captureWarnings = result.report.warnings.filter((w) => w.startsWith('Slide 2 '))
+    expect(captureWarnings).toHaveLength(1)
+    expect(result.report.warnings).toHaveLength(1)
+  })
+
+  it('emits no downgrade warning when every capture succeeds', async () => {
+    const result = await buildSlidesPptx({
+      ...base,
+      fidelity: 'raster',
+      slides,
+      range: { kind: 'all' },
+      renderer: fakeRenderer(),
+      writer: recordingWriter(),
+    })
+    expect(result.report.warnings).toEqual([])
   })
 
   it('reports progress per slide and at assembly', async () => {

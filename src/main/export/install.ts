@@ -1,7 +1,8 @@
 /**
  * Wire the PDF export channel (M4.2): menu → renderer → `file:exportPdf` → here. The thin Electron
  * half — resolve the sender's window, own the native save dialog (main-only, so the renderer never
- * handles a filesystem path it could tamper with, 60-export.md §1.5), then hand the validated request
+ * *chooses or supplies* the destination it could tamper with, 60-export.md §1.5; the report does echo
+ * the chosen `outPath` back for display), then hand the validated request
  * to the pure orchestrator and write its bytes atomically. Registered once from the app-ready handler,
  * alongside the slide and present IPC, and given the same `SlideRegistry` so export slides are served
  * over the identical `slide://` path as the editor canvas.

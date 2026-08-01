@@ -73,9 +73,28 @@ export type PptxFidelity = 'auto' | 'editable' | 'raster'
 /** The tier chosen for one slide: editable shapes, or a flat picture. */
 export type SlideTier = 'structured' | 'raster'
 
+/**
+ * A machine-readable record that the planner could not deliver the tier it chose, so a consumer can
+ * branch on *what happened* rather than on the wording of a human-readable reason.
+ *
+ * `kind` is the contract; `reasons` stays purely presentational. Introduced in review round 5, after a
+ * warning in the orchestrator was found branching on a free-text substring authored in another module
+ * — rewording the prose silently deleted a user-facing warning with every test still green. Prose must
+ * be safe to reword; that is only true if nothing controls flow with it.
+ *
+ * - `capture-failed` — raster was chosen (by score, coverage or a forced fidelity) but no full-slide
+ *   capture was available (`capturePage` threw), so the structured shapes were kept instead.
+ */
+export type SlideDowngrade = { kind: 'capture-failed' }
+
 /** The plan for one slide — everything the writer needs, with no residual DOM or `electron` in it. */
 export type SlidePlan = {
   tier: SlideTier
+  /**
+   * Present when the delivered `tier` is not the one the decision logic selected. Absent on the
+   * ordinary path. Branch on `downgrade.kind`, never on `reasons` text.
+   */
+  downgrade?: SlideDowngrade
   /** Slide background: a solid colour, a full-bleed image (gradient/photo body bg), or nothing. */
   background?: FillSpec | { dataUrl: string }
   /** Structured shapes (`tier: 'structured'`). Empty for a raster slide. */

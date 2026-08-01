@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { ANIMATION_NOTE, planSlide } from '../../../../src/shared/export/pptx/plan'
+import {
+  ANIMATION_NOTE,
+  CAPTURE_FAILED_REASON,
+  planSlide,
+} from '../../../../src/shared/export/pptx/plan'
 import { makeMeasure, makeNode } from './_fixtures'
 
 const PNG = 'data:image/png;base64,AAAA'
@@ -52,7 +56,22 @@ describe('planSlide', () => {
     const hard = makeMeasure([makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 })])
     const plan = planSlide({ measure: hard, fidelity: 'raster', rasterDataUrl: null })
     expect(plan.tier).toBe('structured')
-    expect(plan.reasons.some((r) => r.includes('capture unavailable'))).toBe(true)
+    // The machine-readable contract consumers branch on.
+    expect(plan.downgrade).toEqual({ kind: 'capture-failed' })
+    // The prose is carried too, but only as presentation — asserted via the exported constant so
+    // rewording it is a one-line change here and cannot silently break a consumer.
+    expect(plan.reasons).toContain(CAPTURE_FAILED_REASON)
+  })
+
+  it('sets no downgrade on the ordinary paths', () => {
+    const plain = makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: 'Hello' })])
+    expect(
+      planSlide({ measure: plain, fidelity: 'auto', rasterDataUrl: PNG }).downgrade,
+    ).toBeUndefined()
+    const hard = makeMeasure([makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 })])
+    expect(
+      planSlide({ measure: hard, fidelity: 'auto', rasterDataUrl: PNG }).downgrade,
+    ).toBeUndefined()
   })
 
   it('writes a [Slide text] accessibility layer and the animation note into speaker notes', () => {

@@ -26,6 +26,12 @@ export type PlanSlideArgs = {
   rasterDataUrl: string | null
 }
 
+/**
+ * The presentational reason recorded when a raster slide had no capture. Purely human-readable — it is
+ * listed in the report and nothing branches on it (see `SlideDowngrade`); reword it at will.
+ */
+export const CAPTURE_FAILED_REASON = 'raster capture unavailable — kept structured shapes'
+
 /** The degradation note appended to a raster/animated slide's speaker notes (§4.2 / §3.5). */
 export const ANIMATION_NOTE =
   '[Sloodge] This slide is animated; the exported image shows its final state.'
@@ -54,11 +60,13 @@ export function planSlide(args: PlanSlideArgs): SlidePlan {
   const notes = notesParts.join('\n\n')
 
   // Raster requested/decided but no capture available: keep the structured shapes rather than ship an
-  // empty slide. Recorded in reasons so the report is honest about the downgrade.
+  // empty slide. Reported two ways, deliberately kept apart: `downgrade.kind` is the machine-readable
+  // contract consumers branch on, and the `reasons` entry is presentation only — reword it freely.
   if (tier === 'raster' && rasterDataUrl === null) {
-    reasons.push('raster capture unavailable — kept structured shapes')
+    reasons.push(CAPTURE_FAILED_REASON)
     return {
       tier: 'structured',
+      downgrade: { kind: 'capture-failed' },
       ...(walk.background !== null ? { background: walk.background } : {}),
       shapes: walk.shapes,
       notes,
