@@ -110,4 +110,52 @@ describe('AgentSession', () => {
     // No second query is started by a post-close send.
     expect(queryFn).toHaveBeenCalledTimes(1)
   })
+
+  describe('skillStatus — the §8 assertion that the bundled skills reached the model', () => {
+    it('reports nothing missing when init lists all three', async () => {
+      const queryFn = vi.fn(() =>
+        fakeHandle([
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 's1',
+            model: 'claude-opus-5',
+            skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
+          },
+        ]),
+      ) as unknown as AgentQueryFn
+      const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {} })
+      session.send('hello')
+
+      await vi.waitFor(() => expect(session.skillStatus.loaded).toHaveLength(3))
+      expect(session.skillStatus.missing).toEqual([])
+      await session.close()
+    })
+
+    it('names what did not load, which is what the fallback and status line key off', async () => {
+      const queryFn = vi.fn(() =>
+        fakeHandle([
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 's1',
+            model: 'claude-opus-5',
+            skills: ['slide-deck'],
+          },
+        ]),
+      ) as unknown as AgentQueryFn
+      const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {} })
+      session.send('hello')
+
+      await vi.waitFor(() => expect(session.skillStatus.loaded).toEqual(['slide-deck']))
+      expect(session.skillStatus.missing).toEqual(['svg-animation', 'interactive-graph'])
+      await session.close()
+    })
+
+    it('reports all three missing before a turn has started', () => {
+      const queryFn = vi.fn(() => fakeHandle([])) as unknown as AgentQueryFn
+      const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {} })
+      expect(session.skillStatus.missing).toHaveLength(3)
+    })
+  })
 })

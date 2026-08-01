@@ -259,7 +259,10 @@ describe('reduceTranscript — out-of-turn events are inert', () => {
 
   it('ready is a no-op on the transcript', () => {
     const state = run([sendTurn('hi')])
-    const after = reduceTranscript(state, ev({ type: 'ready', sessionId: 's', model: 'm' }))
+    const after = reduceTranscript(
+      state,
+      ev({ type: 'ready', sessionId: 's', model: 'm', skills: [] }),
+    )
     expect(after.messages).toEqual(state.messages)
   })
 })

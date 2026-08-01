@@ -208,4 +208,60 @@ describe('AgentService', () => {
     await service.send(3, 'again', () => {})
     expect(rec.starts()).toBe(2)
   })
+
+  describe('prepareWorkspace (M2.4 skill materialization)', () => {
+    it('materializes the workspace before the query opens, with the session cwd', async () => {
+      const rec = recordingQueryFn()
+      const order: string[] = []
+      const prepareWorkspace = vi.fn(async (cwd: string) => {
+        order.push(`prepare:${cwd}`)
+      })
+      const queryFn: AgentQueryFn = (params) => {
+        order.push('query')
+        return rec.queryFn(params)
+      }
+      const service = new AgentService({
+        queryFn,
+        loadApiKey: async () => 'sk-ant-live',
+        resolvePaths: PATHS,
+        prepareWorkspace,
+      })
+
+      await service.send(1, 'hi', NOOP)
+
+      // Skills are discovered from disk when the subprocess starts — a copy that lands afterwards
+      // is a session with no skills, silently.
+      expect(order).toEqual(['prepare:/w', 'query'])
+      expect(prepareWorkspace).toHaveBeenCalledTimes(1)
+    })
+
+    it('runs once per session, not once per turn', async () => {
+      const rec = recordingQueryFn()
+      const prepareWorkspace = vi.fn(async () => {})
+      const service = new AgentService({
+        queryFn: rec.queryFn,
+        loadApiKey: async () => 'sk-ant-live',
+        resolvePaths: PATHS,
+        prepareWorkspace,
+      })
+
+      await service.send(1, 'one', NOOP)
+      await service.send(1, 'two', NOOP)
+
+      expect(prepareWorkspace).toHaveBeenCalledTimes(1)
+    })
+
+    it('still starts the session when materialization fails — degraded, not dead', async () => {
+      const rec = recordingQueryFn()
+      const service = new AgentService({
+        queryFn: rec.queryFn,
+        loadApiKey: async () => 'sk-ant-live',
+        resolvePaths: PATHS,
+        prepareWorkspace: () => Promise.reject(new Error('EACCES')),
+      })
+
+      expect(await service.send(1, 'hi', NOOP)).toEqual({ accepted: true })
+      expect(rec.starts()).toBe(1)
+    })
+  })
 })

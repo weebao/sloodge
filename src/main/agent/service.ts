@@ -27,6 +27,17 @@ export type AgentServiceDeps = {
    * with the read-only surface. Kept opaque here (the seam is SDK-free — see query-contract.ts).
    */
   readonly resolveMcpServers?: (senderId: number) => Readonly<Record<string, unknown>> | undefined
+  /**
+   * Prepare the app-owned workspace before the query opens — in practice `materializeSkills`, which
+   * copies the three bundled skills into `<cwd>/.claude/skills` and writes the workspace's own
+   * `settings.json` (M2.4, 50-agent-integration.md §8). Skills are filesystem-only, so this must
+   * complete *before* `queryFn` runs or the subprocess starts with nothing to discover.
+   *
+   * It is deliberately allowed to fail: a rejection is swallowed and the session still starts, with
+   * the agent degraded to its no-skill behaviour rather than the chat box being dead. `materializeSkills`
+   * already reports per-skill trouble in its result instead of throwing.
+   */
+  readonly prepareWorkspace?: (cwd: string) => Promise<unknown>
 }
 
 export class AgentService {
@@ -91,6 +102,13 @@ export class AgentService {
       const apiKey = await this.deps.loadApiKey()
       if (apiKey === null) return null
       const { cwd, configDir } = this.deps.resolvePaths()
+      // Skills are discovered from disk when the subprocess starts, so the copy has to land first.
+      // A failure here must not cost the user their chat box — see `prepareWorkspace`'s docstring.
+      try {
+        await this.deps.prepareWorkspace?.(cwd)
+      } catch {
+        // Degraded (no skills), not broken: the session below still opens.
+      }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
       const session = new AgentSession({
         queryFn: this.deps.queryFn,

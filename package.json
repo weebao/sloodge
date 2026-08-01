@@ -22,6 +22,20 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "build": {
+    "_comment": "Partial electron-builder config: M2.4 owns only what the agent needs to work in a packaged app. M5.2 completes it (appId, productName, mac/win/linux targets, icons, signing/notarization, publish). Do not drop these keys when it does.",
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/@anthropic-ai/claude-agent-sdk/**",
+      "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/skills",
+        "to": "skills"
+      }
+    ]
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.220",
     "fflate": "catalog:",

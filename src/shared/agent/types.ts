@@ -72,7 +72,18 @@ export type AgentUsage = {
  * don't double-count (50-agent-integration.md §10, §16).
  */
 export type AgentEvent =
-  | { readonly type: 'ready'; readonly sessionId: string; readonly model: string }
+  /**
+   * `skills` is the SDK's own list of what the session loaded, straight off `system:init`. It is the
+   * only observable answer to "did the bundled skills actually reach the model?" (M2.4,
+   * 50-agent-integration.md §8) — the SKILL.md files are discovered from disk inside the subprocess,
+   * so nothing on our side of the boundary can otherwise tell success from a silent miss.
+   */
+  | {
+      readonly type: 'ready'
+      readonly sessionId: string
+      readonly model: string
+      readonly skills: readonly string[]
+    }
   | { readonly type: 'assistant-delta'; readonly text: string }
   | { readonly type: 'assistant-message'; readonly text: string; readonly usage: AgentUsage }
   | { readonly type: 'tool-use'; readonly toolUseId: string; readonly label: string }

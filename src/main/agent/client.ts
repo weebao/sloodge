@@ -19,6 +19,7 @@ import {
 import { app } from 'electron'
 import path from 'node:path'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
+import { BUNDLED_SKILL_NAMES, resolveBundledSkillsDir } from './skills'
 
 /**
  * Re-exported so the in-process `mcp__slides__*` server (`tools.ts`) can build tool definitions
@@ -49,6 +50,18 @@ export function defaultAgentPaths(): { cwd: string; configDir: string } {
     cwd: path.join(userData, 'agent', 'workspace'),
     configDir: path.join(userData, 'agent', 'claude'),
   }
+}
+
+/**
+ * Where the read-only bundled skill sources live for this build (M2.4). `electron`-touching, so the
+ * decision itself lives in the pure `resolveBundledSkillsDir`; this only reads the three app facts.
+ */
+export function bundledSkillsDir(): string {
+  return resolveBundledSkillsDir({
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+  })
 }
 
 /**
@@ -87,6 +100,14 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     disallowedTools: ['Bash', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Agent', 'Task'],
     permissionMode: 'default',
     ...(hasSlides ? { mcpServers: o.mcpServers as Record<string, McpServerConfig> } : {}),
+
+    // --- skills (§8): the three validated slide skills, materialized into `<cwd>/.claude/skills`
+    // by `materializeSkills` before the session starts. This list is a *context filter*, not just a
+    // convenience: naming ours explicitly means a stray skill in the workspace — or anything the
+    // project layer picked up — is never loaded, which is the second half of the §5 isolation that
+    // `settingSources: ['project']` starts. The user's `~/.claude/skills` is invisible on both
+    // counts. ---
+    skills: [...BUNDLED_SKILL_NAMES],
 
     // --- prompting ---
     systemPrompt: {

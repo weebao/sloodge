@@ -10,10 +10,12 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn((_params: { prompt: unknown; options: unknown }) => ({ marker: 'handle' })),
 }))
 
-vi.mock('electron', () => ({ app: { getPath: () => '/userData' } }))
+vi.mock('electron', () => ({
+  app: { getPath: () => '/userData', getAppPath: () => '/repo', isPackaged: false },
+}))
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: mocks.query }))
 
-const { buildSdkOptions, defaultAgentPaths, realQuery } =
+const { buildSdkOptions, bundledSkillsDir, defaultAgentPaths, realQuery } =
   await import('../../../src/main/agent/client')
 const { DEFAULT_AGENT_MODEL } = await import('../../../src/shared/agent/types')
 
@@ -55,6 +57,31 @@ describe('buildSdkOptions — isolation invariants (§5)', () => {
     expect(options.permissionMode).toBe('default')
   })
 
+  it('loads exactly the three bundled skills, so a stray or ambient skill is filtered out', () => {
+    // `skills` is a context filter as well as an enable list (§8): naming ours is the second lock on
+    // §5's isolation, after `settingSources: ['project']` keeps `~/.claude` undiscovered at all.
+    expect(buildSdkOptions(OPTIONS).skills).toEqual([
+      'slide-deck',
+      'svg-animation',
+      'interactive-graph',
+    ])
+  })
+
+  it('keeps the Skill tool available alongside the bundled skills', () => {
+    const options = buildSdkOptions(OPTIONS)
+    expect(options.tools).toContain('Skill')
+    expect(options.allowedTools).toContain('Skill')
+  })
+
+  it('bundling skills did not reopen the ambient-config door', () => {
+    // Mutation guard: this fails if anyone "fixes" skill discovery by adding the user layer.
+    const options = buildSdkOptions(OPTIONS)
+    expect(options.settingSources).not.toContain('user')
+    expect(options.settingSources).not.toContain('local')
+    expect(options.env?.['CLAUDE_CONFIG_DIR']).not.toContain('.claude')
+    expect(options.env?.['CLAUDE_CODE_DISABLE_AUTO_MEMORY']).toBe('1')
+  })
+
   it('passes the model through and streams partial messages', () => {
     const options = buildSdkOptions(OPTIONS)
     expect(options.model).toBe(DEFAULT_AGENT_MODEL)
@@ -76,6 +103,12 @@ describe('realQuery', () => {
     expect(call?.prompt).toBe(prompt)
     expect(call?.options).toMatchObject({ settingSources: ['project'], model: DEFAULT_AGENT_MODEL })
     expect(handle).toEqual({ marker: 'handle' })
+  })
+})
+
+describe('bundledSkillsDir', () => {
+  it('resolves the dev source tree from the app path', () => {
+    expect(bundledSkillsDir()).toBe('/repo/resources/skills')
   })
 })
 

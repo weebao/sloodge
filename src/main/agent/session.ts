@@ -11,6 +11,7 @@ import type { AgentEvent } from '../../shared/agent/types'
 import { createChatBridge, type ChatBridge } from './bridge'
 import { classifyException, isRecoverable, mapSdkMessage } from './event-mapping'
 import type { AgentQueryFn, AgentQueryHandle, AgentQueryOptions } from './query-contract'
+import { missingSkills, type BundledSkillName } from './skills'
 
 export type AgentSessionDeps = {
   readonly queryFn: AgentQueryFn
@@ -28,6 +29,8 @@ export class AgentSession {
   private readonly seenAssistantIds = new Set<string>()
   /** Client-side estimate; accumulated per `result` message, never billed off (§10). */
   private spendUsd = 0
+  /** What the runtime reported loading on `system:init`; empty until the first `ready` (M2.4, §8). */
+  private loadedSkills: readonly string[] = []
 
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
@@ -37,6 +40,16 @@ export class AgentSession {
   /** Client-side cost estimate accumulated across this session's turns. */
   get estimatedSpendUsd(): number {
     return this.spendUsd
+  }
+
+  /**
+   * The §8 skill assertion, readable once a turn has started: what the runtime actually loaded and
+   * which bundled skills are missing. `missing` non-empty means the materialized `SKILL.md` files
+   * were not discovered — the agent is running without its craft knowledge, which is the trigger for
+   * the documented system-prompt fallback and the `skills: fallback` status line.
+   */
+  get skillStatus(): { loaded: readonly string[]; missing: readonly BundledSkillName[] } {
+    return { loaded: this.loadedSkills, missing: missingSkills(this.loadedSkills) }
   }
 
   /**
@@ -59,6 +72,7 @@ export class AgentSession {
       for await (const raw of handle) {
         for (const event of mapSdkMessage(raw, this.seenAssistantIds)) {
           if (event.type === 'turn-end') this.spendUsd += event.costUsd
+          if (event.type === 'ready') this.loadedSkills = event.skills
           this.deps.emit(event)
         }
       }

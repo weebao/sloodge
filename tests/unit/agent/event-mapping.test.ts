@@ -74,7 +74,40 @@ describe('mapSdkMessage', () => {
       { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-opus-5', tools: [] },
       seen(),
     )
-    expect(events).toEqual([{ type: 'ready', sessionId: 'sess-1', model: 'claude-opus-5' }])
+    expect(events).toEqual([
+      { type: 'ready', sessionId: 'sess-1', model: 'claude-opus-5', skills: [] },
+    ])
+  })
+
+  it('carries the loaded skill list off init, so §8 can assert the bundled skills arrived', () => {
+    const events = mapSdkMessage(
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-1',
+        model: 'claude-opus-5',
+        skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
+      },
+      seen(),
+    )
+    expect(events).toEqual([
+      {
+        type: 'ready',
+        sessionId: 'sess-1',
+        model: 'claude-opus-5',
+        skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
+      },
+    ])
+  })
+
+  it('degrades a malformed skills field to an empty list rather than dropping the ready event', () => {
+    const from = (skills: unknown): unknown =>
+      mapSdkMessage(
+        { type: 'system', subtype: 'init', session_id: 's', model: 'm', skills },
+        seen(),
+      )[0]
+    expect(from('slide-deck')).toMatchObject({ type: 'ready', skills: [] })
+    expect(from([1, 'slide-deck', null])).toMatchObject({ skills: ['slide-deck'] })
   })
 
   it('ignores a system message that is not init', () => {
