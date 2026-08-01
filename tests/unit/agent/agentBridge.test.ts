@@ -7,8 +7,10 @@ import {
   AGENT_KEY_STATUS_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_SET_KEY_CHANNEL,
+  DECK_UPDATED_CHANNEL,
 } from '../../../src/shared/ipc-contract'
 import type { AgentEvent } from '../../../src/shared/agent/types'
+import type { DeckUpdate } from '../../../src/shared/document/deck-update'
 
 function makeBridge(invokeImpl: (channel: string, payload: unknown) => Promise<unknown>) {
   const invoke = vi.fn(invokeImpl)
@@ -85,5 +87,26 @@ describe('createAgentBridge — event stream', () => {
     expect(received).toEqual([{ type: 'ready', sessionId: 's', model: 'claude-opus-5' }])
     unsubscribe()
     expect(handlers.has(AGENT_EVENT_CHANNEL)).toBe(false)
+  })
+})
+
+describe('createAgentBridge — deck hot-update stream', () => {
+  it('subscribes to the deck channel and gates malformed payloads', () => {
+    const received: DeckUpdate[] = []
+    const { bridge, subscribe, handlers } = makeBridge(async () => ({}))
+    const unsubscribe = bridge.onDeckUpdated((u) => received.push(u))
+    expect(subscribe).toHaveBeenCalledWith(DECK_UPDATED_CHANNEL, expect.any(Function))
+
+    const deliver = handlers.get(DECK_UPDATED_CHANNEL)
+    const update = { manifest: { id: 'd' }, slides: {}, notes: {}, theme: null }
+    deliver?.(update)
+    // Missing the structural fields the gate requires — must not reach the listener.
+    deliver?.({ manifest: null, slides: {}, notes: {} })
+    deliver?.({ slides: {}, notes: {} })
+    deliver?.(null)
+
+    expect(received).toEqual([update])
+    unsubscribe()
+    expect(handlers.has(DECK_UPDATED_CHANNEL)).toBe(false)
   })
 })

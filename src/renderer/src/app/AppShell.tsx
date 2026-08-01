@@ -8,6 +8,7 @@ import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
+import { useAgentDeckSync } from './useAgentDeckSync'
 import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
 import { useUndoRedoKeys } from './useUndoRedoKeys'
 
@@ -43,6 +44,9 @@ export function AppShell(): JSX.Element {
 
   const toggleDesign = useDesignStore((state) => state.toggle)
   useDesignModeKey(toggleDesign)
+
+  // Agent-driven deck mutations hot-update the canvas and rail (§9), independent of the chat stream.
+  useAgentDeckSync()
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)

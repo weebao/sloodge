@@ -16,8 +16,10 @@ import {
   AGENT_KEY_STATUS_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_SET_KEY_CHANNEL,
+  DECK_UPDATED_CHANNEL,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
+import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'
 
 export type AgentInvoke = (channel: string, payload: unknown) => Promise<unknown>
 export type AgentSubscribe = (channel: string, handler: (payload: unknown) => void) => () => void
@@ -33,6 +35,11 @@ export type AgentBridge = {
   interrupt: () => Promise<boolean>
   /** Subscribe to the streaming event feed. Returns an unsubscribe function. */
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void
+  /**
+   * Subscribe to live deck snapshots pushed as the agent writes (§9). A separate feed from
+   * `onAgentEvent` so the canvas never waits on the chat stream. Returns an unsubscribe function.
+   */
+  onDeckUpdated: (listener: (update: DeckUpdate) => void) => () => void
 }
 
 function readStatus(response: unknown): ApiKeyStatus {
@@ -74,6 +81,11 @@ export function createAgentBridge(invoke: AgentInvoke, subscribe: AgentSubscribe
     onAgentEvent: (listener) =>
       subscribe(AGENT_EVENT_CHANNEL, (payload) => {
         if (isAgentEvent(payload)) listener(payload)
+      }),
+
+    onDeckUpdated: (listener) =>
+      subscribe(DECK_UPDATED_CHANNEL, (payload) => {
+        if (isDeckUpdate(payload)) listener(payload)
       }),
   }
 }

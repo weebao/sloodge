@@ -35,9 +35,16 @@ import {
   getSlide,
   hasSlide,
 } from '../../../shared/document/deck'
+import type { DeckUpdate } from '../../../shared/document/deck-update'
 import { DocumentHistory } from '../../../shared/document/history'
 import { createStarterSlideHtml } from '../../../shared/document/starter-slide'
-import type { DeckManifest, SlideEntry, SlideId } from '../../../shared/document/types'
+import {
+  parseManifest,
+  parseTheme,
+  type DeckManifest,
+  type SlideEntry,
+  type SlideId,
+} from '../../../shared/document/types'
 import { createStore } from './createStore'
 
 /** One slide as the rail and canvas need it: identity, label, and the bytes to render. */
@@ -104,6 +111,13 @@ export type DeckState = DeckSnapshot & {
    * source-map id, not a message payload. `label` is the Edit-menu text ("Font size 44 -> 46").
    */
   setSlideHtml: (id: SlideId, html: string, elementId: string, label: string) => boolean
+  /**
+   * Adopt a whole deck snapshot pushed by the agent over `deck:updated` (§9), so the canvas and rail
+   * hot-update as slides are written. Returns `false` (a no-op) when the snapshot's manifest fails
+   * validation — a malformed push must never blank the editor. See `applyRemoteDeck` below for why
+   * this replaces the document via `history.reset` rather than landing on the undo stack.
+   */
+  applyRemoteDeck: (update: DeckUpdate) => boolean
   undo: () => boolean
   redo: () => boolean
 }
@@ -393,6 +407,39 @@ export const useDeckStore = createStore<DeckState>((set, get) => {
       })
       if (!result.ok) return false
       set({ ...published(state.history), currentSlideId: state.currentSlideId })
+      return true
+    },
+
+    applyRemoteDeck: (update) => {
+      // Validate the manifest before it can reach a selector: a malformed push must be a no-op, not
+      // a blanked canvas. Main is the trusted sender, but the snapshot carries agent-authored HTML
+      // and this is the one place a bad shape would surface as a runtime crash rather than a value.
+      const parsed = parseManifest(update.manifest)
+      if (!parsed.ok) return false
+      const manifest = parsed.manifest
+
+      const slides = Object.create(null) as Record<string, string>
+      for (const id of Object.keys(update.slides)) slides[id] = update.slides[id] ?? ''
+      const notes = Object.create(null) as Record<string, string>
+      for (const id of Object.keys(update.notes)) notes[id] = update.notes[id] ?? ''
+      // A theme that fails validation is dropped rather than trusted — same posture as `readDeck`.
+      let theme = null
+      if (update.theme !== null && update.theme !== undefined) {
+        const parsedTheme = parseTheme(update.theme)
+        if (parsedTheme.ok) theme = parsedTheme.theme
+      }
+
+      const state = get()
+      const previousIndex = selectCurrentIndex(state.deck, state.currentSlideId)
+      // `reset`, not `apply`: the shipped renderer owns its history, and an agent snapshot is a new
+      // document state — not a command with an inverse this store computed. Replacing the document
+      // and clearing the stacks (§5 `doc:open` semantics) keeps the two from forking. Undoing an
+      // agent turn is coupled to the main-authoritative migration; noted in deck-update.ts.
+      state.history.reset({ manifest, slides, notes, theme })
+      set({
+        ...published(state.history),
+        currentSlideId: reselect(manifest, state.currentSlideId, previousIndex),
+      })
       return true
     },
 

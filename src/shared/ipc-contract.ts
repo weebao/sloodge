@@ -8,6 +8,7 @@
  */
 
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
+import type { DeckUpdate } from './document/deck-update'
 
 /**
  * Native-menu action ids, and the single source of truth for them: the main
@@ -96,6 +97,12 @@ export type IpcRequests = {
 export type IpcEvents = {
   'app:menu': MenuAction
   'agent:event': AgentEvent
+  /**
+   * A live deck snapshot pushed as the agent writes, so the canvas and rail hot-update mid-turn
+   * (50-agent-integration.md §9). Independent of `agent:event` on purpose — a stalled chat stream
+   * must never freeze the canvas (10-architecture.md §9 invariant 3).
+   */
+  'deck:updated': DeckUpdate
 }
 
 export type IpcRequestChannel = keyof IpcRequests
@@ -140,6 +147,12 @@ export const AGENT_INTERRUPT_CHANNEL = 'agent:interrupt' satisfies IpcRequestCha
 export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
 
 /**
+ * The deck hot-update channel (§9). Main pushes a full deck snapshot after every agent-driven
+ * mutation; the renderer adopts it into its deck store so the slides appear as they are written.
+ */
+export const DECK_UPDATED_CHANNEL = 'deck:updated' satisfies IpcEventChannel
+
+/**
  * Runtime allow-lists: the declaration of every channel that may cross, which
  * call sites are expected to honour.
  *
@@ -165,6 +178,7 @@ export const IPC_REQUEST_CHANNELS = [
 export const IPC_EVENT_CHANNELS = [
   MENU_EVENT_CHANNEL,
   AGENT_EVENT_CHANNEL,
+  DECK_UPDATED_CHANNEL,
 ] as const satisfies readonly IpcEventChannel[]
 
 export function isIpcRequestChannel(value: string): value is IpcRequestChannel {

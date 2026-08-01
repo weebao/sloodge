@@ -1,0 +1,197 @@
+/**
+ * @vitest-environment happy-dom
+ *
+ * The live chat panel driven by a fake agent bridge — no real IPC, no API call. The pure transcript
+ * logic is proven in `transcript.test.ts`; this covers the component wiring: compose+send calls the
+ * bridge, Enter vs Shift+Enter, Stop interrupts, chips + errors render, the no-key gate, and the
+ * disabled-while-streaming composer.
+ */
+
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ChatPanel } from '../../../src/renderer/src/features/chat/ChatPanel'
+import type { AgentBridge } from '../../../src/preload/agentBridge'
+import type { AgentEvent, ApiKeyStatus } from '../../../src/shared/agent/types'
+
+type Emit = (event: AgentEvent) => void
+
+function makeFakeBridge(status: ApiKeyStatus): {
+  bridge: AgentBridge
+  emit: Emit
+  sendMessage: ReturnType<typeof vi.fn>
+  interrupt: ReturnType<typeof vi.fn>
+  setApiKey: ReturnType<typeof vi.fn>
+} {
+  const listeners = new Set<(e: AgentEvent) => void>()
+  const sendMessage = vi.fn(async () => true)
+  const interrupt = vi.fn(async () => true)
+  const setApiKey = vi.fn(async () => ({ configured: true, last4: 'aXY9' }) as ApiKeyStatus)
+  const bridge: AgentBridge = {
+    setApiKey,
+    clearApiKey: vi.fn(async () => ({ configured: false, last4: null })),
+    getApiKeyStatus: vi.fn(async () => status),
+    sendMessage,
+    interrupt,
+    onAgentEvent: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    onDeckUpdated: () => () => undefined,
+  }
+  const emit: Emit = (event) => {
+    act(() => {
+      for (const listener of listeners) listener(event)
+    })
+  }
+  return { bridge, emit, sendMessage, interrupt, setApiKey }
+}
+
+const CONFIGURED: ApiKeyStatus = { configured: true, last4: 'aXY9' }
+const NO_KEY: ApiKeyStatus = { configured: false, last4: null }
+
+afterEach(() => {
+  cleanup()
+  delete window.sloodge
+  vi.restoreAllMocks()
+})
+
+const composer = (): HTMLTextAreaElement =>
+  screen.getByPlaceholderText('Ask Claude…') as HTMLTextAreaElement
+
+describe('ChatPanel — no bridge (browser host)', () => {
+  it('renders an editable composer with an inert Send and no key gate', () => {
+    render(<ChatPanel />)
+    expect(composer().disabled).toBe(false)
+    expect(screen.getByRole('button', { name: /send/i }).getAttribute('aria-disabled')).toBe('true')
+    expect(screen.queryByText(/add your claude api key/i)).toBeNull()
+  })
+})
+
+describe('ChatPanel — no key configured', () => {
+  beforeEach(() => {
+    window.sloodge = { onMenuAction: () => () => undefined, agent: makeFakeBridge(NO_KEY).bridge }
+  })
+
+  it('shows the add-key affordance and disables the composer', async () => {
+    render(<ChatPanel />)
+    expect(await screen.findByText(/add your claude api key/i)).toBeTruthy()
+    expect(composer().disabled).toBe(true)
+  })
+
+  it('storing a key clears the gate and enables the composer', async () => {
+    const fake = makeFakeBridge(NO_KEY)
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await screen.findByText(/add your claude api key/i)
+
+    fireEvent.change(screen.getByLabelText('Claude API key'), { target: { value: 'sk-ant-xyz' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    await waitFor(() => expect(fake.setApiKey).toHaveBeenCalledWith('sk-ant-xyz'))
+    await waitFor(() => expect(composer().disabled).toBe(false))
+  })
+})
+
+describe('ChatPanel — sending', () => {
+  let fake: ReturnType<typeof makeFakeBridge>
+
+  beforeEach(async () => {
+    fake = makeFakeBridge(CONFIGURED)
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+  })
+
+  it('sends the composed text and shows a user bubble', async () => {
+    fireEvent.change(composer(), { target: { value: 'make a title slide' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledWith('make a title slide'))
+    expect(screen.getByText('make a title slide')).toBeTruthy()
+    // Composer clears and disables while the turn streams.
+    expect(composer().value).toBe('')
+    expect(composer().disabled).toBe(true)
+  })
+
+  it('Enter sends, Shift+Enter does not', () => {
+    fireEvent.change(composer(), { target: { value: 'first' } })
+    fireEvent.keyDown(composer(), { key: 'Enter', shiftKey: true })
+    expect(fake.sendMessage).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(composer(), { key: 'Enter' })
+    expect(fake.sendMessage).toHaveBeenCalledWith('first')
+  })
+
+  it('does not send empty/whitespace text', () => {
+    fireEvent.change(composer(), { target: { value: '   ' } })
+    fireEvent.keyDown(composer(), { key: 'Enter' })
+    expect(fake.sendMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatPanel — streaming transcript', () => {
+  let fake: ReturnType<typeof makeFakeBridge>
+
+  beforeEach(async () => {
+    fake = makeFakeBridge(CONFIGURED)
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    fireEvent.change(composer(), { target: { value: 'build it' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+  })
+
+  it('shows Stop while streaming and interrupts on click', () => {
+    const stop = screen.getByRole('button', { name: /stop/i })
+    fireEvent.click(stop)
+    expect(fake.interrupt).toHaveBeenCalled()
+    // Send returns once the turn is no longer streaming.
+    expect(screen.getByRole('button', { name: /send/i })).toBeTruthy()
+  })
+
+  it('streams assistant deltas and renders tool-call chips inline', () => {
+    fake.emit({ type: 'assistant-delta', text: 'Creating the title slide' })
+    fake.emit({ type: 'tool-use', toolUseId: 't1', label: 'create slide' })
+
+    const log = screen.getByRole('log', { name: 'Conversation' })
+    expect(within(log).getByText('Creating the title slide')).toBeTruthy()
+    expect(within(log).getByText(/New slide/)).toBeTruthy()
+  })
+
+  it('surfaces a typed error as a chat bubble', () => {
+    fake.emit({ type: 'error', kind: 'auth', message: '401', recoverable: false })
+    expect(screen.getByRole('alert').textContent).toMatch(/authentication failed/i)
+  })
+
+  it('renders "(no response)" for a turn that produced no text or tools', () => {
+    fake.emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
+    const log = screen.getByRole('log', { name: 'Conversation' })
+    expect(within(log).getByText('(no response)')).toBeTruthy()
+  })
+})
+
+describe('ChatPanel — a pre-stream send rejection', () => {
+  it('surfaces an error bubble and leaves the turn settled, not stuck streaming', async () => {
+    const fake = makeFakeBridge(CONFIGURED)
+    // agent:send rejects before any stream begins (e.g. a keychain read fault) — session.consume()
+    // never sees it, so the hook's own catch is the only thing that can settle the turn.
+    const rejecting = vi.fn(async () => {
+      throw new Error('keychain is locked')
+    })
+    fake.bridge.sendMessage = rejecting
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    fireEvent.change(composer(), { target: { value: 'build it' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    // The reject is mapped to a visible bubble carrying its message…
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/keychain is locked/i)
+    // …and the composer is usable again (not wedged behind a Stop button).
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    expect(screen.getByRole('button', { name: /send/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /stop/i })).toBeNull()
+  })
+})
