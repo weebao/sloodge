@@ -102,7 +102,8 @@ export const SL_ELEMENTS = 'SL_ELEMENTS'
  *
  * `begin` turns the named element into a caret-bearing `contenteditable` inside the frame; `commit`
  * and `cancel` end the session, the first reporting the current text and the second restoring what
- * was there before. The frame *also* originates `SL_EDIT` as an **event** when the user ends the
+ * was there before; `undo` and `redo` step the field's own history and keep the session open (see
+ * `SlEditAction`). The frame *also* originates `SL_EDIT` as an **event** when the user ends the
  * session from inside the frame (Enter, Escape, Tab or a blur) — the parent cannot see those
  * keystrokes, because they land on a node in a document it has no access to.
  *
@@ -214,8 +215,16 @@ export type SlElementsRequest = Record<string, never>
 /** `SL_ELEMENTS` response payload: every addressable, grabbable element as a full hit, in doc order. */
 export type SlElementsResponse = readonly SlHit[]
 
-/** What the parent is asking the frame to do to an edit session. */
-export type SlEditAction = 'begin' | 'commit' | 'cancel'
+/**
+ * What the parent is asking the frame to do to an edit session.
+ *
+ * `undo`/`redo` step the **field's own** undo stack (Blink's `undo`/`redo` editing commands on the
+ * session's element) and leave the session open. They exist because in Electron the Edit menu owns
+ * Ctrl/⌘+Z: the chord is consumed by the menu accelerator and never reaches the frame as a keystroke,
+ * so the parent forwards the intent here instead of running the *deck's* undo under an open caret.
+ * Ignored when no session is open on `slId`.
+ */
+export type SlEditAction = 'begin' | 'commit' | 'cancel' | 'undo' | 'redo'
 
 /** `SL_EDIT` request payload: which element, and which transition. */
 export interface SlEditRequest {
@@ -403,7 +412,11 @@ function isEditRequestPayload(value: unknown): value is SlEditRequest {
   return (
     isRecord(value) &&
     typeof value['slId'] === 'string' &&
-    (value['action'] === 'begin' || value['action'] === 'commit' || value['action'] === 'cancel')
+    (value['action'] === 'begin' ||
+      value['action'] === 'commit' ||
+      value['action'] === 'cancel' ||
+      value['action'] === 'undo' ||
+      value['action'] === 'redo')
   )
 }
 

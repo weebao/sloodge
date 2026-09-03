@@ -27,6 +27,7 @@ import {
   sanitizeEditedText,
 } from '../../../src/shared/design/text-edit'
 import type { ElementSpan, SlideMap } from '../../../src/shared/design/types'
+import { CORPUS } from './corpus'
 
 function mapOf(html: string): SlideMap {
   return buildSlideMap('s', html)
@@ -86,13 +87,32 @@ describe('isTextEditable', () => {
     expect(isTextEditable(only('<img src="x">'))).toBe(false)
   })
 
-  it('rejects every non-character-data tag', () => {
-    for (const tag of NON_EDITABLE_TAGS) {
-      const map = mapOf(`<${tag}>x</${tag}>`)
-      const element = map.byId.get(idOf(map, tag))
-      // Some of these are dropped or relocated by the parser; when present they must be refused.
-      if (element !== undefined) expect(isTextEditable(element), tag).toBe(false)
-    }
+  it.each([...NON_EDITABLE_TAGS])('rejects <%s> wherever the parser keeps it', (tag) => {
+    // Table-model tags only exist inside a table, so each tag is tried in the contexts that let the
+    // parser keep it; whitespace content is what makes a table or list text-only at all.
+    const contexts = [
+      `<${tag}> x </${tag}>`,
+      `<table><${tag}> </${tag}></table>`,
+      `<table><tbody><${tag}> </${tag}></tbody></table>`,
+      `<${tag}> </${tag}>`,
+    ]
+    const found = contexts
+      .map((html) => mapOf(html))
+      .flatMap((map) => map.order.map((id) => map.byId.get(id)!))
+      .filter((element) => element.tagName === tag)
+    expect(found.length, `no context keeps <${tag}>`).toBeGreaterThan(0)
+    for (const element of found) expect(isTextEditable(element)).toBe(false)
+  })
+
+  it('rejects an element the adoption agency rendered as two nodes — the caret has no one home', () => {
+    // One source <b>, two <b> nodes in the DOM with different text ("x" and "y"), both carrying the
+    // same data-sl-id. The frame can only open a caret in one of them.
+    const map = mapOf('<div><p><b>x</p><p>y</b></p></div>')
+    const bold = map.byId.get(idOf(map, 'b'))!
+    expect(bold.textOnly).toBe(true)
+    expect(bold.minDomNodeCount).toBe(2)
+    expect(isTextEditable(bold)).toBe(false)
+    expect(buildTextEditPatch(map, bold.slId, 'z')).toBeNull()
   })
 
   it('rejects a data-sl-lock element — selectable but not mutable (30-slide-format §3.4)', () => {
@@ -163,6 +183,30 @@ describe('escapeAndNeutralizeText', () => {
   it.each([...FORBIDDEN_API_TOKENS])('neutralizes %s written in upper case', (token) => {
     const written = escapeAndNeutralizeText(`WE CALL ${token.toUpperCase()} HERE`)
     expect(packForApiScan(written)).not.toContain(packForApiScan(token))
+  })
+
+  // The validator strips ALL whitespace, including the one inside `new Function(`: `newFunction(`
+  // is a violation to it, so the neutralizer must see it too. Building the matcher from the raw
+  // token instead of `packForApiScan(token)` makes that space a required literal and reds this.
+  it.each([...FORBIDDEN_API_TOKENS])('neutralizes %s with every whitespace removed', (token) => {
+    const written = escapeAndNeutralizeText(`we call ${packForApiScan(token)} here`)
+    expect(packForApiScan(written)).not.toContain(packForApiScan(token))
+  })
+
+  it.each([...FORBIDDEN_API_TOKENS])('neutralizes %s in mixed case', (token) => {
+    const mixed = [...token].map((c, i) => (i % 2 ? c.toUpperCase() : c.toLowerCase())).join('')
+    const written = escapeAndNeutralizeText(`we call ${mixed} here`)
+    expect(packForApiScan(written)).not.toContain(packForApiScan(token))
+    expect(renderedText(`<p>${written}</p>`, 'p')).toBe(`we call ${mixed} here`)
+  })
+
+  it('an honest sentence using the whitespace-free spelling is written, not refused', () => {
+    const map = mapOf('<div class="slide"><h1>Old</h1></div>')
+    const prose = 'avoid newFunction( in modern JS'
+    const patched = buildTextEditPatch(map, idOf(map, 'h1'), prose)
+    expect(patched).not.toBeNull()
+    expect(findForbiddenApiTokens(patched!)).toEqual([])
+    expect(renderedText(patched!, 'h1')).toBe(prose)
   })
 
   it.each([...FORBIDDEN_API_TOKENS])('preserves the rendered text of %s exactly', (token) => {
@@ -269,5 +313,238 @@ describe('buildTextEditPatch', () => {
     const map = mapOf(fixture)
     const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'a\u0000\u0007b')!
     expect(patched).toContain('<h1 id="t">ab</h1>')
+  })
+})
+
+/**
+ * Round-1 review fixes. Blocker: on an adoption-agency mis-nested slide the mapped (original)
+ * formatting element had zero tree children while its `inner` bytes held markup, so `textOnly` was
+ * vacuously true and a text edit spliced over the markup — deleting a `<p>` and shifting every later
+ * `data-sl-id`. Major: the no-op check compared bytes, so an untouched `&nbsp;` heading pushed a
+ * phantom undo entry on every Esc. Minors: the Kelvin sign defeated the neutralizer's case fold,
+ * table/list containers and the RAWTEXT `noembed`/`noframes` were editable, and lone surrogates
+ * reached the source.
+ *
+ * Every invisible or control character below is written as an escape on purpose — a raw one in a
+ * test file is the same diff hazard the code under test refuses to write.
+ */
+
+const MIS_NESTED = [
+  // The original <b> ends up with no children; its inner is `<p>x`.
+  ['formatting element wrapping a block', '<div><b><p>x</b>y</p></div>', 'b'],
+  // Contract-valid slide shape from the review.
+  ['inline wrapping a classed div', '<div><em><div class="note">x</em> more</div></div>', 'em'],
+  // One text child covering `x`, but the inner continues into `<p>y`.
+  ['text then a block inside the formatting element', '<div><b>x<p>y</b>z</p></div>', 'b'],
+] as const
+
+describe('buildTextEditPatch — mis-nested source is refused, never patched', () => {
+  it.each([...MIS_NESTED])('%s: not text-only, not editable, no patch', (_label, html, tag) => {
+    const map = mapOf(html)
+    const element = map.byId.get(idOf(map, tag))!
+    expect(element.textOnly).toBe(false)
+    expect(element.textContent).toBeNull()
+    expect(isTextEditable(element)).toBe(false)
+    expect(buildTextEditPatch(map, element.slId, 'hello')).toBeNull()
+    // A forged SL_EDIT naming the shared id with an empty text is refused the same way.
+    expect(buildTextEditPatch(map, element.slId, '')).toBeNull()
+  })
+
+  it('keeps a well-formed inline element inside mis-nested siblings editable', () => {
+    // The <em> is not a clone and its text covers its inner exactly: still a text box.
+    const html = '<div><p><strong>Q3 <em>revenue</em></p><p>rose</strong></p></div>'
+    const map = mapOf(html)
+    expect(buildTextEditPatch(map, idOf(map, 'em'), 'sales')).toBe(
+      '<div><p><strong>Q3 <em>sales</em></p><p>rose</strong></p></div>',
+    )
+  })
+
+  /**
+   * The invariant behind the blocker, over the whole adversarial corpus: for every element an edit is
+   * *accepted* on, the map rebuilt from the patched source has the same ids, in the same order, with
+   * the same tags and paths — and the patched element's decoded text is exactly what was typed.
+   */
+  it.each(CORPUS.map((entry) => [entry.name, entry.html] as const))(
+    'id-stability: every accepted edit in "%s" keeps the id set, order and paths',
+    (_name, html) => {
+      const map = mapOf(html)
+      for (const id of map.order) {
+        const patched = buildTextEditPatch(map, id, 'edited <text> & more')
+        if (patched === null) continue
+        const after = mapOf(patched)
+        expect([...after.order], id).toEqual([...map.order])
+        for (const other of map.order) {
+          expect(after.byId.get(other)!.tagName, other).toBe(map.byId.get(other)!.tagName)
+          expect(after.byId.get(other)!.path, other).toEqual(map.byId.get(other)!.path)
+        }
+        expect(after.byId.get(id)!.textContent).toBe('edited <text> & more')
+      }
+    },
+  )
+
+  it('the corpus exercises the invariant: most entries accept at least one edit', () => {
+    const accepting = CORPUS.filter((entry) => {
+      const map = mapOf(entry.html)
+      return map.order.some((id) => buildTextEditPatch(map, id, 'edited') !== null)
+    })
+    expect(accepting.length).toBeGreaterThan(CORPUS.length / 2)
+  })
+})
+
+describe('textOnly coverage rule — the shapes around the blocker', () => {
+  it('a stray ignored end tag inside text is still one text node covering the inner', () => {
+    // parse5 ignores `</b>` and merges the characters around it; nothing addressable is lost.
+    const map = mapOf('<div><p>a</b>b</p></div>')
+    const p = map.byId.get(idOf(map, 'p'))!
+    expect(p.textOnly).toBe(true)
+    expect(p.textContent).toBe('ab')
+    expect(buildTextEditPatch(map, p.slId, 'ab')).toBeNull()
+    expect(buildTextEditPatch(map, p.slId, 'abc')).toBe('<div><p>abc</p></div>')
+  })
+
+  it('a <pre> whose leading newline the parser drops stays text-only', () => {
+    const map = mapOf('<div><pre>\nline</pre></div>')
+    const pre = map.byId.get(idOf(map, 'pre'))!
+    expect(pre.textOnly).toBe(true)
+    expect(pre.textContent).toBe('line')
+    expect(buildTextEditPatch(map, pre.slId, 'line')).toBeNull()
+    expect(buildTextEditPatch(map, pre.slId, 'code')).toBe('<div><pre>code</pre></div>')
+  })
+})
+
+describe('buildTextEditPatch — entity-bearing text (review major)', () => {
+  const ENTITY_SOURCE =
+    '<div class="slide"><h1>a&nbsp;b &mdash; &quot;c&quot; &lt;d&gt; e&amp;f</h1></div>'
+
+  it('an unchanged commit on entity-bearing text is a no-op', () => {
+    const map = mapOf(ENTITY_SOURCE)
+    const h1 = map.byId.get(idOf(map, 'h1'))!
+    // What the frame's textContent returns for this element.
+    const seen = renderedText(ENTITY_SOURCE, 'h1')
+    expect(seen).toBe('a\u00A0b — "c" <d> e&f')
+    expect(h1.textContent).toBe(seen)
+    expect(buildTextEditPatch(map, h1.slId, seen)).toBeNull()
+  })
+
+  it.each(['&nbsp;', '&mdash;', '&quot;', '&rarr;', '&copy;', '&#8212;', '&#x2014;', '&amp;'])(
+    'unchanged text containing %s is a no-op',
+    (entity) => {
+      const html = `<div class="slide"><p>x ${entity} y</p></div>`
+      const map = mapOf(html)
+      expect(buildTextEditPatch(map, idOf(map, 'p'), renderedText(html, 'p'))).toBeNull()
+    },
+  )
+
+  it('a real change lands, and the no-break space keeps its entity spelling', () => {
+    const map = mapOf(ENTITY_SOURCE)
+    const typed = 'a\u00A0b — "c" <d> e&f!'
+    const patched = buildTextEditPatch(map, idOf(map, 'h1'), typed)!
+    expect(patched).toBe('<div class="slide"><h1>a&nbsp;b — "c" &lt;d> e&amp;f!</h1></div>')
+    expect(renderedText(patched, 'h1')).toBe(typed)
+  })
+
+  it('a control character in the source does not make an untouched edit look changed', () => {
+    // The tokenizer keeps U+0001; the frame's textContent carries it; the sanitizer strips it on
+    // both sides of the comparison.
+    const html = '<div class="slide"><p>a\u0001b</p></div>'
+    const map = mapOf(html)
+    expect(buildTextEditPatch(map, idOf(map, 'p'), 'a\u0001b')).toBeNull()
+    expect(buildTextEditPatch(map, idOf(map, 'p'), 'ab')).toBeNull()
+  })
+})
+
+describe('escapeAndNeutralizeText — invisible characters are written as references', () => {
+  it.each([
+    ['\u00A0', '&nbsp;'],
+    ['\u00AD', '&#173;'],
+    ['\u200B', '&#8203;'],
+    ['\u200C', '&#8204;'],
+    ['\u200D', '&#8205;'],
+    ['\u2060', '&#8288;'],
+    ['\uFEFF', '&#65279;'],
+  ])('writes %o as %s, which decodes back to the same character', (char, reference) => {
+    const written = escapeAndNeutralizeText(`a${char}b`)
+    expect(written).toBe(`a${reference}b`)
+    expect(renderedText(`<p>${written}</p>`, 'p')).toBe(`a${char}b`)
+  })
+})
+
+describe('escapeAndNeutralizeText — folds case the way the validator does (review minor)', () => {
+  it('neutralizes a token spelled with a Kelvin sign, which lowercases to k', () => {
+    const text = 'open a WebSocKet here'
+    const written = escapeAndNeutralizeText(text)
+    expect(packForApiScan(written)).not.toContain('websocket')
+    expect(renderedText(`<p>${written}</p>`, 'p')).toBe(text)
+  })
+
+  it.each([
+    ['Kelvin sign', 'WebSocKet'],
+    ['dotted capital I (two-code-unit lowercase)', 'İndexedDB'],
+    ['long s', 'WebSocketſ'],
+    ['fullwidth letters', 'ｆetch('],
+    ['fi ligature', 'ﬁetch('],
+    ['mixed: Kelvin inside spaced token', 'W e b S o c K e t'],
+  ])('%s: the patch is never refused and never violates SL-S04', (_label, text) => {
+    const map = mapOf('<div class="slide"><h1>Old</h1></div>')
+    const patched = buildTextEditPatch(map, idOf(map, 'h1'), text)
+    expect(patched).not.toBeNull()
+    expect(findForbiddenApiTokens(patched!)).toEqual([])
+    expect(renderedText(patched!, 'h1')).toBe(text)
+  })
+
+  it('the post-patch assertion refuses a patch that gains a token — pinned through a non-text span', () => {
+    // A map whose `inner` is not flanked by tags is the only way past the neutralizer: the shape a
+    // future slide-map change could produce. Hand-built, because a real parse never yields it.
+    const source = 'fetcX('
+    const element: ElementSpan = {
+      slId: 's:0',
+      tagName: 'p',
+      outer: { start: 0, end: source.length },
+      inner: { start: 4, end: 5 },
+      attrs: {},
+      attrInsert: 0,
+      parentSlId: null,
+      childSlIds: [],
+      path: [0],
+      textOnly: true,
+      textContent: 'X',
+      ns: 'html',
+      authoredSlId: null,
+      minDomNodeCount: 1,
+    }
+    const map: SlideMap = {
+      slideId: 's',
+      sourceHash: 'test',
+      source,
+      byId: new Map([[element.slId, element]]),
+      order: [element.slId],
+    }
+    expect(buildTextEditPatch(map, 's:0', 'h')).toBeNull()
+    expect(buildTextEditPatch(map, 's:0', 'Y')).toBe('fetcY(')
+  })
+})
+
+describe('sanitizeEditedText — lone surrogates (review minor)', () => {
+  it('replaces a lone high or low surrogate with U+FFFD', () => {
+    expect(sanitizeEditedText('a\uD800b')).toBe('a�b')
+    expect(sanitizeEditedText('a\uDC00b')).toBe('a�b')
+  })
+
+  it('keeps a well-formed pair intact', () => {
+    expect(sanitizeEditedText('a\u{1F600}b')).toBe('a\u{1F600}b')
+  })
+
+  it('repairs a pair the length cap cut in half', () => {
+    const out = sanitizeEditedText(`${'x'.repeat(MAX_TEXT_LENGTH - 1)}\u{1F600}`)
+    expect(out).toHaveLength(MAX_TEXT_LENGTH)
+    expect(out.endsWith('�')).toBe(true)
+  })
+
+  it('edit -> save -> reopen is identity for a pasted lone surrogate', () => {
+    const map = mapOf('<div class="slide"><h1>Old</h1></div>')
+    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'a\uD800b')!
+    // A UTF-8 round trip changes nothing, because nothing lone is left to become U+FFFD on save.
+    expect(Buffer.from(patched, 'utf8').toString('utf8')).toBe(patched)
+    expect(renderedText(patched, 'h1')).toBe('a�b')
   })
 })

@@ -31,6 +31,7 @@ import {
   parseFrameMessage,
   SL_ELEMENTS,
   SL_HITTEST,
+  SL_READY,
   type SlEditAction,
   type SlEditEventPayload,
   type SlEditResponse,
@@ -61,6 +62,12 @@ export interface DesignBridgeOptions {
    * element from the parent's map and never trusts the text as markup.
    */
   readonly onEditEnd?: (payload: SlEditEventPayload) => void
+  /**
+   * The frame announced a **fresh document** (`SL_READY`). Fires once per load, so a second call
+   * during one mount means the frame reloaded — the bytes changed, or the slide switched — and any
+   * state the parent kept about the previous document (an open text session) is now about nothing.
+   */
+  readonly onReady?: () => void
 }
 
 export interface DesignBridgeApi {
@@ -85,7 +92,7 @@ export interface DesignBridgeApi {
 }
 
 export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
-  const { frameRef, slideId, enabled, onHit, onEditEnd } = options
+  const { frameRef, slideId, enabled, onHit, onEditEnd, onReady } = options
 
   const nextId = useRef(createEnvelopeIdSource())
   // Correlates a response back to the mode that asked for it (the response payload does not carry
@@ -106,6 +113,10 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
   useEffect(() => {
     onEditEndRef.current = onEditEnd
   }, [onEditEnd])
+  const onReadyRef = useRef(onReady)
+  useEffect(() => {
+    onReadyRef.current = onReady
+  }, [onReady])
 
   useEffect(() => {
     if (!enabled) return
@@ -121,6 +132,11 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
       const message = parseFrameMessage(event.data, slideId)
       if (message === null) return
 
+      // A fresh frame document. The parent's own state about the previous one is now stale.
+      if (message.dir === 'evt' && message.type === SL_READY) {
+        onReadyRef.current?.()
+        return
+      }
       // The frame ended a session itself (a key or a blur inside its document).
       if (isEditEventMessage(message)) {
         onEditEndRef.current?.(message.payload)

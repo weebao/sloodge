@@ -21,6 +21,7 @@ type Element = DefaultTreeAdapterTypes.Element
 type Template = DefaultTreeAdapterTypes.Template
 type ChildNode = DefaultTreeAdapterTypes.ChildNode
 type ParentNode = DefaultTreeAdapterTypes.ParentNode
+type TextNode = DefaultTreeAdapterTypes.TextNode
 
 /** parse5 reports `namespaceURI` as one of these URIs; the HTML parser can only produce three. */
 const NAMESPACE_BY_URI: Readonly<Record<string, SlideNamespace>> = {
@@ -97,6 +98,10 @@ export function sourceFingerprint(source: string): string {
 
 function isElement(node: ChildNode): node is Element {
   return 'tagName' in node
+}
+
+function isTextNode(node: ChildNode): node is TextNode {
+  return node.nodeName === '#text'
 }
 
 function isTemplate(node: Element): node is Template {
@@ -199,6 +204,52 @@ function isContentless(
     if (solidus >= attr.whole.start && solidus < attr.whole.end) return false
   }
   return true
+}
+
+/**
+ * Elements whose leading newline the tree builder discards ("pre", "listing" and "textarea" start
+ * tags: "if the next token is a U+000A LINE FEED character token, then ignore that token"). It is
+ * the one place character bytes inside `inner` are not represented by any text node.
+ */
+const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea'])
+
+/**
+ * The decoded character data of an element whose `inner` bytes are exactly its text-node children,
+ * or `null` when they are not — the definition of `ElementSpan.textOnly` (see its docstring).
+ *
+ * Coverage is checked on **source spans**, not on the tree: the text nodes must tile `inner` from
+ * its first byte to its last with no gap. A gap means bytes the tree does not attribute to this
+ * element's character data — a start tag the adoption agency moved elsewhere, foster-parented text
+ * that landed *outside* the element, a `<head>` whose location the parser reports inverted — and
+ * splicing over those bytes is exactly the corruption this refuses.
+ *
+ * A text node's span may legitimately contain bytes that are not text: the parser *ignores* a stray
+ * `</b>` or an out-of-place `<tr>` inside `<p>a</b>b</p>`, merges the character tokens around it into
+ * one node and extends that node's span across the ignored tag. Those bytes produced no element, so
+ * nothing addressable is lost by writing over them; the decoded value is still the whole truth of
+ * what the element renders.
+ */
+function textOnlyContent(
+  source: string,
+  tagName: string,
+  inner: Span,
+  children: readonly ChildNode[],
+): string | null {
+  let cursor = inner.start
+  if (LEADING_NEWLINE_DROPPED.has(tagName)) {
+    if (source.startsWith('\r\n', cursor)) cursor += 2
+    else if (source[cursor] === '\n') cursor += 1
+  }
+
+  let content = ''
+  for (const child of children) {
+    if (!isTextNode(child)) return null
+    const location = child.sourceCodeLocation
+    if (!location || location.startOffset !== cursor) return null
+    cursor = location.endOffset
+    content += child.value
+  }
+  return cursor === inner.end ? content : null
 }
 
 interface WalkState {
@@ -304,6 +355,7 @@ function mapElement(
 
   const children = childrenOf(node)
   const slIdAttr = attrs[SL_ID_ATTR]
+  const textContent = inner === null ? null : textOnlyContent(source, node.tagName, inner, children)
 
   const span: ElementSpan = {
     slId: `${state.slideId}:${String(state.spans.length)}`,
@@ -315,7 +367,8 @@ function mapElement(
     parentSlId,
     childSlIds: [],
     path,
-    textOnly: !contentless && children.every((child) => child.nodeName === '#text'),
+    textOnly: textContent !== null,
+    textContent,
     ns,
     authoredSlId: slIdAttr?.value ? source.slice(slIdAttr.value.start, slIdAttr.value.end) : null,
     minDomNodeCount: 1,

@@ -163,6 +163,11 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const onEditEnd = useCallback((payload: SlEditEventPayload): void => {
     editEndRef.current(payload)
   }, [])
+  // Same shape for the frame's "fresh document" signal, which ends a session the reload destroyed.
+  const readyRef = useRef<() => void>(() => undefined)
+  const onReady = useCallback((): void => {
+    readyRef.current()
+  }, [])
 
   // `beginEdit` is created below (it needs the bridge this callback is being passed to), so the
   // double-click response reaches it through a ref.
@@ -192,12 +197,19 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     enabled: true,
     onHit,
     onEditEnd,
+    onReady,
   })
 
-  const { beginEdit, onFrameEditEnd, editing } = useTextEditing({ slideId, requestEdit })
+  const { beginEdit, onFrameEditEnd, onFrameReady, editing } = useTextEditing({
+    slideId,
+    requestEdit,
+  })
   useEffect(() => {
     editEndRef.current = onFrameEditEnd
   }, [onFrameEditEnd])
+  useEffect(() => {
+    readyRef.current = onFrameReady
+  }, [onFrameReady])
   useEffect(() => {
     beginEditRef.current = beginEdit
   }, [beginEdit])

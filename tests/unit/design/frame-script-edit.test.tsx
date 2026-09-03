@@ -311,3 +311,47 @@ describe('DESIGN_BRIDGE_SCRIPT edit drift guards', () => {
     expect(DESIGN_BRIDGE_SCRIPT).toContain('plaintext-only')
   })
 })
+
+/**
+ * Round-1 review blocker 2, half (a), frame side: in Electron the Edit menu consumes Ctrl/⌘+Z, so the
+ * chord never reaches this document as a keystroke. The parent forwards it as an `SL_EDIT` `undo` /
+ * `redo`, and the frame runs the editing host's own command — the same thing the keystroke would
+ * have done in a browser host — keeping the session open.
+ */
+describe('designBridgeFrameMain SL_EDIT — forwarded undo/redo', () => {
+  function armWithExecCommand(): { parent: FakeParent; exec: ReturnType<typeof vi.fn> } {
+    const exec = vi.fn(() => true)
+    // happy-dom has no execCommand; the frame calls whatever the document exposes.
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true })
+    return { parent: arm(PLAIN), exec }
+  }
+
+  it.each(['undo', 'redo'] as const)(
+    '%s runs the document editing command and keeps the session open',
+    (action) => {
+      const { parent, exec } = armWithExecCommand()
+      postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }), parent)
+      target().textContent = 'typed'
+      parent.postMessage.mockClear()
+
+      postToFrame(editRequest({ slId: EDITABLE, action }, 12), parent)
+
+      expect(exec).toHaveBeenCalledWith(action)
+      expect(lastPayload(parent)).toMatchObject({ slId: EDITABLE, text: 'typed', editing: true })
+      expect(target().getAttribute('contenteditable')).not.toBeNull()
+    },
+  )
+
+  it('ignores undo/redo when no session is open, or for an element that is not the session', () => {
+    const { parent, exec } = armWithExecCommand()
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'undo' }), parent)
+    expect(exec).not.toHaveBeenCalled()
+    expect(lastPayload(parent)).toMatchObject({ slId: EDITABLE, editing: false })
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }, 2), parent)
+    postToFrame(editRequest({ slId: 's_x:0', action: 'redo' }, 3), parent)
+    expect(exec).not.toHaveBeenCalled()
+    expect(target().getAttribute('contenteditable')).not.toBeNull()
+  })
+})

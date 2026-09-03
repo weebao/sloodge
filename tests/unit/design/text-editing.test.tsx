@@ -16,7 +16,9 @@ import type { SlEditAction, SlEditEventPayload } from '../../../src/shared/desig
 import { findForbiddenApiTokens } from '../../../src/shared/document/slide-contract'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/history'
+import { runEditAction } from '../../../src/renderer/src/app/editActions'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
+import { activeTextEditSession } from '../../../src/renderer/src/features/design/textEditSession'
 import { useTextEditing } from '../../../src/renderer/src/features/design/useTextEditing'
 import {
   createStarterDeck,
@@ -314,5 +316,249 @@ describe('useTextEditing — the text is untrusted', () => {
 
     expect(undoDepth()).toBe(before)
     expect(currentHtml()).toBe(SLIDE_HTML)
+  })
+})
+
+/**
+ * Round-1 review blocker 2, half (b): the document moving under an open caret must end the session
+ * deterministically — never leave `editing` set with no caret in the frame, which strands the overlay
+ * in pass-through mode with Enter/F2 disarmed. Ended by *cancel*: the in-progress text is not written
+ * against bytes the `slId` no longer describes.
+ */
+describe('useTextEditing — the document moving under an open caret ends the session', () => {
+  function openSession(harness: Harness): string {
+    const id = idOfClass('title')
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    expect(useDesignStore.getState().editing).toBe(id)
+    return id
+  }
+
+  /** Enter/F2 are armed again only when `editing` is null; a fresh `beginEdit` proves the same. */
+  function canBeginAgain(harness: Harness): boolean {
+    let opened = false
+    act(() => {
+      opened = harness.result.current.beginEdit(idOfClass('title'))
+    })
+    return opened
+  }
+
+  it('a deck:updated snapshot replacing the slide ends the session and re-arms editing', () => {
+    const harness = mount()
+    openSession(harness)
+    const before = undoDepth()
+
+    const replaced = SLIDE_HTML.replace('Old title', 'Agent title')
+    act(() => {
+      const state = useDeckStore.getState()
+      useDeckStore.getState().applyRemoteDeck({
+        manifest: state.deck,
+        slides: { [slideId]: replaced },
+        notes: {},
+        theme: null,
+      })
+    })
+
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(currentHtml()).toBe(replaced)
+    // Nothing was committed against the new bytes, and no frame message was needed to end it.
+    expect(undoDepth()).toBe(before)
+    expect(harness.sent.filter((s) => s.action !== 'begin')).toEqual([])
+    expect(canBeginAgain(harness)).toBe(true)
+  })
+
+  it('an outside setSlideHtml (property panel, agent tool edit) ends the session without committing', () => {
+    const harness = mount()
+    openSession(harness)
+
+    const outside = SLIDE_HTML.replace('Old title', 'Panel title')
+    act(() => {
+      useDeckStore.getState().setSlideHtml(slideId, outside, 'x', 'Panel edit')
+    })
+
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(currentHtml()).toBe(outside)
+    expect(canBeginAgain(harness)).toBe(true)
+  })
+
+  it('the frame announcing a fresh document (SL_READY) ends the session', () => {
+    const harness = mount()
+    openSession(harness)
+
+    act(() => {
+      harness.result.current.onFrameReady()
+    })
+
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent.filter((s) => s.action !== 'begin')).toEqual([])
+    expect(canBeginAgain(harness)).toBe(true)
+  })
+
+  it('SL_READY with no session open is a no-op', () => {
+    const harness = mount()
+    act(() => {
+      harness.result.current.onFrameReady()
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent).toEqual([])
+  })
+
+  it('a late end event from the destroyed session commits nothing', () => {
+    const harness = mount()
+    const id = openSession(harness)
+    act(() => {
+      harness.result.current.onFrameReady()
+    })
+    const before = undoDepth()
+
+    frameEnd(harness, { slId: id, text: 'from the old document' })
+
+    expect(undoDepth()).toBe(before)
+    expect(currentHtml()).toBe(SLIDE_HTML)
+  })
+
+  it('the hook’s own commit does not trip the bytes-changed guard (one entry, session closed once)', () => {
+    const harness = mount()
+    const id = openSession(harness)
+    const before = undoDepth()
+
+    frameEnd(harness, { slId: id, text: 'New title' })
+
+    expect(undoDepth()).toBe(before + 1)
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(canBeginAgain(harness)).toBe(true)
+  })
+})
+
+describe('useTextEditing — the frame declining a begin does not strand the overlay', () => {
+  it('ends the session when the frame answers editing:false or null', () => {
+    for (const answer of [{ slId: '', text: 'x', editing: false }, null]) {
+      const calls: ((r: unknown) => void)[] = []
+      const requestEdit = vi.fn((_slId: string, _action: SlEditAction, cb?: (r: never) => void) => {
+        if (cb) calls.push(cb as (r: unknown) => void)
+      })
+      const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
+      const id = idOfClass('title')
+      act(() => {
+        result.current.beginEdit(id)
+      })
+      expect(useDesignStore.getState().editing).toBe(id)
+
+      act(() => {
+        calls[0]!(answer === null ? null : { ...answer, slId: id })
+      })
+      expect(useDesignStore.getState().editing).toBeNull()
+      cleanup()
+    }
+  })
+
+  it('keeps the session when the frame confirms editing:true', () => {
+    const calls: ((r: unknown) => void)[] = []
+    const requestEdit = vi.fn((_slId: string, _action: SlEditAction, cb?: (r: never) => void) => {
+      if (cb) calls.push(cb as (r: unknown) => void)
+    })
+    const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
+    const id = idOfClass('title')
+    act(() => {
+      result.current.beginEdit(id)
+    })
+    act(() => {
+      calls[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+    expect(useDesignStore.getState().editing).toBe(id)
+  })
+})
+
+/**
+ * Round-1 review blocker 2, half (a): while a caret is open the Edit menu's Undo/Redo must reach the
+ * *field's* undo inside the frame, never the deck's. The session registers a forwarder for exactly
+ * as long as it is open.
+ */
+describe('useTextEditing — registers the open session for the Edit menu', () => {
+  it('is registered while editing and forwards undo/redo to the frame', () => {
+    const harness = mount()
+    expect(activeTextEditSession()).toBeNull()
+    const id = idOfClass('title')
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+
+    const session = activeTextEditSession()
+    expect(session).not.toBeNull()
+    session!.undo()
+    session!.redo()
+    expect(harness.sent.slice(1)).toEqual([
+      { slId: id, action: 'undo' },
+      { slId: id, action: 'redo' },
+    ])
+  })
+
+  it('is unregistered by every way a session ends', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    frameEnd(harness, { slId: id, text: 'x' })
+    expect(activeTextEditSession()).toBeNull()
+
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    act(() => {
+      harness.result.current.onFrameReady()
+    })
+    expect(activeTextEditSession()).toBeNull()
+
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    cleanup()
+    expect(activeTextEditSession()).toBeNull()
+  })
+
+  it('menu Undo with focus on the iframe runs the frame field’s undo, not the deck’s', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    const deck = { undo: vi.fn(), redo: vi.fn() }
+    const iframe = document.createElement('iframe')
+
+    const route = runEditAction('edit.undo', deck, {
+      activeElement: iframe,
+      execCommand: vi.fn(() => true),
+      frameSession: activeTextEditSession(),
+    })
+
+    expect(route).toBe('frame')
+    expect(deck.undo).not.toHaveBeenCalled()
+    expect(harness.sent.at(-1)).toEqual({ slId: id, action: 'undo' })
+    expect(useDesignStore.getState().editing).toBe(id)
+    expect(currentHtml()).toBe(SLIDE_HTML)
+  })
+})
+
+describe('useTextEditing — entity-bearing text is a no-op when unchanged (review major)', () => {
+  it('open + Esc on an &nbsp; heading: zero patches, zero undo entries, canUndo unchanged', () => {
+    slideId = seedDeck(SLIDE_HTML.replace('Old title', 'Q3&nbsp;Revenue &mdash; 2026'))
+    const harness = mount()
+    const id = idOfClass('title')
+    const html = currentHtml()
+    const before = undoDepth()
+    const canUndo = useDeckStore.getState().canUndo
+
+    act(() => {
+      harness.result.current.beginEdit(id)
+    })
+    // What the frame's textContent reads for that heading.
+    frameEnd(harness, { slId: id, text: 'Q3\u00A0Revenue — 2026', reason: 'escape' })
+
+    expect(currentHtml()).toBe(html)
+    expect(undoDepth()).toBe(before)
+    expect(useDeckStore.getState().canUndo).toBe(canUndo)
   })
 })

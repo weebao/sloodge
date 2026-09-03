@@ -365,10 +365,13 @@ describe('SL_EDIT envelopes', () => {
     }
   }
 
-  it('round-trips a request through its factory and validator', () => {
-    const request = makeEditRequest(9, EDIT_SLIDE, { slId: 's_1:2', action: 'begin' })
-    expect(parseParentMessage(request, EDIT_SLIDE)).toEqual(request)
-  })
+  it.each(['begin', 'commit', 'cancel', 'undo', 'redo'] as const)(
+    'round-trips a %s request through its factory and validator',
+    (action) => {
+      const request = makeEditRequest(9, EDIT_SLIDE, { slId: 's_1:2', action })
+      expect(parseParentMessage(request, EDIT_SLIDE)).toEqual(request)
+    },
+  )
 
   it('round-trips a response and an event through their factories', () => {
     const response = makeEditResponse(9, EDIT_SLIDE, { slId: 's_1:2', text: 'x', editing: false })

@@ -753,3 +753,52 @@ describe('buildSlideMap — the map describes the source it was given', () => {
     }
   })
 })
+
+/**
+ * `textOnly` is a **byte-coverage** claim, not a tree-shape claim (M3.11 round-1 blocker): the text
+ * nodes' source spans must tile `inner` exactly. The tree alone said "all children are text" for an
+ * adoption-agency original with zero children and markup in its inner bytes.
+ */
+describe('buildSlideMap — textOnly requires the text nodes to cover inner exactly', () => {
+  it.each([
+    ['formatting element wrapping a block', '<b><p>x</b>y</p>', 'b'],
+    ['inline wrapping a div', '<em><div class="note">x</em> more</div>', 'em'],
+    ['text then a block inside the formatting element', '<b>x<p>y</b>z</p>', 'b'],
+    ['text foster-parented out of a table', '<table>x</table>', 'table'],
+    ['head the parser locates inverted', '<head>x</head>', 'head'],
+  ])('%s: not textOnly, textContent null', (_label, html, tag) => {
+    const element = one(build(html), tag)
+    expect(element.textOnly).toBe(false)
+    expect(element.textContent).toBeNull()
+  })
+
+  it.each([
+    ['plain text', '<p>plain</p>', 'p', 'plain'],
+    ['empty element', '<div></div>', 'div', ''],
+    ['entities decoded', '<p>a&nbsp;b &mdash; &lt;c&gt; &amp;d</p>', 'p', 'a b — <c> &d'],
+    ['crlf normalized', '<p>a\r\nb</p>', 'p', 'a\nb'],
+    ['stray ignored end tag merged into one text node', '<p>a</b>b</p>', 'p', 'ab'],
+    ['stray ignored start tag merged into one text node', '<p>a<tr>b</p>', 'p', 'ab'],
+    ['pre with the leading newline the parser drops', '<pre>\nx</pre>', 'pre', 'x'],
+    ['pre with a dropped CRLF', '<pre>\r\nx</pre>', 'pre', 'x'],
+    ['pre holding only the dropped newline', '<pre>\n</pre>', 'pre', ''],
+    ['textarea with the leading newline dropped', '<textarea>\nx</textarea>', 'textarea', 'x'],
+    ['whitespace inside a table', '<table> </table>', 'table', ' '],
+    ['svg text', '<svg><text>a</text></svg>', 'text', 'a'],
+    ['unclosed at eof', '<p>tail', 'p', 'tail'],
+    ['astral text', '<p>\u{1F600} bars</p>', 'p', '\u{1F600} bars'],
+    ['formatting original whose text covers its inner', '<p><b>x</p><p>y</b></p>', 'b', 'x'],
+  ])('%s: textOnly with textContent as the DOM reads it', (_label, html, tag, expected) => {
+    const element = one(build(html), tag)
+    expect(element.textOnly).toBe(true)
+    expect(element.textContent).toBe(expected)
+  })
+
+  it('textContent is null exactly when textOnly is false, across the corpus', () => {
+    for (const entry of CORPUS) {
+      for (const span of spans(build(entry.html))) {
+        expect(span.textContent === null, `${entry.name} ${span.slId}`).toBe(!span.textOnly)
+      }
+    }
+  })
+})

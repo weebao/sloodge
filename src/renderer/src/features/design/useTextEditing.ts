@@ -19,6 +19,19 @@
  * A session that changed nothing commits nothing: `buildTextEditPatch` returns `null` for an
  * unchanged value, so tabbing through text without editing leaves the undo stack untouched.
  *
+ * ## Ctrl/⌘+Z *inside* the caret is the field's undo, never the deck's
+ *
+ * While a session is open the element is a `contenteditable` with its own undo history, and §5 of
+ * 10-architecture.md binds the deck's chord "only when focus is not inside a text input that has its
+ * own native undo". In a browser host that is automatic — the keystroke lands in the frame and Blink
+ * handles it. In Electron the Edit menu owns the accelerator, the chord arrives as `edit.undo` in the
+ * parent, and the parent's `activeElement` is the `<iframe>`, so nothing about focus says "a field
+ * owns this". The session therefore registers itself (`textEditSession.ts`) for as long as
+ * `designStore.editing` is set, and `editActions.ts` forwards the chord to the frame as an `SL_EDIT`
+ * `undo`/`redo`, which runs the editing host's own command. The deck's undo is unreachable from
+ * inside a caret — the alternative (deck undo under an open session) changes the bytes, reloads the
+ * frame and destroys the very text the user was trying to take back one character of.
+ *
  * ## Enter / Escape / commit semantics, and why
  *
  * | Key            | Behaviour                                                                    |
@@ -39,6 +52,25 @@
  * element's content") and PowerPoint, where `Esc` leaves your typing and selects the shape. Undo is
  * the cancel path and it is exactly one entry, so nothing is trapped.
  *
+ * ## The document moving under an open caret ends the session — by *cancel*, deterministically
+ *
+ * Three things can replace the frame's document while a caret is open: the slide switches, the slide's
+ * bytes change from outside this hook (an agent edit landing via M2.6, a `deck:updated` snapshot, the
+ * property panel), or the frame simply reloads. In every case the DOM the characters lived in is gone
+ * and the frame's session with it; what must not survive is the parent's `editing` flag, because the
+ * overlay reads it as "pass pointer events through, disarm Enter/F2" and would be stranded with a
+ * live slide and no way to re-enter editing.
+ *
+ * The session is ended in the store and **not committed**. Committing would mean writing the
+ * in-progress text against *new* bytes by a positional `slId` that referred to the old map — after an
+ * agent restructures the slide, that id can name a different element, and a silent write into the
+ * wrong element is worse than a lost in-progress edit. The same reasoning already applies to the
+ * slide switch (the id belongs to the previous slide's map). Three signals end it, each sufficient on
+ * its own: the `slideId` prop changing, the slide's html string changing while `editing` is set (a
+ * commit from this hook clears `editing` *before* it writes, so it never trips this), and the frame's
+ * next `SL_READY` — which by construction can only arrive for a fresh document, since a session
+ * cannot begin before the first `SL_READY` armed the frame.
+ *
  * ## The untrusted-text rule
  *
  * The committed string arrives over postMessage from a realm the slide's own JS shares, so it is
@@ -54,6 +86,7 @@ import { buildTextEditPatch, isTextEditable } from '../../../../shared/design/te
 import { resolveElement } from '../../../../shared/design/property-model'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
+import { setActiveTextEditSession } from './textEditSession'
 import type { DesignBridgeApi } from './useDesignBridge'
 
 export interface TextEditingOptions {
@@ -69,6 +102,8 @@ export interface TextEditingApi {
   readonly beginEdit: (slId: string) => boolean
   /** Handle a session the frame ended itself. Wire this into `useDesignBridge`'s `onEditEnd`. */
   readonly onFrameEditEnd: (payload: SlEditEventPayload) => void
+  /** The frame loaded a fresh document. Wire this into `useDesignBridge`'s `onReady`. */
+  readonly onFrameReady: () => void
   /** The sl-id with an open session, or `null`. */
   readonly editing: string | null
 }
@@ -107,14 +142,27 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     [slideId],
   )
 
+  /** Close the session in the store without talking to the frame. */
+  const dropSession = useCallback((): void => {
+    editingRef.current = null
+    endEditing()
+  }, [endEditing])
+
   const beginEdit = useCallback(
     (slId: string): boolean => {
       if (!canEdit(slId)) return false
       beginEditing(slId)
-      requestEdit(slId, 'begin')
+      editingRef.current = slId
+      requestEdit(slId, 'begin', (result) => {
+        // The frame judges editability on its live DOM, which author JS may have changed since the
+        // source was parsed (a script that split the text into spans). If it declined, no caret
+        // exists, and leaving `editing` set would strand the overlay in pass-through mode.
+        if (editingRef.current !== slId) return
+        if (result === null || !result.editing) dropSession()
+      })
       return true
     },
-    [canEdit, beginEditing, requestEdit],
+    [canEdit, beginEditing, requestEdit, dropSession],
   )
 
   /**
@@ -140,24 +188,22 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       // Only the session the parent believes is open may commit. A forged event naming another
       // element is dropped here, before it can reach the source map.
       if (editingRef.current !== payload.slId) return
-      editingRef.current = null
-      endEditing()
+      dropSession()
       commitText(payload.slId, payload.text)
     },
-    [endEditing, commitText],
+    [dropSession, commitText],
   )
 
   // Ending a session the parent initiated: ask the frame for the text, then commit it. Used when the
   // app — not the frame — decides editing is over (Design Mode off, the slide changed, unmount).
   const endFromParent = useCallback(
     (slId: string, commit: boolean): void => {
-      editingRef.current = null
-      endEditing()
+      dropSession()
       requestEdit(slId, commit ? 'commit' : 'cancel', (result) => {
         if (commit && result !== null) commitText(slId, result.text)
       })
     },
-    [endEditing, commitText, requestEdit],
+    [dropSession, commitText, requestEdit],
   )
 
   // Design Mode turned off (or the overlay unmounted) with a session open: commit rather than
@@ -183,5 +229,34 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     if (open !== null) endRef.current(open, false)
   }, [slideId])
 
-  return { beginEdit, onFrameEditEnd, editing }
+  // The slide's bytes changed under an open session from outside this hook — see the header. The
+  // frame is reloading with the new bytes, so there is no session left to cancel there; only the
+  // store's flag has to go. A commit from this hook never trips this: it clears `editing` first.
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const source = getSlideHtml(slideHtml, slideId)
+  const sourceRef = useRef(source)
+  useEffect(() => {
+    if (sourceRef.current === source) return
+    sourceRef.current = source
+    if (editingRef.current !== null) dropSession()
+  }, [source, dropSession])
+
+  // A fresh frame document while the flag is set: whatever caused the reload, the session is gone.
+  const onFrameReady = useCallback((): void => {
+    if (editingRef.current !== null) dropSession()
+  }, [dropSession])
+
+  // Announce the open session to the Edit menu's router for exactly as long as it is open.
+  useEffect(() => {
+    if (editing === null) return
+    setActiveTextEditSession({
+      undo: () => requestEdit(editing, 'undo'),
+      redo: () => requestEdit(editing, 'redo'),
+    })
+    return () => {
+      setActiveTextEditSession(null)
+    }
+  }, [editing, requestEdit])
+
+  return { beginEdit, onFrameEditEnd, onFrameReady, editing }
 }

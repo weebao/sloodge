@@ -21,11 +21,13 @@
  *
  * ## Three layers of defence, in order
  *
- * 1. **Target gating** (`isTextEditable`) — only a `textOnly` element with an `inner` span, whose tag
- *    parses its children as ordinary character data, and which is not `data-sl-lock`ed.
- * 2. **Escaping** (`escapeText`, reused from `patch.ts`) — `&` and `<` become entities, so the text
- *    cannot close the element or open a tag. This is what makes HTML/script injection *structurally*
- *    impossible rather than merely filtered: there is no `<` left to start a tag with.
+ * 1. **Target gating** (`isTextEditable`) — only a `textOnly` element with an `inner` span that
+ *    renders as exactly one DOM node, whose tag parses its children as ordinary character data, and
+ *    which is not `data-sl-lock`ed.
+ * 2. **Escaping** (`escapeAndNeutralizeText`, a superset of `patch.ts`'s `escapeText`) — `&` and `<`
+ *    become entities, so the text cannot close the element or open a tag. This is what makes
+ *    HTML/script injection *structurally* impossible rather than merely filtered: there is no `<`
+ *    left to start a tag with.
  * 3. **Contract preservation** (`neutralizeForbiddenTokens` + the post-patch assertion) — escaping
  *    stops injection but not SL-S04, which is a substring scan that does not care whether the match
  *    is executable. Typing the prose "we call fetch(url) here" would otherwise make the slide fail
@@ -39,8 +41,10 @@
  * the first character of each match is rewritten as a numeric character reference (`f` → `&#102;`).
  * That is invisible to the reader — the DOM decodes it back to exactly the same character, so the
  * rendered text is unchanged and the round-trip is stable — while the *bytes* no longer contain the
- * token. The match is found whitespace-tolerantly (`f\s*e\s*t\s*c\s*h\s*\(`) precisely because the
- * scan packs whitespace out, so `fetch (x)` is caught too.
+ * token. The match is found whitespace-tolerantly (`f\s*e\s*t\s*c\s*h\s*\(`) and over the same
+ * case fold the validator applies, precisely because the scan packs whitespace out and lowercases
+ * before looking: `fetch (x)` and `WebSocKet` (a Kelvin sign that lowercases to `k`) are both
+ * caught, because the neutralizer sees what the validator will see.
  *
  * Neutralization is a **UX** measure: it keeps honest prose editable. The **guarantee** is the
  * assertion in `buildTextEditPatch`, which recomputes `findForbiddenApiTokens` over the whole patched
@@ -50,21 +54,36 @@
  * there is exactly one definition of the rule in the codebase.
  */
 
-import { findForbiddenApiTokens, FORBIDDEN_API_TOKENS } from '../document/slide-contract'
+import {
+  findForbiddenApiTokens,
+  FORBIDDEN_API_TOKENS,
+  packForApiScan,
+} from '../document/slide-contract'
 import { applyOps } from './patch'
 import { resolveElement } from './property-model'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
- * Tags whose children the HTML parser does **not** treat as ordinary character data, so writing
- * "escaped text" into them does not mean what it means everywhere else.
+ * Tags a caret must never open in, in three groups.
  *
- * `<script>`, `<style>`, `<xmp>`, `<plaintext>`, `<noscript>` and `<iframe>` are RAWTEXT-ish: an
- * `&lt;` written inside them stays the six literal characters and is never decoded, so *escaping
- * buys nothing there*. `<style>` is the sharpest case and does not even need a `<` to be dangerous —
- * a typed `}` closes the current rule and everything after it is a new one, so a "text edit" would be
- * arbitrary CSS injection into saved, exportable source. `<title>`/`<textarea>` are RCDATA (escaping
- * does work) but are not visible slide content and have no business being edited on canvas.
+ * **Not character data.** `<script>`, `<style>`, `<xmp>`, `<plaintext>`, `<noscript>`, `<noembed>`,
+ * `<noframes>` and `<iframe>` are RAWTEXT-ish: an `&lt;` written inside them stays the six literal
+ * characters and is never decoded, so *escaping buys nothing there*. `<style>` is the sharpest case
+ * and does not even need a `<` to be dangerous — a typed `}` closes the current rule and everything
+ * after it is a new one, so a "text edit" would be arbitrary CSS injection into saved, exportable
+ * source. `<title>`/`<textarea>` are RCDATA (escaping does work) but are not visible slide content and
+ * have no business being edited on canvas. `<template>` content is inert until cloned.
+ *
+ * **Text is foster-parented out.** Inside `<table>`, `<thead>`, `<tbody>`, `<tfoot>`, `<tr>` and
+ * `<colgroup>` the tree builder moves non-whitespace text *before* the table, so the frame's caret
+ * would type into a node that renders somewhere else and the parent would write bytes the element
+ * never renders. Whitespace-only content is the only way one of these is text-only at all.
+ *
+ * **Text is not content.** `<ul>`, `<ol>`, `<dl>`, `<select>` and `<optgroup>` accept character
+ * data in the parser but their text is not slide content the way an `<li>` or `<option>`'s is;
+ * a whitespace-only list is "empty", not "a text box". `<html>` and `<head>` are document structure:
+ * text written into an empty `<head>` is moved by the parser into an implied body, and an authored
+ * `<body>` that follows then loses its location and its id — the id-stability corpus test found it.
  *
  * None of these is reachable through the UI today — the grabbable climb rejects zero-size elements,
  * so a `<script>` or `<style>` can never be double-clicked. This list is the second lock on that
@@ -77,10 +96,25 @@ export const NON_EDITABLE_TAGS: ReadonlySet<string> = new Set([
   'xmp',
   'plaintext',
   'noscript',
+  'noembed',
+  'noframes',
   'iframe',
   'title',
   'textarea',
   'template',
+  'table',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'colgroup',
+  'ul',
+  'ol',
+  'dl',
+  'select',
+  'optgroup',
+  'html',
+  'head',
 ])
 
 /**
@@ -99,8 +133,17 @@ export const MAX_TEXT_LENGTH = 65_536
 /**
  * Whether an element can be edited in place — the definition of §3.2's undefined `editableText`.
  *
- * Narrower than `textOnly` in two ways that matter: the tag must parse its content as character data
- * (see `NON_EDITABLE_TAGS`), and the element must not be `data-sl-lock`ed.
+ * Narrower than `textOnly` in three ways that matter: the element must render as **one** DOM node,
+ * the tag must parse its content as character data (see `NON_EDITABLE_TAGS`), and the element must
+ * not be `data-sl-lock`ed.
+ *
+ * The one-node rule is about the adoption agency. `<p><b>x</p><p>y</b></p>` is one source `<b>`
+ * rendered as two `<b>` nodes with different text, both carrying the same `data-sl-id`; the frame
+ * can only put the caret in one of them and the map cannot say which one the user double-clicked, so
+ * a session there edits text the user may not have been looking at. `minDomNodeCount` is a lower
+ * bound, so this refuses the clones it can see; the ones it cannot (a clone the parser gave no
+ * location) leave the source element with bytes its text nodes do not cover, which `textOnly`
+ * already refuses.
  *
  * Mixed inline content (`<p>Revenue rose <b>18%</b></p>`) is **out of scope for M3.11** and returns
  * `false` here. §9.3 routes it through rich-text editing that returns `innerHTML`, which is exactly
@@ -110,6 +153,7 @@ export const MAX_TEXT_LENGTH = 65_536
  */
 export function isTextEditable(element: ElementSpan): boolean {
   if (!element.textOnly || element.inner === null) return false
+  if (element.minDomNodeCount !== 1) return false
   if (NON_EDITABLE_TAGS.has(element.tagName)) return false
   return element.attrs[LOCK_ATTR] === undefined
 }
@@ -127,15 +171,28 @@ export function isTextEditable(element: ElementSpan): boolean {
 const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029]/g
 
 /**
+ * A high surrogate not followed by a low one, or a low surrogate not preceded by a high one. A lone
+ * surrogate cannot be encoded as UTF-8, so the save would write U+FFFD in its place and edit → save →
+ * reopen would not be identity. Replacing it here makes the bytes the same before and after the
+ * save. Only reachable through a paste or author JS — a keyboard never produces one.
+ */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
  * Normalize a raw string that arrived from the frame into the text we are willing to write.
  *
  * Line endings are normalized to `\n` (a Windows paste carries `\r\n`, and a stray `\r` in source is
- * a diff hazard), control characters are stripped, and the result is capped. Nothing else is
+ * a diff hazard), control characters are stripped, the result is capped, and lone surrogates become
+ * U+FFFD — *after* the cap, so a pair the cap cut in half is repaired too. Nothing else is
  * "cleaned": the user's spaces, punctuation and non-ASCII are theirs, and `escapeText` deliberately
  * leaves non-ASCII alone so "Café" stays "Café" in source.
  */
 export function sanitizeEditedText(raw: string): string {
-  return raw.replace(/\r\n?/g, '\n').replace(CONTROL_CHARS, '').slice(0, MAX_TEXT_LENGTH)
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .replace(CONTROL_CHARS, '')
+    .slice(0, MAX_TEXT_LENGTH)
+    .replace(LONE_SURROGATE, '\uFFFD')
 }
 
 /** Escape the regex metacharacters in a literal token so it can be spliced into a pattern. */
@@ -144,31 +201,58 @@ function escapeRegex(literal: string): string {
 }
 
 /**
- * A whitespace-tolerant, case-insensitive matcher for one forbidden token.
+ * A whitespace-tolerant matcher for one forbidden token, built from the token's **packed** form.
  *
- * `\s*` between every character mirrors `packForApiScan` removing all whitespace before the scan: to
- * the validator, `fetch (` and `f e t c h (` are `fetch(`, so the neutralizer has to see them the
- * same way. Built per token from `FORBIDDEN_API_TOKENS` — never from a hand-written list.
+ * The validator scans `packForApiScan(source)` for `packForApiScan(token)`, so the neutralizer must
+ * match exactly the spellings that reach that packed form: every character of the *packed* token, in
+ * order, with any whitespace between any two of them. Packing the token first is load-bearing for
+ * `new Function(` — spelling the pattern from the raw token would make its space a *required*
+ * literal, so `newFunction(` would slip past the neutralizer, fail the post-patch assertion and
+ * refuse an honest edit (the bug M4.5's first review round found in the same shape). Deriving both
+ * sides from `packForApiScan` leaves one definition of the whitespace rule in the codebase.
+ *
+ * Built per token from `FORBIDDEN_API_TOKENS` — never from a hand-written list. Case is handled by
+ * folding the *text* (`foldForScan`), not by the `i` flag: the flag's fold and `toLowerCase()`'s
+ * differ outside ASCII, and it is `toLowerCase()` the validator applies.
  */
 function tokenPattern(token: string): RegExp {
-  return new RegExp([...token].map((char) => escapeRegex(char)).join('\\s*'), 'gi')
+  return new RegExp([...packForApiScan(token)].map((char) => escapeRegex(char)).join('\\s*'), 'g')
 }
 
 const TOKEN_PATTERNS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(tokenPattern)
+
+/**
+ * `text` lowercased the way `packForApiScan` lowercases it, but **code unit for code unit**, so an
+ * index into the folded string is an index into the original.
+ *
+ * `toLowerCase()` on the whole string would not give that: `İ` (U+0130) lowercases to two code
+ * units, shifting every later index. A character whose lowercase is not exactly one code unit is
+ * kept as-is — it cannot be a letter of an ASCII token anyway, and the validator's fold of it puts a
+ * combining mark between the letters, so the validator does not see a token there either.
+ */
+function foldForScan(text: string): string {
+  let out = ''
+  for (const char of text) {
+    const lower = char.toLowerCase()
+    out += lower.length === 1 ? lower : char
+  }
+  return out
+}
 
 /**
  * The indices in `text` at which a forbidden-token match begins — the characters that must be
  * written as numeric references to break the token.
  *
  * Every token is ASCII, so a break index always lands on a single-code-unit character and never
- * splits a surrogate pair.
+ * splits a surrogate pair — a match can only start at a character that folds to an ASCII letter.
  */
 function forbiddenBreakPoints(text: string): ReadonlySet<number> {
+  const folded = foldForScan(text)
   const breaks = new Set<number>()
   for (const pattern of TOKEN_PATTERNS) {
     pattern.lastIndex = 0
     let match: RegExpExecArray | null
-    while ((match = pattern.exec(text)) !== null) {
+    while ((match = pattern.exec(folded)) !== null) {
       breaks.add(match.index)
       // Overlapping matches matter: `eval(` inside a longer run must still be found, so the scan
       // resumes one character past the start rather than past the whole match.
@@ -179,6 +263,24 @@ function forbiddenBreakPoints(text: string): ReadonlySet<number> {
 }
 
 /**
+ * Characters that render as nothing or as an ordinary space, written as references so a reader of
+ * the source can tell them from a plain space or from nothing at all.
+ *
+ * The frame hands back decoded text, so an author's `&nbsp;` arrives as U+00A0 and would otherwise
+ * be written back raw — an invisible byte in a file people diff and edit by hand. `&nbsp;` is the
+ * spelling authors use; the rest have no common name and get numeric references.
+ */
+const INVISIBLE_AS_REFERENCE: ReadonlyMap<string, string> = new Map([
+  ['\u00A0', '&nbsp;'],
+  ['\u00AD', '&#173;'],
+  ['\u200B', '&#8203;'],
+  ['\u200C', '&#8204;'],
+  ['\u200D', '&#8205;'],
+  ['\u2060', '&#8288;'],
+  ['\uFEFF', '&#65279;'],
+])
+
+/**
  * Escape `text` for a text-node position **and** break any SL-S04 forbidden token, in one pass.
  *
  * One pass rather than "escape, then neutralize" for a specific correctness reason: a second scan
@@ -187,8 +289,9 @@ function forbiddenBreakPoints(text: string): ReadonlySet<number> {
  * user typed into the literal text `&lt;`. Scanning the raw text and emitting the escaped form only
  * for characters that are not break points makes that unrepresentable.
  *
- * For text containing no forbidden token this is **exactly** `escapeText` — asserted over a corpus in
- * the unit tests, so the two can never drift into disagreeing about `&`, `<` or `]]>`.
+ * For text containing no forbidden token and none of `INVISIBLE_AS_REFERENCE` this is **exactly**
+ * `escapeText` — asserted over a corpus in the unit tests, so the two can never drift into
+ * disagreeing about `&`, `<` or `]]>`.
  */
 export function escapeAndNeutralizeText(text: string): string {
   const breaks = forbiddenBreakPoints(text)
@@ -201,7 +304,9 @@ export function escapeAndNeutralizeText(text: string): string {
       out += `&#${String(char.codePointAt(0) ?? 0)};`
       continue
     }
-    if (char === '&') out += '&amp;'
+    const invisible = INVISIBLE_AS_REFERENCE.get(char)
+    if (invisible !== undefined) out += invisible
+    else if (char === '&') out += '&amp;'
     else if (char === '<') out += '&lt;'
     // `>` only needs escaping where it would close a `]]>` run — matching `escapeText` exactly.
     else if (char === '>' && index >= 2 && text[index - 1] === ']' && text[index - 2] === ']') {
@@ -224,36 +329,31 @@ export function escapeAndNeutralizeText(text: string): string {
  */
 export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string): string | null {
   const element = resolveElement(map, slId)
-  if (element === null || element.inner === null) return null
+  if (element === null || element.inner === null || element.textContent === null) return null
   if (!isTextEditable(element)) return null
 
-  const source = map.source
   const text = sanitizeEditedText(rawText)
-  const written = escapeAndNeutralizeText(text)
-  // Compare against the bytes actually in the span: an edit that retypes the same text — including
-  // one that re-normalizes to what is already there — is a no-op, not an undo entry.
-  if (written === source.slice(element.inner.start, element.inner.end)) return null
+  // "Unchanged" is judged on what the user saw, never on bytes: the frame returns decoded text, so
+  // against the raw span `a&nbsp;b` would always look edited, and double-click + Esc on any element
+  // holding an entity would push a phantom undo entry, dirty the document and rewrite the author's
+  // entities. The same sanitizer runs on both sides so a stray control character in the source
+  // cannot make an untouched edit look like a change either.
+  if (text === sanitizeEditedText(element.textContent)) return null
 
+  const source = map.source
+  const written = escapeAndNeutralizeText(text)
   const patched = applyOps(source, [{ kind: 'replaceSpan', span: element.inner, text: written }])
 
   // The guarantee (see the file header). Neutralization is best-effort UX; this is the invariant.
   // A *subset* check, not "is empty": a slide that already violated SL-S04 elsewhere is still
   // editable, it just may not get worse.
   //
-  // ## Deliberately unpinned, and why
-  //
-  // No test reds when this branch is deleted, and that is honest rather than an oversight: with the
-  // neutralizer in place the branch is **unreachable by construction**. The bytes immediately around
-  // an `inner` span are `>` and `<` (the element's own tags), no forbidden token contains either
-  // character, and `escapeAndNeutralizeText` breaks every token *within* the inserted text — so
-  // there is no way for a patch to introduce a token the original lacked. Removing the neutralizer
-  // instead (mutation M2) makes this branch fire and reds the SL-S04 corpus, which is what pins the
-  // pair as a whole.
-  //
-  // It stays because it is the only thing standing between a *future* change and a contract
-  // violation in saved, exportable source: a new token containing `<`, a weakened neutralizer, or an
-  // `inner` span that stops being a text-node context would each make it reachable, and the failure
-  // it prevents (a slide that no longer passes its own validator) is silent at the point of edit.
+  // With the neutralizer folding case the way the validator does, no text reaches this branch
+  // through a real map: the bytes around a text-only `inner` are `>` and `<`, no token contains
+  // either, and every token *within* the text is broken. What pins it is a map whose `inner` is not
+  // a text-node context (the unit test hands it one) — the shape a future change to `slide-map.ts`
+  // could produce, and the failure it prevents (a slide that no longer passes its own validator)
+  // is silent at the point of edit.
   const before = new Set(findForbiddenApiTokens(source))
   if (findForbiddenApiTokens(patched).some((token) => !before.has(token))) return null
 

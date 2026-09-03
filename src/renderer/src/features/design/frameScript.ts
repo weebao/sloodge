@@ -71,10 +71,25 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     xmp: true,
     plaintext: true,
     noscript: true,
+    noembed: true,
+    noframes: true,
     iframe: true,
     title: true,
     textarea: true,
     template: true,
+    table: true,
+    thead: true,
+    tbody: true,
+    tfoot: true,
+    tr: true,
+    colgroup: true,
+    ul: true,
+    ol: true,
+    dl: true,
+    select: true,
+    optgroup: true,
+    html: true,
+    head: true,
   }
   // The computed-style whitelist (§6.2) — must stay inside this self-contained function, so it is a
   // literal copy of `COMPUTED_STYLE_WHITELIST` in `element-context.ts`. `frame-script.test.tsx`
@@ -548,11 +563,19 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
   const applyEdit = (slId: string, action: string) => {
     if (action === 'begin') return beginEdit(slId)
     const open = session
-    // A commit/cancel for an element that is not the open session must not touch the document.
+    // A commit/cancel/undo/redo for an element that is not the open session must not touch the
+    // document.
     if (!open || open.el.getAttribute(ID_ATTR) !== slId) {
       const node = doc.querySelector('[' + ID_ATTR + '="' + slId + '"]')
       if (!node) return null
       return { slId, text: node.textContent ?? '', editing: false }
+    }
+    if (action === 'undo' || action === 'redo') {
+      // The field's own undo. In Electron the Edit menu owns Ctrl/⌘+Z, so the chord never reaches
+      // this document as a keystroke; the parent forwards it here instead, and Blink's editing
+      // command steps the editing host's undo stack exactly as the keystroke would have.
+      doc.execCommand(action)
+      return { slId, text: open.el.textContent ?? '', editing: true }
     }
     return { slId, text: endEdit(action === 'cancel'), editing: false }
   }
@@ -614,7 +637,15 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     if (data['type'] === TYPE_EDIT) {
       if (typeof p['slId'] !== 'string') return
       const action = p['action']
-      if (action !== 'begin' && action !== 'commit' && action !== 'cancel') return
+      if (
+        action !== 'begin' &&
+        action !== 'commit' &&
+        action !== 'cancel' &&
+        action !== 'undo' &&
+        action !== 'redo'
+      ) {
+        return
+      }
       send({
         __sl: MAGIC,
         v: VERSION,
