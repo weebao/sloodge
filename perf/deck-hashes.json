@@ -1,0 +1,93 @@
+{
+  "stress-25": {
+    "seed": 20260801,
+    "slideCount": 25,
+    "contentSha256": "03102c433f993fd388f6f09a1df695cf2d39c2590ac70164566a8955653bd286",
+    "archiveBytes": 161443,
+    "totalSlideBytes": 444114,
+    "archetypeCounts": {
+      "svg-animation": 7,
+      "interactive-graph": 6,
+      "image-laden": 6,
+      "component-dense": 6
+    }
+  },
+  "stress-50": {
+    "seed": 20260801,
+    "slideCount": 50,
+    "contentSha256": "29cde332a89e3290d4a5431bf189d40c49d4ffae04e64dea8c78230ebd0afc56",
+    "archiveBytes": 336144,
+    "totalSlideBytes": 894180,
+    "archetypeCounts": {
+      "svg-animation": 13,
+      "interactive-graph": 13,
+      "image-laden": 12,
+      "component-dense": 12
+    }
+  },
+  "stress-100": {
+    "seed": 20260801,
+    "slideCount": 100,
+    "contentSha256": "3715c575416a981829c6e00e78520be6ec27d37a2d2370a2b63b4985b0f342c6",
+    "archiveBytes": 681851,
+    "totalSlideBytes": 1795006,
+    "archetypeCounts": {
+      "svg-animation": 25,
+      "interactive-graph": 25,
+      "image-laden": 25,
+      "component-dense": 25
+    }
+  },
+  "stress-200": {
+    "seed": 20260801,
+    "slideCount": 200,
+    "contentSha256": "1992ac295964241aab842a92b7c178f207d8d3ed07a6a91aa0a45169d19047a7",
+    "archiveBytes": 1376061,
+    "totalSlideBytes": 3609895,
+    "archetypeCounts": {
+      "svg-animation": 50,
+      "interactive-graph": 50,
+      "image-laden": 50,
+      "component-dense": 50
+    }
+  },
+  "stress-300": {
+    "seed": 20260801,
+    "slideCount": 300,
+    "contentSha256": "488e7de01e95f45be27072016bcae8a83486c8cab27e751c2e668c704ee63652",
+    "archiveBytes": 2034214,
+    "totalSlideBytes": 5376473,
+    "archetypeCounts": {
+      "svg-animation": 75,
+      "interactive-graph": 75,
+      "image-laden": 75,
+      "component-dense": 75
+    }
+  },
+  "stress-500": {
+    "seed": 20260801,
+    "slideCount": 500,
+    "contentSha256": "2355d1a915c9571fd9ef99c00dc4fbb7b3bd0a362273fd4114f273c1a26fab2c",
+    "archiveBytes": 3400446,
+    "totalSlideBytes": 8973753,
+    "archetypeCounts": {
+      "svg-animation": 125,
+      "interactive-graph": 125,
+      "image-laden": 125,
+      "component-dense": 125
+    }
+  },
+  "stress-1000": {
+    "seed": 20260801,
+    "slideCount": 1000,
+    "contentSha256": "eddb96acf947f01f78d02a00a454129b626416a7a773fbebf141644082913456",
+    "archiveBytes": 6795782,
+    "totalSlideBytes": 17945434,
+    "archetypeCounts": {
+      "svg-animation": 250,
+      "interactive-graph": 250,
+      "image-laden": 250,
+      "component-dense": 250
+    }
+  }
+}

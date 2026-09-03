@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "commit": "e2a3a20f02c5c19266066c1c7d7e95d12a11e47e",
+  "generatedAt": "2026-09-03T09:24:01.028Z",
+  "deck": {
+    "slideCount": 300,
+    "seed": 20260801,
+    "totalSlideBytes": 5376473,
+    "archetypeCounts": {
+      "svg-animation": 75,
+      "interactive-graph": 75,
+      "image-laden": 75,
+      "component-dense": 75
+    }
+  },
+  "environment": {
+    "platform": "linux",
+    "release": "5.15.167.4-microsoft-standard-WSL2",
+    "cpuModel": "AMD Ryzen 7 5800H with Radeon Graphics",
+    "cpuCount": 16,
+    "totalMemMb": 6862,
+    "electron": "43.2.0",
+    "node": "v24.18.1",
+    "display": ":0"
+  },
+  "runs": 1,
+  "metrics": {
+    "coldStartMs": 1080,
+    "deckOpenMs": 7793,
+    "slideSwitchMs": {
+      "count": 20,
+      "min": 81.59999999997672,
+      "p25": 88.19999999995343,
+      "median": 91.59999999997672,
+      "p75": 108.39999999999418,
+      "p95": 235.89499999999555,
+      "max": 499.89999999990687,
+      "mean": 123.55999999998603,
+      "stdDev": 91.7272173348642
+    },
+    "ramMb": {
+      "count": 38,
+      "min": 405.8271484375,
+      "p25": 453.1044921875,
+      "median": 3655.25732421875,
+      "p75": 4244.155517578125,
+      "p95": 4375.70068359375,
+      "max": 4671.8525390625,
+      "mean": 2406.6822831003287,
+      "stdDev": 1830.8854487072492
+    },
+    "ramBasis": "proc-pss-sum",
+    "frameIntervalMs": {
+      "count": 115,
+      "min": 16.599999999998545,
+      "p25": 16.69999999999709,
+      "median": 16.80000000000291,
+      "p75": 66.69999999999709,
+      "p95": 83.40000000000146,
+      "max": 233.40000000000146,
+      "mean": 42.181739130434735,
+      "stdDev": 32.272523196941584
+    },
+    "droppedFrames": 184,
+    "frameRateFps": 23.2,
+    "longFrameIntervals": 57,
+    "idleRamMb": 452.6845703125,
+    "rendererHeapMb": {
+      "count": 38,
+      "min": 4.876953125,
+      "p25": 4.93017578125,
+      "median": 12.01611328125,
+      "p75": 15.903564453125,
+      "p95": 77.058740234375,
+      "max": 77.3310546875,
+      "mean": 21.46083470394737,
+      "stdDev": 24.376423332459478
+    }
+  },
+  "ramBases": {
+    "app-metrics-working-set-sum": {
+      "count": 38,
+      "min": 750.015625,
+      "p25": 956.4892578125,
+      "median": 10951.453125,
+      "p75": 14252.146484375,
+      "p95": 22217.235742187495,
+      "max": 26558.96484375,
+      "mean": 8579.00935444079,
+      "stdDev": 7877.786527162606
+    },
+    "proc-pss-sum": {
+      "count": 38,
+      "min": 405.8271484375,
+      "p25": 453.1044921875,
+      "median": 3655.25732421875,
+      "p75": 4244.155517578125,
+      "p95": 4375.70068359375,
+      "max": 4671.8525390625,
+      "mean": 2406.6822831003287,
+      "stdDev": 1830.8854487072492
+    },
+    "proc-rss-sum": {
+      "count": 38,
+      "min": 763.83203125,
+      "p25": 981.966796875,
+      "median": 12090.740234375,
+      "p75": 15435.056640625,
+      "p95": 23306.255664062493,
+      "max": 27470.734375,
+      "mean": 9178.382298519737,
+      "stdDev": 8380.983064157439
+    }
+  },
+  "processCount": {
+    "count": 38,
+    "min": 5,
+    "p25": 8,
+    "median": 304.5,
+    "p75": 305,
+    "p95": 305.15,
+    "max": 306,
+    "mean": 163.8684210526316,
+    "stdDev": 148.8218947977451
+  },
+  "hostContention": {
+    "loadAvg1": {
+      "count": 38,
+      "min": 12.7,
+      "p25": 13.2,
+      "median": 13.735,
+      "p75": 15.46,
+      "p95": 17.54,
+      "max": 18.54,
+      "mean": 14.499473684210523,
+      "stdDev": 1.6746090625771062
+    },
+    "memAvailableMb": {
+      "count": 38,
+      "min": 331,
+      "p25": 529.75,
+      "median": 1444.5,
+      "p75": 4964.5,
+      "p95": 5002.15,
+      "max": 5018,
+      "mean": 2587.0526315789475,
+      "stdDev": 2141.7505376796266
+    },
+    "contended": true
+  },
+  "perRun": [
+    {
+      "coldStartMs": 1080,
+      "deckOpenMs": 7793,
+      "medianRamMb": 3655.25732421875,
+      "medianSlideSwitchMs": 91.59999999997672
+    }
+  ],
+  "notes": [
+    "RAM basis for the headline number: proc-pss-sum. See perf/README.md for what each basis means.",
+    "Cold start is a bracket; documentLoadedMs (lower bound, navigation loadEventEnd) per run: 865.",
+    "deckReadMs (unzip only, shipped readDeck, per run): 322.",
+    "deckWriteMs (zip + fsync + rename, shipped writeDeck, per run): 199.",
+    "deckPublishMs (deck:updated -> every rail frame has a slide:// src): 6460.",
+    "HTML export ms: 762.",
+    "Present phase ms: 4118.",
+    "Peak Electron process count: 306.",
+    "Long tasks during the animation dwell: 0.",
+    "Shell frame rate during the dwell (fps, per run): 23.2.",
+    "Idle RAM (starter deck, before the stress deck): 453 MB on the proc-pss-sum basis.",
+    "CONTENDED: other processes were competing for this machine while these numbers were taken. Memory figures survive contention well; timing figures (cold start, slide switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this."
+  ]
+}
