@@ -237,10 +237,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   // `summarize` throws on an empty series; these name the cause so the fix is obvious.
   if (allRam.length === 0) {
     throw new Error(
-      `No RAM samples on the ${options.ramBasis} basis` +
-        (options.ramBasis === 'app-metrics-working-set-sum'
-          ? '.'
-          : ' — /proc is Linux-only; use --ram-basis=app-metrics-working-set-sum elsewhere.'),
+      `No RAM samples on the ${options.ramBasis} basis (proc-* bases need Linux /proc).`,
     )
   }
   if (allSwitches.length === 0) {

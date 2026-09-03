@@ -181,7 +181,7 @@ export async function takeSample(
 }
 
 /** Which per-process field a RAM basis sums. Mirrors the per-sample totals above. */
-export const PROCESS_MEMORY_FIELD = {
+const PROCESS_MEMORY_FIELD = {
   'app-metrics-working-set-sum': 'workingSetKb',
   'proc-pss-sum': 'pssKb',
   'proc-rss-sum': 'rssKb',
