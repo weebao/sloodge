@@ -42,6 +42,6 @@ const child = spawn(
   [join(bundleDir, 'harness.mjs'), '--root', root, ...process.argv.slice(2)],
   { cwd: root, stdio: 'inherit' },
 )
-child.on('exit', (code, signal) => {
-  process.exitCode = code ?? (signal === null ? 1 : 1)
+child.on('exit', (code) => {
+  process.exitCode = code ?? 1
 })

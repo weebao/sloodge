@@ -17,9 +17,6 @@ export type ReadbackRun = {
   /** 6-digit uppercase hex, or null when the run inherits. */
   color: string | null
   sizePt: number | null
-  bold: boolean
-  italic: boolean
-  font: string | null
 }
 
 export type ReadbackShape = {
@@ -91,9 +88,6 @@ function parseRuns(txBody: string): ReadbackRun[] {
       text: unescapeXml(text),
       color: firstSrgb(rPrBlock),
       sizePt: sz === null ? null : parseInt(sz, 10) / 100,
-      bold: attr(rPrTag, 'b') === '1',
-      italic: attr(rPrTag, 'i') === '1',
-      font: /<a:latin typeface="([^"]*)"/.exec(rPrBlock)?.[1] ?? null,
     })
   }
   return runs
@@ -144,8 +138,7 @@ function isFullBleed(shape: ReadbackShape): boolean {
   )
 }
 
-/** Parse one slide part's XML. Exported so a test can feed it a hand-written document. */
-export function readbackSlideXml(index: number, slideXml: string): ReadbackSlide {
+function readbackSlideXml(index: number, slideXml: string): ReadbackSlide {
   const shapes: ReadbackShape[] = []
   for (const m of slideXml.matchAll(/<p:(sp|pic)\b[\s\S]*?<\/p:\1>/g)) {
     const shape = parseShape(m[1] === 'pic' ? 'pic' : 'sp', m[0])

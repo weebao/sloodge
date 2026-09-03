@@ -72,7 +72,8 @@ const recordedDir = join(corpusDir, 'recorded')
 const outDir = resolve(argValue('--out') ?? join(fidelityDir, 'out'))
 const record = process.argv.includes('--record')
 
-const MODES: readonly PptxFidelity[] = ['auto', 'editable']
+type Mode = 'auto' | 'editable'
+const MODES: readonly Mode[] = ['auto', 'editable']
 
 type PixelResult = { file: string; fraction: number; ok: boolean }
 type PixelStep = { status: 'ran'; results: PixelResult[] } | { status: 'not-run'; reason: string }
@@ -215,7 +216,7 @@ async function main(): Promise<number> {
   const registry = installSlideProtocol()
   const scriptHash = sha256(slideMeasurementScript())
 
-  const byMode: Record<PptxFidelity, SlideAssessment[]> = { auto: [], editable: [], raster: [] }
+  const byMode: Record<Mode, SlideAssessment[]> = { auto: [], editable: [] }
   const pixelInputs: { file: string; pptx: string; ref: string }[] = []
   const wrapped: { title: string; html: string }[] = []
 
