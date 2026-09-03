@@ -189,12 +189,12 @@ function deckTitleFrom(entries: Readonly<Record<string, Uint8Array>>, path: stri
   return name === '' ? 'Imported deck' : name.slice(0, 200)
 }
 
-/** The sloodge `theme.json` derived from the package's theme part. */
 /** A validated `#rrggbb`, or the fallback: theme values come from an untrusted archive. */
 function hex(value: string | undefined, fallback: string): string {
   return value !== undefined && /^#[0-9a-f]{6}$/.test(value) ? value : fallback
 }
 
+/** The sloodge `theme.json` derived from the package's theme part. */
 function buildTheme(source: PptxTheme, name: string, now: number): Theme {
   const bg = hex(source.colors['lt1'], '#ffffff')
   // `mode` drives nothing structural, but a wrong value makes later theme edits fight the deck:

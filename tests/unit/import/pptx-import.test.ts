@@ -242,11 +242,16 @@ describe('SlideGate — the one door into the deck', () => {
 
   it('is the only writer into the slide map in the importer', () => {
     // The gate is only a choke point if nothing writes around it. Round 3 found the template branch
-    // doing exactly that; this pins the property structurally so a fourth branch cannot.
+    // doing exactly that; this pins the spellings a fourth branch would reach for: an indexed
+    // write, a push, a bulk `Object.assign`, or handing the bundle a different map. Residual, stated:
+    // `Reflect.set` / `defineProperty`, or a spread copy mutated before the bundle, pass this net;
+    // the behavioural tests above (a rejected document never reaches the bundle) are the net for those.
     const source = readFileSync(join(process.cwd(), 'src/main/import/pptx-import.ts'), 'utf8')
     const writes = [...source.matchAll(/\bslides\[[^\]]+\]\s*=/g)].map((m) => m[0])
     expect(writes).toEqual(['slides[entry.id] ='])
     expect(source.match(/\bentries\.push\(/g)).toHaveLength(1)
+    expect(source).not.toMatch(/Object\.assign\(\s*gate\.slides/)
+    expect(source).toContain('slides: gate.slides')
     // ...and validation happens there, not per branch.
     expect(source.match(/validateSlideContract\(/g)).toHaveLength(1)
   })

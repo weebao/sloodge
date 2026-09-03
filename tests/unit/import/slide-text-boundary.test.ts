@@ -10,23 +10,31 @@ import { join, relative, sep } from 'node:path'
  * table of emission sites in `convert.test.ts`; round 3 showed the table only covered the sites
  * someone had thought of, because the starter slide was built by a module the table never drove.
  *
- * So the rows here come from the source, not from memory. Every module under `src/` that emits a
- * slide document (it stamps `data-sl-contract=`) is found by walking the tree, and inside each one
- * every `escapeHtml(` call is read off the text. Text must go through `slideText`; a bare
- * `escapeHtml(` is permitted only for an argument in `NOT_TEXT` below, each with the reason it is
- * provably not archive- or user-supplied text. A new `escapeHtml(x)` in any producer — or a new
- * producer that never calls `slideText` — reds until it is classified, which is the question the
- * round-3 defect needed asked.
+ * So the rows here come from the source, not from memory. Every module under `src/` that names
+ * the contract attribute `data-sl-contract` is treated as a producer, and inside each one every
+ * `escapeHtml(` call is read off the text. Text must go through `slideText`; a bare `escapeHtml(`
+ * is permitted only for an argument in `NOT_TEXT` below, each with the reason it is provably not
+ * archive- or user-supplied text. A new `escapeHtml(x)` in any producer — or a new producer that
+ * never calls `slideText` — reds until it is classified, which is the question the round-3 defect
+ * needed asked.
+ *
+ * The mark is the bare attribute name, not `data-sl-contract="`: round 4 planted a producer that
+ * spelt the attribute through a constant and one that built the document with `setAttribute`, and
+ * the narrower mark saw neither. The bare name also sweeps in any future *reader* of the attribute
+ * (today the validator and the frame script read `data-sl-slide` only), which then reds on the
+ * producer list until it is classified — a question worth asking once, not a false alarm.
  *
  * Behavioural coverage is the other half: `convert.test.ts` drives every forbidden token through
  * the converter's sites, `starter-slide.test.ts` through the starter slide, and
- * `pptx-import.test.ts` through a `.potx` title end to end. Residual, stated: a value interpolated
- * with no escaper at all is invisible here; that is a markup-injection bug, which the hostile-text
- * tests catch, and the `SlideGate` refuses the document regardless.
+ * `pptx-import.test.ts` through a `.potx` title end to end. Residuals, stated: (1) a value
+ * interpolated with no escaper at all inside an existing producer is invisible here — there is no
+ * call to read; (2) a producer that never spells `data-sl-contract` (`dataset.slContract`, a name
+ * assembled from pieces) is never walked. Both are markup-injection bugs the hostile-text tests
+ * catch, and the `SlideGate` refuses the document regardless.
  */
 
 const SRC_ROOT = join(process.cwd(), 'src')
-const PRODUCER_MARK = 'data-sl-contract="'
+const PRODUCER_MARK = 'data-sl-contract'
 
 /** `escapeHtml(<arg>)` arguments that are provably not text, and why. */
 const NOT_TEXT: Readonly<Record<string, string>> = {

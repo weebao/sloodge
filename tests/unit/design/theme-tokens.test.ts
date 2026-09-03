@@ -73,7 +73,9 @@ describe('theme colour tokens', () => {
   it('reads the declared token set from theme.css', () => {
     expect(tokens.has('ink')).toBe(true)
     expect(tokens.has('accent-soft')).toBe(true)
-    expect(namespaces).toEqual(new Set(['shell', 'chrome', 'accent', 'canvas', 'ink']))
+    expect(namespaces).toEqual(
+      new Set(['shell', 'chrome', 'accent', 'canvas', 'ink', 'danger', 'warning']),
+    )
   })
 
   it('extracts tokens through variants and opacity, and only from colour utilities', () => {

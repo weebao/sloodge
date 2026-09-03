@@ -198,7 +198,11 @@ export function StatusBar({
           <span
             role="status"
             title={[openStatus.message, ...openStatus.details].join('\n')}
-            className={`max-w-[40ch] truncate ${openStatus.severity === 'error' ? 'text-danger' : 'text-warning'}`}
+            className={`max-w-[40ch] truncate ${
+              openStatus.severity === 'error'
+                ? 'text-danger dark:text-danger-dark'
+                : 'text-warning dark:text-warning-dark'
+            }`}
           >
             <span aria-hidden="true">⚠</span> {openStatus.message}
           </span>

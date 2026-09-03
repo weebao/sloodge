@@ -16,7 +16,7 @@ import { useDesignStore } from '../../src/renderer/src/features/design/designSto
 import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
 import type { MenuAction } from '../../src/shared/ipc-contract'
 import { installFakeIntersectionObserver } from './deck/fake-intersection-observer'
-import type { OpenDeckPayload } from '../../src/shared/document/open'
+import type { OpenDeckPayload, OpenDeckResponse } from '../../src/shared/document/open'
 
 const NOW = 1_770_000_000_000
 
@@ -382,38 +382,47 @@ describe('AppShell under Electron (bridge present)', () => {
    * conversion notes crossed IPC and were dropped). A payload that lost something shows a one-line
    * summary with the details as its tooltip; a clean one shows nothing.
    */
-  function openedPayload(
+  function openedWith(
     overrides: Partial<Pick<OpenDeckPayload, 'warnings' | 'import'>> = {},
-  ): OpenDeckPayload {
+  ): OpenDeckResponse {
     const snapshot = createStarterDeck(NOW)
     return {
-      path: '/tmp/talk.pptx',
-      fileName: 'talk.pptx',
-      source: 'pptx',
-      deck: { manifest: snapshot.deck, slides: snapshot.slideHtml, notes: {}, theme: null },
-      warnings: [],
-      ...overrides,
+      canceled: false,
+      ok: true,
+      payload: {
+        path: '/tmp/talk.pptx',
+        fileName: 'talk.pptx',
+        source: 'pptx',
+        deck: { manifest: snapshot.deck, slides: snapshot.slideHtml, notes: {}, theme: null },
+        warnings: [],
+        ...overrides,
+      },
     }
   }
 
-  async function openFromMenu(payload: OpenDeckPayload): Promise<void> {
-    window.sloodge = {
-      onMenuAction: (listener) => {
-        menuListeners.add(listener)
-        return () => menuListeners.delete(listener)
-      },
-      openDeck: async () => ({ canceled: false, ok: true, payload }),
-    }
-    render(<AppShell />)
+  async function chooseFile(): Promise<void> {
     await act(async () => {
       for (const listener of menuListeners) listener('file.open')
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
   }
 
+  /** Installs a bridge that answers successive File ▸ Opens with `responses`, renders, opens once. */
+  async function openFromMenu(...responses: OpenDeckResponse[]): Promise<void> {
+    window.sloodge = {
+      onMenuAction: (listener) => {
+        menuListeners.add(listener)
+        return () => menuListeners.delete(listener)
+      },
+      openDeck: async () => responses.shift() ?? { canceled: true },
+    }
+    render(<AppShell />)
+    await chooseFile()
+  }
+
   it('shows what a lossy import degraded, with the details as the tooltip', async () => {
     await openFromMenu(
-      openedPayload({
+      openedWith({
         warnings: ['package has 600 slides; imported the first 500'],
         import: {
           slideCount: 500,
@@ -438,7 +447,7 @@ describe('AppShell under Electron (bridge present)', () => {
 
   it('shows nothing for an import that lost nothing', async () => {
     await openFromMenu(
-      openedPayload({
+      openedWith({
         import: {
           slideCount: 3,
           convertedCount: 3,
@@ -450,6 +459,29 @@ describe('AppShell under Electron (bridge present)', () => {
         },
       }),
     )
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText(/talk\.pptx/)).toBeTruthy()
+  })
+
+  it('shows a failed open as an error, keeps the document, and lets a clean open clear it', async () => {
+    await openFromMenu(
+      {
+        canceled: false,
+        ok: false,
+        error: { code: 'not-a-zip', message: 'talk.pptx is not a zip archive' },
+      },
+      openedWith(),
+    )
+
+    const status = screen.getByRole('status')
+    expect(status.textContent).toContain('talk.pptx is not a zip archive')
+    expect(status.className).toContain('text-danger')
+    expect(status.className).not.toContain('text-warning')
+    // Nothing was adopted: the previous document is still the one on screen.
+    expect(screen.getByText(/Untitled\.sloodge/)).toBeTruthy()
+
+    // The error and the import notice share one slot; a clean open leaves it empty.
+    await chooseFile()
     expect(screen.queryByRole('status')).toBeNull()
     expect(screen.getByText(/talk\.pptx/)).toBeTruthy()
   })
