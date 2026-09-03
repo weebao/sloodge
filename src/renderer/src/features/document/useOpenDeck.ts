@@ -31,11 +31,17 @@ export type UseOpenDeckArgs = {
 export function useOpenDeck(args: UseOpenDeckArgs): () => void {
   const argsRef = useRef(args)
   argsRef.current = args
+  // One open at a time. The native dialog is modal to the window, so a second Ctrl+O cannot reach
+  // here in practice; the guard is for the scripted double invoke, where two concurrent opens would
+  // otherwise race into `applyRemoteDeck` last-write-wins.
+  const inFlight = useRef(false)
 
   return useCallback(() => {
     const bridge = getBridge()
     // A plain-browser host has no file system to open from; the menu item simply does nothing there.
     if (bridge?.openDeck === undefined) return
+    if (inFlight.current) return
+    inFlight.current = true
 
     void (async () => {
       const { applyRemoteDeck, onOpened, onError } = argsRef.current
@@ -63,6 +69,8 @@ export function useOpenDeck(args: UseOpenDeckArgs): () => void {
         return
       }
       onOpened?.(response.payload)
-    })()
+    })().finally(() => {
+      inFlight.current = false
+    })
   }, [])
 }

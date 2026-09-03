@@ -128,11 +128,13 @@ describe('contract compliance', () => {
     expect(FORBIDDEN_API_TOKENS.length).toBeGreaterThan(10)
 
     /**
-     * Every place archive-controlled text reaches the slide document. Round 2 found the typeface
-     * attribute still spelled `escapeHtml` while the text node used `slideText`, so the claim "one
-     * path for imported strings" was true of all sites but one. Enumerating the sites here makes it
-     * a tested property: a future emission site is covered the moment it is added to this table, and
-     * a site that stops defusing reds immediately.
+     * Every place archive-controlled text reaches the slide document *through the converter*.
+     * Round 2 found the typeface attribute still spelled `escapeHtml` while the text node used
+     * `slideText`; round 3 found a site this table could never drive — the `.potx` starter slide,
+     * built by `starter-slide.ts`. So this table is the behavioural half only: it proves each row
+     * defuses. The exhaustiveness question — is every emission site *in* some table — is answered
+     * structurally by `slide-text-boundary.test.ts`, which reads every producer's `escapeHtml(`
+     * calls off the source; the starter slide has its own rows in `starter-slide.test.ts`.
      */
     const sites: { name: string; build: (spelling: string) => string }[] = [
       {

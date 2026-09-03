@@ -91,26 +91,38 @@ describe('pptxgenjs boundary', () => {
    * left the guard green. A path pattern can only ever enumerate where the problem has appeared so
    * far, which is the same "list someone must remember to extend" that `sanitize.ts` argues against.
    *
-   * So the scoping is inverted. Every hand-rolled `&` -> `&amp;` escaper anywhere under `src/` must
-   * appear in `ESCAPERS` below with a stated domain, and each one in the XML domain must import the
-   * canonical sanitizer. A new escaper — under any name, in any directory — fails this test until
-   * someone adds it, and adding it forces the one question that matters: is this HTML or is this XML?
-   * That is the conversation the guard exists to cause.
+   * So the scoping is inverted. Every module under `src/` that spells the escaped ampersand as a
+   * string literal — `'&amp;'`, `'&#38;'` or `'&#x26;'`, in any quote style — must appear in
+   * `ESCAPERS` below with a stated domain, and each one in the XML domain must import the canonical
+   * sanitizer. A new escaper — under any name, in any directory — fails this test until someone adds
+   * it, and adding it forces the one question that matters: is this HTML or is this XML? That is the
+   * conversation the guard exists to cause.
    *
-   * **Residual, deliberately accepted** (the same one the pptxgenjs check above documents): an
-   * escape assembled at runtime — `'&a' + 'mp;'`, or a table lookup — defeats any regex. That is not
-   * the failure mode this guards. It guards the ordinary accident of someone typing a fresh escaper
-   * in a new module, which is exactly how the round-1 defect arose. A contributor assembling the
-   * string dynamically has evidently decided to route around the boundary, which review catches.
-   * The behavioural layer is the real guarantee either way: `tests/unit/import/rewrite.test.ts`
-   * drives a hostile battery through the splice with `hasXmlIllegalChars` as the oracle, and
+   * ## Why the net is the literal, not the call
+   *
+   * Round 2's net matched the *call shape* (`replace('&', '&amp;')` / `replace(/&/g, …)`), and
+   * round 3 listed seven ordinary spellings it missed: `/&(?!amp;)/g` (the no-double-escape idiom),
+   * `/&/gu`, `/[&]/g`, `'&#38;'`, `'&#x26;'`, `split('&').join('&amp;')` and
+   * `new RegExp('&', 'g')`. Every one of them still has to *write the replacement down*, so the
+   * literal is the invariant and the call is incidental. Matching the literal catches all seven with
+   * no new declarations: the census today is exactly the four modules below.
+   *
+   * **Residual, deliberately accepted**, stated precisely: (1) a replacement assembled at runtime —
+   * `'&a' + 'mp;'`, `String.fromCharCode`, a table built from numbers — is invisible to any regex;
+   * (2) the walk covers `src/` only, so a helper under `tests/` that `src/` imports is out of range
+   * (`src/` importing from `tests/` is its own smell). Neither is the failure mode this guards. It
+   * guards the ordinary accident of someone typing a fresh escaper in a new module, which is exactly
+   * how the round-1 defect arose; a contributor assembling the string dynamically has evidently
+   * decided to route around the boundary, which review catches. The behavioural layer is the real
+   * guarantee either way: `tests/unit/import/rewrite.test.ts` drives a hostile battery through the
+   * splice with `hasXmlIllegalChars` as the oracle, and
    * `tests/unit/import/pptx-roundtrip-identity.test.ts` asserts it over every part of a whole
    * exported package. Round 2 confirmed the split is real by reproducing M4.3 round 4's failure
    * mode — keeping the import but neutering the call left this guard green while four behavioural
    * tests reded — which is precisely why no string-presence assertion lives here.
    */
-  /** `.replaceAll('&', '&amp;')` / `.replace(/&/g, '&amp;')` in any quote style. */
-  const XML_ESCAPER = /replace(?:All)?\(\s*(?:['"`]&['"`]|\/&\/g)\s*,\s*['"`]&amp;['"`]/
+  /** The escaped ampersand as a string literal, in any quote style, named or numeric. */
+  const ESCAPED_AMPERSAND_LITERAL = /['"`]&(?:amp|#38|#x26);['"`]/
   const IMPORTS_SANITIZER = /from\s+['"][^'"]*export\/pptx\/sanitize['"]/
 
   /**
@@ -122,8 +134,8 @@ describe('pptxgenjs boundary', () => {
       domain: 'Design Mode byte-span patching — HTML source text',
       xml: false,
     },
-    'src/shared/document/starter-slide.ts': {
-      domain: 'escapeHtml for generated slide HTML — HTML domain',
+    'src/shared/document/slide-text.ts': {
+      domain: 'escapeHtml + slideText for generated slide HTML — HTML domain',
       xml: false,
     },
     'src/shared/export/html-escape.ts': {
@@ -138,7 +150,7 @@ describe('pptxgenjs boundary', () => {
 
   function escaperFiles(): string[] {
     return files
-      .filter((file) => XML_ESCAPER.test(readFileSync(file, 'utf8')))
+      .filter((file) => ESCAPED_AMPERSAND_LITERAL.test(readFileSync(file, 'utf8')))
       .map((file) => relative(process.cwd(), file).split(sep).join('/'))
       .toSorted()
   }

@@ -41,7 +41,10 @@ export type PptxImportSummary = {
   readonly sourceSha256: string
   readonly retainedBytes: number
   readonly partCount: number
-  /** Everything the converter could not represent. Surfaced so fidelity loss is never silent. */
+  /**
+   * Everything the converter could not represent. Surfaced in the status bar through
+   * `noticeForOpen` so fidelity loss is never silent.
+   */
   readonly conversionNotes: readonly string[]
 }
 
@@ -66,6 +69,44 @@ export type OpenDeckResponse =
   | { readonly canceled: true }
   | { readonly canceled: false; readonly ok: true; readonly payload: OpenDeckPayload }
   | { readonly canceled: false; readonly ok: false; readonly error: OpenDeckError }
+
+/** What the status bar says after an open that lost something; `null` when nothing did. */
+export type OpenNotice = {
+  /** One line with the counts: what was imported and what degraded. */
+  readonly summary: string
+  /** The individual warnings and conversion notes, in that order, for the tooltip. */
+  readonly details: readonly string[]
+}
+
+function count(n: number, noun: string): string {
+  return `${String(n)} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * Summarise a payload's fidelity loss for the user (M4.5, review r3).
+ *
+ * The importer has always reported the slide cap, the text-only fallbacks, the dropped images and
+ * the missing theme part; round 3 found the renderer discarding all of it, so a 200-slide deck
+ * opened under `maxSlides` showed its first N with no sign the rest existed. Pure and shared so the
+ * wording is decided once and tested without a DOM. Returns `null` for a clean open, so a deck that
+ * lost nothing shows no notice at all — a notice on every open is one nobody reads.
+ */
+export function noticeForOpen(payload: OpenDeckPayload): OpenNotice | null {
+  const details = [...payload.warnings, ...(payload.import?.conversionNotes ?? [])]
+  if (details.length === 0 && (payload.import?.fallbackCount ?? 0) === 0) return null
+
+  const parts: string[] = []
+  if (payload.import === undefined) {
+    parts.push(`Opened with ${count(payload.warnings.length, 'warning')}`)
+  } else {
+    const { slideCount, fallbackCount, conversionNotes } = payload.import
+    parts.push(`Imported ${count(slideCount, 'slide')}`)
+    if (fallbackCount > 0) parts.push(`${String(fallbackCount)} as text-only`)
+    if (payload.warnings.length > 0) parts.push(count(payload.warnings.length, 'warning'))
+    if (conversionNotes.length > 0) parts.push(count(conversionNotes.length, 'conversion note'))
+  }
+  return { summary: parts.join(' · '), details }
+}
 
 /** The dialog filters, shared so the menu, the handler and its tests cannot drift apart. */
 export const OPEN_DECK_FILTERS: readonly { name: string; extensions: string[] }[] = [

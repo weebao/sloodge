@@ -45,8 +45,8 @@
  */
 
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../document/types'
-import { FORBIDDEN_API_TOKENS, packForApiScan } from '../../document/slide-contract'
-import { escapeHtml, renderThemeBlock, SLIDE_CONTRACT_VERSION } from '../../document/starter-slide'
+import { renderThemeBlock, SLIDE_CONTRACT_VERSION } from '../../document/starter-slide'
+import { escapeHtml, slideText } from '../../document/slide-text'
 import {
   attribute,
   childrenNamed,
@@ -60,77 +60,6 @@ import type { OpcRelationships } from './opc'
 import type { SlideSizeEmu } from './opc'
 
 export const EMU_PER_INCH = 914_400
-
-/**
- * One matcher per forbidden token, derived from `slide-contract.ts`'s **own** list and **own**
- * normalisation rather than a copy of either.
- *
- * The first version of this restated both, and got the normalisation wrong in exactly one place:
- * it split each token on characters and joined with `\s*`, so the literal space inside
- * `new Function(` became a *required* space. SL-S04 strips all whitespace before comparing, so it
- * matched `newFunction(` while the defuser did not — and a slide whose prose read
- * `Avoid newFunction( in modern JavaScript` failed conversion, failed the text-only fallback for
- * the same reason, and took the entire deck import down as `unconvertible`. One innocuous word,
- * one unopenable presentation.
- *
- * So the token is packed with `packForApiScan` first (which is what removes that space), and *then*
- * `\s*` is inserted between every remaining character — because the validator's normalisation means
- * arbitrary whitespace may sit anywhere inside a match. `i` covers the case fold. The list itself is
- * imported, so a token added to the rule later is defused without anyone remembering to mirror it.
- */
-const FORBIDDEN_TOKEN_MATCHERS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(
-  (token) =>
-    new RegExp(
-      packForApiScan(token)
-        .split('')
-        .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('\\s*'),
-      'gi',
-    ),
-)
-
-/**
- * Defuse SL-S04 token matches in *text content*, without changing what the text says.
- *
- * SL-S04 forbids `fetch(`, `localStorage`, `eval(` and friends by scanning the whole slide source
- * with whitespace stripped and case folded. For an authored slide that is exactly right. For an
- * *imported* one it produces a false positive on ordinary prose: a deck about JavaScript whose
- * title reads "Use fetch() instead of XMLHttpRequest" is perfectly inert — the words sit in a text
- * node, there is no `<script>` in the document at all (`capabilities: ['static']`, and SL-H01/I02
- * enforce that separately) — but the scan cannot see context and rejects it. Before this, such a
- * deck failed conversion, failed the text-only fallback for the same reason, and failed the import
- * outright with `unconvertible`. That is a real deck a real user has.
- *
- * The fix is to make the *bytes* unmatchable while leaving the *rendering* identical: the first
- * character of each occurrence becomes a numeric character reference. `fetch(` is emitted as
- * `&#102;etch(`, which a browser renders as "fetch(" and a substring scan does not match. Nothing
- * is removed, nothing is altered on screen, and no rule is weakened — a document that genuinely
- * contained script would still carry `<script>`, which SL-H01 rejects independently.
- *
- * Matching mirrors the validator's own normalisation: whitespace between characters is optional
- * (the scan strips it, so "local storage" packs to "localstorage" and would match) and the compare
- * is case-insensitive. Applied only to text nodes and only after HTML escaping, so it can never
- * introduce markup.
- */
-export function defuseForbiddenTokens(escaped: string): string {
-  let out = escaped
-  for (const matcher of FORBIDDEN_TOKEN_MATCHERS) {
-    // `lastIndex` is per-RegExp state and these are module-level `g` objects, so it must be reset
-    // before each use or a second call would resume mid-string and miss an early match.
-    matcher.lastIndex = 0
-    out = out.replace(matcher, (match) => {
-      const first = match.codePointAt(0)
-      if (first === undefined) return match
-      return `&#${String(first)};${match.slice(String.fromCodePoint(first).length)}`
-    })
-  }
-  return out
-}
-
-/** HTML-escape a text node, then make it unmatchable by SL-S04's substring scan. */
-function slideText(value: string): string {
-  return defuseForbiddenTokens(escapeHtml(value))
-}
 
 /** Resolves an image part name to a `data:` URI, or `null` when it cannot be inlined. */
 export type MediaResolver = (partName: string) => string | null

@@ -135,6 +135,40 @@ describe('useOpenDeck', () => {
     expect(applyRemoteDeck).not.toHaveBeenCalled()
   })
 
+  it('runs one open at a time: a second call while the first is pending is dropped', async () => {
+    let resolve: ((response: OpenDeckResponse) => void) | undefined
+    const openDeck = vi.fn(
+      () =>
+        new Promise<OpenDeckResponse>((r) => {
+          resolve = r
+        }),
+    )
+    installBridge(openDeck)
+    const applyRemoteDeck = vi.fn(() => true)
+
+    const { result } = renderHook(() => useOpenDeck({ applyRemoteDeck }))
+    await act(async () => {
+      result.current()
+      result.current()
+      await Promise.resolve()
+    })
+    expect(openDeck).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolve?.(payloadResponse('first.pptx'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(applyRemoteDeck).toHaveBeenCalledTimes(1)
+
+    // Once settled, the next invocation goes through again.
+    await act(async () => {
+      result.current()
+      await Promise.resolve()
+    })
+    expect(openDeck).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps a stable callback identity across renders', () => {
     installBridge(async () => ({ canceled: true }))
     const { result, rerender } = renderHook(

@@ -16,6 +16,7 @@ import { useDesignStore } from '../../src/renderer/src/features/design/designSto
 import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
 import type { MenuAction } from '../../src/shared/ipc-contract'
 import { installFakeIntersectionObserver } from './deck/fake-intersection-observer'
+import type { OpenDeckPayload } from '../../src/shared/document/open'
 
 const NOW = 1_770_000_000_000
 
@@ -374,6 +375,83 @@ describe('AppShell under Electron (bridge present)', () => {
 
     emit('edit.redo')
     expect(statusText()).toContain('of 4')
+  })
+
+  /**
+   * File ▸ Open's outcome lands in the status bar (M4.5, review r3: the importer's warnings and
+   * conversion notes crossed IPC and were dropped). A payload that lost something shows a one-line
+   * summary with the details as its tooltip; a clean one shows nothing.
+   */
+  function openedPayload(
+    overrides: Partial<Pick<OpenDeckPayload, 'warnings' | 'import'>> = {},
+  ): OpenDeckPayload {
+    const snapshot = createStarterDeck(NOW)
+    return {
+      path: '/tmp/talk.pptx',
+      fileName: 'talk.pptx',
+      source: 'pptx',
+      deck: { manifest: snapshot.deck, slides: snapshot.slideHtml, notes: {}, theme: null },
+      warnings: [],
+      ...overrides,
+    }
+  }
+
+  async function openFromMenu(payload: OpenDeckPayload): Promise<void> {
+    window.sloodge = {
+      onMenuAction: (listener) => {
+        menuListeners.add(listener)
+        return () => menuListeners.delete(listener)
+      },
+      openDeck: async () => ({ canceled: false, ok: true, payload }),
+    }
+    render(<AppShell />)
+    await act(async () => {
+      for (const listener of menuListeners) listener('file.open')
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+  }
+
+  it('shows what a lossy import degraded, with the details as the tooltip', async () => {
+    await openFromMenu(
+      openedPayload({
+        warnings: ['package has 600 slides; imported the first 500'],
+        import: {
+          slideCount: 500,
+          convertedCount: 497,
+          fallbackCount: 3,
+          sourceSha256: 'a'.repeat(64),
+          retainedBytes: 1,
+          partCount: 1,
+          conversionNotes: ['an image over 4194304 bytes was not inlined'],
+        },
+      }),
+    )
+
+    const status = screen.getByRole('status')
+    expect(status.textContent).toContain(
+      'Imported 500 slides · 3 as text-only · 1 warning · 1 conversion note',
+    )
+    expect(status.getAttribute('title')).toContain('imported the first 500')
+    expect(status.getAttribute('title')).toContain('was not inlined')
+    expect(screen.getByText(/talk\.pptx/)).toBeTruthy()
+  })
+
+  it('shows nothing for an import that lost nothing', async () => {
+    await openFromMenu(
+      openedPayload({
+        import: {
+          slideCount: 3,
+          convertedCount: 3,
+          fallbackCount: 0,
+          sourceSha256: 'a'.repeat(64),
+          retainedBytes: 1,
+          partCount: 1,
+          conversionNotes: [],
+        },
+      }),
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByText(/talk\.pptx/)).toBeTruthy()
   })
 
   it('sends a chord typed in the composer to the field, never to the deck', () => {

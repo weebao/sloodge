@@ -12,8 +12,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { strToU8, unzipSync, zipSync } from 'fflate'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { importPptx } from '../../../src/main/import/pptx-import'
+import { readFileSync } from 'node:fs'
+import { importPptx, SlideGate } from '../../../src/main/import/pptx-import'
+import { createSlideEntry } from '../../../src/shared/document/deck'
 import { validateSlideContract } from '../../../src/shared/document/slide-contract'
+import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
 import { parseManifest } from '../../../src/shared/document/types'
 import { LEDGER_ENTRY, ORIGINAL_ARCHIVE_ENTRY } from '../../../src/shared/import/pptx/ledger'
 import { fixturePath, PPTX_FIXTURES, readFixture } from './fixtures'
@@ -145,17 +148,26 @@ describe('importPptx over the committed fixtures', () => {
   })
 })
 
+/** The fixture re-declared as a template with no slide list, which is what a real .potx is. */
+async function templateParts(title?: string): Promise<Record<string, Uint8Array>> {
+  const parts = await fixtureParts()
+  parts['[Content_Types].xml'] = strToU8(
+    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="bin" ContentType="application/octet-stream"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"/></Types>`,
+  )
+  parts['ppt/presentation.xml'] = strToU8(
+    '<p:presentation><p:sldSz cx="12192000" cy="6858000"/></p:presentation>',
+  )
+  if (title !== undefined) {
+    parts['docProps/core.xml'] = strToU8(
+      `<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${title}</dc:title></cp:coreProperties>`,
+    )
+  }
+  return parts
+}
+
 describe('templates', () => {
   it('imports a .potx as a theme source with a starter slide', async () => {
-    const parts = await fixtureParts()
-    // Re-declare the main part as a template and drop the slide list, which is what a real .potx is.
-    parts['[Content_Types].xml'] = strToU8(
-      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="bin" ContentType="application/octet-stream"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"/></Types>`,
-    )
-    parts['ppt/presentation.xml'] = strToU8(
-      '<p:presentation><p:sldSz cx="12192000" cy="6858000"/></p:presentation>',
-    )
-    const path = await writeArchive('template.potx', parts)
+    const path = await writeArchive('template.potx', await templateParts())
 
     const result = await importPptx(path, { now: NOW })
     if (!result.ok) throw new Error(result.error.message)
@@ -167,6 +179,76 @@ describe('templates', () => {
     expect(result.bundle.theme?.tokens.color.accent).toBe('#4f81bd')
     // The starter slide is not in the ledger, so an export honestly falls back to a rebuild.
     expect(result.ledger.slideOrder).toEqual([])
+  })
+
+  /**
+   * Review round 3: these five ordinary template titles each imported `ok: true` with a starter
+   * slide that failed SL-S04 — `dc:title` is archive text, the starter slide escaped it but did not
+   * defuse it, and the template branch skipped the validator. Now the title goes through
+   * `slideText` and the slide through the gate. Mutation: revert `createStarterSlideHtml` to
+   * `escapeHtml` and every title below fails with `unconvertible`.
+   */
+  it('imports a .potx whose dc:title mentions a forbidden API, contract-valid', async () => {
+    const titles = [
+      'Using localStorage wisely',
+      'How to fetch(data)',
+      'Eval(uation) rubric',
+      'WebSocket demo deck',
+      'Our document.cookie policy',
+    ]
+    const results = await Promise.all(
+      titles.map(async (title, index) => {
+        const path = await writeArchive(`titled-${String(index)}.potx`, await templateParts(title))
+        return [title, await importPptx(path, { now: NOW })] as const
+      }),
+    )
+    for (const [title, result] of results) {
+      if (!result.ok) throw new Error(`${title}: ${result.error.message}`)
+      expect(result.bundle.manifest.title).toBe(title)
+      expect(result.bundle.manifest.slideOrder).toHaveLength(1)
+      for (const id of result.bundle.manifest.slideOrder) {
+        const html = result.bundle.slides[id] ?? ''
+        expect(validateSlideContract(html, ['static']).ok, title).toBe(true)
+        // Still the same words on screen once entities resolve.
+        expect(
+          html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+        ).toContain(`class="title">${title}</h1>`)
+      }
+    }
+  })
+})
+
+describe('SlideGate — the one door into the deck', () => {
+  const entry = createSlideEntry({ now: NOW, title: 'x' })
+
+  it('refuses a document that fails the contract and admits nothing', () => {
+    const gate = new SlideGate()
+    const result = gate.admit(
+      '<!doctype html><html><body><div>no .slide root</div></body></html>',
+      entry,
+    )
+    expect(result.ok).toBe(false)
+    expect(Object.keys(gate.slides)).toEqual([])
+    expect(gate.entries).toEqual([])
+  })
+
+  it('admits a contract-valid document under its entry id', () => {
+    const gate = new SlideGate()
+    const html = createStarterSlideHtml({ id: entry.id, title: 'ok' })
+    expect(gate.admit(html, entry).ok).toBe(true)
+    expect(gate.slides[entry.id]).toBe(html)
+    expect(gate.entries).toEqual([entry])
+  })
+
+  it('is the only writer into the slide map in the importer', () => {
+    // The gate is only a choke point if nothing writes around it. Round 3 found the template branch
+    // doing exactly that; this pins the property structurally so a fourth branch cannot.
+    const source = readFileSync(join(process.cwd(), 'src/main/import/pptx-import.ts'), 'utf8')
+    const writes = [...source.matchAll(/\bslides\[[^\]]+\]\s*=/g)].map((m) => m[0])
+    expect(writes).toEqual(['slides[entry.id] ='])
+    expect(source.match(/\bentries\.push\(/g)).toHaveLength(1)
+    // ...and validation happens there, not per branch.
+    expect(source.match(/validateSlideContract\(/g)).toHaveLength(1)
   })
 })
 

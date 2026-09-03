@@ -12,11 +12,12 @@
  *     prototype-pollution entry names all apply exactly as they do to a deck, and all are already
  *     handled. Nothing in this file re-implements a gate; `readArchiveFile` either hands back a
  *     validated entry map or an error value.
- *  2. **The slides are converted best effort** to contract HTML, and every converted document is
- *     put through the Tier-1 validator before it is allowed into the deck. A slide that fails is
- *     replaced by a text-only fallback rather than admitted — the contract is what the rest of the
- *     app (the sandboxed iframe, the export renderer, Design Mode) is entitled to assume, and an
- *     importer that can weaken it is a hole in all three.
+ *  2. **The slides are converted best effort** to contract HTML, and every document — converted,
+ *     text-only fallback or starter — enters the deck through one gate (`SlideGate`) that runs the
+ *     Tier-1 validator first and refuses otherwise. A converted slide that fails is replaced by a
+ *     text-only fallback rather than admitted — the contract is what the rest of the app (the
+ *     sandboxed iframe, the export renderer, Design Mode) is entitled to assume, and an importer
+ *     that can weaken it is a hole in all three.
  *  3. **The original archive is retained byte-for-byte** at `import/original.pptx`, with a per-part
  *     ledger at `import/ledger.json`. Both ride in `bundle.extras`, which `store.ts` round-trips
  *     verbatim by design (§5.2), so they survive save-and-reopen without the manifest schema
@@ -30,10 +31,10 @@
  * ## Templates
  *
  * A `.potx` is the same package with a different main content type and (usually) no slides — its
- * value is the masters, layouts and theme. Import treats it as a theme source: the colour scheme
- * and typeface names become the deck's `theme/theme.json`, and a starter slide is created so the
- * deck is not empty. The archive is retained just the same, so a template that *does* carry slides
- * round-trips like any other package.
+ * value is the masters, layouts and theme. Import takes the *theme* only: the package's colour
+ * scheme becomes the deck's `theme/theme.json` (layout and master inheritance is not resolved, see
+ * `convert.ts`), and a starter slide is created so the deck is not empty. The archive is retained
+ * just the same, so a template that *does* carry slides round-trips like any other package.
  */
 
 import { basename } from 'node:path'
@@ -47,12 +48,17 @@ import {
   newSlideId,
   newThemeId,
 } from '../../shared/document/deck'
-import { contractErrorSummary, validateSlideContract } from '../../shared/document/slide-contract'
+import {
+  contractErrorSummary,
+  validateSlideContract,
+  type SlideContractResult,
+} from '../../shared/document/slide-contract'
+import { escapeHtml, slideText } from '../../shared/document/slide-text'
 import {
   createStarterSlideHtml,
   DEFAULT_THEME_TOKENS,
-  escapeHtml,
   renderThemeBlock,
+  SLIDE_CONTRACT_VERSION,
   SYSTEM_FONT_STACK,
 } from '../../shared/document/starter-slide'
 import {
@@ -75,7 +81,7 @@ import {
   type OpcRelationships,
   type SlideGraph,
 } from '../../shared/import/pptx/opc'
-import { convertSlide, defuseForbiddenTokens } from '../../shared/import/pptx/convert'
+import { convertSlide } from '../../shared/import/pptx/convert'
 import {
   FALLBACK_THEME,
   readTheme,
@@ -239,19 +245,19 @@ function fallbackSlideHtml(
   texts: readonly string[],
   tokens: Readonly<Record<string, string>>,
 ): string {
-  // Same SL-S04 defusing as the structural converter: this fallback exists precisely because the
-  // structural output was rejected, so it must not be rejected for the same reason.
+  // `slideText`, the same path as the structural converter: this fallback exists precisely because
+  // the structural output was rejected, so it must not be rejected for the same reason.
   const body = texts
     .map(
       (text, index) =>
-        `  <p class="sl-tx" data-sl-id="e_${(index + 2).toString(16).padStart(3, '0')}" style="font-size:24px;line-height:1.4;margin:0 0 12px"><span data-sl-run="${String(index)}">${defuseForbiddenTokens(escapeHtml(text))}</span></p>`,
+        `  <p class="sl-tx" data-sl-id="e_${(index + 2).toString(16).padStart(3, '0')}" style="font-size:24px;line-height:1.4;margin:0 0 12px"><span data-sl-run="${String(index)}">${slideText(text)}</span></p>`,
     )
     .join('\n')
   return `<!doctype html>
-<html lang="en" data-sl-slide="${escapeHtml(slideId)}" data-sl-contract="1" data-sl-origin="pptx-fallback">
+<html lang="en" data-sl-slide="${escapeHtml(slideId)}" data-sl-contract="${String(SLIDE_CONTRACT_VERSION)}" data-sl-origin="pptx-fallback">
 <head>
 <meta charset="utf-8">
-<title>${defuseForbiddenTokens(escapeHtml(title))}</title>
+<title>${slideText(title)}</title>
 <style>
 ${renderThemeBlock(tokens)}
   *, *::before, *::after { box-sizing: border-box; }
@@ -278,6 +284,31 @@ ${body}
 </body>
 </html>
 `
+}
+
+/**
+ * The one door into the deck.
+ *
+ * Review round 3 found the template branch admitting its starter slide without validation while the
+ * structural and fallback branches each ran the validator by hand — per-branch discipline, and the
+ * branch nobody was looking at had none. Now every slide, whichever producer built it, enters
+ * `slides` and `entries` through `admit`, which validates first and refuses otherwise; `importPptx`
+ * hands both to the bundle by identity, so there is no second writer to forget. The importer's
+ * tests hold both halves: the gate refuses an invalid document, and the importer's source contains
+ * no other assignment into a slide map.
+ */
+export class SlideGate {
+  readonly slides = emptyMap<string>()
+  readonly entries: SlideEntry[] = []
+
+  admit(html: string, entry: SlideEntry): SlideContractResult {
+    const validation = validateSlideContract(html, ['static'])
+    if (validation.ok) {
+      this.slides[entry.id] = html
+      this.entries.push(entry)
+    }
+    return validation
+  }
 }
 
 /** Read a package's theme part, falling back to OOXML's stock scheme when it is absent or broken. */
@@ -360,8 +391,7 @@ export async function importPptx(
   }
 
   let inlinedBytes = 0
-  const slides = emptyMap<string>()
-  const slideEntries: SlideEntry[] = []
+  const gate = new SlideGate()
   const ledgerSlides: { slideId: string; part: string; html: string }[] = []
   let convertedCount = 0
   let fallbackCount = 0
@@ -426,40 +456,36 @@ export async function importPptx(
     })
     for (const note of converted.notes) conversionNotes.add(note)
 
-    // The contract gate. A slide that fails is never admitted; it degrades to text.
+    const entry = createSlideEntry({
+      id: slideId,
+      title: converted.title,
+      kind: index === 0 ? 'title' : 'content',
+      capabilities: ['static'],
+      origin: { type: 'import' },
+      now: now + index,
+    })
+
+    // A slide the gate refuses is never admitted; it degrades to text and tries the gate again.
     let html = converted.html
-    let validation = validateSlideContract(html, ['static'])
-    if (!validation.ok) {
+    const structural = gate.admit(html, entry)
+    if (structural.ok) {
+      convertedCount += 1
+    } else {
       const texts = descendantsNamed(slideXml, 't').map((node) => node.text)
       html = fallbackSlideHtml(slideId, converted.title, texts, tokens)
-      const fallbackValidation = validateSlideContract(html, ['static'])
-      if (!fallbackValidation.ok) {
+      const fallback = gate.admit(html, entry)
+      if (!fallback.ok) {
         return {
           ok: false,
           error: {
             code: 'unconvertible',
-            message: `slide ${part} could not be converted into contract-valid HTML: ${contractErrorSummary(fallbackValidation)}`,
+            message: `slide ${part} could not be converted into contract-valid HTML: ${contractErrorSummary(fallback)}`,
           },
         }
       }
-      warnings.push(`${part} converted to a text-only slide: ${contractErrorSummary(validation)}`)
-      validation = fallbackValidation
+      warnings.push(`${part} converted to a text-only slide: ${contractErrorSummary(structural)}`)
       fallbackCount += 1
-    } else {
-      convertedCount += 1
     }
-
-    slides[slideId] = html
-    slideEntries.push(
-      createSlideEntry({
-        id: slideId,
-        title: converted.title,
-        kind: index === 0 ? 'title' : 'content',
-        capabilities: ['static'],
-        origin: { type: 'import' },
-        now: now + index,
-      }),
-    )
     ledgerSlides.push({ slideId, part, html })
   }
 
@@ -467,28 +493,39 @@ export async function importPptx(
   // not a usable document, so one starter slide is created. It carries no `data-sl-run` markers and
   // is not in the ledger, so its presence forces `rebuild` on export — which is correct, because
   // the archive it would round-trip to has no slide to match it.
-  if (slideEntries.length === 0) {
+  if (gate.entries.length === 0) {
     const slideId = newSlideId(now)
-    const html = createStarterSlideHtml({ id: slideId, title: deckTitle, tokens })
-    slides[slideId] = html
-    slideEntries.push(
-      createSlideEntry({
-        id: slideId,
-        title: deckTitle,
-        kind: 'title',
-        capabilities: ['static'],
-        origin: { type: 'template' },
-        now,
-      }),
+    const entry = createSlideEntry({
+      id: slideId,
+      title: deckTitle,
+      kind: 'title',
+      capabilities: ['static'],
+      origin: { type: 'template' },
+      now,
+    })
+    // `deckTitle` is `dc:title` — archive text. `createStarterSlideHtml` puts it through `slideText`,
+    // so the title cannot fail the gate; the gate is still what admits it, not the producer.
+    const starter = gate.admit(
+      createStarterSlideHtml({ id: slideId, title: deckTitle, tokens }),
+      entry,
     )
+    if (!starter.ok) {
+      return {
+        ok: false,
+        error: {
+          code: 'unconvertible',
+          message: `the starter slide is not contract-valid HTML: ${contractErrorSummary(starter)}`,
+        },
+      }
+    }
     warnings.push(
       graph.kind === 'template'
-        ? 'template imported: masters and theme became the deck theme, and a starter slide was created'
+        ? 'template imported: the package theme (colour scheme) became the deck theme, and a starter slide was created'
         : 'package contained no readable slides; created a starter slide',
     )
   }
 
-  const manifest = buildManifest(deckTitle, slideEntries, now)
+  const manifest = buildManifest(deckTitle, gate.entries, now)
 
   const ledger = buildLedger({
     format: formatOf(path, graph),
@@ -506,12 +543,12 @@ export async function importPptx(
 
   return {
     ok: true,
-    bundle: { manifest, slides, notes: emptyMap<string>(), theme, extras },
+    bundle: { manifest, slides: gate.slides, notes: emptyMap<string>(), theme, extras },
     ledger,
     report: {
       sourcePath: path,
       format: ledger.source.format,
-      slideCount: slideEntries.length,
+      slideCount: gate.entries.length,
       convertedCount,
       fallbackCount,
       sourceSha256,
@@ -525,11 +562,11 @@ export async function importPptx(
 
 function buildManifest(title: string, entries: readonly SlideEntry[], now: number): DeckManifest {
   const deck = createEmptyDeck({ title, now, theme: DEFAULT_THEME_PATH })
-  const slides = Object.create(null) as Record<string, SlideEntry>
+  const entriesById = Object.create(null) as Record<string, SlideEntry>
   const slideOrder: string[] = []
   for (const entry of entries) {
-    slides[entry.id] = entry
+    entriesById[entry.id] = entry
     slideOrder.push(entry.id)
   }
-  return { ...deck, slides, slideOrder }
+  return { ...deck, slides: entriesById, slideOrder }
 }

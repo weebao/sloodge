@@ -11,9 +11,9 @@ import { useExportPptx } from '../features/export/useExportPptx'
 import { ExportPptxDialog } from '../features/export/ExportPptxDialog'
 import { useExportHtml } from '../features/export/useExportHtml'
 import { useOpenDeck } from '../features/document/useOpenDeck'
-import type { OpenDeckPayload } from '../../../shared/document/open'
+import { noticeForOpen, type OpenDeckPayload } from '../../../shared/document/open'
 import { SettingsDialog } from '../features/settings/SettingsDialog'
-import { StatusBar } from '../features/statusbar/StatusBar'
+import { StatusBar, type OpenStatus } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
@@ -112,15 +112,22 @@ export function AppShell(): JSX.Element {
 
   // File ▸ Open (M4.5): .sloodge, .pptx and .potx. Main owns the chooser and the read; the renderer
   // adopts the document with `doc:open` semantics, which resets the undo stack (see useOpenDeck.ts).
-  // The file name drives the tab strip so it is visible that a different document is loaded.
+  // The file name drives the tab strip so it is visible that a different document is loaded; the
+  // status bar carries the outcome — a read error, or what a lossy import degraded (review r3: the
+  // importer's warnings and conversion notes crossed IPC and were dropped here).
   const [documentName, setDocumentName] = useState('Untitled.sloodge')
-  const [openError, setOpenError] = useState<string | null>(null)
+  const [openStatus, setOpenStatus] = useState<OpenStatus | null>(null)
   const onOpened = useCallback((payload: OpenDeckPayload) => {
     setDocumentName(payload.fileName)
-    setOpenError(null)
+    const notice = noticeForOpen(payload)
+    setOpenStatus(
+      notice === null
+        ? null
+        : { severity: 'warning', message: notice.summary, details: notice.details },
+    )
   }, [])
   const onOpenError = useCallback((error: { code: string; message: string }) => {
-    setOpenError(error.message)
+    setOpenStatus({ severity: 'error', message: error.message, details: [] })
   }, [])
   const openDeck = useOpenDeck({ applyRemoteDeck, onOpened, onError: onOpenError })
 
@@ -210,7 +217,7 @@ export function AppShell(): JSX.Element {
         budget={budget}
         budgetUnknown={budgetUnknown}
         skills={sessionSkills}
-        openError={openError}
+        openStatus={openStatus}
         {...(canPresent ? { onPresent: startPresent } : {})}
       />
       {presentFrom !== null ? (

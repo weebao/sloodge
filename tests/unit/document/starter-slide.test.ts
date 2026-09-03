@@ -4,12 +4,17 @@ import {
   assertSafeThemeToken,
   createStarterSlideHtml,
   DEFAULT_THEME_TOKENS,
-  escapeHtml,
   MAX_THEME_TOKEN_VALUE_LENGTH,
   renderThemeBlock,
   SLIDE_CONTRACT_VERSION,
   ThemeTokenError,
 } from '../../../src/shared/document/starter-slide'
+import { escapeHtml } from '../../../src/shared/document/slide-text'
+import {
+  FORBIDDEN_API_TOKENS,
+  packForApiScan,
+  validateSlideContract,
+} from '../../../src/shared/document/slide-contract'
 
 const ID = newSlideId(1_770_000_000_000)
 
@@ -63,13 +68,50 @@ describe('starter slide template', () => {
   it('escapes user text into both the <title> and the heading', () => {
     const html = createStarterSlideHtml({ id: ID, title: '<script>alert("x")</script>' })
     expect(html).not.toContain('<script>')
-    expect(html).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;')
+    // `alert(` is also an SL-S04 token, so its first letter is a numeric reference; resolve those
+    // to see the escaping on its own.
+    expect(
+      html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+    ).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;')
     expect(escapeHtml(`a&b<c>'d"`)).toBe('a&amp;b&lt;c&gt;&#39;d&quot;')
   })
 
   it('omits the subtitle element entirely when no subtitle is given', () => {
     expect(createStarterSlideHtml({ id: ID })).not.toContain('data-sl-id="e_002"')
     expect(createStarterSlideHtml({ id: ID, subtitle: 'yes' })).toContain('data-sl-id="e_002"')
+  })
+
+  /**
+   * M4.5 review round 3: a `.potx` whose `dc:title` read "Using localStorage wisely" produced a
+   * starter slide that failed SL-S04, because the title was escaped but not defused. The title and
+   * subtitle are caller text (an archive's, a user's, an agent's), so the starter slide must stay
+   * contract-clean for every spelling the validator would flag — iterated from the rule's own list.
+   */
+  it('stays contract-valid for a title or subtitle that mentions a forbidden API', () => {
+    expect(FORBIDDEN_API_TOKENS.length).toBeGreaterThan(10)
+    for (const token of FORBIDDEN_API_TOKENS) {
+      const packed = packForApiScan(token)
+      for (const spelling of [token, packed, token.toUpperCase(), packed.split('').join(' ')]) {
+        expect(packForApiScan(spelling)).toContain(packed)
+        const html = createStarterSlideHtml({
+          id: ID,
+          title: `About ${spelling} today`,
+          subtitle: spelling,
+        })
+        const errors = validateSlideContract(html, ['static']).issues.filter(
+          (issue) => issue.severity === 'error',
+        )
+        expect(errors, JSON.stringify(spelling)).toEqual([])
+      }
+    }
+  })
+
+  it('renders the defused title unchanged once entities resolve', () => {
+    const html = createStarterSlideHtml({ id: ID, title: 'How to fetch(data)' })
+    expect(html).not.toContain('fetch(')
+    expect(
+      html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+    ).toContain('<h1 data-sl-id="e_001" class="title">How to fetch(data)</h1>')
   })
 })
 
