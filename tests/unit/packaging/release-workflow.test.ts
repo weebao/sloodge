@@ -534,6 +534,7 @@ describe('the tag/version guard, executed', () => {
     { version: '0.0.1', tag: 'v0.0.1x', why: 'trailing junk without the - separator' },
     { version: '0.0.1', tag: 'release-0.0.1', why: 'unrelated tag shape' },
     { version: '0.0.0', tag: 'v0.0.1-preview', why: 'the exact collision seen on origin' },
+    { version: '0.0.1', tag: 'v0.0.1-', why: 'empty suffix — a trailing dash is a typo' },
   ])('rejects $tag against $version ($why)', ({ version, tag }) => {
     expect(runGuard(version, tag)).not.toBe(0)
   })

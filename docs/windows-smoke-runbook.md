@@ -417,15 +417,19 @@ artifact and may be excluded; a direct string comparison (`expected '\a\b' to be
 bug in the class this run exists to catch, and must be fixed. `win32-path-simulation.test.ts` reds
 if a listed file does no filesystem I/O, so the list cannot quietly absorb a genuine failure.
 
-The run also cannot litter. Under win32 semantics `os.tmpdir()` becomes `\tmp\...`, which Linux
-reads as a _relative_ path, so an unlisted test that writes there passes while dropping
-backslash-named files into the repo root — three tests once left 377 of them. No check over test
-source can close that (a bare `'fs/promises'` import and a write hidden behind a `src/` helper both
-walked past the first one), so `tests/support/win32-litter-guard.ts`, a vitest `globalSetup`,
-reads the disk instead: it snapshots the repo root before the run and fails the run — exit 1,
-naming the entries — on anything new in it afterwards. It also refuses to start over strays from an
-earlier run. Those are usually empty directories, which `git status` never shows; find them with
-`ls -A | grep '\\'`.
+The run also proves it left nothing new in the repo root. Under win32 semantics `os.tmpdir()`
+becomes `\tmp\...`, which Linux reads as a _relative_ path, so an unlisted test that writes there
+passes while dropping backslash-named files into the repo root — three tests once left 377 of them.
+No check over test source can close that (a bare `'fs/promises'` import and a write hidden behind a
+`src/` helper both walked past the first one), so `tests/support/win32-litter-guard.ts`, a vitest
+`globalSetup`, reads the disk instead: it snapshots the repo root before the run and fails the run
+— exit 1, naming the entries — on anything new in it afterwards. Every write whose path went
+through win32 `path.join` on an absolute or tmpdir-based input lands there, including `..\x`. Two
+routes do not, and neither exists in the repo today: a worker that `process.chdir`s before writing
+(the stray lands in the repo's _parent_), and a posix string prefix concatenated with a win32 tail,
+which creates `sub\f` inside an existing directory — `git status` shows that file, but not an empty
+directory. The guard also refuses to start over strays from an earlier run. Those are usually empty
+directories, which `git status` never shows; find them with `ls -A | grep '\\'`.
 
 Still not covered by either: anything needing a real Windows kernel — case-insensitive filesystems,
 path-length limits, reserved device names (`CON`, `NUL`), and the NSIS step itself. Those are proven

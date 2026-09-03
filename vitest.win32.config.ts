@@ -51,11 +51,16 @@ const shim = fileURLToPath(new URL('./tests/support/path-win32.ts', import.meta.
  * that actually proves the run left nothing behind: it snapshots the repo root and fails the run
  * on any new entry. "Touches the filesystem" means it uses `fs` for real — a suite that only
  * `vi.mock`s it, like `vault.test.ts`, is pure logic and belongs in the run.
+ *
+ * A test that lands on main AFTER a branch is cut can trip both checks on rebase — `pnpm test` reds
+ * naming the unlisted file, and the simulation dies with `ENOENT` on its `\`-path. That is the
+ * guard doing its job, not a regression: classify the new test by the criterion above and list it.
  */
 export const REAL_FILESYSTEM_TESTS = [
   'tests/unit/agent/skills-contract.test.ts',
   'tests/unit/canvas/host-csp.test.ts',
   'tests/unit/canvas/sandbox-invariant.test.ts',
+  'tests/unit/design/theme-tokens.test.ts',
   'tests/unit/document/store-extraction-deadline.test.ts',
   'tests/unit/document/store.test.ts',
   'tests/unit/export/export-ipc.test.ts',

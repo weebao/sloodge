@@ -68,7 +68,8 @@ jobs:
       # happily overwrite on top of each other.
       #
       # CONVENTION: the tag is `v<version>` where `<version>` is package.json's `version` exactly,
-      # optionally followed by `-<suffix>` for pre-releases (`v0.0.1-preview`). So cutting a release
+      # optionally followed by `-<suffix>` for pre-releases (`v0.0.1-preview`); the `?` in the
+      # pattern makes an empty suffix (`v0.0.1-`, a typo) a mismatch. So cutting a release
       # requires bumping package.json first — the step M9.1 describes but nothing previously
       # enforced. Runs before `pnpm install` so a mismatch fails in seconds, not after a 15-minute
       # build.
@@ -78,7 +79,7 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           tag="${GITHUB_REF_NAME}"
-          if [ "$tag" != "v$version" ] && [ "${tag#v"$version"-}" = "$tag" ]; then
+          if [ "$tag" != "v$version" ] && [ "${tag#v"$version"-?}" = "$tag" ]; then
             echo "::error::Tag '$tag' does not match package.json version '$version'."
             echo "Expected 'v$version' or 'v$version-<suffix>' (for example v$version-preview)."
             echo "Fix: set \"version\" in package.json to the version this tag names, commit that,"
@@ -113,7 +114,9 @@ jobs:
       # (instrument.test.ts "scales roughly linearly", store.test.ts "bounded sequential
       # extraction") are load-sensitive, and this 2-vCPU runner is slower than any box they were
       # tuned on; without the retry a flake there costs a manual re-run of the whole job at 2x
-      # billing. A genuine failure fails twice and still reds. test.yml deliberately has no retry,
+      # billing. A genuine failure fails twice and still reds. A test that passed only on retry is
+      # listed under "Flaky Tests" in the job SUMMARY (vitest's github-actions reporter), not in the
+      # step log — vitest prints a retried pass as a plain pass. test.yml deliberately has no retry,
       # so flakes stay visible on the development path where they get fixed.
       - name: Unit tests
         run: pnpm test --retry=1

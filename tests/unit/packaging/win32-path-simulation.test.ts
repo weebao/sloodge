@@ -13,7 +13,8 @@ import { REAL_FILESYSTEM_TESTS } from '../../../vitest.win32.config'
  * simulated (which would hide a genuine posix-literal failure), and a test that visibly uses the
  * filesystem may not be omitted. That second direction is only a fast first line — a regex over
  * source cannot see a write hidden behind a src helper — so the proof that the run leaves nothing
- * in the repo is `tests/support/win32-litter-guard.ts`, which reads the disk before and after.
+ * new in the repo root is `tests/support/win32-litter-guard.ts`, which reads the disk before and
+ * after (its docblock names the two routes that compare does not see).
  */
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
