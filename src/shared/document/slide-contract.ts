@@ -92,8 +92,14 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
 /**
  * APIs forbidden by SL-S04 / SL-S05: the ones that open a socket, touch storage, or run string
  * code — none of which a self-contained, stateless, sandboxed slide may use.
+ *
+ * **Exported because it is the single definition of the rule.** SL-S04 is a substring scan over the
+ * whole slide source, so any *writer* of slide bytes — not just this validator — has to know the
+ * token set to avoid emitting source the validator will then reject. `text-edit.ts` builds its
+ * neutralization corpus from this array rather than restating it, so a token added here is
+ * automatically covered there (and its tests fail if it is not).
  */
-const FORBIDDEN_API_TOKENS: readonly string[] = [
+export const FORBIDDEN_API_TOKENS: readonly string[] = [
   'fetch(',
   'XMLHttpRequest',
   'WebSocket',
@@ -108,6 +114,32 @@ const FORBIDDEN_API_TOKENS: readonly string[] = [
   'eval(',
   'new Function(',
 ]
+
+/**
+ * The normalization SL-S04 scans under: whitespace removed, lowercased.
+ *
+ * Both halves matter and both are deliberately aggressive. Lowercasing means `LOCALSTORAGE` is
+ * caught; removing **all** whitespace means `fetch (url)` and even `f e t c h (` are caught, because
+ * JS does not care about the spaces. That aggression is why a *writer* of slide source cannot simply
+ * check `source.includes(token)` — it has to pack first, which is why this is exported rather than
+ * inlined at its one original call site.
+ */
+export function packForApiScan(text: string): string {
+  return text.replace(/\s+/g, '').toLowerCase()
+}
+
+/**
+ * Every SL-S04 forbidden token present in `source`, in `FORBIDDEN_API_TOKENS` order. Empty means the
+ * source passes the forbidden-API half of the rule.
+ *
+ * This is the whole of SL-S04's decision procedure, factored out so the validator and the Design Mode
+ * text-edit writer run **literally the same code** over the same token list. A writer that wants to
+ * prove it did not introduce a violation compares this function's result before and after its patch.
+ */
+export function findForbiddenApiTokens(source: string): readonly string[] {
+  const packed = packForApiScan(source)
+  return FORBIDDEN_API_TOKENS.filter((token) => packed.includes(packForApiScan(token)))
+}
 
 function isElement(node: ChildNode): node is Element {
   return 'tagName' in node
@@ -341,7 +373,6 @@ export function validateSlideContract(
   const css = styleText(html)
   const cssPacked = css.replace(/\s+/g, '').toLowerCase()
   const source = html
-  const sourcePacked = source.replace(/\s+/g, '').toLowerCase()
 
   // Parse once, up front: the subresource and geometry rules below are decided over the parse5 tree
   // and the inline styles it carries, not over regex, so attribute-order / case / whitespace /
@@ -372,9 +403,7 @@ export function validateSlideContract(
   }
 
   // --- SL-S04/S05: no network / storage / eval APIs -------------------------------------------
-  const forbidden = FORBIDDEN_API_TOKENS.filter((token) =>
-    sourcePacked.includes(token.replace(/\s+/g, '').toLowerCase()),
-  )
+  const forbidden = findForbiddenApiTokens(source)
   if (forbidden.length > 0) {
     issues.push(
       issue(

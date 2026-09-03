@@ -97,6 +97,23 @@ export const SL_INSPECT = 'SL_INSPECT'
  */
 export const SL_ELEMENTS = 'SL_ELEMENTS'
 
+/**
+ * Parent → frame request / frame → parent response **and event**: direct text editing (M3.11, §4.1).
+ *
+ * `begin` turns the named element into a caret-bearing `contenteditable` inside the frame; `commit`
+ * and `cancel` end the session, the first reporting the current text and the second restoring what
+ * was there before. The frame *also* originates `SL_EDIT` as an **event** when the user ends the
+ * session from inside the frame (Enter, Escape, Tab or a blur) — the parent cannot see those
+ * keystrokes, because they land on a node in a document it has no access to.
+ *
+ * The text on the way back is the element's `textContent`, never its `innerHTML`: markup a paste
+ * introduced is dropped by that read rather than filtered afterwards. It remains an **untrusted
+ * hint** like every other frame → parent payload (§2.2) — author JS in the same realm can post an
+ * identical message — so the parent re-derives the target element from its own map and writes the
+ * string only through `text-edit.ts`, which escapes it into a text-node position.
+ */
+export const SL_EDIT = 'SL_EDIT'
+
 /** Direction tag. Requests carry an id a response echoes; events are fire-and-forget. */
 export type SlDir = 'req' | 'res' | 'evt'
 
@@ -197,15 +214,51 @@ export type SlElementsRequest = Record<string, never>
 /** `SL_ELEMENTS` response payload: every addressable, grabbable element as a full hit, in doc order. */
 export type SlElementsResponse = readonly SlHit[]
 
-export type BridgeEvent = SlEnvelope<typeof SL_READY, SlReadyPayload>
+/** What the parent is asking the frame to do to an edit session. */
+export type SlEditAction = 'begin' | 'commit' | 'cancel'
+
+/** `SL_EDIT` request payload: which element, and which transition. */
+export interface SlEditRequest {
+  readonly slId: string
+  readonly action: SlEditAction
+}
+
+/**
+ * `SL_EDIT` response/event payload: the element's current plain text and whether a session is still
+ * open on it. `null` (response only) when the frame has no node for that sl-id.
+ */
+export interface SlEditResult {
+  readonly slId: string
+  readonly text: string
+  readonly editing: boolean
+}
+export type SlEditResponse = SlEditResult | null
+
+/**
+ * Why the frame ended a session on its own. The parent maps these to Enter/Escape semantics; it
+ * cannot observe the keystrokes itself, so this is the only signal that distinguishes them.
+ */
+export type SlEditReason = 'enter' | 'escape' | 'tab' | 'blur'
+
+/** `SL_EDIT` event payload: a session the *frame* ended, and why. */
+export interface SlEditEventPayload {
+  readonly slId: string
+  readonly text: string
+  readonly reason: SlEditReason
+}
+
+export type BridgeEvent =
+  SlEnvelope<typeof SL_READY, SlReadyPayload> | SlEnvelope<typeof SL_EDIT, SlEditEventPayload>
 export type BridgeRequest =
   | SlEnvelope<typeof SL_HITTEST, SlHittestRequest>
   | SlEnvelope<typeof SL_INSPECT, SlInspectRequest>
   | SlEnvelope<typeof SL_ELEMENTS, SlElementsRequest>
+  | SlEnvelope<typeof SL_EDIT, SlEditRequest>
 export type BridgeResponse =
   | SlEnvelope<typeof SL_HITTEST, SlHittestResponse>
   | SlEnvelope<typeof SL_INSPECT, SlInspectResponse>
   | SlEnvelope<typeof SL_ELEMENTS, SlElementsResponse>
+  | SlEnvelope<typeof SL_EDIT, SlEditResponse>
 
 /** Everything the parent can legitimately receive from the frame. */
 export type FromFrame = BridgeEvent | BridgeResponse
@@ -346,6 +399,33 @@ function isHitArray(value: unknown): value is SlHit[] {
   return Array.isArray(value) && value.every(isHit)
 }
 
+function isEditRequestPayload(value: unknown): value is SlEditRequest {
+  return (
+    isRecord(value) &&
+    typeof value['slId'] === 'string' &&
+    (value['action'] === 'begin' || value['action'] === 'commit' || value['action'] === 'cancel')
+  )
+}
+
+function isEditResult(value: unknown): value is SlEditResult {
+  return (
+    isRecord(value) &&
+    typeof value['slId'] === 'string' &&
+    typeof value['text'] === 'string' &&
+    typeof value['editing'] === 'boolean'
+  )
+}
+
+function isEditEventPayload(value: unknown): value is SlEditEventPayload {
+  const reason = isRecord(value) ? value['reason'] : undefined
+  return (
+    isRecord(value) &&
+    typeof value['slId'] === 'string' &&
+    typeof value['text'] === 'string' &&
+    (reason === 'enter' || reason === 'escape' || reason === 'tab' || reason === 'blur')
+  )
+}
+
 interface EnvelopeBase {
   readonly id: number
   readonly dir: string
@@ -443,6 +523,34 @@ export function parseFrameMessage(data: unknown, expectedSlide: string): FromFra
     }
   }
 
+  if (base.dir === 'res' && base.type === SL_EDIT) {
+    if (base.payload !== null && !isEditResult(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'res',
+      type: SL_EDIT,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
+  // The only frame-originated *event* besides `SL_READY`: the user ended an edit session with a key
+  // or a blur, which the parent has no way to observe from outside the frame's document.
+  if (base.dir === 'evt' && base.type === SL_EDIT) {
+    if (!isEditEventPayload(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'evt',
+      type: SL_EDIT,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
   return null
 }
 
@@ -495,6 +603,19 @@ export function parseParentMessage(data: unknown, expectedSlide: string): Bridge
       id: base.id,
       dir: 'req',
       type: SL_ELEMENTS,
+      slide: base.slide,
+      payload: base.payload,
+    }
+  }
+
+  if (base.type === SL_EDIT) {
+    if (!isEditRequestPayload(base.payload)) return null
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: base.id,
+      dir: 'req',
+      type: SL_EDIT,
       slide: base.slide,
       payload: base.payload,
     }
@@ -616,6 +737,69 @@ export function makeElementsResponse(
     id,
     dir: 'res',
     type: SL_ELEMENTS,
+    slide,
+    payload,
+  }
+}
+
+/**
+ * Narrow an accepted frame message to the `SL_EDIT` **event** (the frame ended a session itself).
+ *
+ * `SlEnvelope.dir` is `SlDir` rather than a per-variant literal, so `message.dir === 'evt'` does not
+ * narrow the union on its own and the two `SL_EDIT` shapes are otherwise indistinguishable to the
+ * compiler. These guards re-check the payload shape — the same predicate `parseFrameMessage` already
+ * applied — which is what makes the narrowing sound rather than a cast.
+ */
+export function isEditEventMessage(
+  message: FromFrame,
+): message is SlEnvelope<typeof SL_EDIT, SlEditEventPayload> {
+  return message.type === SL_EDIT && message.dir === 'evt' && isEditEventPayload(message.payload)
+}
+
+/** Narrow an accepted frame message to the `SL_EDIT` **response** (an answer to a parent request). */
+export function isEditResponseMessage(
+  message: FromFrame,
+): message is SlEnvelope<typeof SL_EDIT, SlEditResponse> {
+  if (message.type !== SL_EDIT || message.dir !== 'res') return false
+  return message.payload === null || isEditResult(message.payload)
+}
+
+export function makeEditRequest(id: number, slide: string, payload: SlEditRequest): BridgeRequest {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'req',
+    type: SL_EDIT,
+    slide,
+    payload,
+  }
+}
+
+export function makeEditResponse(
+  id: number,
+  slide: string,
+  payload: SlEditResponse,
+): BridgeResponse {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id,
+    dir: 'res',
+    type: SL_EDIT,
+    slide,
+    payload,
+  }
+}
+
+/** A session the frame ended on its own. `id` is 0 — events answer no request. */
+export function makeEditEvent(slide: string, payload: SlEditEventPayload): BridgeEvent {
+  return {
+    __sl: SL_MAGIC,
+    v: SL_PROTOCOL_VERSION,
+    id: 0,
+    dir: 'evt',
+    type: SL_EDIT,
     slide,
     payload,
   }

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState, type JSX } from 'react'
 import { SlideCanvas } from '../features/canvas/SlideCanvas'
 import { ChatPanel } from '../features/chat/ChatPanel'
 import { ThumbnailRail } from '../features/deck/ThumbnailRail'
+import { DesignModeToggle } from '../features/design/DesignModeToggle'
 import { FormatBar } from '../features/format/FormatBar'
 import { MenuTabStrip } from '../features/format/MenuTabStrip'
 import { PresentSurface } from '../features/present/PresentSurface'
@@ -162,7 +163,14 @@ export function AppShell(): JSX.Element {
       className="flex h-screen w-screen flex-col overflow-hidden bg-shell-bg text-shell-fg dark:bg-ink dark:text-ink-fg"
     >
       <MenuTabStrip />
-      <FormatBar />
+      {/* The toolbar row and the Design Mode switch are siblings on purpose: the toolbar is a tab
+          panel whose contents M6.1 swaps per ribbon tab, and the switch must stay visible and
+          operable on every tab (see DesignModeToggle's header). Owning the row here is what makes
+          that structural rather than a convention a later PR can quietly break. */}
+      <div className="flex shrink-0 items-stretch border-b border-chrome-line bg-white dark:border-ink-line dark:bg-ink-alt">
+        <FormatBar />
+        <DesignModeToggle />
+      </div>
       <div className="flex min-h-0 flex-1">
         <ThumbnailRail
           slides={slides}

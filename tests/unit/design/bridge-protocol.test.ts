@@ -7,7 +7,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   createEnvelopeIdSource,
+  isEditEventMessage,
+  isEditResponseMessage,
   isMessageFromFrame,
+  makeEditEvent,
+  makeEditRequest,
+  makeEditResponse,
   makeHittestRequest,
   makeHittestResponse,
   makeInspectRequest,
@@ -15,6 +20,7 @@ import {
   makeReadyEvent,
   parseFrameMessage,
   parseParentMessage,
+  SL_EDIT,
   SL_HITTEST,
   SL_INSPECT,
   SL_MAGIC,
@@ -321,5 +327,114 @@ describe('SL_INSPECT — the computed-styles bridge message (M3.4)', () => {
     // authoritative HTML from it — see element-context.test.ts §2.2 re-derivation).
     expect(isMessageFromFrame({ source: frameWindow }, frameWindow)).toBe(true)
     expect(parseFrameMessage(env, SLIDE)?.type).toBe(SL_INSPECT)
+  })
+})
+
+/**
+ * M3.11 `SL_EDIT`. This type is unusual in appearing in all three directions — a parent request, a
+ * frame response, and a frame-originated *event* for a session the user ended with a key or a blur.
+ * The shape validators are the parent's first line against a malformed or forged message, so every
+ * field is pinned including the ones a lazy validator would wave through.
+ */
+describe('SL_EDIT envelopes', () => {
+  const EDIT_SLIDE = 's_1'
+
+  function frameEnvelope(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: 3,
+      dir: 'res',
+      type: SL_EDIT,
+      slide: EDIT_SLIDE,
+      payload: { slId: 's_1:2', text: 'hello', editing: true },
+      ...overrides,
+    }
+  }
+
+  function parentEnvelope(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      __sl: SL_MAGIC,
+      v: SL_PROTOCOL_VERSION,
+      id: 3,
+      dir: 'req',
+      type: SL_EDIT,
+      slide: EDIT_SLIDE,
+      payload: { slId: 's_1:2', action: 'begin' },
+      ...overrides,
+    }
+  }
+
+  it('round-trips a request through its factory and validator', () => {
+    const request = makeEditRequest(9, EDIT_SLIDE, { slId: 's_1:2', action: 'begin' })
+    expect(parseParentMessage(request, EDIT_SLIDE)).toEqual(request)
+  })
+
+  it('round-trips a response and an event through their factories', () => {
+    const response = makeEditResponse(9, EDIT_SLIDE, { slId: 's_1:2', text: 'x', editing: false })
+    expect(parseFrameMessage(response, EDIT_SLIDE)).toEqual(response)
+
+    const event = makeEditEvent(EDIT_SLIDE, { slId: 's_1:2', text: 'x', reason: 'enter' })
+    expect(parseFrameMessage(event, EDIT_SLIDE)).toEqual(event)
+  })
+
+  it('accepts a null response payload (the frame has no node for that id)', () => {
+    expect(parseFrameMessage(frameEnvelope({ payload: null }), EDIT_SLIDE)).not.toBeNull()
+  })
+
+  it.each([
+    ['a non-string slId', { slId: 7, action: 'begin' }],
+    ['a missing action', { slId: 's_1:2' }],
+    ['an unknown action', { slId: 's_1:2', action: 'destroy' }],
+    ['a null payload', null],
+    ['a non-object payload', 'begin'],
+  ])('rejects a request with %s', (_label, payload) => {
+    expect(parseParentMessage(parentEnvelope({ payload }), EDIT_SLIDE)).toBeNull()
+  })
+
+  it.each([
+    ['a non-string text', { slId: 's_1:2', text: 7, editing: true }],
+    ['a missing editing flag', { slId: 's_1:2', text: 'x' }],
+    ['a non-boolean editing flag', { slId: 's_1:2', text: 'x', editing: 'yes' }],
+    ['a missing slId', { text: 'x', editing: true }],
+  ])('rejects a response with %s', (_label, payload) => {
+    expect(parseFrameMessage(frameEnvelope({ payload }), EDIT_SLIDE)).toBeNull()
+  })
+
+  it.each([
+    ['an unknown reason', { slId: 's_1:2', text: 'x', reason: 'exploded' }],
+    ['a missing reason', { slId: 's_1:2', text: 'x' }],
+    ['a null payload', null],
+  ])('rejects an event with %s', (_label, payload) => {
+    expect(parseFrameMessage(frameEnvelope({ dir: 'evt', payload }), EDIT_SLIDE)).toBeNull()
+  })
+
+  it('rejects an edit message for a different slide (the staleness guard)', () => {
+    expect(parseFrameMessage(frameEnvelope({}), 'other')).toBeNull()
+    expect(parseParentMessage(parentEnvelope({}), 'other')).toBeNull()
+  })
+
+  it('rejects an edit request arriving in the response direction, and vice versa', () => {
+    expect(parseParentMessage(parentEnvelope({ dir: 'res' }), EDIT_SLIDE)).toBeNull()
+    // A `req` from the frame is not something the parent accepts.
+    expect(parseFrameMessage(frameEnvelope({ dir: 'req' }), EDIT_SLIDE)).toBeNull()
+  })
+
+  it('narrows events and responses apart — they share a type and dir is not a literal', () => {
+    const event = parseFrameMessage(
+      makeEditEvent(EDIT_SLIDE, { slId: 's_1:2', text: 'x', reason: 'blur' }),
+      EDIT_SLIDE,
+    )
+    const response = parseFrameMessage(
+      makeEditResponse(4, EDIT_SLIDE, { slId: 's_1:2', text: 'x', editing: false }),
+      EDIT_SLIDE,
+    )
+    expect(event).not.toBeNull()
+    expect(response).not.toBeNull()
+
+    expect(isEditEventMessage(event!)).toBe(true)
+    expect(isEditResponseMessage(event!)).toBe(false)
+    expect(isEditResponseMessage(response!)).toBe(true)
+    expect(isEditEventMessage(response!)).toBe(false)
   })
 })

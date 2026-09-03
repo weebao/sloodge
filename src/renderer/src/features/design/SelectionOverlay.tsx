@@ -38,7 +38,12 @@ import {
   type JSX,
   type RefObject,
 } from 'react'
-import type { SlCrumb, SlHit, SlRect } from '../../../../shared/design/bridge-protocol'
+import type {
+  SlCrumb,
+  SlEditEventPayload,
+  SlHit,
+  SlRect,
+} from '../../../../shared/design/bridge-protocol'
 import type { DragHandle } from '../../../../shared/design/drag'
 import type { Point } from '../../../../shared/design/overlay-geometry'
 import {
@@ -53,6 +58,7 @@ import { boxOf, shiftHit } from '../../../../shared/design/hit-geometry'
 import { buildMultiElementPatch, type ElementMove } from '../../../../shared/design/multi-commit'
 import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smart-guides'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
+import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readStyleProp } from '../../../../shared/design/patch'
 import { readRotation } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
@@ -64,6 +70,8 @@ import { useMarqueeGesture } from './useMarqueeGesture'
 import { useRotateGesture } from './useRotateGesture'
 import { useElementActions } from './useElementActions'
 import { useDuplicateKey } from './useDuplicateKey'
+import { useTextEditing } from './useTextEditing'
+import { useTextEditKey } from './useTextEditKey'
 
 export type SelectionOverlayProps = {
   /** The slide iframe hosting the instrumented document and the agent script. */
@@ -149,21 +157,60 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const isMulti = selections.length >= 2
   const selectedIds = useMemo(() => new Set(selections.map((hit) => hit.slId)), [selections])
 
+  // `useTextEditing` needs `requestEdit` from the bridge, and the bridge needs the hook's event
+  // handler — a cycle the ref breaks, the same way the bridge already holds `onHit` in a ref.
+  const editEndRef = useRef<(payload: SlEditEventPayload) => void>(() => undefined)
+  const onEditEnd = useCallback((payload: SlEditEventPayload): void => {
+    editEndRef.current(payload)
+  }, [])
+
+  // `beginEdit` is created below (it needs the bridge this callback is being passed to), so the
+  // double-click response reaches it through a ref.
+  const beginEditRef = useRef<(slId: string) => boolean>(() => false)
+
   const onHit = useCallback(
     (hit: SlHit | null, mode: HitMode): void => {
-      if (mode === 'hover') setHover(hit)
-      else if (mode === 'toggle') toggleSelection(hit)
-      else setSelection(hit)
+      if (mode === 'hover') {
+        setHover(hit)
+        return
+      }
+      if (mode === 'toggle') {
+        toggleSelection(hit)
+        return
+      }
+      // Select first either way: a double-click on a non-editable element (an image, a mixed-content
+      // paragraph) still selects it, which is the useful fallback rather than doing nothing.
+      setSelection(hit)
+      if (mode === 'edit' && hit !== null) beginEditRef.current(hit.slId)
     },
     [setHover, setSelection, toggleSelection],
   )
 
-  const { requestHit, requestElements } = useDesignBridge({
+  const { requestHit, requestElements, requestEdit } = useDesignBridge({
     frameRef,
     slideId,
     enabled: true,
     onHit,
+    onEditEnd,
   })
+
+  const { beginEdit, onFrameEditEnd, editing } = useTextEditing({ slideId, requestEdit })
+  useEffect(() => {
+    editEndRef.current = onFrameEditEnd
+  }, [onFrameEditEnd])
+  useEffect(() => {
+    beginEditRef.current = beginEdit
+  }, [beginEdit])
+
+  // A session that ends leaves focus inside the iframe, where `window` key listeners in the host
+  // document never see it — `Ctrl/⌘+D` and the selection keys would all be dead. Pulling focus back
+  // to the overlay restores them, and gives the keyboard path somewhere sensible to land.
+  const wasEditing = useRef(false)
+  useEffect(() => {
+    const isEditing = editing !== null
+    if (wasEditing.current && !isEditing) rootRef.current?.focus()
+    wasEditing.current = isEditing
+  }, [editing])
 
   // Cache of every grabbable element (rects) for smart-guide snapping, refreshed on each drag start.
   const elementsRef = useRef<readonly SlHit[]>([])
@@ -270,6 +317,14 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const actions = useElementActions(slideId)
   useDuplicateKey(actions.duplicate, actions.hasSelection)
 
+  // `Enter`/`F2` edits the selected element. Armed only for a single selection with nothing already
+  // open — a group has no one element to type into.
+  const beginEditSelected = useCallback((): boolean => {
+    if (selection === null) return false
+    return beginEdit(selection.slId)
+  }, [selection, beginEdit])
+  useTextEditKey(beginEditSelected, !isMulti && selection !== null && editing === null)
+
   const boxRect = previewRect ?? selectionBox
   const getCentre = useCallback((): Point | null => {
     if (boxRect === null) return null
@@ -340,6 +395,19 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       if (isMarqueeing) return
       const point = framePoint(event)
       requestHit(point.x, point.y, event.shiftKey ? 'toggle' : 'select', event.altKey)
+    },
+    [framePoint, requestHit, isMarqueeing],
+  )
+
+  // Double-click opens a caret on whatever is under the pointer. It hit-tests rather than reusing
+  // the current selection so that double-clicking straight into an unselected element works in one
+  // gesture — and the hit is only used as "the user gestured near this id": `beginEdit` re-derives
+  // the element from the parent's own map before anything is written (§2.2).
+  const onDoubleClick = useCallback(
+    (event: React.MouseEvent): void => {
+      if (isMarqueeing) return
+      const point = framePoint(event)
+      requestHit(point.x, point.y, 'edit', event.altKey)
     },
     [framePoint, requestHit, isMarqueeing],
   )
@@ -459,19 +527,42 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     return [...selection.ancestors.toReversed(), selection]
   }, [selection, isMulti])
 
+  const isEditing = editing !== null
+
+  // Whether the selected element can take a caret, for the discoverability hint below. Derived from
+  // the source bytes rather than asked of the hook, because editability is a property of the
+  // *source* — mixed content, a lock attribute — so it has to recompute when the bytes change.
+  const canEditSelection = useMemo(() => {
+    if (isMulti || selection === null || source === undefined) return false
+    const element = buildSlideMap(slideId, source).byId.get(selection.slId)
+    return element !== undefined && isTextEditable(element)
+  }, [isMulti, selection, slideId, source])
+
   const showHover =
-    hoverStyle && !isDragging && !isRotating && !isMarqueeing && !selectedIds.has(hover?.slId ?? '')
+    hoverStyle &&
+    !isDragging &&
+    !isRotating &&
+    !isMarqueeing &&
+    !isEditing &&
+    !selectedIds.has(hover?.slId ?? '')
 
   return (
     <div
       ref={rootRef}
       role="presentation"
-      className="absolute inset-0 cursor-crosshair"
-      style={CAPTURE_POINTER}
+      tabIndex={-1}
+      className={`absolute inset-0 outline-none ${isEditing ? '' : 'cursor-crosshair'}`}
+      // While a caret is open the overlay stops swallowing pointer events, so clicks land in the
+      // frame and place the caret. That is the "hole punched in the overlay" of §9.3, done as a
+      // whole-layer pass-through: the session is single-element by construction, and clicking any
+      // *other* element must end the session anyway (the frame's blur commits it). The frame's own
+      // capture-phase guard keeps the rest of the slide's handlers frozen meanwhile.
+      style={isEditing ? NO_POINTER : CAPTURE_POINTER}
       onPointerDown={onRootPointerDown}
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
     >
       {showHover ? (
         <div
@@ -510,22 +601,41 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       {selectionStyle && boxRect ? (
         <div
           data-testid={isMulti ? 'design-group' : 'design-selection'}
+          data-editing={isEditing ? 'true' : undefined}
           className={
             isMulti
               ? 'absolute border-2 border-dashed border-accent'
-              : 'absolute border-2 border-accent'
+              : // §4.1: while editing, the selection box becomes a "text caret frame" — a distinct
+                // dashed amber frame, so the two modes are never confused at a glance.
+                `absolute border-2 ${isEditing ? 'border-dashed border-amber-500' : 'border-accent'}`
           }
           style={selectionStyle}
           onPointerDown={onBodyPointerDown}
           onClick={stop}
         >
-          <span className="absolute -top-5 right-0 whitespace-nowrap rounded bg-accent px-1 text-[11px] leading-4 text-white">
-            {isMulti
-              ? `${String(selections.length)} selected`
-              : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
+          <span
+            className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
+              isEditing ? 'bg-amber-600' : 'bg-accent'
+            }`}
+          >
+            {isEditing
+              ? 'Editing — Enter or Esc to finish'
+              : isMulti
+                ? `${String(selections.length)} selected`
+                : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
-          {/* Resize + rotate handles only for a single element; a group only moves. */}
-          {isMulti
+          {/* Double-click is invisible until you try it, so say so while the element is selected. */}
+          {canEditSelection && !isEditing ? (
+            <span
+              data-testid="design-edit-hint"
+              className="absolute -bottom-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-[11px] leading-4 text-white"
+            >
+              Double-click or press Enter to edit text
+            </span>
+          ) : null}
+          {/* Resize + rotate handles only for a single element; a group only moves — and none while
+              editing, where the box is a caret frame rather than a transform target. */}
+          {isMulti || isEditing
             ? null
             : HANDLES.map((handle) => (
                 <span
@@ -538,7 +648,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   onPointerDown={onHandlePointerDown}
                 />
               ))}
-          {isMulti ? null : (
+          {isMulti || isEditing ? null : (
             <>
               <span
                 aria-hidden="true"

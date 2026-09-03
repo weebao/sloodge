@@ -60,6 +60,7 @@ Direct-manipulation depth so Design Mode reaches parity with a real slide editor
 | M3.8 | `feat: color controls + eyedropper` | Fill/stroke/text color swatches with theme-token quick row; eyedropper via the `EyeDropper` API (Chromium ships it) sampling anywhere in the app window; writes hex back to source |
 | M3.9 | `feat: animation controls (duration, easing/bezier editor, transition presets)` | Per-element panel: duration/delay sliders, easing dropdown (ease/linear/ease-in-out/spring) + draggable cubic-bezier curve editor; one-click entrance presets (fade, slide-in, scale) written as CSS keyframes honoring the slide contract |
 | M3.10 | `feat: installed-font family dropdown` | Main process enumerates machine fonts (`queryLocalFonts` in renderer needs a permission prompt; fallback: `font-list` npm lib in main over IPC); dropdown previews each face; embeds font-family stack into slide source with system-fallback chain and an export-fidelity warning (non-system fonts won't travel) |
+| M3.11 | `feat: direct text editing on canvas + edit-first default` | Design Mode **on by default** so a fresh deck is directly manipulable (it shipped off through M3.2–M3.10, so clicking text did nothing until the user found `Ctrl/⌘+D`); the toggle moves out of the tab-swapped toolbar into persistent chrome as a labelled On/Off switch, and the canvas names the live-slide state when it is off. Double-click (or `Enter`/`F2`) opens an in-frame `contenteditable`; `Enter`/`Esc`/`Tab`/blur all commit. The committed value crosses the bridge as `textContent` and is written through the M3.3 byte-span map — escaped into the text node, so markup cannot be injected — with SL-S04 tokens broken by numeric character references so prose like “call fetch(x)” stays contract-clean. Typing never touches the store, so a burst is exactly one undo entry |
 
 ## Milestone 6 — Insert ribbon (contextual toolbar framework)
 PowerPoint's ribbon behavior: the top tab strip gains **Insert** next to Home(Edit), and switching tabs swaps the toolbar row content.
@@ -89,7 +90,7 @@ Dependency graph (arrows = "must land first"):
 ```
 M0.1 ─┬─ M0.2
       └─ M0.3 ── M0.4 ── M1.1 ── M1.2 ── M1.3 ── M1.4 ─┬─ M2.0..M2.7 (stack; M2.7 needs M2.1 vault + M2.3 chat gate)
-                                                        ├─ M3.1..M3.5 ── M3.6..M3.10 (stack)
+                                                        ├─ M3.1..M3.5 ── M3.6..M3.11 (stack)
                                                         └─ M4.1
                                   M1.3 ─────────────────┬─ M4.2, M4.3, M4.4
                                   M4.3 ── M4.5 ── M4.6 (import + round-trip identity gate)

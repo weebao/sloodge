@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   contractErrorSummary,
+  findForbiddenApiTokens,
+  FORBIDDEN_API_TOKENS,
+  packForApiScan,
   validateSlideContract,
 } from '../../../src/shared/document/slide-contract'
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
@@ -200,5 +203,41 @@ describe('validateSlideContract — Tier 1 static gate', () => {
     const result = validateSlideContract(small)
     expect(result.ok).toBe(true)
     expect(result.issues.some((i) => i.rule === 'SL-C01' && i.severity === 'warn')).toBe(true)
+  })
+})
+
+/**
+ * M3.11 exported SL-S04 primitives. `FORBIDDEN_API_TOKENS`, `packForApiScan` and
+ * `findForbiddenApiTokens` became public so that a *writer* of slide bytes — Design Mode's in-place
+ * text editor — can prove it did not introduce a violation, using the same code and the same list
+ * the validator uses rather than a second copy that could drift.
+ */
+describe('SL-S04 scan primitives', () => {
+  it('packs the way the scan does: whitespace stripped, lowercased', () => {
+    expect(packForApiScan('  Fetch (\n x )')).toBe('fetch(x)')
+    expect(packForApiScan('LOCAL\tStorage')).toBe('localstorage')
+  })
+
+  it.each([...FORBIDDEN_API_TOKENS])('finds %s in a slide that uses it', (token) => {
+    expect(findForbiddenApiTokens(`<script>${token}</script>`)).toContain(token)
+  })
+
+  it.each([...FORBIDDEN_API_TOKENS])('finds %s even when broken up by whitespace', (token) => {
+    const spaced = [...token].join(' ')
+    expect(findForbiddenApiTokens(`<script>${spaced}</script>`)).toContain(token)
+  })
+
+  it('returns nothing for a clean slide', () => {
+    expect(findForbiddenApiTokens('<div class="slide"><h1>Q3 revenue</h1></div>')).toEqual([])
+  })
+
+  it('agrees exactly with the SL-S04 issue the validator raises', () => {
+    // The refactor that exported these must not have changed what SL-S04 decides.
+    const dirty = '<div class="slide"><script>localStorage.getItem("x")</script></div>'
+    const issues = validateSlideContract(dirty, ['interactive-js']).issues
+    const s04 = issues.filter((issue) => issue.rule === 'SL-S04')
+    expect(s04).toHaveLength(1)
+    expect(findForbiddenApiTokens(dirty)).toEqual(['localStorage'])
+    expect(s04[0]?.message).toContain('localStorage')
   })
 })

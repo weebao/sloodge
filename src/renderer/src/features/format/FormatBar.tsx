@@ -1,15 +1,15 @@
 import type { JSX, ReactNode } from 'react'
-import { useDesignStore } from '../design/designStore'
 
 /**
  * The formatting toolbar. Most buttons are still cosmetic (M0.4): they carry
  * `aria-disabled` so they still hover and focus, selects are plainly
  * `disabled` because a focusable-but-unusable select is a trap.
  *
- * The Design Mode toggle is live as of M3.2 — it drives `useDesignStore`, the view-only store the
- * canvas overlay reads. It talks to that store directly rather than through props because Design
- * Mode is ephemeral view state, not the document (see `designStore.ts`); the shell-owns-all-state
- * rule is about `deckStore`, the undoable document.
+ * **The Design Mode toggle deliberately does not live here** (M3.11). This row is a tab panel — M6.1
+ * swaps its contents per ribbon tab, contextually — so a control placed here is reachable only on
+ * some tabs. Design Mode is the switch that decides whether clicking the canvas selects or interacts,
+ * and it has to be operable at all times, so it moved to `DesignModeToggle`, rendered as persistent
+ * chrome by `AppShell`. See that file's header for the full argument.
  */
 
 const BUTTON_BASE =
@@ -61,14 +61,11 @@ function AlignIcon({ align }: { align: 'left' | 'center' | 'right' }): JSX.Eleme
 }
 
 export function FormatBar(): JSX.Element {
-  const designEnabled = useDesignStore((state) => state.enabled)
-  const toggleDesign = useDesignStore((state) => state.toggle)
-
   return (
     <div
       role="toolbar"
       aria-label="Formatting"
-      className="flex shrink-0 flex-wrap items-center gap-0.5 border-b border-chrome-line bg-white px-2 py-1.5 dark:border-ink-line dark:bg-ink-alt"
+      className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 px-2 py-1.5"
     >
       <ToolButton label="Bold">
         <span className="font-bold">B</span>
@@ -131,22 +128,6 @@ export function FormatBar(): JSX.Element {
         </svg>{' '}
         Image
       </ToolButton>
-
-      <div className="ml-auto flex items-center">
-        <button
-          type="button"
-          aria-pressed={designEnabled}
-          onClick={toggleDesign}
-          title="Design Mode (Ctrl/⌘+D)"
-          className={`inline-flex h-7 items-center gap-1.5 rounded border px-2.5 text-[13px] font-medium transition-colors ${
-            designEnabled
-              ? 'border-accent bg-accent text-white'
-              : 'border-accent/30 bg-accent-soft text-accent hover:bg-accent hover:text-white dark:border-accent/50 dark:bg-transparent'
-          }`}
-        >
-          <span aria-hidden="true">✦</span> Design Mode
-        </button>
-      </div>
     </div>
   )
 }

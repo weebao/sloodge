@@ -22,21 +22,28 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react'
 import {
   createEnvelopeIdSource,
+  isEditEventMessage,
+  isEditResponseMessage,
   isMessageFromFrame,
+  makeEditRequest,
   makeElementsRequest,
   makeHittestRequest,
   parseFrameMessage,
   SL_ELEMENTS,
   SL_HITTEST,
+  type SlEditAction,
+  type SlEditEventPayload,
+  type SlEditResponse,
   type SlHit,
 } from '../../../../shared/design/bridge-protocol'
 
 /**
  * How a hit-test response should be applied. `hover`/`select` are the plain outline/single-select
- * paths; `toggle` is shift-click multi-select (M3.7) — the wire request is still a `select`, and
- * only the parent's response handling differs, so the frame protocol is untouched.
+ * paths; `toggle` is shift-click multi-select (M3.7) and `edit` is double-click-to-type (M3.11).
+ * Both of the latter send a plain `select` on the wire — the frame hit-tests identically and only
+ * the parent's response handling differs — so the frame protocol is untouched by either.
  */
-export type HitMode = 'hover' | 'select' | 'toggle'
+export type HitMode = 'hover' | 'select' | 'toggle' | 'edit'
 
 export interface DesignBridgeOptions {
   /** The slide iframe. Its `contentWindow` is the only trusted message source. */
@@ -47,6 +54,13 @@ export interface DesignBridgeOptions {
   readonly enabled: boolean
   /** Called for every accepted hit-test response, tagged with the mode that requested it. */
   readonly onHit: (hit: SlHit | null, mode: HitMode) => void
+  /**
+   * Called when the **frame** ends a text-edit session on its own — Enter, Escape, Tab or a blur.
+   * The parent cannot observe those keystrokes, so this event is the only signal they happened.
+   * Like every frame → parent payload it is an untrusted hint (§2.2): the handler re-derives the
+   * element from the parent's map and never trusts the text as markup.
+   */
+  readonly onEditEnd?: (payload: SlEditEventPayload) => void
 }
 
 export interface DesignBridgeApi {
@@ -58,10 +72,20 @@ export interface DesignBridgeApi {
    * frame is gone or never answers. No-op if the frame is unavailable.
    */
   readonly requestElements: (onElements: (hits: readonly SlHit[]) => void) => void
+  /**
+   * Drive an in-frame text-edit session: `begin` opens a caret on `slId`, `commit` closes it and
+   * reports the text, `cancel` closes it and restores what was there. `onResult` fires once with the
+   * frame's answer (or never, if the frame is gone). No-op if the frame is unavailable.
+   */
+  readonly requestEdit: (
+    slId: string,
+    action: SlEditAction,
+    onResult?: (result: SlEditResponse) => void,
+  ) => void
 }
 
 export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
-  const { frameRef, slideId, enabled, onHit } = options
+  const { frameRef, slideId, enabled, onHit, onEditEnd } = options
 
   const nextId = useRef(createEnvelopeIdSource())
   // Correlates a response back to the mode that asked for it (the response payload does not carry
@@ -70,12 +94,18 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
   const latestHover = useRef(0)
   // Correlates an `SL_ELEMENTS` response to the one-shot callback that asked for it.
   const pendingElements = useRef(new Map<number, (hits: readonly SlHit[]) => void>())
+  // Correlates an `SL_EDIT` response to the one-shot callback that asked for it.
+  const pendingEdits = useRef(new Map<number, (result: SlEditResponse) => void>())
 
   // A ref so the listener effect never re-subscribes just because the caller passed a fresh closure.
   const onHitRef = useRef(onHit)
   useEffect(() => {
     onHitRef.current = onHit
   }, [onHit])
+  const onEditEndRef = useRef(onEditEnd)
+  useEffect(() => {
+    onEditEndRef.current = onEditEnd
+  }, [onEditEnd])
 
   useEffect(() => {
     if (!enabled) return
@@ -84,11 +114,25 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
     // Map — but capturing states that intent and satisfies the hooks rule).
     const pendingMap = pending.current
     const pendingElementsMap = pendingElements.current
+    const pendingEditsMap = pendingEdits.current
     const handler = (event: MessageEvent): void => {
       const frameWindow = frameRef.current?.contentWindow ?? null
       if (!isMessageFromFrame(event, frameWindow)) return
       const message = parseFrameMessage(event.data, slideId)
       if (message === null) return
+
+      // The frame ended a session itself (a key or a blur inside its document).
+      if (isEditEventMessage(message)) {
+        onEditEndRef.current?.(message.payload)
+        return
+      }
+      if (isEditResponseMessage(message)) {
+        const cb = pendingEditsMap.get(message.id)
+        if (cb === undefined) return
+        pendingEditsMap.delete(message.id)
+        cb(message.payload)
+        return
+      }
       if (message.dir !== 'res') return
 
       if (message.type === SL_ELEMENTS) {
@@ -113,6 +157,7 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
       window.removeEventListener('message', handler)
       pendingMap.clear()
       pendingElementsMap.clear()
+      pendingEditsMap.clear()
     }
   }, [enabled, slideId, frameRef])
 
@@ -142,5 +187,16 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
     [frameRef, slideId],
   )
 
-  return { requestHit, requestElements }
+  const requestEdit = useCallback<DesignBridgeApi['requestEdit']>(
+    (slId, action, onResult) => {
+      const frameWindow = frameRef.current?.contentWindow
+      if (!frameWindow) return
+      const id = nextId.current()
+      if (onResult) pendingEdits.current.set(id, onResult)
+      frameWindow.postMessage(makeEditRequest(id, slideId, { slId, action }), '*')
+    },
+    [frameRef, slideId],
+  )
+
+  return { requestHit, requestElements, requestEdit }
 }
