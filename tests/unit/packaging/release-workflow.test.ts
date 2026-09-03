@@ -66,6 +66,8 @@ interface YamlBlock {
 interface SourceLine {
   readonly indent: number
   readonly text: string
+  /** Index of this line in the unfiltered source, so block scalars can be read back verbatim. */
+  readonly rawIndex: number
 }
 
 const EMPTY_BLOCK: YamlBlock = {
@@ -80,15 +82,52 @@ const KEY_RE = /^(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_.-]+)):(?:\s+(.*))?$/
 /** Block scalar introducers, including the chomping/keep modifiers. */
 const BLOCK_SCALAR_RE = /^[|>][+-]?$/
 
-/** Drops blank lines and whole-line comments, and records each surviving line's indentation. */
+/**
+ * Drops blank lines and whole-line comments for *structural* parsing, recording each surviving
+ * line's indentation and its index in the original source.
+ *
+ * That index is what lets block scalar bodies be reconstructed from the RAW lines instead of these
+ * filtered ones. Without it, a `run:` body silently lost its comments and blank lines, so the
+ * guard-execution harness only happened to be byte-faithful for a step that contained neither —
+ * fidelity by luck rather than by construction. Comments in a shell script are harmless to execute,
+ * but "the body we run is not the body that ships" is not a property to leave to chance.
+ */
 function readLines(source: string): readonly SourceLine[] {
   const lines: SourceLine[] = []
-  for (const raw of source.split('\n')) {
-    const trimmed = raw.trim()
+  const raw = source.split('\n')
+  for (const [index, line] of raw.entries()) {
+    const trimmed = line.trim()
     if (trimmed === '' || trimmed.startsWith('#')) continue
-    lines.push({ indent: raw.length - raw.trimStart().length, text: trimmed })
+    lines.push({
+      indent: line.length - line.trimStart().length,
+      text: trimmed,
+      rawIndex: index,
+    })
   }
   return lines
+}
+
+/**
+ * Reconstructs a block scalar body from the original source, preserving comments and interior
+ * blank lines exactly as they ship, dedented by the body's own indentation.
+ */
+function blockScalarBody(rawLines: readonly string[], ownerRawIndex: number, ownerIndent: number) {
+  const body: string[] = []
+  for (let i = ownerRawIndex + 1; i < rawLines.length; i += 1) {
+    const line = rawLines[i] ?? ''
+    if (line.trim() === '') {
+      body.push('')
+      continue
+    }
+    if (line.length - line.trimStart().length <= ownerIndent) break
+    body.push(line)
+  }
+  while (body.length > 0 && body[body.length - 1] === '') body.pop()
+  const indents = body
+    .filter((line) => line.trim() !== '')
+    .map((line) => line.length - line.trimStart().length)
+  const base = indents.length === 0 ? 0 : Math.min(...indents)
+  return body.map((line) => (line.trim() === '' ? '' : line.slice(base))).join('\n')
 }
 
 /**
@@ -109,6 +148,7 @@ function parseBlock(
   lines: readonly SourceLine[],
   start: number,
   indent: number,
+  rawLines: readonly string[],
 ): readonly [YamlBlock, number] {
   const scalars = new Map<string, string>()
   const blocks = new Map<string, YamlBlock>()
@@ -143,8 +183,8 @@ function parseBlock(
       const [deeper, afterDeeper] = takeDeeper(i + 1, line.indent)
       const itemIndent = line.indent + 2
       if (rest !== '' && KEY_RE.test(rest)) {
-        const itemLines = [{ indent: itemIndent, text: rest }, ...deeper]
-        const [item] = parseBlock(itemLines, 0, itemIndent)
+        const itemLines = [{ indent: itemIndent, text: rest, rawIndex: line.rawIndex }, ...deeper]
+        const [item] = parseBlock(itemLines, 0, itemIndent, rawLines)
         items.push(item)
       } else if (deeper.length === 0) {
         sequence.push(rest)
@@ -167,11 +207,10 @@ function parseBlock(
     i += 1
 
     if (BLOCK_SCALAR_RE.test(value)) {
-      const [body, afterBody] = takeDeeper(i, line.indent)
-      // Relative indentation is preserved, because the `run:` bodies are not just inspected —
-      // `describe('the tag/version guard, executed')` runs one of them under bash.
-      const base = body.length === 0 ? 0 : Math.min(...body.map((entry) => entry.indent))
-      scalars.set(key, body.map((entry) => ' '.repeat(entry.indent - base) + entry.text).join('\n'))
+      // Read the body from the RAW source, not the comment-stripped lines, so what the harness
+      // executes is byte-for-byte what the runner executes.
+      scalars.set(key, blockScalarBody(rawLines, line.rawIndex, line.indent))
+      const [, afterBody] = takeDeeper(i, line.indent)
       i = afterBody
       continue
     }
@@ -181,7 +220,7 @@ function parseBlock(
     }
     const next = lines[i]
     if (next !== undefined && next.indent > indent) {
-      const [child, consumed] = parseBlock(lines, i, next.indent)
+      const [child, consumed] = parseBlock(lines, i, next.indent, rawLines)
       blocks.set(key, child)
       i = consumed
     } else {
@@ -192,6 +231,11 @@ function parseBlock(
   }
 
   return [{ scalars, blocks, sequence, items }, i]
+}
+
+/** Parses a whole YAML document, giving the reader both the structural and the raw lines. */
+function parseYaml(source: string): YamlBlock {
+  return parseBlock(readLines(source), 0, 0, source.split('\n'))[0]
 }
 
 /** Every key present at a level, whether it held a scalar or a nested block. */
@@ -207,8 +251,13 @@ const workflowSource = existsSync(WORKFLOW_PATH) ? readFileSync(WORKFLOW_PATH, '
  */
 let parsed: YamlBlock | undefined
 function getWorkflow(): YamlBlock {
-  parsed ??= parseBlock(readLines(workflowSource), 0, 0)[0]
+  parsed ??= parseYaml(workflowSource)
   return parsed
+}
+
+/** A `defaults.run.shell` override at whatever scope `block` is, if one is declared. */
+function defaultsShell(block: YamlBlock | undefined): string | undefined {
+  return block?.blocks.get('defaults')?.blocks.get('run')?.scalars.get('shell')
 }
 
 /** Every step across every job, as parsed mappings. */
@@ -300,9 +349,7 @@ describe('release workflow — CI budget guard', () => {
       const code = source.replace(/^\s*#.*$/gm, '')
       if (!/electron-builder|pnpm (run |exec )?pack|pack:win/.test(code)) continue
       packagers.push(file)
-      const triggers = keysOf(
-        parseBlock(readLines(source), 0, 0)[0].blocks.get('on') ?? EMPTY_BLOCK,
-      )
+      const triggers = keysOf(parseYaml(source).blocks.get('on') ?? EMPTY_BLOCK)
       expect(
         triggers,
         `${file} runs a packaging command, so it must be triggered by tag pushes only`,
@@ -425,13 +472,20 @@ describe('the tag/version guard, executed', () => {
     return step
   }
 
-  /** Runs the guard's shell in a scratch dir whose package.json carries `version`. */
+  /**
+   * Runs the guard's shell in a scratch dir whose package.json carries `version`, returning the
+   * exit status. `GITHUB_ENV` points at a real file, as it does on a runner — the step appends the
+   * artifact-name slug to it, and under `set -u` an unset `GITHUB_ENV` would abort the script for
+   * reasons that have nothing to do with the tag.
+   */
   const runGuard = (version: string, tag: string | undefined): number => {
     const script = guardStep().scalars.get('run') ?? ''
     const dir = mkdtempSync(path.join(tmpdir(), 'sloodge-tag-guard-'))
     try {
       writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'sloodge', version }))
-      const env = { ...process.env }
+      const githubEnv = path.join(dir, 'github_env')
+      writeFileSync(githubEnv, '')
+      const env: NodeJS.ProcessEnv = { ...process.env, GITHUB_ENV: githubEnv }
       if (tag === undefined) delete env['GITHUB_REF_NAME']
       else env['GITHUB_REF_NAME'] = tag
       execFileSync('bash', ['-c', script], { cwd: dir, env, stdio: 'pipe' })
@@ -473,8 +527,40 @@ describe('the tag/version guard, executed', () => {
   })
 
   it('fails rather than passing when the tag variable is absent entirely', () => {
-    // `set -u` must turn a missing GITHUB_REF_NAME into a failure, not an empty-string pass.
+    // Note what actually catches this, since an earlier comment here overclaimed: with no
+    // GITHUB_REF_NAME the ordinary mismatch branch exits 1 anyway, so the case is covered with or
+    // without `set -u`. The strict-mode flags are pinned separately, below.
     expect(runGuard('0.0.1', undefined)).not.toBe(0)
+  })
+
+  it('runs under bash strict mode', () => {
+    // Pinned explicitly because the assertion above does NOT depend on it: deleting
+    // `set -euo pipefail` left the whole file green. Strict mode still matters — an unset variable
+    // or a failing `node` invocation must abort rather than sail on to the success echo.
+    expect(guardStep().scalars.get('run')).toContain('set -euo pipefail')
+  })
+
+  it('declares shell: bash, which is what makes executing the body here meaningful', () => {
+    // The harness runs the body under bash. If the step did not itself declare `shell: bash`,
+    // everything proven here would be about a shell the runner never uses. On windows-latest the
+    // default is pwsh, and `shell: cmd` is actionlint-valid and exits with the errorlevel of the
+    // LAST command — the guard's last line is an `echo`, so it would be silently always-green.
+    expect(
+      guardStep().scalars.get('shell'),
+      'the tag/version guard must declare `shell: bash` — the default on windows-latest is pwsh',
+    ).toBe('bash')
+  })
+
+  it('is not overridden by a defaults.run.shell at workflow or job level', () => {
+    // Deleting `shell: bash` AND adding `defaults: {run: {shell: pwsh}}` is a two-line change that
+    // would otherwise pass. Assert no defaults block redirects the shell anywhere in the file.
+    expect(
+      defaultsShell(getWorkflow()),
+      'workflow-level defaults.run.shell must not be set',
+    ).toBeUndefined()
+    for (const [name, job] of getWorkflow().blocks.get('jobs')?.blocks ?? new Map()) {
+      expect(defaultsShell(job), `job "${name}" must not set defaults.run.shell`).toBeUndefined()
+    }
   })
 
   it('is not neutered by continue-on-error', () => {
@@ -492,15 +578,37 @@ describe('the tag/version guard, executed', () => {
     expect(guardStep().scalars.get('if')).toBeUndefined()
   })
 
-  it('reads the tag from the runner, with no step-level env to override it', () => {
-    // Executing the `run:` body proves the logic, but not that the step is fed real inputs: a
-    // step-level `env: { GITHUB_REF_NAME: ... }` would pin the comparison to a constant and the
-    // matrix above would never notice, because it supplies the variable itself. Nothing legitimate
-    // needs env here — the runner already provides GITHUB_REF_NAME.
+  it('reads the tag from the runner, with no env block at ANY scope overriding it', () => {
+    // Executing the `run:` body proves the logic, but not that the step is fed real inputs: an
+    // `env: { GITHUB_REF_NAME: ... }` would pin the comparison to a constant and the matrix above
+    // would never notice, because it supplies the variable itself.
+    //
+    // Checking only the guard step is not enough — that was the earlier gap. GitHub resolves `env`
+    // at workflow, job AND step scope, so the identical override one level up would have sailed
+    // through. Walk every env block in the file instead, which also covers steps nobody has
+    // written yet, in the same spirit as the packaging guard above.
+    const offenders: string[] = []
+    const visit = (block: YamlBlock, where: string): void => {
+      const env = block.blocks.get('env')
+      if (
+        env?.scalars.has('GITHUB_REF_NAME') === true ||
+        env?.blocks.has('GITHUB_REF_NAME') === true
+      ) {
+        offenders.push(where)
+      }
+      for (const [key, child] of block.blocks) {
+        if (key === 'env') continue
+        visit(child, `${where}.${key}`)
+      }
+      for (const [index, item] of block.items.entries()) visit(item, `${where}[${index}]`)
+    }
+    visit(getWorkflow(), 'workflow')
+
     expect(
-      guardStep().blocks.get('env'),
-      'the tag/version guard must take GITHUB_REF_NAME from the runner, not from a step env block',
-    ).toBeUndefined()
+      offenders,
+      'GITHUB_REF_NAME must come from the runner. An env override at workflow, job or step scope ' +
+        'would pin the tag/version guard to a constant and neuter it silently.',
+    ).toEqual([])
     expect(guardStep().scalars.get('run')).toContain('GITHUB_REF_NAME')
   })
 })
@@ -512,7 +620,7 @@ describe('release workflow — the reader fails closed', () => {
    * that the reader ignored, leaving the suite green while the budget rule was abandoned. These
    * tests pin the fail-closed property itself, so it cannot regress back into a silent skip.
    */
-  const parse = (yaml: string): YamlBlock => parseBlock(readLines(yaml), 0, 0)[0]
+  const parse = (yaml: string): YamlBlock => parseYaml(yaml)
 
   it('sees a double-quoted trigger key', () => {
     expect(keysOf(parse('on:\n  "pull_request":\n  push:\n'))).toEqual(['on'])
@@ -539,5 +647,14 @@ describe('release workflow — the reader fails closed', () => {
     // Without this, the shell script inside `run: |` would trip the throw above.
     const block = parse('run: |\n  set -euo pipefail\n  echo hi\n')
     expect(block.scalars.get('run')).toBe('set -euo pipefail\necho hi')
+  })
+
+  it('preserves comments and interior blank lines inside a block scalar', () => {
+    // The harness EXECUTES an extracted `run:` body, so "what we run" must be "what ships". An
+    // earlier revision assembled bodies from the comment-stripped line list, and was byte-faithful
+    // only by luck — for a step that happened to contain neither comments nor blank lines. Bodies
+    // are now read back from the raw source; this pins that so the fidelity cannot silently lapse.
+    const block = parse('run: |\n  one\n  # a comment\n\n  two\n')
+    expect(block.scalars.get('run')).toBe('one\n# a comment\n\ntwo')
   })
 })

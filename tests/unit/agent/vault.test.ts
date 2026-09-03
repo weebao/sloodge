@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import path from 'node:path'
 
 /**
  * `vault.ts` is the `safeStorage` + filesystem edge. `electron` and `node:fs/promises` are mocked so
@@ -35,7 +36,9 @@ vi.mock('node:fs/promises', () => ({
 const vault = await import('../../../src/main/agent/vault')
 const { InvalidApiKeyError } = await import('../../../src/main/agent/key-store')
 
-const KEY_FILE = '/ud/anthropic.key.enc'
+// path.join, not a posix literal — `vault.ts` builds this with path.join, and the M9.0 release job
+// runs this suite on windows-latest where that emits backslashes. `pnpm test:win-paths` pins it.
+const KEY_FILE = path.join('/ud', 'anthropic.key.enc')
 
 beforeEach(() => {
   mocks.isEncryptionAvailable.mockReturnValue(true)

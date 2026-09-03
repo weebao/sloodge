@@ -386,6 +386,41 @@ anyone adds one.
 - **macOS is not covered.** M9.2 still builds mac artifacts on real hardware; a `macos-latest` job
   could be added later, but it bills at 10x and signing/notarization is deferred past 0.0.1 anyway.
 
+### 8.6 Validating Windows behaviour from Linux — you need BOTH tools
+
+M9.0's release job runs `pnpm test` on `windows-latest`, on a suite that had only ever run on Linux.
+Two independent properties of a Windows checkout can red it before packaging is ever reached, and
+**each needs its own tool. Neither tool can see the other's failures**, which is exactly how the
+second one shipped after the first had been "thoroughly verified":
+
+| Property                            | Tool                                                                                    | Catches                                     |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Line endings (`core.autocrlf=true`) | a `--no-checkout` clone configured with `core.autocrlf=true`, then `git checkout <ref>` | `'---\n'` assertions against CRLF files     |
+| Path separators (`path.sep`)        | `pnpm test:win-paths` (aliases `node:path` to `path.win32`)                             | `path.join` output compared to `/`-literals |
+
+The CRLF clone reproduces line endings faithfully and is **structurally blind to `path.sep`** — it
+runs on Linux, where `path.join` still emits `/`. Round 3 found 14 posix-literal assertions in three
+agent test files that the CRLF method could never have surfaced, no matter how carefully applied.
+Run both before cutting a release.
+
+```bash
+pnpm test           # the real suite, Linux semantics
+pnpm test:win-paths # the same suite with win32 path semantics
+```
+
+`test:win-paths` **excludes tests that do real filesystem I/O** (`vitest.win32.config.ts` lists
+them). Backslash separators are not separators to a Linux kernel, so such a test gets `ENOENT` on a
+`\`-path, or writes a file whose _name_ contains a backslash and then reads an empty directory.
+Those failures say nothing about the code. Before adding anything to that list, check which kind of
+failure you have: an `ENOENT`/empty-`readdir` failure downstream of a real file operation is an
+artifact and may be excluded; a direct string comparison (`expected '\a\b' to be '/a/b'`) is a real
+bug in the class this run exists to catch, and must be fixed. `win32-path-simulation.test.ts` reds
+if a listed file does no filesystem I/O, so the list cannot quietly absorb a genuine failure.
+
+Still not covered by either: anything needing a real Windows kernel — case-insensitive filesystems,
+path-length limits, reserved device names (`CON`, `NUL`), and the NSIS step itself. Those are proven
+only by the runner.
+
 ## Gotchas summary
 
 - `cmd.exe` invoked while cwd is a WSL UNC path warns "UNC paths are not supported" and defaults to

@@ -21,6 +21,7 @@
     "check": "pnpm lint && pnpm typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:win-paths": "vitest run --config vitest.win32.config.ts",
     "pack:dir": "pnpm build && electron-builder --dir",
     "pack:win": "pnpm build && electron-builder --win",
     "pack:win:zip": "pnpm build && electron-builder --win zip",

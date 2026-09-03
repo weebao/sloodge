@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import path from 'node:path'
 
 /**
  * `client.ts` is the one file that imports the Agent SDK and applies the isolation levers of
@@ -110,15 +111,17 @@ describe('realQuery', () => {
 
 describe('bundledSkillsDir', () => {
   it('resolves the dev source tree from the app path', () => {
-    expect(bundledSkillsDir()).toBe('/repo/resources/skills')
+    // Built with path.join, not a posix literal: this runs on windows-latest during the M9.0
+    // release job, where path.join emits backslashes. `pnpm test:win-paths` pins that.
+    expect(bundledSkillsDir()).toBe(path.join('/repo', 'resources', 'skills'))
   })
 })
 
 describe('defaultAgentPaths', () => {
   it('derives app-owned paths under userData', () => {
     expect(defaultAgentPaths()).toEqual({
-      cwd: '/userData/agent/workspace',
-      configDir: '/userData/agent/claude',
+      cwd: path.join('/userData', 'agent', 'workspace'),
+      configDir: path.join('/userData', 'agent', 'claude'),
     })
   })
 })

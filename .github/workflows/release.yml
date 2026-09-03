@@ -87,6 +87,12 @@ jobs:
           fi
           echo "tag '$tag' matches package.json version '$version'"
 
+          # Export a slug safe for an upload-artifact name, which rejects '/' among other
+          # characters. Two things already make a slash unreachable here — GitHub's `v*` tag filter
+          # does not match '/', and the check above rejects anything that is not v<version> or
+          # v<version>-<suffix> — so this is belt-and-braces for whoever loosens one of those later.
+          echo "TAG_SLUG=${tag//\//-}" >> "$GITHUB_ENV"
+
       # NOTE the deliberately INVERTED env discipline versus test.yml. That workflow sets
       # ELECTRON_SKIP_BINARY_DOWNLOAD=1 because unit tests never launch Electron and the download
       # is ~120 MB of pure waste. Packaging is the opposite case: electron-builder packs the real
@@ -117,7 +123,7 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: sloodge-windows-${{ github.ref_name }}
+          name: sloodge-windows-${{ env.TAG_SLUG }}
           path: |
             release/*.exe
             release/*.zip

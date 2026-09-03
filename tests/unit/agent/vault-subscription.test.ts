@@ -7,6 +7,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import path from 'node:path'
 
 const mocks = vi.hoisted(() => ({
   isEncryptionAvailable: vi.fn(() => true),
@@ -45,8 +46,9 @@ function withFiles(files: Readonly<Record<string, string>>): void {
   })
 }
 
-const KEY_FILE = '/userData/anthropic.key.enc'
-const TOKEN_FILE = '/userData/claude.oauth.enc'
+// path.join, not posix literals — see the note in vault.test.ts.
+const KEY_FILE = path.join('/userData', 'anthropic.key.enc')
+const TOKEN_FILE = path.join('/userData', 'claude.oauth.enc')
 
 beforeEach(() => {
   vi.clearAllMocks()
