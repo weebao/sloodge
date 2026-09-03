@@ -21,7 +21,7 @@ const THEME_FILE = join(RENDERER_ROOT, 'styles', 'theme.css')
 
 /** Tailwind utility families that take a colour. Anything else (`w-`, `h-`, `p-`) is not a colour. */
 const COLOUR_UTILITIES =
-  'bg|text|border|outline|ring|fill|stroke|from|to|via|decoration|placeholder|caret|accent|shadow|divide'
+  'bg|text|border|outline|ring|inset-ring|fill|stroke|from|to|via|decoration|placeholder|caret|accent|shadow|inset-shadow|divide'
 
 /** Names declared as `--color-<name>` inside `@theme { … }`. */
 function themeColourTokens(css: string): ReadonlySet<string> {
@@ -31,8 +31,14 @@ function themeColourTokens(css: string): ReadonlySet<string> {
 
 /**
  * Colour tokens referenced by utilities in `source`, restricted to the given namespaces (the first
- * hyphen-segment of each declared token: `ink`, `chrome`, …). Variants (`dark:`, `hover:`) and
- * opacity suffixes (`/50`) are stripped; the returned name is exactly what must appear in the theme.
+ * hyphen-segment of each declared token: `ink`, `chrome`, …). Variants (`dark:`, `hover:`), side and
+ * offset segments (`border-b-`, `ring-offset-`) and opacity suffixes (`/50`) are stripped; the
+ * returned name is exactly what must appear in the theme.
+ *
+ * Deliberately namespace-scoped: a typo in the namespace segment itself (`bg-inkk-fg`) is skipped,
+ * because the same position holds Tailwind's own palette (`bg-white`, `text-red-950`) and we cannot
+ * tell a misspelled namespace from a palette colour. Do not widen the pattern to fix that; it would
+ * flag every palette class instead.
  */
 function referencedColourTokens(
   source: string,
@@ -40,7 +46,7 @@ function referencedColourTokens(
 ): readonly { token: string; line: number }[] {
   const ns = [...namespaces].join('|')
   const pattern = new RegExp(
-    `(?:^|[\\s'"\`{}(),])(?:[a-z-]+:)*(?:${COLOUR_UTILITIES})-((?:${ns})(?:-[a-z0-9]+)*)(?:/\\d+)?(?=$|[\\s'"\`{}(),])`,
+    `(?:^|[\\s'"\`{}(),])(?:[a-z-]+:)*(?:${COLOUR_UTILITIES})(?:-(?:[tbrlxyse]|offset))?-((?:${ns})(?:-[a-z0-9]+)*)(?:/\\d+)?(?=$|[\\s'"\`{}(),])`,
     'g',
   )
   const out: { token: string; line: number }[] = []
@@ -72,10 +78,10 @@ describe('theme colour tokens', () => {
 
   it('extracts tokens through variants and opacity, and only from colour utilities', () => {
     const refs = referencedColourTokens(
-      `className="dark:bg-ink-bg text-shell-fg hover:border-accent/50 w-7 h-ink"`,
+      `className="dark:bg-ink-bg text-shell-fg hover:border-accent/50 dark:border-b-ink-alt ring-offset-chrome w-7 h-ink"`,
       namespaces,
     )
-    expect(refs.map((r) => r.token)).toEqual(['ink-bg', 'shell-fg', 'accent'])
+    expect(refs.map((r) => r.token)).toEqual(['ink-bg', 'shell-fg', 'accent', 'ink-alt', 'chrome'])
   })
 
   it('every colour utility under src/renderer/src names a declared token', () => {
