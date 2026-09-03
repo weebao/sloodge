@@ -79,48 +79,90 @@ describe('pptxgenjs boundary', () => {
    * The second doorway, found in M4.5 review round 1.
    *
    * pptxgenjs is not the only way text reaches an OOXML part any more: M4.6's `patched`-mode splice
-   * writes `ppt/slides/slideN.xml` directly, and its first version hand-rolled a three-character
-   * XML escaper instead of calling the canonical sanitizer. Escaping is not sanitizing — a U+0001 or
-   * a lone surrogate survived it and produced a part that real XML parsers reject — and nothing
+   * writes `ppt/slides/slideN.xml` directly, and its first version hand-rolled a three-character XML
+   * escaper instead of calling the canonical sanitizer. Escaping is not sanitizing — a U+0001 or a
+   * lone surrogate survived it and produced a part that real XML parsers reject — and nothing
    * upstream catches those, because Tier-1 is an HTML contract.
    *
-   * So the boundary is widened from "one importer of pptxgenjs" to "nobody in the pptx domain
-   * hand-rolls XML escaping without the sanitizer". This catches the *cause* rather than the symptom:
-   * the way this defect arises is somebody writing `.replaceAll('&', '&amp;')` in a new module,
-   * which is precisely what the pattern below looks for.
+   * ## Why an allow-list rather than a path pattern
    *
-   * Deliberately NOT a check that some file "contains the string sanitizeXmlText" — round 4 deleted
-   * exactly that kind of assertion from this file after proving it could stay green while four
-   * methods stopped sanitizing. Whether the sanitizer actually runs is a behavioural question, and it
-   * is answered behaviourally in `tests/unit/import/rewrite.test.ts` (hostile battery, oracle =
-   * `hasXmlIllegalChars`) and end-to-end over a whole exported package in
-   * `tests/unit/import/pptx-roundtrip-identity.test.ts`.
+   * Round 1 scoped this guard by file path (`import/pptx`, `export/pptx`, `pptx-*`). Round 2 showed
+   * that is evadable by filing alone: an identical escaper at `src/shared/import/ooxml-escape.ts`
+   * left the guard green. A path pattern can only ever enumerate where the problem has appeared so
+   * far, which is the same "list someone must remember to extend" that `sanitize.ts` argues against.
+   *
+   * So the scoping is inverted. Every hand-rolled `&` -> `&amp;` escaper anywhere under `src/` must
+   * appear in `ESCAPERS` below with a stated domain, and each one in the XML domain must import the
+   * canonical sanitizer. A new escaper — under any name, in any directory — fails this test until
+   * someone adds it, and adding it forces the one question that matters: is this HTML or is this XML?
+   * That is the conversation the guard exists to cause.
+   *
+   * **Residual, deliberately accepted** (the same one the pptxgenjs check above documents): an
+   * escape assembled at runtime — `'&a' + 'mp;'`, or a table lookup — defeats any regex. That is not
+   * the failure mode this guards. It guards the ordinary accident of someone typing a fresh escaper
+   * in a new module, which is exactly how the round-1 defect arose. A contributor assembling the
+   * string dynamically has evidently decided to route around the boundary, which review catches.
+   * The behavioural layer is the real guarantee either way: `tests/unit/import/rewrite.test.ts`
+   * drives a hostile battery through the splice with `hasXmlIllegalChars` as the oracle, and
+   * `tests/unit/import/pptx-roundtrip-identity.test.ts` asserts it over every part of a whole
+   * exported package. Round 2 confirmed the split is real by reproducing M4.3 round 4's failure
+   * mode — keeping the import but neutering the call left this guard green while four behavioural
+   * tests reded — which is precisely why no string-presence assertion lives here.
    */
-  it('no module in the pptx domain hand-rolls XML escaping without the canonical sanitizer', () => {
-    /** `.replaceAll('&', '&amp;')` / `.replace(/&/g, '&amp;')` in any quote style. */
-    const XML_ESCAPER = /replace(?:All)?\(\s*(?:['"`]&['"`]|\/&\/g)\s*,\s*['"`]&amp;['"`]/
-    /** Anything that produces or consumes `.pptx` part content. */
-    const PPTX_DOMAIN = /(?:^|[\\/])(?:import[\\/]pptx|export[\\/]pptx|pptx-[a-z]+)\.?/
-    const IMPORTS_SANITIZER = /from\s+['"][^'"]*export\/pptx\/sanitize['"]/
+  /** `.replaceAll('&', '&amp;')` / `.replace(/&/g, '&amp;')` in any quote style. */
+  const XML_ESCAPER = /replace(?:All)?\(\s*(?:['"`]&['"`]|\/&\/g)\s*,\s*['"`]&amp;['"`]/
+  const IMPORTS_SANITIZER = /from\s+['"][^'"]*export\/pptx\/sanitize['"]/
 
-    const offenders = files
-      .map((file) => ({
-        rel: relative(process.cwd(), file).split(sep).join('/'),
-        source: readFileSync(file, 'utf8'),
-      }))
-      .filter(({ rel }) => PPTX_DOMAIN.test(rel))
-      .filter(({ source }) => XML_ESCAPER.test(source))
-      .filter(({ source }) => !IMPORTS_SANITIZER.test(source))
-      .map(({ rel }) => rel)
+  /**
+   * Every module permitted to hand-roll an escape, and the domain that justifies it. `xml: true`
+   * means its output reaches an OOXML part and it must therefore route through `sanitizeXmlText`.
+   */
+  const ESCAPERS: Readonly<Record<string, { domain: string; xml: boolean }>> = {
+    'src/shared/design/patch.ts': {
+      domain: 'Design Mode byte-span patching — HTML source text',
+      xml: false,
+    },
+    'src/shared/document/starter-slide.ts': {
+      domain: 'escapeHtml for generated slide HTML — HTML domain',
+      xml: false,
+    },
+    'src/shared/export/html-escape.ts': {
+      domain: 'HTML-bundle export — HTML domain, its own rules',
+      xml: false,
+    },
+    'src/shared/import/pptx/rewrite.ts': {
+      domain: "M4.6's OOXML splice — XML domain, must sanitize",
+      xml: true,
+    },
+  }
+
+  function escaperFiles(): string[] {
+    return files
+      .filter((file) => XML_ESCAPER.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(process.cwd(), file).split(sep).join('/'))
+      .toSorted()
+  }
+
+  it('every hand-rolled escaper in the tree is a declared one', () => {
+    // Catches a new escaper under ANY name in ANY directory — the round-1 path pattern could not.
+    expect(escaperFiles()).toEqual(Object.keys(ESCAPERS).toSorted())
+  })
+
+  it('every escaper in the XML domain routes through the canonical sanitizer', () => {
+    const offenders = escaperFiles()
+      .filter((rel) => ESCAPERS[rel]?.xml === true)
+      .filter((rel) => !IMPORTS_SANITIZER.test(readFileSync(join(process.cwd(), rel), 'utf8')))
 
     expect(offenders).toEqual([])
   })
 
-  it('finds the splice via that rule, so the check above is not vacuous', () => {
-    // If `rewrite.ts` ever stops matching the escaper pattern the guard silently covers nothing, so
-    // pin that it is genuinely in scope today.
-    const XML_ESCAPER = /replace(?:All)?\(\s*['"`]&['"`]\s*,\s*['"`]&amp;['"`]/
-    const splice = readFileSync(join(SRC_ROOT, 'shared', 'import', 'pptx', 'rewrite.ts'), 'utf8')
-    expect(XML_ESCAPER.test(splice)).toBe(true)
+  it('declares an XML-domain escaper, so the rule above is not vacuous', () => {
+    // If the splice ever stopped matching the escaper pattern, the check above would range over an
+    // empty set and pass while covering nothing.
+    const xmlEscapers = Object.entries(ESCAPERS)
+      .filter(([, entry]) => entry.xml)
+      .map(([rel]) => rel)
+    expect(xmlEscapers).toEqual(['src/shared/import/pptx/rewrite.ts'])
+    expect(escaperFiles()).toContain('src/shared/import/pptx/rewrite.ts')
   })
 })

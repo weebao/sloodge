@@ -124,8 +124,36 @@ describe('contract compliance', () => {
    * without anyone remembering, and it generates every spelling `packForApiScan` folds together —
    * which is the definition of "what the validator will catch".
    */
-  it('defuses every spelling of every forbidden token the validator normalises to a hit', () => {
+  it('defuses every spelling of every forbidden token at every archive-supplied emission site', () => {
     expect(FORBIDDEN_API_TOKENS.length).toBeGreaterThan(10)
+
+    /**
+     * Every place archive-controlled text reaches the slide document. Round 2 found the typeface
+     * attribute still spelled `escapeHtml` while the text node used `slideText`, so the claim "one
+     * path for imported strings" was true of all sites but one. Enumerating the sites here makes it
+     * a tested property: a future emission site is covered the moment it is added to this table, and
+     * a site that stops defusing reds immediately.
+     */
+    const sites: { name: string; build: (spelling: string) => string }[] = [
+      {
+        name: 'text run',
+        build: (spelling) =>
+          shape(textBody(`<a:r><a:t>Avoid ${spelling} in modern code</a:t></a:r>`)),
+      },
+      {
+        name: 'typeface attribute',
+        build: (spelling) =>
+          shape(
+            textBody(
+              `<a:r><a:rPr><a:latin typeface="${spelling}"/></a:rPr><a:t>styled</a:t></a:r>`,
+            ),
+          ),
+      },
+      {
+        name: 'slide title (first run, echoed into <title>)',
+        build: (spelling) => shape(textBody(`<a:r><a:t>${spelling}</a:t></a:r>`)),
+      },
+    ]
 
     for (const token of FORBIDDEN_API_TOKENS) {
       const packed = packForApiScan(token)
@@ -143,18 +171,31 @@ describe('contract compliance', () => {
         // below means the defuser worked rather than that the input was harmless.
         expect(packForApiScan(spelling)).toContain(packed)
 
-        const result = convert(
-          shape(textBody(`<a:r><a:t>Avoid ${spelling} in modern code</a:t></a:r>`)),
-        )
-        const errors = validateSlideContract(result.html, ['static']).issues.filter(
-          (issue) => issue.severity === 'error',
-        )
-        expect(
-          errors,
-          `token ${JSON.stringify(token)} spelled ${JSON.stringify(spelling)}`,
-        ).toEqual([])
+        for (const site of sites) {
+          // A typeface is capped at 128 chars and dropped if longer; every spelling here is short.
+          const result = convert(site.build(spelling))
+          const errors = validateSlideContract(result.html, ['static']).issues.filter(
+            (issue) => issue.severity === 'error',
+          )
+          expect(
+            errors,
+            `${site.name}: token ${JSON.stringify(token)} spelled ${JSON.stringify(spelling)}`,
+          ).toEqual([])
+        }
       }
     }
+  })
+
+  it('still records the defused typeface, so provenance survives the escaping', () => {
+    const result = convert(
+      shape(textBody('<a:r><a:rPr><a:latin typeface="localStorage"/></a:rPr><a:t>x</a:t></a:r>')),
+    )
+    expect(validateSlideContract(result.html, ['static']).ok).toBe(true)
+    expect(result.html).not.toContain('data-sl-pptx-font="localStorage"')
+    // The attribute is still there and still reads back as the original name once entities resolve.
+    expect(
+      result.html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+    ).toContain('data-sl-pptx-font="localStorage"')
   })
 
   it('imports a deck whose prose reads "newFunction(" — the exact round-1 blocker', async () => {

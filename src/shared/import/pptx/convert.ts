@@ -358,11 +358,18 @@ function emitParagraph(
     if (resolved !== null) styles.push(`color:${resolved}`)
 
     // Typeface is recorded, never applied — SL-S03 permits the system stack only.
+    //
+    // Through `slideText`, not `escapeHtml`, and for the same reason every other imported string on
+    // this path goes through it: a typeface is archive-supplied text, so a font named `localStorage`
+    // would put a forbidden token into the packed slide source and fail SL-S04. Harmless in practice
+    // (the slide degrades to the text-only fallback rather than failing the import, and the quote is
+    // escaped either way) but it is the one emission site that was still spelled differently from the
+    // others, and "one path for imported strings" is only true if it has no exceptions.
     const latin = rPr ? firstChildNamed(rPr, 'latin') : undefined
     const typeface = latin ? attribute(latin, 'typeface') : undefined
     const fontAttr =
       typeface !== undefined && typeface !== '' && typeface.length <= 128
-        ? ` data-sl-pptx-font="${escapeHtml(typeface)}"`
+        ? ` data-sl-pptx-font="${slideText(typeface)}"`
         : ''
 
     const runAttr = index === null ? '' : ` data-sl-run="${String(index)}"`
