@@ -1,0 +1,70 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #fffbeb;
+    padding: 64px;
+    position: relative;
+    overflow: hidden;
+  }
+  h1 {
+    font-size: 46px;
+    font-weight: 800;
+    color: #78350f;
+  }
+  .stamp {
+    position: absolute;
+    right: 90px;
+    top: 120px;
+    transform: rotate(-14deg);
+    border: 6px solid #b91c1c;
+    color: #b91c1c;
+    font-size: 38px;
+    font-weight: 900;
+    padding: 14px 26px;
+    border-radius: 8px;
+  }
+  .note {
+    position: absolute;
+    left: 90px;
+    top: 280px;
+    width: 520px;
+    transform: rotate(3deg);
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+    border-radius: 6px;
+    padding: 24px;
+    font-size: 20px;
+    color: #78350f;
+    line-height: 1.5;
+  }
+  .side {
+    position: absolute;
+    left: 900px;
+    top: 400px;
+    transform: rotate(90deg);
+    font-size: 18px;
+    color: #92400e;
+    font-weight: 700;
+  }
+</style>
+<h1>Draft Review Copy</h1>
+<div class="stamp">CONFIDENTIAL</div>
+<div class="note">
+  Rotated elements test how the exporter handles CSS transforms on both text and containers.
+</div>
+<div class="side">INTERNAL ONLY</div>

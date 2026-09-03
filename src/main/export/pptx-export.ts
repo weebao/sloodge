@@ -123,6 +123,7 @@ export async function buildSlidesPptx(args: BuildPptxArgs): Promise<BuildPptxRes
         measure: rendered.measure,
         fidelity,
         rasterDataUrl: rendered.rasterDataUrl,
+        backgroundDataUrl: rendered.backgroundDataUrl,
       })
       plans.push(plan)
       outcomes.push({

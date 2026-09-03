@@ -49,8 +49,11 @@ export type ShapeSpec =
       align: TextAlign
       valign: 'top' | 'middle' | 'bottom'
       fill?: FillSpec
-      /** A rounded backing shape behind the text; PowerPoint text boxes cannot be rounded directly. */
-      rounded?: boolean
+      line?: LineSpec
+      /** Corner radius as a fraction (0–1) of the shorter side; the box becomes a `roundRect` text shape. */
+      rectRadius?: number
+      /** Clockwise rotation in degrees, from the element's (and its ancestors') `transform`. */
+      rotate?: number
       lineSpacingMultiple?: number
       charSpacing?: number
     }
@@ -61,7 +64,7 @@ export type ShapeSpec =
       line?: LineSpec
       /** Corner radius as a fraction (0–1) of the shorter side, for `roundRect`. */
       rectRadius?: number
-      /** Clockwise rotation in degrees, from a `transform: rotate()`. */
+      /** Clockwise rotation in degrees, from the element's (and its ancestors') `transform`. */
       rotate?: number
     }
   | { kind: 'line'; box: BoxInches; line: LineSpec }

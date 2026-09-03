@@ -73,6 +73,12 @@ export function createExportWindow(): BrowserWindow {
     },
   })
   win.webContents.setZoomFactor(1)
+  // No menu bar. On Linux (GTK) the default application menu is laid out *inside* the content area,
+  // so a 1280×720 `useContentSize` window settles to a 1280×693 viewport and `capturePage` returns
+  // 693 rows: every raster slide and every full-bleed background lost its bottom 27 px, and
+  // vh-relative layouts were measured in the wrong box. Found by tests/fidelity's reference-capture
+  // size guard (M4.8a); a no-op on macOS, where the menu lives outside the window.
+  win.removeMenu()
   // Containment parity with the editor window (see the module docstring): a slide is untrusted, so
   // deny every window-open and block every renderer-initiated navigation. Export never opens a window
   // and never navigates after main's own `loadURL`, so the strictest policy is also the correct one.

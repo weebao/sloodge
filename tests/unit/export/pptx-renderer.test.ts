@@ -48,6 +48,10 @@ const mocks = vi.hoisted(() => {
       this.options = options
       instances.push(this)
     }
+    menuRemoved = false
+    removeMenu(): void {
+      this.menuRemoved = true
+    }
     isDestroyed(): boolean {
       return this.destroyed
     }
@@ -128,6 +132,39 @@ describe('createOffscreenPptxRenderer', () => {
     mocks.instances[0]!.webContents.capturePage.mockRejectedValueOnce(new Error('capture boom'))
     const out = await renderer.renderSlide('<!doctype html><body>y', 1)
     expect(out.rasterDataUrl).toBeNull()
+    renderer.dispose()
+  })
+
+  it('takes a second, descendants-hidden capture only when the body paints a gradient/image (M4.8a)', async () => {
+    const registry = new SlideRegistry()
+    const renderer = createOffscreenPptxRenderer(registry)
+    const solid = await renderer.renderSlide('<!doctype html><body>x', 0)
+    expect(solid.backgroundDataUrl).toBeNull()
+    const win = mocks.instances[0]!
+    expect(win.webContents.capturePage).toHaveBeenCalledTimes(1)
+
+    const gradient = {
+      ...MEASURE,
+      body: { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'linear-gradient(red, blue)' },
+    }
+    const scripts: string[] = []
+    win.webContents.executeJavaScript.mockImplementation((code: string) => {
+      scripts.push(code)
+      return Promise.resolve(code.includes('hasAnimation') ? gradient : true)
+    })
+    win.webContents.capturePage
+      .mockResolvedValueOnce({ toPNG: () => Buffer.from('FULL') })
+      .mockResolvedValueOnce({ toPNG: () => Buffer.from('BGONLY') })
+    const out = await renderer.renderSlide('<!doctype html><body>y', 1)
+    expect(out.rasterDataUrl).toBe(
+      `data:image/png;base64,${Buffer.from('FULL').toString('base64')}`,
+    )
+    expect(out.backgroundDataUrl).toBe(
+      `data:image/png;base64,${Buffer.from('BGONLY').toString('base64')}`,
+    )
+    // The hide step ran, in the slide's context, before the second capture.
+    expect(scripts.some((s) => s.includes('visibility: hidden !important'))).toBe(true)
+    expect(win.webContents.capturePage).toHaveBeenCalledTimes(3)
     renderer.dispose()
   })
 

@@ -26,6 +26,7 @@
     "perf:run": "node perf/bin/run.mjs",
     "perf:diff": "node perf/bin/diff.mjs",
     "perf:isolation": "node perf/bin/isolation-probe.mjs",
+    "fidelity": "node tests/fidelity/run.ts",
     "pack:dir": "pnpm build && electron-builder --dir",
     "pack:win": "pnpm build && electron-builder --win",
     "pack:win:zip": "pnpm build && electron-builder --win zip",

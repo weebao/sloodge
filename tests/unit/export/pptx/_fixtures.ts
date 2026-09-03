@@ -55,6 +55,10 @@ export function makeNode(
     listType: null,
     svgPrimitiveCount: 0,
     src: null,
+    layoutW: 100,
+    layoutH: 50,
+    ancestorTransforms: [],
+    bareTextCount: 0,
     style: makeStyle(style),
     ...rest,
   }

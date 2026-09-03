@@ -68,6 +68,21 @@ export type SlideNode = {
   svgPrimitiveCount: number
   /** `<img>` current source, else `null`. */
   src: string | null
+  /**
+   * Untransformed border-box size (`offsetWidth`/`offsetHeight`). Equals `w`/`h` unless the element
+   * is transformed, in which case `w`/`h` are the axis-aligned bounds of the rotated box and these
+   * are the box PowerPoint must be handed together with `rot` (M4.8a).
+   */
+  layoutW: number
+  layoutH: number
+  /** Computed `transform` of every transformed ancestor, nearest first. Empty in the common case. */
+  ancestorTransforms: string[]
+  /**
+   * Direct text-node children with content on a NON-leaf element — text no leaf owns, which the
+   * leaf-text rule drops (`<p>a <b>b</b> c</p>` → 2). Always 0 on a leaf. Scored as a loss until
+   * M4.8b's run-level walk emits it.
+   */
+  bareTextCount: number
   style: NodeStyle
 }
 
@@ -106,6 +121,13 @@ export function slideMeasurementScript(): string {
     if (!visible(el, cs, r)) continue;
     const isLeaf = el.children.length === 0;
     const tag = el.tagName.toLowerCase();
+    const ancestorTransforms = [];
+    for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+      const t = getComputedStyle(p).transform;
+      if (t && t !== 'none') ancestorTransforms.push(t);
+    }
+    let bareTextCount = 0;
+    if (!isLeaf) for (const c of el.childNodes) if (c.nodeType === 3 && (c.textContent || '').trim() !== '') bareTextCount++;
     let listType = null;
     const li = el.closest('li');
     if (li) { const list = li.parentElement; listType = list && list.tagName.toLowerCase() === 'ol' ? 'ol' : 'ul'; }
@@ -119,6 +141,10 @@ export function slideMeasurementScript(): string {
       listType,
       svgPrimitiveCount: tag === 'svg' ? el.querySelectorAll(SVG_PRIMS).length : 0,
       src: tag === 'img' ? (el.currentSrc || el.src || null) : null,
+      layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
+      layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
+      ancestorTransforms,
+      bareTextCount,
       style: {
         fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',

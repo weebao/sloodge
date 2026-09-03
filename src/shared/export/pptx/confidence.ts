@@ -12,7 +12,7 @@
  * even approximate without producing silently-wrong output, which is worse than an honest picture.
  */
 
-import type { SlideNode } from './node'
+import type { MeasureResult, SlideNode } from './node'
 import type { SlideTier } from './types'
 
 /** At or above this score, an `auto` slide is converted structurally; below it, rasterized. */
@@ -39,6 +39,15 @@ export const SCORE_WEIGHTS = {
   overlapCap: 30,
   nodeExplosion: 15,
   nodeExplosionThreshold: 120,
+  /** The body paints a gradient/image: representable only as a full-bleed picture (M4.8a). */
+  bodyImageBackground: 5,
+  /**
+   * Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) is dropped by the leaf-text
+   * rule. Sized so a single occurrence lands below `PPTX_TIER_THRESHOLD` in `auto`: missing text is
+   * unreadable output, and a high score would suppress the raster fallback that fixes it (M4.8a).
+   * M4.8b's run-level walk removes the loss and this deduction with it.
+   */
+  bareText: 35,
 } as const
 
 /** The result of scoring one slide. `hardBlocker` non-null forces raster whatever the score. */
@@ -117,6 +126,26 @@ export function classifyTransform(transform: string): 'none' | 'translate' | 'ro
   return 'other'
 }
 
+/**
+ * The rotation angle a computed `transform` encodes, in degrees clockwise (CSS and OOXML agree on
+ * the sign). `none`/`translate` are 0; a pure rotation is `atan2(b, a)` of `matrix(a, b, c, d, …)`;
+ * anything `classifyTransform` calls `other` (skew, scale, 3D) has no single angle → `null`.
+ */
+export function rotationDegrees(transform: string): number | null {
+  const kind = classifyTransform(transform)
+  if (kind === 'none' || kind === 'translate') return 0
+  if (kind === 'other') return null
+  const m = /^matrix\(([^)]+)\)$/.exec(transform.trim().toLowerCase())
+  const parts = (m?.[1] ?? '').split(',').map((p) => parseFloat(p.trim()))
+  const [a, b] = parts as [number, number]
+  return (Math.atan2(b, a) * 180) / Math.PI
+}
+
+/** True when a `background-image` is a gradient or `url()` — paint the pure walker has no pixels for. */
+export function paintsImage(backgroundImage: string): boolean {
+  return /gradient\(|url\(/i.test(backgroundImage)
+}
+
 /** Intersection-over-union of two px boxes; 0 when they do not overlap. */
 function iou(a: SlideNode, b: SlideNode): number {
   const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
@@ -132,10 +161,13 @@ const isComplexShadow = (shadow: string): boolean => shadow !== 'none' && /inset
 const isPresent = (v: string): boolean => v !== '' && v !== 'none'
 
 /**
- * Score a slide from its measured nodes. Deductions are grouped by signal and capped per §3.4, so no
- * single feature can drive the score arbitrarily negative and the reasons list stays legible.
+ * Score a slide from its measurement pass — the nodes *and* the body. Deductions are grouped by signal
+ * and capped per §3.4, so no single feature can drive the score arbitrarily negative and the reasons
+ * list stays legible. Takes the whole `MeasureResult` (M4.8a) because a body gradient was invisible
+ * to a nodes-only scorer by construction and a gradient slide scored 100 while rendering white.
  */
-export function scoreSlide(nodes: readonly SlideNode[]): SlideScore {
+export function scoreSlide(measure: MeasureResult): SlideScore {
+  const { nodes, body } = measure
   const reasons: string[] = []
   let score = 100
   const deduct = (amount: number, reason: string): void => {
@@ -177,8 +209,10 @@ export function scoreSlide(nodes: readonly SlideNode[]): SlideScore {
   // --- Clip paths ---
   if (nodes.some((n) => isPresent(n.style.clipPath))) deduct(SCORE_WEIGHTS.clipPath, 'clip-path')
 
-  // --- Transforms: rotation is cheap, skew/3D/scale is not ---
-  const transforms = nodes.map((n) => classifyTransform(n.style.transform))
+  // --- Transforms, own and inherited: rotation is cheap (emitted as `rot`), skew/3D/scale is not ---
+  const transforms = nodes
+    .flatMap((n) => [n.style.transform, ...n.ancestorTransforms])
+    .map(classifyTransform)
   if (transforms.some((t) => t === 'other'))
     deduct(SCORE_WEIGHTS.transformOther, 'skew/scale/3D transform')
   else if (transforms.some((t) => t === 'rotate'))
@@ -224,6 +258,18 @@ export function scoreSlide(nodes: readonly SlideNode[]): SlideScore {
   // --- Shape explosion ---
   if (nodes.length > SCORE_WEIGHTS.nodeExplosionThreshold)
     deduct(SCORE_WEIGHTS.nodeExplosion, `${String(nodes.length)} nodes (shape explosion)`)
+
+  // --- Body gradient/image: emitted as a full-bleed picture, not editable paint ---
+  if (paintsImage(body.backgroundImage))
+    deduct(SCORE_WEIGHTS.bodyImageBackground, 'body gradient/image background (full-bleed picture)')
+
+  // --- Text no leaf owns: dropped by the leaf-text rule, so the slide would lose words ---
+  const bare = nodes.reduce((acc, n) => acc + n.bareTextCount, 0)
+  if (bare > 0)
+    deduct(
+      SCORE_WEIGHTS.bareText,
+      `${String(bare)} text fragment(s) beside inline elements dropped`,
+    )
 
   return { score: Math.max(0, Math.min(100, score)), reasons, hardBlocker }
 }

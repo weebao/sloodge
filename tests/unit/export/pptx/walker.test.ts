@@ -136,6 +136,102 @@ describe('walkSlide background and coverage', () => {
   })
 })
 
+/** -14° as Chromium serializes it: matrix(cos, sin, -sin, cos, 0, 0). */
+const ROT_MINUS_14 = 'matrix(0.970296, -0.241922, 0.241922, 0.970296, 0, 0)'
+const ROT_90 = 'matrix(0, 1, -1, 0, 0, 0)'
+
+describe('walkSlide rotation (M4.8a)', () => {
+  it('decomposes rot from the transform matrix and hands PowerPoint the unrotated, centred box', () => {
+    // A 200×100 layout box rotated -14° has axis-aligned bounds 218.25×148.38 (w·cos+h·sin, w·sin+h·cos).
+    const node = makeNode({
+      isLeaf: true,
+      text: 'CONFIDENTIAL',
+      x: 400 - 218.251 / 2,
+      y: 300 - 148.377 / 2,
+      w: 218.251,
+      h: 148.377,
+      layoutW: 200,
+      layoutH: 100,
+      style: { transform: ROT_MINUS_14 },
+    })
+    const t = textShapes(walkSlide(makeMeasure([node])).shapes)[0]!
+    expect(t.rotate).toBeCloseTo(346, 3)
+    // Centre preserved, size from the layout box, not the bounds. (Mutation: emit the measured rect →
+    // box.w would be 218.25/96 and rotate undefined.)
+    expect(t.box.x * 96).toBeCloseTo(300, 6)
+    expect(t.box.y * 96).toBeCloseTo(250, 6)
+    expect(t.box.w * 96).toBe(200)
+    expect(t.box.h * 96).toBe(100)
+  })
+
+  it("composes a transformed ancestor into the child's rotation", () => {
+    const node = makeNode({
+      isLeaf: false,
+      w: 100,
+      h: 50,
+      layoutW: 50,
+      layoutH: 100,
+      style: { backgroundColor: 'rgb(0, 0, 0)' },
+      ancestorTransforms: [ROT_90],
+    })
+    const shape = walkSlide(makeMeasure([node])).shapes[0]!
+    expect(shape.kind).toBe('rect')
+    expect((shape as { rotate?: number }).rotate).toBe(90)
+    expect(shape.box.w * 96).toBe(50)
+    expect(shape.box.h * 96).toBe(100)
+  })
+
+  it('leaves the measured rect alone for translate/none and for skew (no single angle)', () => {
+    const plain = makeNode({
+      isLeaf: true,
+      text: 'a',
+      style: { transform: 'matrix(1, 0, 0, 1, 30, 0)' },
+    })
+    const skewed = makeNode({
+      isLeaf: true,
+      text: 'b',
+      style: { transform: 'matrix(1, 0.5, 0, 1, 0, 0)' },
+    })
+    const shapes = textShapes(walkSlide(makeMeasure([plain, skewed])).shapes)
+    expect(shapes[0]!.rotate).toBeUndefined()
+    expect(shapes[1]!.rotate).toBeUndefined()
+    expect(shapes[1]!.box).toEqual({ x: 0, y: 0, w: 100 / 96, h: 50 / 96 })
+  })
+})
+
+describe('walkSlide text-box decoration (M4.8a)', () => {
+  it("keeps a leaf text box's border and corner radius instead of dropping them", () => {
+    const node = makeNode({
+      isLeaf: true,
+      text: 'Shipped',
+      w: 120,
+      h: 40,
+      style: {
+        borderTopWidth: '6px',
+        borderTopStyle: 'solid',
+        borderTopColor: 'rgb(185, 28, 28)',
+        borderRadius: '8px',
+      },
+    })
+    const t = textShapes(walkSlide(makeMeasure([node])).shapes)[0]!
+    expect(t.line).toEqual({ color: 'B91C1C', width: 4.5, dashType: 'solid' })
+    expect(t.rectRadius).toBeCloseTo(8 / 40, 6)
+  })
+
+  it('flags a gradient body for the planner and no longer fakes coverage for it', () => {
+    const measure = makeMeasure([makeNode({ isLeaf: true, text: 'x', w: 100, h: 100 })], {
+      body: {
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        backgroundImage: 'linear-gradient(135deg, rgb(76, 29, 149) 0%, rgb(30, 58, 138) 100%)',
+      },
+    })
+    const walk = walkSlide(measure)
+    expect(walk.bodyImage).toBe(true)
+    expect(walk.background).toBeNull()
+    expect(walk.coveredFraction).toBe(1)
+  })
+})
+
 describe('slideTextForNotes', () => {
   it('joins the visible leaf text for the accessibility notes layer', () => {
     const nodes = [

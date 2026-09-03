@@ -23,6 +23,7 @@
  */
 
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
+import { MAX_IMAGE_DATA_URL_BYTES, isImageDataUrl } from '../../shared/export/pptx/image'
 import { createSafePptxDeck, type SafePptxSlide } from './safe-pptx'
 import type {
   DeckPptxPlan,
@@ -63,6 +64,20 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
   }
 }
 
+/**
+ * Every picture the writer embeds comes from our own `capturePage`, so a string that is not a PNG/JPEG
+ * data URL within bounds is a pipeline defect. Thrown, not skipped: the orchestrator lets writer errors
+ * propagate rather than write a package with a broken media part.
+ */
+function checkedImage(dataUrl: string, what: string): string {
+  if (!isImageDataUrl(dataUrl)) {
+    throw new Error(
+      `${what} must be a PNG/JPEG data URL of at most ${String(MAX_IMAGE_DATA_URL_BYTES)} bytes`,
+    )
+  }
+  return dataUrl
+}
+
 function lineProps(line: {
   color: string
   width: number
@@ -85,6 +100,12 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       wrap: true,
       shrinkText: false,
       ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
+      ...(shape.line !== undefined ? { line: lineProps(shape.line) } : {}),
+      ...(shape.rotate !== undefined ? { rotate: shape.rotate } : {}),
+      // A text box is itself a shape in pptxgenjs: give it roundRect geometry for a CSS radius.
+      ...(shape.rectRadius !== undefined
+        ? { shape: 'roundRect', rectRadius: shape.rectRadius * Math.min(box.w, box.h) }
+        : {}),
       ...(shape.lineSpacingMultiple !== undefined
         ? { lineSpacingMultiple: shape.lineSpacingMultiple }
         : {}),
@@ -103,7 +124,13 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
   }
 
   if (shape.kind === 'image') {
-    slide.addImage({ data: shape.dataUrl, x: box.x, y: box.y, w: box.w, h: box.h })
+    slide.addImage({
+      data: checkedImage(shape.dataUrl, 'image shape'),
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+    })
     return
   }
 
@@ -130,14 +157,14 @@ function addSlideToDeck(deck: ReturnType<typeof createSafePptxDeck>, plan: Slide
   if (plan.background !== undefined) {
     slide.setBackground(
       'dataUrl' in plan.background
-        ? { data: plan.background.dataUrl }
+        ? { data: checkedImage(plan.background.dataUrl, 'slide background') }
         : { color: plan.background.color },
     )
   }
 
   if (plan.tier === 'raster' && plan.rasterDataUrl !== undefined) {
     slide.addImage({
-      data: plan.rasterDataUrl,
+      data: checkedImage(plan.rasterDataUrl, 'raster slide'),
       x: 0,
       y: 0,
       w: SLIDE_WIDTH_INCHES,

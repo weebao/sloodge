@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
     constructor() {
       instances.push(this)
     }
+    removeMenu(): void {}
     isDestroyed(): boolean {
       return this.destroyed
     }

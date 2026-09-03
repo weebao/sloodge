@@ -55,6 +55,10 @@ const mocks = vi.hoisted(() => {
       for (const listener of this.listeners.get(event) ?? []) listener(evt, url)
       return prevented
     }
+    menuRemoved = false
+    removeMenu(): void {
+      this.menuRemoved = true
+    }
     isDestroyed(): boolean {
       return this.destroyed
     }
@@ -105,6 +109,16 @@ describe('createOffscreenPdfRenderer', () => {
     expect(options.webPreferences['nodeIntegration']).toBe(false)
     expect(options.webPreferences['sandbox']).toBe(true)
     expect(options.webPreferences['webviewTag']).toBe(false)
+    renderer.dispose()
+  })
+
+  it('removes the menu bar: on Linux it sits inside the content area and crops the 1280×720 slide', async () => {
+    const registry = new SlideRegistry()
+    const renderer = createOffscreenPdfRenderer(registry)
+    await renderer.renderToPdf('<!doctype html><body>x', 0)
+    // Measured under WSLg (M4.8a harness): with the default menu the window settled to a 1280×693
+    // viewport and `capturePage` returned 693 rows. Mutation: delete `win.removeMenu()` → reds.
+    expect(mocks.instances[0]!.menuRemoved).toBe(true)
     renderer.dispose()
   })
 
