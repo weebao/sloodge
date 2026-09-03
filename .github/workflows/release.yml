@@ -108,8 +108,15 @@ jobs:
 
       # ~8 seconds against a ~15 minute packaging run. Cheap insurance that the tag being shipped
       # is actually green, rather than discovering it after the artifact is in someone's hands.
+      #
+      # `--retry=1` re-runs a failing TEST once, not the step. Two timing assertions
+      # (instrument.test.ts "scales roughly linearly", store.test.ts "bounded sequential
+      # extraction") are load-sensitive, and this 2-vCPU runner is slower than any box they were
+      # tuned on; without the retry a flake there costs a manual re-run of the whole job at 2x
+      # billing. A genuine failure fails twice and still reds. test.yml deliberately has no retry,
+      # so flakes stay visible on the development path where they get fixed.
       - name: Unit tests
-        run: pnpm test
+        run: pnpm test --retry=1
 
       # The real script from package.json, not a copy of its command line. Targets (nsis + zip) and
       # artifact names come from the `build.win` block, which tests/unit/packaging/build-config.test.ts

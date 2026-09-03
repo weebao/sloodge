@@ -7,9 +7,9 @@
  * **Why this exists.** M9.0's release job runs `pnpm test` on a Windows runner. A suite that has
  * only ever run on Linux can hide assertions comparing `path.join` output against forward-slash
  * literals, and that class reds the release job *before* packaging is reached. The
- * `core.autocrlf=true` clone used to
- * validate the CRLF fix reproduces line endings faithfully but is structurally blind to
- * `path.sep`, so it could never have caught this. Validating "Windows on Linux" needs BOTH.
+ * `core.autocrlf=true` clone used to validate the CRLF fix reproduces line endings faithfully but
+ * is structurally blind to `path.sep`, so it could never have caught this. Validating "Windows on
+ * Linux" needs BOTH.
  *
  * It is deliberately NOT part of `pnpm test`: this is a simulation, so a failure needs a human to
  * judge whether the test or the production code is at fault. Run it when touching path handling,
@@ -43,11 +43,14 @@ const shim = fileURLToPath(new URL('./tests/support/path-win32.ts', import.meta.
  * backslashes in their names. Three such tests were found exactly that way — they passed, and
  * dumped 377 files into the working tree.
  *
- * `tests/unit/packaging/win32-path-simulation.test.ts` guards the list in both directions: every
- * entry must really touch the filesystem (so a pure-logic test cannot be parked here to silence a
- * genuine failure), and every test that touches the filesystem must be listed (so the simulation
- * cannot start littering again). "Touches the filesystem" means it uses `node:fs` for real —
- * a suite that only `vi.mock`s it, like `vault.test.ts`, is pure logic and belongs in the run.
+ * Two checks hold the list to that. `tests/unit/packaging/win32-path-simulation.test.ts` reads each
+ * test's source: every entry must really touch the filesystem (so a pure-logic test cannot be
+ * parked here to silence a genuine failure), and a test that visibly imports `fs` or builds a
+ * `tmpdir()` path must be listed. A source regex cannot see a write hidden behind a src helper —
+ * two such tests walked past the first version of it — so the `globalSetup` below is the check
+ * that actually proves the run left nothing behind: it snapshots the repo root and fails the run
+ * on any new entry. "Touches the filesystem" means it uses `fs` for real — a suite that only
+ * `vi.mock`s it, like `vault.test.ts`, is pure logic and belongs in the run.
  */
 export const REAL_FILESYSTEM_TESTS = [
   'tests/unit/agent/skills-contract.test.ts',
@@ -75,6 +78,7 @@ export default defineConfig({
   test: {
     include: ['tests/unit/**/*.test.ts', 'tests/unit/**/*.test.tsx'],
     exclude: [...REAL_FILESYSTEM_TESTS],
+    globalSetup: ['./tests/support/win32-litter-guard.ts'],
     environment: 'node',
   },
 })

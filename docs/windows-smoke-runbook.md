@@ -417,9 +417,50 @@ artifact and may be excluded; a direct string comparison (`expected '\a\b' to be
 bug in the class this run exists to catch, and must be fixed. `win32-path-simulation.test.ts` reds
 if a listed file does no filesystem I/O, so the list cannot quietly absorb a genuine failure.
 
+The run also cannot litter. Under win32 semantics `os.tmpdir()` becomes `\tmp\...`, which Linux
+reads as a _relative_ path, so an unlisted test that writes there passes while dropping
+backslash-named files into the repo root — three tests once left 377 of them. No check over test
+source can close that (a bare `'fs/promises'` import and a write hidden behind a `src/` helper both
+walked past the first one), so `tests/support/win32-litter-guard.ts`, a vitest `globalSetup`,
+reads the disk instead: it snapshots the repo root before the run and fails the run — exit 1,
+naming the entries — on anything new in it afterwards. It also refuses to start over strays from an
+earlier run. Those are usually empty directories, which `git status` never shows; find them with
+`ls -A | grep '\\'`.
+
 Still not covered by either: anything needing a real Windows kernel — case-insensitive filesystems,
 path-length limits, reserved device names (`CON`, `NUL`), and the NSIS step itself. Those are proven
 only by the runner.
+
+#### 8.6.1 What the first real tag run can still fail on
+
+No runner has executed `release.yml` yet. The `pnpm test` step is proven (2709/2709 on a real
+Windows host, from a real `core.autocrlf=true` checkout, Node 24, pnpm 11); the rest of the job is
+not. When the first run fails, read the failing step against this list first, most likely first:
+
+1. **electron-builder 26 collecting pnpm's `node_modules` on native Windows.** pnpm's virtual store
+   is junction-based, and the only NSIS build so far (§8.2) used `--prepackaged` from a Linux-built
+   app dir, so `pnpm build && electron-builder --win` end-to-end on Windows has never run.
+2. **Path-length limits under `node_modules/.pnpm/...`** during asar packing and copying. The
+   runner has `LongPathsEnabled` and Node 24 uses `\\?\` prefixes; app-builder and 7za may not.
+3. **Network fetches against `timeout-minutes: 30`.** The Electron win32 binary (postinstall),
+   `@anthropic-ai/claude-agent-sdk-win32-x64` (~275 MB) and electron-builder's nsis /
+   nsis-resources / winCodeSign downloads all happen inside the budget on a 2-vCPU runner. The
+   12–15 minute estimate is unmeasured.
+4. **`bash` resolution inside `pnpm test`.** `release-workflow.test.ts` spawns bash to execute the
+   tag guard. The windows-2022/2025 images put Git's bin ahead of System32 and have no WSL, and the
+   test prefers `%ProgramFiles%\Git\bin\bash.exe` explicitly when it exists; verified only by
+   emulating the runner's PATH order on a dev host.
+5. **`gh release view` against a DRAFT release.** `releases/tags/<tag>` returns 404 for drafts and
+   gh falls back to listing releases by tag name. Works in current gh, not exercisable offline. If
+   it breaks, the artifacts are still attached to the workflow run — upload-artifact runs first.
+6. **Load-sensitive tests** — `instrument.test.ts` "scales roughly linearly", `store.test.ts`
+   "bounded sequential extraction" — mitigated by `--retry=1` on the test step. A test that fails
+   twice is a real failure.
+7. **Missing `build/icon.png`.** `directories.buildResources` names a directory that does not
+   exist, so artifacts ship the default Electron icon. A warning, not a failure — M9.1.
+8. Action majors (`checkout@v4`, `setup-node@v4`, `upload-artifact@v4`, `pnpm/action-setup@v4`)
+   are current and `cache: pnpm` after action-setup is the right order. Nothing expected here;
+   listed so the checklist is complete.
 
 ## Gotchas summary
 

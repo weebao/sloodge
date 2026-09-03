@@ -9,21 +9,27 @@ import { REAL_FILESYSTEM_TESTS } from '../../../vitest.win32.config'
  * simulation is for and why tests doing real filesystem I/O cannot be part of it.
  *
  * An exclusion list is the kind of escape hatch that quietly grows until it covers a real bug, so
- * this file pins it in both directions: nothing may be excluded that could have been simulated
- * (which would hide a genuine posix-literal failure), and nothing that touches the filesystem may
- * be omitted (which would let the run scatter backslash-named files through the repo root).
+ * this file pins what a test's SOURCE can pin: nothing may be excluded that could have been
+ * simulated (which would hide a genuine posix-literal failure), and a test that visibly uses the
+ * filesystem may not be omitted. That second direction is only a fast first line — a regex over
+ * source cannot see a write hidden behind a src helper — so the proof that the run leaves nothing
+ * in the repo is `tests/support/win32-litter-guard.ts`, which reads the disk before and after.
  */
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 /**
- * Does this test reach the REAL filesystem?
+ * Does this test visibly reach the REAL filesystem?
  *
  * A suite that only `vi.mock`s `node:fs` is pure logic — `vault.test.ts` is the case in point — and
  * belongs in the simulation, where it catches posix-literal assertions. Only unmocked use counts.
+ * "Visibly" means an import of `fs` in any spelling (`node:` or bare, with or without `/promises`),
+ * or a `tmpdir()` path, which a test only builds in order to write there. A write behind a src
+ * helper on a hard-coded path is invisible here; the litter guard catches it on disk.
  */
-const FS_USE = /from 'node:fs|require\('node:fs|readFileSync|writeFileSync|mkdtempSync/
-const FS_MOCKED = /vi\.mock\('node:fs/
+const FS_USE =
+  /from ['"](node:)?fs(\/promises)?['"]|require\(['"](node:)?fs(\/promises)?['"]\)|tmpdir\(/
+const FS_MOCKED = /vi\.mock\(['"](node:)?fs(\/promises)?['"]/
 const touchesRealFilesystem = (source: string): boolean =>
   FS_USE.test(source) && !FS_MOCKED.test(source)
 
@@ -68,13 +74,14 @@ describe('win32 path simulation — the exclusion list', () => {
     }
   })
 
-  it('lists EVERY test that touches the real filesystem, so the run cannot litter the repo', () => {
+  it('lists every test that visibly touches the real filesystem', () => {
     // The other direction, and the one that bites silently. A test writing to `os.tmpdir()` without
     // asserting on the path PASSES the simulation while quietly littering: win32 rewrites `/tmp/x`
     // as `\\tmp\\x`, which Linux treats as a *relative* path, so the files land in the repo root
     // with backslashes in their names. Three such tests slipped the first exclusion list — which had
     // been derived from observed failures rather than from actual filesystem use — and dumped 377
-    // files into the working tree.
+    // files into the working tree. This check names the offending file; the litter guard is the
+    // one that cannot be bypassed.
     const missing = allTestFiles().filter(
       (relative) =>
         !REAL_FILESYSTEM_TESTS.includes(relative) &&

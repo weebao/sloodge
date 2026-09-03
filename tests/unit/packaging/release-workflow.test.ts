@@ -466,6 +466,18 @@ describe('the tag/version guard, executed', () => {
     return step
   }
 
+  // By bare name, `bash` on a Windows host with WSL resolves to `System32\\bash.exe` (the WSL
+  // launcher) whenever that precedes Git's bin on PATH, and every case below then fails for a
+  // reason unrelated to the guard. The runner image has Git's bin first and no WSL at all, so this
+  // only matters on developer machines — but there it turned 11 tests red.
+  const gitBash = path.join(
+    process.env['ProgramFiles'] ?? 'C:\\Program Files',
+    'Git',
+    'bin',
+    'bash.exe',
+  )
+  const bash = process.platform === 'win32' && existsSync(gitBash) ? gitBash : 'bash'
+
   /**
    * Runs the guard's shell in a scratch dir whose package.json carries `version`, returning the
    * exit status. `GITHUB_ENV` points at a real file, as it does on a runner — the step appends the
@@ -482,7 +494,7 @@ describe('the tag/version guard, executed', () => {
       const env: NodeJS.ProcessEnv = { ...process.env, GITHUB_ENV: githubEnv }
       if (tag === undefined) delete env['GITHUB_REF_NAME']
       else env['GITHUB_REF_NAME'] = tag
-      execFileSync('bash', ['-c', script], { cwd: dir, env, stdio: 'pipe' })
+      execFileSync(bash, ['-c', script], { cwd: dir, env, stdio: 'pipe' })
       return 0
     } catch (error) {
       const status = (error as { status?: unknown }).status
@@ -496,7 +508,13 @@ describe('the tag/version guard, executed', () => {
         { cause: error },
       )
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      // A throw here would REPLACE the return or the error above, and a scratch dir that resists
+      // removal (a scanner holding a handle on Windows) is not what this test measures.
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+      } catch {
+        // left in tmpdir; the exit status wins
+      }
     }
   }
 
