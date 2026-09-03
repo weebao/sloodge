@@ -200,7 +200,7 @@ function fail(code: ArchiveErrorCode, message: string): { ok: false; error: Arch
   return { ok: false as const, error: { code, message } }
 }
 
-export function looksLikeZip(bytes: Uint8Array): boolean {
+function looksLikeZip(bytes: Uint8Array): boolean {
   return ZIP_MAGIC.every((byte, index) => bytes[index] === byte)
 }
 

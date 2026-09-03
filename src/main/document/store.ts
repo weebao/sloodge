@@ -122,19 +122,19 @@ export type WriteDeckError = { code: WriteDeckErrorCode; message: string }
 export type WriteDeckResult = { ok: true; path: string } | { ok: false; error: WriteDeckError }
 
 /**
- * The archive-level knobs live in `archive.ts` and are re-exported here because `.sloodge`
- * callers (and the M1.1 test suite) have always reached for them through the store. The same
- * `ArchiveLimits` bounds the *write* path below, where `maxEntries` and `maxTotalBytes` are
- * checked against the bytes about to be serialized: `extras` round-trips verbatim by design
- * (§5.2), so open-then-save hands whatever an untrusted deck contained straight back to the
- * zipper, and a save that is not bounded is a read that is not bounded one step later.
+ * Re-exported because M1.x reaches for it through the store: `slide-protocol.test.ts` pins
+ * `MAX_SLIDE_HTML_BYTES` against `maxEntryBytes`, and `slide-registry.test.ts` derives the
+ * registry's ceilings from it. The same `ArchiveLimits` bounds the *write* path below, where
+ * `maxEntries` and `maxTotalBytes` are checked against the bytes about to be serialized: `extras`
+ * round-trips verbatim by design (§5.2), so open-then-save hands whatever an untrusted deck
+ * contained straight back to the zipper, and a save that is not bounded is a read that is not
+ * bounded one step later.
+ *
+ * Only this one. The other archive-level names have no consumer outside `archive.ts`, and
+ * re-exporting a moved symbol nothing imports is a compatibility shim for callers that do not
+ * exist — import them from `archive.ts` if a need appears.
  */
-export {
-  DEFAULT_ARCHIVE_LIMITS,
-  DEFAULT_EXTRACTION_TIMEOUT_MS,
-  type ArchiveLimits,
-  type ExtractionObserver,
-} from './archive'
+export { DEFAULT_ARCHIVE_LIMITS } from './archive'
 
 /** Archive read options plus nothing deck-specific — the shape `readArchiveFile` already takes. */
 export type ReadDeckOptions = ReadArchiveOptions

@@ -66,6 +66,7 @@ import {
 import { parseXml, XmlParseError, descendantsNamed, type XmlElement } from '../../shared/import/xml'
 import {
   contentTypeOf,
+  DEFAULT_SLIDE_SIZE_EMU,
   OpcError,
   parseRelationships,
   readSlideGraph,
@@ -343,9 +344,7 @@ export async function importPptx(
       warnings.push(`${graph.presentationPart} could not be parsed; using the default slide size`)
     }
   }
-  const size = presentation
-    ? readSlideSize(presentation)
-    : { widthEmu: 12_192_000, heightEmu: 6_858_000 }
+  const size = presentation ? readSlideSize(presentation) : DEFAULT_SLIDE_SIZE_EMU
 
   const pptxTheme = loadTheme(entries, graph, warnings)
   const tokens = themeTokens(pptxTheme, DEFAULT_THEME_TOKENS)

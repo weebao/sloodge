@@ -41,18 +41,13 @@ import {
 export const CONTENT_TYPES_PART = '[Content_Types].xml'
 export const PACKAGE_RELS_PART = '_rels/.rels'
 
-/** The relationship types this importer follows. Compared by suffix — see `relationshipIs`. */
+/** The relationship types this importer follows. */
 export const RT_OFFICE_DOCUMENT =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument'
 export const RT_SLIDE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide'
-export const RT_SLIDE_LAYOUT =
-  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout'
 export const RT_SLIDE_MASTER =
   'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster'
 export const RT_THEME = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme'
-export const RT_IMAGE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
-export const RT_NOTES_SLIDE =
-  'http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide'
 
 /** The content types that mark a package as a presentation (`.pptx`) or a template (`.potx`). */
 export const CT_PRESENTATION_MAIN =

@@ -228,11 +228,6 @@ function colorOf(container: XmlElement | undefined, theme: PptxTheme): string | 
   return null
 }
 
-function solidFillColor(spPr: XmlElement | undefined, theme: PptxTheme): string | null {
-  if (!spPr) return null
-  return colorOf(firstChildNamed(spPr, 'solidFill'), theme)
-}
-
 /** Emu geometry from an `a:xfrm`, in the element's own coordinate space. */
 function readXfrm(xfrm: XmlElement | undefined): {
   x: number
@@ -424,7 +419,7 @@ function emitShape(emitter: Emitter, sp: XmlElement, transform: Transform, index
     )
   }
 
-  const fill = solidFillColor(spPr, emitter.theme)
+  const fill = spPr ? colorOf(firstChildNamed(spPr, 'solidFill'), emitter.theme) : null
   const noFill = spPr ? firstChildNamed(spPr, 'noFill') !== undefined : false
   const preset = spPr ? attribute(firstChildNamed(spPr, 'prstGeom') ?? sp, 'prst') : undefined
   if (spPr && firstChildNamed(spPr, 'gradFill') !== undefined) {
