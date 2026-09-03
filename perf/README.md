@@ -228,81 +228,111 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
     pending and future call with `CdpClosedError` the moment a socket closes, and every call carries
     a 30 s reply deadline, so a dead or frozen app surfaces within seconds rather than as an
     open-ended hang (the earlier 500-slide "20 minutes of silence" was this hang).
+11. **The session median weights phases by sample count.** Every sample reads `/proc` for every
+    process, so at 200+ processes under heavy host load one sample can take seconds and the loaded
+    phase ends up under-sampled relative to the cheap idle phase. One 200-slide run taken at a load
+    of 21 reported a 605 MB "median" and a `processCount.median` of 8 for exactly that reason, while
+    its trace shows 205 processes for the whole loaded phase. A report whose `processCount.median` is
+    far below `processCount.max` did not measure the loaded deck; `processTypes.session` and the
+    trace show which phase the median landed in.
 
 ---
 
 ## The result: we are far over the RAM budget, and the cause is structural
 
 Committed baseline: `perf/results/baseline-main.json` (100-slide deck, 3 runs, PSS basis), with
-`perf/results/baseline-scaling-*.json` for the other tiers. All taken on commit `e2a3a20`.
+`perf/results/baseline-scaling-*.json` for the other tiers. All taken by the harness at commit
+`ef07cf4` — the code in this tree — so every field can be re-derived by the committed code. Every one
+of them is labelled `contended` (see below); the memory columns are the trustworthy ones.
 
-**Median RAM is 1725 MB against a 200 MB budget — 8.6x over.** That is not a tuning problem; no
+**Median RAM is 1685 MB against a 200 MB budget — 8.4x over.** That is not a tuning problem; no
 amount of trimming allocations reaches 200 MB from here. The cause is architectural, and it shows up
 first in the process count:
 
 > Every slide is published at `slide://<unique-id>/` (`src/shared/slide-protocol.ts`,
 > `slideDocumentUrl`). The document id is the URL **host**, so every slide is a distinct _origin_,
 > and Chromium's site isolation gives each origin its own renderer process. A 100-slide deck runs
-> **105 Electron processes**; a 300-slide deck runs 305.
+> **105 Electron processes** (1 Browser, 1 GPU, 1 Utility, 102 renderers: shell, canvas, 100 rail
+> thumbnails); a 300-slide deck runs 305.
 
 Each of those carries its own renderer heap, compositor, and per-process Blink/V8 overhead. The
-measured marginal cost is roughly **11-14 MB PSS per mounted slide**, on top of a large fixed floor.
+`processTypes.session` block of the baseline puts the number on it: the `Tab` processes alone hold a
+median **1184 MB PSS** on the 100-slide deck (max 1320 MB), against ~230 MB for the Browser process
+and ~220 MB for the GPU process when it is alive. The measured marginal cost is roughly **11-14 MB PSS
+per mounted slide**, on top of a large fixed floor.
 
 ### Scaling
 
 | Slides | Processes | Median PSS | Working-set sum | Cold start | Deck open | Slide switch |
 | -----: | --------: | ---------: | --------------: | ---------: | --------: | -----------: |
-|     25 |        30 |     776 MB |         3039 MB |     794 ms |    495 ms |       118 ms |
-|     50 |        55 |    1091 MB |         5358 MB |     772 ms |   1185 ms |        52 ms |
-|    100 |       105 |    1725 MB |         9890 MB |    1030 ms |   1927 ms |        58 ms |
-|    200 |       205 |    2929 MB |        18812 MB |    1091 ms |   4982 ms |       101 ms |
-|    300 |       305 |    3655 MB |             n/a |    1080 ms |   7793 ms |        92 ms |
+|     25 |        30 |     805 MB |         3019 MB |    1754 ms |    513 ms |       106 ms |
+|     50 |        55 |    1164 MB |         5395 MB |    1366 ms |   1433 ms |        49 ms |
+|    100 |       105 |    1685 MB |         9875 MB |    1528 ms |   1794 ms |        54 ms |
+|    200 |       205 |    3092 MB |        17715 MB |    1340 ms |   3908 ms |        68 ms |
+|    300 |       305 |    3971 MB |        12395 MB |    1344 ms |  11920 ms |        84 ms |
 
-PSS and process count scale cleanly and are the trustworthy columns. The 300-slide working-set sum is
-omitted: under memory pressure some processes reported a zero working set, making that basis
-incoherent exactly where it mattered — another reason PSS is the headline basis.
+PSS and process count scale cleanly and are the trustworthy columns. The working-set sum is kept only
+to show how far the naive basis is from physical reality (it exceeds the 6.8 GB VM from 200 slides
+up); under memory pressure some processes report a zero working set, making that basis incoherent
+exactly where it matters — another reason PSS is the headline basis.
 
 Two consequences worth stating plainly, because they set up M8.2:
 
 1. **The app is over budget before a stress deck is opened at all.** Idle on its 3-slide starter
-   deck, it sits at **448-453 MB PSS**, measured independently in all five runs above (a spread under
-   1 %). That is 2.2x the 200 MB budget with three slides on screen. An earlier single-sample read of
-   194 MB was taken ~1 s after launch, before the app had settled, and is superseded.
+   deck it sits at **270–480 MB PSS**, and the whole spread is one process. Under WSLg the GPU
+   process is SwiftShader; it holds 160–200 MB PSS and is alive in some idle windows and not others
+   (`processTypes.idle.GPU.processes.min` is 0 in two of the five committed baselines). Without it
+   the floor is Browser ~120 MB + five renderers (shell, canvas, three thumbnails) ~125 MB + Utility
+   ~25 MB ≈ **270 MB**; with it ≈ **440–480 MB**. Even the GPU-less floor is 1.35x the budget with
+   three slides on screen. An earlier claim of "448–453 MB, spread under 1 %" was measuring the GPU
+   process's presence in those particular windows, not the app's stability, and is withdrawn.
 2. **The 500- and 1000-slide tiers do not run on this machine.** A 500-slide deck spawns ~507
    processes; observed directly, `MemAvailable` fell to 0 MB, all 2 GB of swap was consumed, and the
-   session never reached a loaded state in 20 minutes before it was killed. The decks generate and
-   validate fine — the app cannot hold them. There is therefore **no harness JSON for 500 or 1000**,
-   and the roadmap's "open a 500-slide deck in under 5 s" is currently not a timing question at all.
+   session never reached a loaded state before it was killed. (The 20 minutes it took to notice was
+   the CDP hang fixed in this round; the harness now fails within seconds of the app dying.) The
+   decks generate and validate fine — the app cannot hold them. There is therefore **no harness JSON
+   for 500 or 1000**, and the roadmap's "open a 500-slide deck in under 5 s" is currently not a
+   timing question at all.
 
 M8.2 ("lazy slide mounting — only the active slide's iframe is live, ±1 neighbours pre-warmed") is
 therefore not an optimization but the fix for a hard ceiling. This harness will show it directly as a
-collapse in `processCount` and `ramMb`.
+collapse in `processCount`, `ramMb` and `processTypes.session.Tab`.
 
 ### What passes today
 
-Cold start (~1.0 s against 3 s) passes comfortably at every tier. Slide switch passes at 50-100
-slides and sits at the 100 ms budget by 200. Deck open passes to 100 slides, reaches 4982 ms at 200,
-and fails at 300 (7793 ms) — three tiers below the deck size that budget was written for.
+Cold start (1.3–2.3 s contended, ~0.8–1.0 s in quieter runs, against 3 s) passes at every tier.
+Slide switch sits at 50–60 ms at 50–100 slides; the 106 ms at 25 slides is contention (41 ms for the
+same tier one sweep earlier). Deck open passes to 100 slides (1.8 s), reaches 3908 ms at 200 and
+fails at 300 (11920 ms) — three tiers below the deck size that budget was written for.
+
+Rail scroll — the summed round-trip of 25 `scrollTop` assignments, sleeps excluded — is the number
+M8.3 will move: 249 ms at 25 slides, 227 ms at 50, 420–750 ms at 100, 5757 ms at 200 and
+29093 ms at 300. Every assignment forces a layout over every mounted thumbnail, so it grows
+faster than linearly with the deck.
 
 ### Contention, and which numbers survive it
 
-This baseline was taken while other agents ran test suites on the same machine.
-`hostContention.contended` is `true`, median 1-minute load 12.6 on 16 cores. Comparing against an
-earlier quiet window:
+Every committed baseline was taken while other agents ran test suites and their own harness runs on
+the same machine; `hostContention.contended` is `true` in all five, with median 1-minute loads of
+6–18 on 16 cores, and each one says so in its own `notes`. What survives that:
 
-| Metric                       | Quiet   | Contended |
-| ---------------------------- | ------- | --------- |
-| 25-slide median RAM          | 796 MB  | 776 MB    |
-| 50-slide median RAM          | 1146 MB | 1091 MB   |
-| 25-slide median slide switch | 54 ms   | 118 ms    |
+| 100-slide median PSS    | Harness revision | Load (median) |
+| ----------------------- | ---------------- | ------------: |
+| 1725 MB (superseded)    | `e2a3a20`        |          12.6 |
+| 1680 MB                 | `7dda941`        |           9.8 |
+| 1662 MB                 | `ef07cf4`        |           7.8 |
+| **1685 MB** (committed) | `ef07cf4`        |           6.3 |
 
-**Memory reproduces within a few percent; timing roughly doubles.** So the RAM conclusion — the
-headline of this milestone — is safe. The timing columns above should be re-taken on a quiet machine
-before M8.2 diffs against them, and any contended run now says so in its own `notes`.
+**Memory reproduces within 4 % across four sweeps and three harness revisions; the process count is
+identical every time.** Timing does not: cold start ranged 0.75–2.3 s and slide switch 41–117 ms per
+run across the same sweeps, and the earlier quiet-window comparison (25-slide switch 54 ms quiet vs
+118 ms contended) still stands. The RAM conclusion — the headline of this milestone — is safe. The
+timing columns should be re-taken on a quiet machine before M8.2 diffs against them.
 
-`frameRateFps` in the contended baseline is **not usable**: it comes out non-monotonic across tiers
-(21.8, 50.4, 12.2, 0.0, 23.2 fps) because rAF delivery is exactly what a loaded host disrupts. The
-quiet-window series is the one to believe, and it degrades cleanly with deck size:
+`frameRateFps` and `droppedFrames` in the contended baselines are **not usable**: the three runs of
+the committed 100-slide baseline recorded 49.4, 2.4 and 55.6 fps, because rAF delivery is exactly
+what a loaded host disrupts. Contended reports now carry that caveat in `notes`. The quiet-window
+series taken during M8.1 development is the one to believe, and it degrades cleanly with deck size:
 
 | Slides | Shell frame rate (quiet) |
 | -----: | -----------------------: |
