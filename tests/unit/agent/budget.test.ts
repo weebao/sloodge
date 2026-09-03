@@ -35,12 +35,6 @@ describe('evaluateBudget — the warn/block progression', () => {
     expect(evaluateBudget(boundary, cap).level).toBe('warn')
   })
 
-  it('reports remaining budget, floored at zero on an overshoot', () => {
-    expect(evaluateBudget(0.5, 2).remainingUsd).toBeCloseTo(1.5)
-    // A turn that crossed the cap cannot be un-spent; remaining is zero, never negative.
-    expect(evaluateBudget(2.6, 2).remainingUsd).toBe(0)
-  })
-
   it('clamps the progress fraction to [0, 1] so an overshoot cannot overflow the bar', () => {
     expect(evaluateBudget(1, 2).fraction).toBeCloseTo(0.5)
     expect(evaluateBudget(9, 2).fraction).toBe(1)
@@ -49,7 +43,6 @@ describe('evaluateBudget — the warn/block progression', () => {
   it('is "off" with no cap — the meter still runs, nothing is refused', () => {
     const status = evaluateBudget(500, null)
     expect(status.level).toBe('off')
-    expect(status.remainingUsd).toBeNull()
     expect(canStartTurn(status)).toBe(true)
   })
 

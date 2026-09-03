@@ -96,6 +96,11 @@ describe('ChatPanel — no bridge (browser host)', () => {
     expect(composer().disabled).toBe(false)
     expect(screen.getByRole('button', { name: /send/i }).getAttribute('aria-disabled')).toBe('true')
     expect(screen.queryByText(/set up authentication/i)).toBeNull()
+    // The reason is on screen, not only in the button's tooltip — Enter is inert here too.
+    expect(screen.getByText(/chat is unavailable in this window/i)).toBeTruthy()
+    fireEvent.change(composer(), { target: { value: 'hello' } })
+    fireEvent.keyDown(composer(), { key: 'Enter' })
+    expect(composer().value).toBe('hello')
   })
 })
 

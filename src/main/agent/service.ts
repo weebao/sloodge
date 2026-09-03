@@ -121,7 +121,7 @@ export class AgentService {
       return { accepted: false, reason: 'budget' }
     }
     const session = existing ?? (await creating)
-    if (session === null || session === undefined) {
+    if (session === null) {
       return { accepted: false, reason: 'no-credential' }
     }
     // The cap the session enforces, and the backstop any query this send opens is handed. After a

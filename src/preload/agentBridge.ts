@@ -24,10 +24,10 @@ import {
   DECK_AGENT_EDIT_CHANNEL,
   DECK_AGENT_EDIT_RESULT_CHANNEL,
   DECK_UPDATED_CHANNEL,
+  type AgentSendRefusal,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
 import { isBudgetCap, type BudgetCap } from '../shared/agent/budget'
-import type { AgentSendRefusal } from '../shared/ipc-contract'
 import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
 import { type EndpointInfo } from '../shared/agent/endpoint'
 import { isDeckUpdate, type DeckUpdate } from '../shared/document/deck-update'

@@ -84,8 +84,6 @@ export type BudgetStatus = {
   readonly level: BudgetLevel
   readonly capUsd: BudgetCap
   readonly spentUsd: number
-  /** USD left before the cap; `null` when uncapped. Never negative — an overshoot reads `0`. */
-  readonly remainingUsd: number | null
   /** Spend as a fraction of the cap, clamped to `[0, 1]` for the progress bar; `0` when uncapped. */
   readonly fraction: number
 }
@@ -113,7 +111,7 @@ function sanitizeSpend(spentUsd: number): number {
 export function evaluateBudget(spentUsd: number, capUsd: BudgetCap): BudgetStatus {
   const spent = sanitizeSpend(spentUsd)
   if (capUsd === null) {
-    return { level: 'off', capUsd: null, spentUsd: spent, remainingUsd: null, fraction: 0 }
+    return { level: 'off', capUsd: null, spentUsd: spent, fraction: 0 }
   }
   if (!Number.isFinite(capUsd) || capUsd <= 0) {
     return evaluateBudget(spent, DEFAULT_BUDGET_CAP_USD)
@@ -121,13 +119,7 @@ export function evaluateBudget(spentUsd: number, capUsd: BudgetCap): BudgetStatu
   const fraction = Math.min(1, spent / capUsd)
   const level: BudgetLevel =
     spent >= capUsd ? 'blocked' : spent >= capUsd * BUDGET_WARN_FRACTION ? 'warn' : 'ok'
-  return {
-    level,
-    capUsd,
-    spentUsd: spent,
-    remainingUsd: Math.max(0, capUsd - spent),
-    fraction,
-  }
+  return { level, capUsd, spentUsd: spent, fraction }
 }
 
 /** Whether a new turn may be started. The one question the composer asks before sending. */

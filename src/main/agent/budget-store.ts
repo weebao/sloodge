@@ -28,7 +28,7 @@ import path from 'node:path'
 import { DEFAULT_BUDGET_CAP_USD, isBudgetCap, type BudgetCap } from '../../shared/agent/budget'
 
 /** The file's name under `userData`. Sibling of the vault slots, deliberately not inside them. */
-export const BUDGET_FILE_NAME = 'budget.json'
+const BUDGET_FILE_NAME = 'budget.json'
 
 /**
  * Read a persisted cap.
@@ -64,7 +64,7 @@ export type BudgetFs = {
   rename: (from: string, to: string) => Promise<void>
 }
 
-export const nodeBudgetFs: BudgetFs = {
+const nodeBudgetFs: BudgetFs = {
   readFile: (file) => readFile(file, 'utf8'),
   writeFile: (file, data) => writeFile(file, data, 'utf8'),
   rename: (from, to) => rename(from, to),

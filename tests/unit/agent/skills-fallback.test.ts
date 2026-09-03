@@ -207,7 +207,8 @@ describe('§8 fallback restart', () => {
       options: { ...OPTIONS, maxBudgetUsd: 2 },
       emit: () => {},
       log: () => {},
-      // Deferred so the first query's `result` is folded before the restart computes what remains.
+      // Deferred so the first query's `result` is folded before the restart, proving the cap handed
+      // to the replacement is not decremented by spend.
       loadFallbackPrompt: () =>
         new Promise((resolve) => setTimeout(() => resolve(FALLBACK_PROMPT), 10)),
     })

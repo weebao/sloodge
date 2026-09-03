@@ -211,13 +211,16 @@ describe('AgentService', () => {
     // later send pushes into a dead bridge while `accepted: true` comes back, and the chat panel is
     // finished for the life of the window.
     const ceilings: (number | undefined)[] = []
+    const resumes: (string | undefined)[] = []
     let starts = 0
     const queryFn: AgentQueryFn = (params) => {
       starts += 1
       ceilings.push(params.options.maxBudgetUsd)
+      resumes.push(params.options.resumeSessionId)
       const first = starts === 1
       const gen = (async function* () {
         if (first) {
+          yield { type: 'system', subtype: 'init', session_id: 's1', model: 'm', skills: [] }
           // The SDK's own ceiling fires and TERMINATES the query.
           yield { type: 'result', uuid: 'r1', subtype: 'error_max_budget_usd', total_cost_usd: 2.4 }
         } else {
@@ -258,7 +261,8 @@ describe('AgentService', () => {
     await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
     // ...carrying the RAISED cap as its backstop — the absolute cap, not a remainder.
     expect(ceilings[1]).toBe(20)
-    expect(service).toBeDefined()
+    // ...and resumes the conversation the stopped query had built up (best effort, §12).
+    expect(resumes).toEqual([undefined, 's1'])
     await service.dispose(1)
   })
 
@@ -387,19 +391,6 @@ describe('AgentService', () => {
     rt.finishTurn()
     await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
     expect(emitted.filter((e) => e.type === 'error')).toHaveLength(0)
-    await service.dispose(1)
-  })
-
-  it('hands the SDK the absolute cap as the per-query backstop', async () => {
-    const rt = costedQueryFn(0.01)
-    const service = new AgentService({
-      queryFn: rt.queryFn,
-      loadCredential: async () => LIVE,
-      resolvePaths: PATHS,
-      loadBudgetCap: async () => 2,
-    })
-    await service.send(1, 'hi', NOOP)
-    expect(rt.ceilings()).toEqual([2])
     await service.dispose(1)
   })
 

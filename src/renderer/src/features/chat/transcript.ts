@@ -159,9 +159,8 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
   'rate-limit': 'Claude is busy right now. Try again in a moment.',
   overloaded: 'Claude is overloaded. Try again shortly.',
   network: "Can't reach Claude. Slides and Design Mode still work offline.",
-  // M2.5 re-scoped this from "this deck" to the session — what the guard actually meters — and
-  // names the tab that changes it. Shared by both budget paths: our turn-admission refusal and the
-  // SDK's mid-turn `error_max_budget_usd` ceiling.
+  // Shared by both budget paths: our turn-admission refusal and the SDK's mid-turn
+  // `error_max_budget_usd` ceiling.
   budget: 'Budget reached for this session. Raise the limit in Settings ▸ Budget to continue.',
   'max-turns': 'This got complicated — Claude stopped after the step limit.',
   interrupted: 'Stopped.',

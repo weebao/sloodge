@@ -68,13 +68,7 @@ export type AgentErrorKind = (typeof AGENT_ERROR_KINDS)[number]
  * "not yet known" is the *absence* of this event rather than a value of it. The renderer's store
  * carries its own idle state.
  */
-export const SKILLS_STATUSES = ['ok', 'fallback', 'unavailable'] as const
-
-export type SkillsStatus = (typeof SKILLS_STATUSES)[number]
-
-export function isSkillsStatus(value: unknown): value is SkillsStatus {
-  return typeof value === 'string' && (SKILLS_STATUSES as readonly string[]).includes(value)
-}
+export type SkillsStatus = 'ok' | 'fallback' | 'unavailable'
 
 /**
  * Token usage for one assistant message or turn. Deliberately a subset of the SDK's `usage` object —

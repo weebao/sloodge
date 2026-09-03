@@ -164,13 +164,12 @@ describe('buildSdkOptions — §10 budget ceiling (M2.5)', () => {
     expect('maxBudgetUsd' in buildSdkOptions(OPTIONS)).toBe(false)
   })
 
-  it('passes the remaining budget as the in-flight ceiling', () => {
+  it('passes the cap through as maxBudgetUsd', () => {
     expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 1.5 }).maxBudgetUsd).toBe(1.5)
   })
 
   it('passes a ceiling of zero through rather than treating it as absent', () => {
-    // The session is already blocked; a query that ends immediately with error_max_budget_usd is
-    // the correct outcome, not one that runs free because the number looked degenerate.
+    // Pins the `!== undefined` check: a falsy-but-present number must reach the SDK, not be dropped.
     expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 0 }).maxBudgetUsd).toBe(0)
   })
 })

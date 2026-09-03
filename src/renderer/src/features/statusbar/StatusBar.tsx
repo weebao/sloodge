@@ -121,7 +121,7 @@ function CostMeter({
       >
         <span aria-hidden="true">≈</span>
         <span className="sr-only">approximately </span> {formatCostUsd(costUsd)}
-        {capped && budget.capUsd !== null ? ` / ${formatCostUsd(budget.capUsd)}` : ''}
+        {budget.capUsd !== null ? ` / ${formatCostUsd(budget.capUsd)}` : ''}
         {budgetUnknown ? ' / limit unknown' : ''} session
       </span>
       {capped ? (
