@@ -15,6 +15,12 @@ export type StatusBarProps = {
   sessionCostUsd: number
   /** The session against its cap (§10). `level: 'off'` renders the meter with no cap alongside it. */
   budget: BudgetStatus
+  /**
+   * The cap could not be read from main (M2.5). `budget` is then evaluated uncapped, but the session
+   * is *not* uncapped — main enforces the real cap — so the meter says the limit is unknown instead
+   * of showing a bare spend that reads as "no limit".
+   */
+  budgetUnknown?: boolean
   /** How the session loaded its slide skills (§8). `null` before the first init; see below. */
   skills: SessionSkills
   /**
@@ -73,12 +79,20 @@ function SkillsIndicator({ skills }: { skills: SessionSkills }): JSX.Element | n
  * `$0.34 / $2.00 ▓▓▓░░░░░`. Amber from 80%, red once the cap is reached and turns are refused, so
  * the moment the composer starts saying no is visible *before* the user is told no.
  */
-function CostMeter({ costUsd, budget }: { costUsd: number; budget: BudgetStatus }): JSX.Element {
+function CostMeter({
+  costUsd,
+  budget,
+  budgetUnknown,
+}: {
+  costUsd: number
+  budget: BudgetStatus
+  budgetUnknown: boolean
+}): JSX.Element {
   const capped = budget.level !== 'off' && budget.capUsd !== null
   const tone =
     budget.level === 'blocked'
       ? 'text-red-600 dark:text-red-400'
-      : budget.level === 'warn'
+      : budget.level === 'warn' || budgetUnknown
         ? 'text-amber-600 dark:text-amber-500'
         : undefined
   const barTone =
@@ -96,10 +110,19 @@ function CostMeter({ costUsd, budget }: { costUsd: number; budget: BudgetStatus 
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span data-testid="statusbar-cost" className={tone}>
+      <span
+        data-testid="statusbar-cost"
+        className={tone}
+        title={
+          budgetUnknown
+            ? 'Your saved limit could not be read. Sloodge is still enforcing it; open Settings ▸ Budget to retry.'
+            : undefined
+        }
+      >
         <span aria-hidden="true">≈</span>
         <span className="sr-only">approximately </span> {formatCostUsd(costUsd)}
-        {capped && budget.capUsd !== null ? ` / ${formatCostUsd(budget.capUsd)}` : ''} session
+        {capped && budget.capUsd !== null ? ` / ${formatCostUsd(budget.capUsd)}` : ''}
+        {budgetUnknown ? ' / limit unknown' : ''} session
       </span>
       {capped ? (
         <span
@@ -129,6 +152,7 @@ export function StatusBar({
   issueCount,
   sessionCostUsd,
   budget,
+  budgetUnknown = false,
   skills,
   onPresent,
 }: StatusBarProps): JSX.Element {
@@ -148,7 +172,7 @@ export function StatusBar({
       </span>
       <SkillsIndicator skills={skills} />
       <span aria-hidden="true" className="h-3 w-px bg-chrome-line dark:bg-ink-line" />
-      <CostMeter costUsd={sessionCostUsd} budget={budget} />
+      <CostMeter costUsd={sessionCostUsd} budget={budget} budgetUnknown={budgetUnknown} />
 
       <button
         type="button"

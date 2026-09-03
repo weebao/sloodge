@@ -235,9 +235,10 @@ describe('ChatPanel — a pre-stream send rejection', () => {
     // agent:send rejects before any stream begins (e.g. a keychain read fault) — session.consume()
     // never sees it, so the hook's own catch is the only thing that can settle the turn.
     const rejecting = vi.fn(async () => {
-      throw new Error('keychain is locked')
+      throw new Error("Error invoking remote method 'agent:send': keychain is locked")
     })
     fake.bridge.sendMessage = rejecting
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
     render(<ChatPanel />)
     await waitFor(() => expect(composer().disabled).toBe(false))
@@ -245,9 +246,12 @@ describe('ChatPanel — a pre-stream send rejection', () => {
     fireEvent.change(composer(), { target: { value: 'build it' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
 
-    // The reject is mapped to a visible bubble carrying its message…
+    // The reject is mapped to a visible bubble with calibrated copy — the raw IPC text (channel
+    // names, main-process stack) goes to the console, not the chat…
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/keychain is locked/i)
+    expect(alert.textContent).toMatch(/the agent turn failed/i)
+    expect(alert.textContent).not.toMatch(/agent:send|keychain/i)
+    expect(quiet).toHaveBeenCalled()
     // …and the composer is usable again (not wedged behind a Stop button).
     await waitFor(() => expect(composer().disabled).toBe(false))
     expect(screen.getByRole('button', { name: /send/i })).toBeTruthy()

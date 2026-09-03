@@ -238,7 +238,11 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
       if (!isBudgetSetRequest(payload)) {
         throw new Error('agent:setBudget requires { capUsd: number | null }')
       }
-      return { capUsd: await setBudgetCap(payload.capUsd) }
+      const capUsd = await setBudgetCap(payload.capUsd)
+      // Bind the saved cap to live sessions now, not on their next send (M2.5 §10: a cap lowered
+      // below current spend stops the running turn).
+      service.setBudgetCap(capUsd)
+      return { capUsd }
     },
   )
 

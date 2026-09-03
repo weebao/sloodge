@@ -9,12 +9,7 @@
  */
 
 import { DEFAULT_AGENT_MODEL, type AgentEvent, type AgentModelId } from '../../shared/agent/types'
-import {
-  canStartTurn,
-  evaluateBudget,
-  remainingBudgetUsd,
-  type BudgetCap,
-} from '../../shared/agent/budget'
+import { canStartTurn, evaluateBudget, type BudgetCap } from '../../shared/agent/budget'
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
 import type { AgentCredential } from './auth-env'
 import { defaultAgentLog, type AgentLog } from './log'
@@ -59,7 +54,8 @@ export type AgentServiceDeps = {
   /**
    * The user's configured spend cap (§10, M2.5), read fresh on every send so a change in Settings
    * takes effect on the next turn rather than the next app launch. `undefined` (dep absent) and
-   * `null` (no limit) both mean "do not cap".
+   * `null` (no limit) both mean "do not cap". A change that must bind *during* a turn arrives via
+   * `setBudgetCap` instead.
    */
   readonly loadBudgetCap?: () => Promise<BudgetCap>
   /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
@@ -128,13 +124,22 @@ export class AgentService {
     if (session === null || session === undefined) {
       return { accepted: false, reason: 'no-credential' }
     }
-    // Re-arm the in-flight ceiling for whatever query this send opens. After a budget stop the SDK
-    // has terminated the query and the session re-arms itself, so the next send opens a *new* one —
-    // which must carry the cap the user just raised, not the one that stopped it. Without this,
-    // "raise the limit in Settings and carry on" would start a query that instantly stops again.
-    session.setBudgetCeiling(remainingBudgetUsd(session.estimatedSpendUsd, capUsd))
+    // The cap the session enforces, and the backstop any query this send opens is handed. After a
+    // budget stop the SDK has terminated the query and the session re-arms on this send — which must
+    // carry the cap the user just raised, not the one that stopped it.
+    session.setBudgetCap(capUsd)
     session.send(text)
     return { accepted: true }
+  }
+
+  /**
+   * A cap saved in Settings, pushed to every live session immediately rather than waiting for the
+   * next send — the one direction that cannot wait is a cap lowered below what a streaming turn's
+   * session has already spent, which the session answers by stopping that turn (`AgentSession.
+   * setBudgetCap`). Sessions still being created pick the cap up on their first send.
+   */
+  setBudgetCap(capUsd: BudgetCap): void {
+    for (const session of this.sessions.values()) session.setBudgetCap(capUsd)
   }
 
   /**
@@ -184,10 +189,8 @@ export class AgentService {
         log(`[agent] workspace preparation failed: ${String(error)}`)
       }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
-      // §10's in-flight ceiling, seeded here so a session is never briefly uncapped. `send` re-arms
-      // it before every turn (so a cap raised in Settings reaches the next query) and the session
-      // recomputes what remains if it restarts into the §8 fallback.
-      const maxBudgetUsd = remainingBudgetUsd(0, (await this.deps.loadBudgetCap?.()) ?? null)
+      // No cap is seeded here: `send` sets it on the session before the first turn, and a query is
+      // only ever opened by a send.
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
         log,
@@ -200,7 +203,6 @@ export class AgentService {
           cwd,
           configDir,
           ...(mcpServers !== undefined ? { mcpServers } : {}),
-          ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
         },
         emit,
       })

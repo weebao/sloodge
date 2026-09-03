@@ -27,25 +27,26 @@
  *
  * ## What happens when a single turn crosses the cap
  *
- * You cannot un-spend it. The two honest options are stop-before-the-next-turn and
- * interrupt-in-flight, and Sloodge does the first — plus hands the second to the one component that
- * can actually do it. The reasoning, because "we picked the easy one" would be the wrong answer:
+ * You cannot un-spend it. Cost reaches us only on the `result` message, i.e. when the turn is
+ * already over — deltas carry no price and assistant `usage` carries tokens, not dollars, and a local
+ * token→price table is the exact thing §10 forbids us from billing off. So the cap is enforced at
+ * the two places main can actually see a number:
  *
- * 1. **We cannot observe a mid-turn crossing.** Cost reaches us only on the `result` message, i.e.
- *    when the turn is already over. Deltas carry no price and assistant `usage` carries tokens, not
- *    dollars. Interrupting "as the cap is crossed" would require a local token→price table — the
- *    exact thing §10 forbids us from billing off.
- * 2. **Interrupting mid-turn destroys the value of money already spent.** The tokens are burnt
- *    either way; an interrupt at slide 3 of 5 leaves the user having paid full price for a
- *    half-edited deck. The cap exists to bound spend, not to maximise waste.
- * 3. **The SDK owns the in-flight brake, and we use it.** `Options.maxBudgetUsd` stops the query
- *    from inside and ends it with `result.subtype === 'error_max_budget_usd'` — already classified
- *    as the `budget` error kind (event-mapping.ts). `remainingBudgetUsd` below computes what main
- *    passes, so the ceiling is enforced *during* a turn by the only layer that prices tokens, while
- *    this module enforces admission *between* turns with copy the user can act on.
+ * 1. **Admission, between turns** — `AgentService.send` refuses a new turn once the folded total
+ *    has reached the cap. This is the primary gate, and it is what the copy below explains.
+ * 2. **On a cap change, or a fold, with a turn still open** — if the folded total already meets the
+ *    cap, `AgentSession` stops the open turn through the same `interrupt()` the Stop button uses.
+ *    That is the only way a cap *lowered* in Settings can bind a turn already running, and the only
+ *    way an overlapping second turn (Stop → retype → Send) is stopped once the first one's result
+ *    lands the session over the cap.
  *
- * So: a turn in flight always runs to completion under the SDK's own ceiling; the next one is
- * refused by us. Neither half is silent.
+ * The SDK's `Options.maxBudgetUsd` is passed to every query as the absolute cap — a backstop that
+ * ends a single runaway query with `error_max_budget_usd`, not the session ledger. It is never a
+ * decaying remainder and a live query is never replaced to change it: both were tried, and both
+ * broke the money invariant (see `AgentSession.setBudgetCap`).
+ *
+ * So: a turn in flight runs until its own result arrives or main can see the cap is met; the next
+ * one is refused. Neither half is silent.
  */
 
 import { formatCostUsd } from './cost'
@@ -132,20 +133,6 @@ export function evaluateBudget(spentUsd: number, capUsd: BudgetCap): BudgetStatu
 /** Whether a new turn may be started. The one question the composer asks before sending. */
 export function canStartTurn(status: BudgetStatus): boolean {
   return status.level !== 'blocked'
-}
-
-/**
- * What main passes as `Options.maxBudgetUsd` for a query opened now (§10's "per-turn ceiling:
- * remaining budget"). `undefined` when uncapped, so the option is omitted rather than sent as a
- * sentinel the SDK would read as a real ceiling.
- *
- * A remaining of `0` is passed through deliberately: the session is already blocked, and a query
- * that ends immediately with `error_max_budget_usd` is the correct outcome — not one that runs free
- * because the number looked degenerate.
- */
-export function remainingBudgetUsd(spentUsd: number, capUsd: BudgetCap): number | undefined {
-  const status = evaluateBudget(spentUsd, capUsd)
-  return status.remainingUsd ?? undefined
 }
 
 /**

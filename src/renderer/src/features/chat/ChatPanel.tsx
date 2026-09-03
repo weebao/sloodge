@@ -58,17 +58,21 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
   }, [transcript.messages, transcript.turnState])
 
   const submit = useCallback(() => {
-    if (draft.trim().length === 0) return
+    const submitted = draft
+    if (submitted.trim().length === 0) return
     // A refused turn never runs, so the composer keeps the user's words to retry — and the context
     // chip stays attached to them. Clearing on a refusal would silently eat a message that was never
     // sent. `send` is **awaited** because the refusal can come from main (its own budget check, or a
     // credential that vanished), which is only known a round trip later; clearing optimistically was
     // exactly how a main-refused message used to disappear.
-    void send(draft, attachment).then((accepted) => {
+    void send(submitted, attachment).then((accepted) => {
       if (!accepted) return
-      // Consume the pending element context with this turn, then clear the chip.
-      if (attachment !== null) clearContext()
-      setDraft('')
+      // Clear only what was sent. Stop re-enables the composer while the accept is still in flight,
+      // so text typed or a chip attached in that window is the user's next message, not this one's.
+      if (attachment !== null && useChatContextStore.getState().attachment === attachment) {
+        clearContext()
+      }
+      setDraft((current) => (current === submitted ? '' : current))
     })
   }, [draft, send, attachment, clearContext])
 
@@ -76,19 +80,20 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
     setDraft(event.target.value)
   }, [])
 
+  const canSend = hasBridge && !needsKey && !streaming && draft.trim().length > 0
+
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       // Enter sends; Shift+Enter inserts a newline. IME composition (`isComposing`) must never
-      // send — pressing Enter to accept a candidate would otherwise fire the turn.
+      // send — pressing Enter to accept a candidate would otherwise fire the turn. The same gate as
+      // the button, so Enter with no bridge is inert for the same reason the hint below states.
       if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault()
-        submit()
+        if (canSend) submit()
       }
     },
-    [submit],
+    [submit, canSend],
   )
-
-  const canSend = hasBridge && !needsKey && !streaming && draft.trim().length > 0
 
   return (
     <aside
@@ -115,6 +120,12 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
 
       <div className="border-t border-chrome-line p-2 dark:border-ink-line">
         {needsKey ? <AuthGate onOpenSettings={onOpenAuthSettings} /> : null}
+        {hasBridge ? null : (
+          // The reason Send and Enter do nothing, on screen rather than only in the button's tooltip.
+          <p className="mb-2 text-[11px] text-chrome-muted dark:text-ink-muted">
+            Chat is unavailable in this window.
+          </p>
+        )}
 
         <label className="sr-only" htmlFor="chat-composer">
           Ask Claude

@@ -1,26 +1,34 @@
 /**
- * **The status bar must not lie.** (M2.5, 50-agent-integration.md §10)
+ * **The ledger never undercounts real spend** — proven combinatorially, not by curated cases.
  *
- * The number the user reads in the status bar comes from the renderer's transcript reducer. The
- * number the budget guard is ultimately enforced against in main comes from `AgentSession`. If those
- * two drift, the meter misreports what was spent *and* the guard fires at the wrong moment — and the
- * drift is invisible, because nothing in the app ever compares them.
+ * Three review rounds failed this feature on the same shape: two conditions that were each tested
+ * alone, and undercounted in their product — overlap × boolean fold (r1), overlap × duplicate
+ * `result` (r2), overlap × query replacement (r3). Each time both ledgers agreed on the wrong
+ * number, so a test comparing them stayed green. This file therefore does two things a curated list
+ * cannot:
  *
- * So this file compares them. One scripted SDK message sequence is driven through *both* paths — the
- * real `AgentSession` with a fake `queryFn`, and the real `reduceTranscript` fed the same
- * `AgentEvent`s — and the totals must match exactly, including on the awkward streams: an
- * interrupted turn, an error turn, and a duplicated `result`.
+ * 1. **Enumerates the conditions and runs every pair and every triple.** The list below is the set of
+ *    independent things a real session can do to a turn's cost. Adding a condition here adds its
+ *    every crossing automatically; a mechanism added to the session without a condition here is the
+ *    next uncrossed pair.
+ * 2. **Checks both ledgers against a model of the script**, not merely against each other. The model
+ *    is one sentence: *a turn bills once, at its first `result`; a turn whose query ends before its
+ *    `result` bills nothing; a `result` with no turn open bills nothing.* `compose()` computes the
+ *    expected total from the script it builds, with no reference to either implementation.
  *
- * This is only meaningful because neither side owns its arithmetic: both call
- * `shared/agent/cost.ts`. Give either one a private accumulator again and the cases below start
- * disagreeing.
+ * Both ledgers are the **real** ones: `AgentSession` with a fake runtime on one side, and the real
+ * `reduceTranscript` on the other, fed the `AgentEvent`s the session *emits* — the same events the
+ * renderer receives over IPC — interleaved with the renderer's own actions in the order the app
+ * produces them (`user-send` before the IPC send, `interrupt-requested` before `interrupt()`).
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentSession } from '../../../src/main/agent/session'
-import type { AgentQueryFn, AgentQueryHandle } from '../../../src/main/agent/query-contract'
-import type { AgentQueryOptions } from '../../../src/main/agent/query-contract'
-import { mapSdkMessage } from '../../../src/main/agent/event-mapping'
+import type {
+  AgentQueryFn,
+  AgentQueryHandle,
+  AgentQueryOptions,
+} from '../../../src/main/agent/query-contract'
 import {
   initialTranscript,
   reduceTranscript,
@@ -35,37 +43,226 @@ const OPTIONS: AgentQueryOptions = {
   configDir: '/config',
 }
 
-const INIT = {
-  type: 'system',
-  subtype: 'init',
-  session_id: 's1',
-  model: 'claude-opus-5',
-  skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
+/** The session's cap for every script; well above what the three turns spend, so admission is moot. */
+const CAP = 2
+
+/* -------------------------------------------------------------------------------------------- *
+ * The conditions
+ * -------------------------------------------------------------------------------------------- */
+
+/**
+ * Every independent condition a script can carry. Each is one thing the app, the SDK, or the user
+ * can do to a turn; the matrix runs every subset of size ≤ 3.
+ *
+ * - `overlap`     — Stop → retype → Send: T3 is opened while T2's result is still in flight.
+ * - `duplicate`   — the runtime repeats every `result` (same uuid).
+ * - `interrupt`   — the user presses Stop on T1; its result still arrives.
+ * - `stray`       — a `result` arrives with no turn open.
+ * - `missing`     — the runtime ends its stream without ever answering T3.
+ * - `dispose`     — the session is closed while T3 is still streaming.
+ * - `outOfOrder`  — with two turns open, T3's result arrives before T2's (implies the overlap shape).
+ * - `backstop`    — T2 ends with the SDK's `error_max_budget_usd`, which terminates the query.
+ * - `lowerAbove`  — Settings lowers the cap mid-turn, but not below what has been spent.
+ * - `lowerBelow`  — Settings lowers the cap mid-turn below what has been spent.
+ * - `raise`       — Settings raises the cap mid-turn.
+ * - `refused`     — main refuses a send the renderer had optimistically opened.
+ */
+const CONDITIONS = [
+  'overlap',
+  'duplicate',
+  'interrupt',
+  'stray',
+  'missing',
+  'dispose',
+  'outOfOrder',
+  'backstop',
+  'lowerAbove',
+  'lowerBelow',
+  'raise',
+  'refused',
+] as const
+
+type Condition = (typeof CONDITIONS)[number]
+
+/* -------------------------------------------------------------------------------------------- *
+ * The script and its model
+ * -------------------------------------------------------------------------------------------- */
+
+type Turn = {
+  readonly id: string
+  readonly text: string
+  readonly costUsd: number
+  readonly uuid: string
 }
 
-function fakeHandle(messages: readonly unknown[]): AgentQueryHandle {
-  async function* gen(): AsyncGenerator<unknown, void, unknown> {
-    yield* messages
-  }
-  const handle = gen() as AgentQueryHandle
-  handle.interrupt = async () => undefined
-  handle.setModel = async () => undefined
-  return handle
+const T1: Turn = { id: 'T1', text: 'one', costUsd: 0.1, uuid: 'r-1' }
+const T2: Turn = { id: 'T2', text: 'two', costUsd: 0.25, uuid: 'r-2' }
+const T3: Turn = { id: 'T3', text: 'three', costUsd: 1, uuid: 'r-3' }
+
+type Step =
+  | { readonly kind: 'send'; readonly turn: Turn }
+  | { readonly kind: 'stop' }
+  | { readonly kind: 'result'; readonly turn: Turn; readonly subtype: string }
+  | { readonly kind: 'stray' }
+  /** The runtime ends its stream; `closes` is how many unanswered turns main must close at $0. */
+  | { readonly kind: 'query-ends'; readonly closes: number }
+  /**
+   * Settings saved a cap. `reply` is what the runtime answers a *main-initiated* interrupt with:
+   * `null` means main must not interrupt at all; `[]` means it interrupts and nothing comes back.
+   */
+  | { readonly kind: 'set-cap'; readonly capUsd: number; readonly reply: readonly Turn[] | null }
+  | { readonly kind: 'refused-send' }
+  | { readonly kind: 'dispose' }
+
+type Script = {
+  readonly steps: readonly Step[]
+  /** The model: what the script actually spent. */
+  readonly expectedUsd: number
+  /** How many `query()` subprocesses the script should have needed. */
+  readonly expectedStarts: number
+  /** Turns still open when the script ends (only a dispose mid-turn leaves one). */
+  readonly expectedOpenAtEnd: number
+  /** How many times the runtime should have been asked to interrupt (user Stops + cap stops). */
+  readonly expectedInterrupts: number
+  /** Budget errors main should have shown: the SDK backstop's, and a cap-stop's. */
+  readonly expectedBudgetErrors: number
 }
 
 /**
- * A runtime whose messages the test releases turn by turn.
+ * Build the script for one set of conditions and, alongside it, what that script should cost.
  *
- * A fixed-list handle cannot express a multi-turn session: it would deliver every `result` after
- * every `send`, which is not an ordering the app can produce (the composer refuses to send while a
- * turn streams) and would compare the two accumulators on a stream neither is designed for. This
- * one answers one turn at a time, the way a real session does.
+ * Three turns, in order. Conditions attach to fixed points so their crossings are well defined: the
+ * user Stop and duplicate on T1, the overlap/backstop on T2, the missing/dispose/cap-stop on T3, the
+ * refusal and the stray between T1 and T2. The running `expectedUsd` is the model — a turn bills at
+ * its first delivered result, and only on a query that is still alive to deliver it.
  */
-function scriptedRuntime(): {
-  handle: AgentQueryHandle
-  deliver: (messages: readonly unknown[]) => void
-  end: () => void
-} {
+function compose(active: ReadonlySet<Condition>): Script {
+  const has = (condition: Condition): boolean => active.has(condition)
+  const steps: Step[] = []
+  let expectedUsd = 0
+  let expectedStarts = 1
+  let expectedInterrupts = 0
+  let expectedBudgetErrors = 0
+  let capUsd = CAP
+
+  const send = (turn: Turn): void => {
+    steps.push({ kind: 'send', turn })
+  }
+  const stop = (): void => {
+    steps.push({ kind: 'stop' })
+    expectedInterrupts += 1
+  }
+  const result = (turn: Turn, subtype = 'success'): void => {
+    steps.push({ kind: 'result', turn, subtype })
+    expectedUsd += turn.costUsd
+  }
+  const setCap = (next: number, reply: readonly Turn[] | null): void => {
+    capUsd = next
+    steps.push({ kind: 'set-cap', capUsd: next, reply })
+  }
+
+  // --- T1: the plain turn, optionally stopped by the user, optionally duplicated by the runtime ---
+  send(T1)
+  if (has('raise')) setCap(10, null)
+  if (has('interrupt')) stop()
+  result(T1)
+  if (has('refused')) steps.push({ kind: 'refused-send' })
+  if (has('stray')) steps.push({ kind: 'stray' })
+
+  // --- T2 (and, in the overlap shape, T3 opened on top of it) ---
+  const overlapShape = has('overlap') || has('outOfOrder')
+  const terminal = has('backstop')
+  send(T2)
+  if (has('lowerAbove')) setCap(1.5, null) // spent so far: $0.10
+  let t3Open = false
+  if (overlapShape) {
+    stop()
+    send(T3)
+    t3Open = true
+    if (has('outOfOrder') && !has('missing') && !has('dispose')) {
+      result(T3)
+      t3Open = false
+    }
+    if (terminal) {
+      result(T2, 'error_max_budget_usd')
+      expectedBudgetErrors += 1
+      // The SDK terminated the query. A T3 still open on it is never answered: main closes it at $0.
+      steps.push({ kind: 'query-ends', closes: t3Open ? 1 : 0 })
+      t3Open = false
+    } else {
+      result(T2)
+    }
+  } else if (terminal) {
+    result(T2, 'error_max_budget_usd')
+    expectedBudgetErrors += 1
+    steps.push({ kind: 'query-ends', closes: 0 })
+    // The next send re-arms: a second query, carrying the cap in force at that moment.
+    send(T3)
+    t3Open = true
+    expectedStarts = 2
+  } else {
+    result(T2)
+    send(T3)
+    t3Open = true
+  }
+
+  // --- T3: answered, stopped by a lowered cap, left unanswered, or disposed mid-stream ---
+  if (t3Open) {
+    if (has('lowerBelow')) {
+      // Spent so far is $0.35 (or more); a cap of $0.20 is below it, so main must stop T3.
+      const reply = has('missing') || has('dispose') ? [] : [T3]
+      setCap(0.2, reply)
+      expectedInterrupts += 1
+      expectedBudgetErrors += 1
+      if (reply.length > 0) {
+        expectedUsd += T3.costUsd
+        t3Open = false
+      }
+    } else if (!has('missing') && !has('dispose')) {
+      result(T3)
+      t3Open = false
+    }
+  } else if (has('lowerBelow')) {
+    // Nothing open: lowering below spend has nothing to stop, and must not invent anything.
+    setCap(0.2, null)
+  }
+
+  let expectedOpenAtEnd = 0
+  if (has('dispose')) {
+    steps.push({ kind: 'dispose' })
+    expectedOpenAtEnd = t3Open ? 1 : 0
+  } else if (t3Open) {
+    // `missing`: the runtime closes its stream without answering. Main closes T3 at $0.
+    steps.push({ kind: 'query-ends', closes: 1 })
+  }
+
+  void capUsd
+  return {
+    steps,
+    expectedUsd,
+    expectedStarts,
+    expectedOpenAtEnd,
+    expectedInterrupts,
+    expectedBudgetErrors,
+  }
+}
+
+/* -------------------------------------------------------------------------------------------- *
+ * The fake runtime and the two-ledger harness
+ * -------------------------------------------------------------------------------------------- */
+
+type Runtime = {
+  readonly handle: AgentQueryHandle
+  readonly deliver: (messages: readonly unknown[]) => void
+  readonly end: () => void
+}
+
+/**
+ * One `query()`: a message stream the test releases explicitly. `interrupt()` calls back so the
+ * harness can answer a main-initiated stop; `return()` ends the stream first so a session closed
+ * mid-turn does not hang on a generator parked at its wake-up await.
+ */
+function scriptedRuntime(onInterrupt: () => void): Runtime {
   const queue: unknown[] = []
   let wake: (() => void) | null = null
   let ended = false
@@ -74,8 +271,7 @@ function scriptedRuntime(): {
     for (;;) {
       while (queue.length > 0) yield queue.shift()
       if (ended) return
-      // Sequential by nature: this generator *is* the runtime's clock, and each pause waits for the
-      // test to release the next turn. Parallelising it would remove the ordering under test.
+      // Sequential by nature: this generator *is* the runtime's clock.
       // eslint-disable-next-line no-await-in-loop
       await new Promise<void>((resolve) => {
         wake = resolve
@@ -83,15 +279,26 @@ function scriptedRuntime(): {
     }
   }
 
-  const handle = gen() as AgentQueryHandle
-  handle.interrupt = async () => undefined
-  handle.setModel = async () => undefined
-
   const nudge = (): void => {
     const resume = wake
     wake = null
     resume?.()
   }
+  const end = (): void => {
+    ended = true
+    nudge()
+  }
+
+  const handle = gen() as AgentQueryHandle
+  handle.interrupt = async () => {
+    onInterrupt()
+  }
+  handle.setModel = async () => undefined
+  const originalReturn = handle.return.bind(handle)
+  handle.return = ((value?: void) => {
+    end()
+    return originalReturn(value)
+  }) as AgentQueryHandle['return']
 
   return {
     handle,
@@ -99,318 +306,231 @@ function scriptedRuntime(): {
       queue.push(...messages)
       nudge()
     },
-    end: () => {
-      ended = true
-      nudge()
-    },
+    end,
   }
 }
 
-/** One user turn and the raw SDK messages the runtime answers it with. */
-type ScriptedTurn = {
-  readonly text: string
-  readonly messages: readonly unknown[]
+type Outcome = {
+  readonly mainUsd: number
+  readonly mainOpen: number
+  readonly rendererUsd: number
+  readonly rendererOpen: number
+  readonly rendererTurnState: Transcript['turnState']
+  readonly starts: number
+  readonly ceilings: readonly (number | undefined)[]
+  readonly interrupts: number
+  readonly budgetErrors: number
 }
 
-/** Run the script through main's accumulator (`AgentSession`) and report its total. */
-async function mainTotal(script: readonly ScriptedTurn[]): Promise<number> {
-  const runtime = scriptedRuntime()
-  const queryFn = vi.fn(() => runtime.handle) as unknown as AgentQueryFn
+/** A macrotask boundary: every microtask chain a runtime's `end()` started has run by then. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+function resultMessage(turn: Turn, subtype: string): unknown {
+  return { type: 'result', uuid: turn.uuid, subtype, total_cost_usd: turn.costUsd }
+}
+
+async function run(script: Script, duplicate: boolean): Promise<Outcome> {
+  const runtimes: Runtime[] = []
+  const ceilings: (number | undefined)[] = []
+  let interrupts = 0
+  let interruptReply: readonly unknown[] | null = null
+
+  const queryFn: AgentQueryFn = ({ options }) => {
+    ceilings.push(options.maxBudgetUsd)
+    const runtime: Runtime = scriptedRuntime(() => {
+      interrupts += 1
+      const reply = interruptReply
+      interruptReply = null
+      if (reply !== null) runtime.deliver(reply)
+    })
+    runtimes.push(runtime)
+    return runtime.handle
+  }
+
+  // The renderer ledger: the real reducer, fed exactly what main emits.
+  let renderer: Transcript = initialTranscript
   const emitted: AgentEvent[] = []
+  const waiters: (() => void)[] = []
   const session = new AgentSession({
     queryFn,
-    options: OPTIONS,
-    emit: (event) => emitted.push(event),
+    options: { ...OPTIONS, maxBudgetUsd: CAP },
+    emit: (event) => {
+      emitted.push(event)
+      renderer = reduceTranscript(renderer, { type: 'agent-event', event })
+      for (const waiter of waiters.splice(0)) waiter()
+    },
     log: () => {},
   })
 
-  let expectedEnds = 0
-  for (const turn of script) {
-    // Each turn is opened on the session exactly as the IPC layer opens it, and answered before the
-    // next one is sent — the only ordering the composer can actually produce.
-    session.send(turn.text)
-    runtime.deliver(turn.messages)
-    expectedEnds += turn.messages.filter((m) => (m as { type?: string }).type === 'result').length
-    const target = expectedEnds
-    // Sequential on purpose: a turn must finish before the next is sent, which is the whole point.
-    // eslint-disable-next-line no-await-in-loop
-    await vi.waitFor(() =>
-      expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(target),
-    )
+  const turnEnds = (): number => emitted.filter((e) => e.type === 'turn-end').length
+  const untilTurnEnds = (n: number): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        reject(
+          new Error(
+            `expected ${String(n)} turn-ends, saw ${String(turnEnds())}: ${emitted.map((e) => e.type).join(',')}`,
+          ),
+        )
+      }, 2000)
+      const check = (): void => {
+        if (turnEnds() >= n) {
+          clearTimeout(deadline)
+          resolve()
+        } else {
+          waiters.push(check)
+        }
+      }
+      check()
+    })
+  const current = (): Runtime => {
+    const runtime = runtimes.at(-1)
+    if (runtime === undefined) throw new Error('no query has been opened')
+    return runtime
   }
-  runtime.end()
-  const total = session.estimatedSpendUsd
-  await session.close()
-  return total
-}
+  const times = (message: unknown): unknown[] => (duplicate ? [message, message] : [message])
 
-/** Run the same script through the renderer's reducer and report its total. */
-function rendererTotal(script: readonly ScriptedTurn[]): number {
-  const seen = new Set<string>()
-  let state: Transcript = initialTranscript
-  for (const turn of script) {
-    state = reduceTranscript(state, { type: 'user-send', text: turn.text })
-    for (const raw of turn.messages) {
-      for (const event of mapSdkMessage(raw, seen)) {
-        state = reduceTranscript(state, { type: 'agent-event', event })
-      }
+  let ends = 0
+  let disposed = false
+  for (const step of script.steps) {
+    switch (step.kind) {
+      case 'send':
+        renderer = reduceTranscript(renderer, {
+          type: 'user-send',
+          text: step.turn.text,
+          turnId: step.turn.id,
+        })
+        session.send(step.turn.text)
+        break
+      case 'stop':
+        renderer = reduceTranscript(renderer, { type: 'interrupt-requested' })
+        // Sequential by construction: each step is the next thing that happens.
+        // eslint-disable-next-line no-await-in-loop
+        await session.interrupt()
+        break
+      case 'result':
+        current().deliver(times(resultMessage(step.turn, step.subtype)))
+        ends += 1
+        // eslint-disable-next-line no-await-in-loop
+        await untilTurnEnds(ends)
+        break
+      case 'stray':
+        current().deliver(
+          times({ type: 'result', uuid: 'r-stray', subtype: 'success', total_cost_usd: 9.99 }),
+        )
+        // Main still emits the (no-op) turn-end; both ledgers ignore it.
+        ends += 1
+        // eslint-disable-next-line no-await-in-loop
+        await untilTurnEnds(ends)
+        break
+      case 'query-ends':
+        current().end()
+        ends += step.closes
+        // eslint-disable-next-line no-await-in-loop
+        await untilTurnEnds(ends)
+        // eslint-disable-next-line no-await-in-loop
+        await flush()
+        break
+      case 'set-cap':
+        interruptReply =
+          step.reply === null
+            ? null
+            : step.reply.flatMap((turn) => times(resultMessage(turn, 'success')))
+        session.setBudgetCap(step.capUsd)
+        if (step.reply !== null && step.reply.length > 0) {
+          ends += 1
+          // eslint-disable-next-line no-await-in-loop
+          await untilTurnEnds(ends)
+        } else {
+          // eslint-disable-next-line no-await-in-loop
+          await flush()
+        }
+        break
+      case 'refused-send':
+        renderer = reduceTranscript(renderer, { type: 'user-send', text: 'refused', turnId: 'TR' })
+        renderer = reduceTranscript(renderer, { type: 'turn-refused', turnId: 'TR' })
+        break
+      case 'dispose':
+        // eslint-disable-next-line no-await-in-loop
+        await session.close()
+        disposed = true
+        break
     }
   }
-  return state.cost.totalUsd
+  if (!disposed) await session.close()
+
+  return {
+    mainUsd: session.estimatedSpendUsd,
+    mainOpen: session.openTurns,
+    rendererUsd: renderer.cost.totalUsd,
+    rendererOpen: renderer.cost.openTurns,
+    rendererTurnState: renderer.turnState,
+    starts: runtimes.length,
+    ceilings,
+    interrupts,
+    budgetErrors: emitted.filter((e) => e.type === 'error' && e.kind === 'budget').length,
+  }
 }
 
-/**
- * An **independent** model of what the script should cost: one turn bills once, at the first
- * `result` the runtime sends for it.
- *
- * This exists because agreement alone is a weak oracle. A boolean fold flag once made both sides
- * drop an overlapping turn's cost *in the same direction*, so the cross-check below stayed green
- * while the meter under-reported a whole turn. A test that can only detect divergence cannot detect
- * shared error — so every case is also checked against this model, which is derived from the script
- * rather than from either implementation.
- */
-function expectedFromScript(script: readonly ScriptedTurn[]): number {
-  return script.reduce((total, turn) => {
-    const first = turn.messages.find((m) => (m as { type?: string }).type === 'result')
-    return total + ((first as { total_cost_usd?: number } | undefined)?.total_cost_usd ?? 0)
-  }, 0)
+/* -------------------------------------------------------------------------------------------- *
+ * The matrix
+ * -------------------------------------------------------------------------------------------- */
+
+/** Every subset of `CONDITIONS` with at most `maxSize` members, the empty set first. */
+function subsets(maxSize: number): Condition[][] {
+  const out: Condition[][] = [[]]
+  for (let size = 1; size <= maxSize; size += 1) {
+    const walk = (start: number, picked: Condition[]): void => {
+      if (picked.length === size) {
+        out.push([...picked])
+        return
+      }
+      for (let i = start; i < CONDITIONS.length; i += 1) {
+        const next = CONDITIONS[i]
+        if (next !== undefined) walk(i + 1, [...picked, next])
+      }
+    }
+    walk(0, [])
+  }
+  return out
 }
 
-async function expectAgreement(script: readonly ScriptedTurn[], expected: number): Promise<void> {
-  // The absolute oracle first: both sides must equal the money the script actually spent.
-  expect(expectedFromScript(script)).toBeCloseTo(expected, 10)
-  const [main, renderer] = [await mainTotal(script), rendererTotal(script)]
-  expect(main).toBeCloseTo(expected, 10)
-  expect(renderer).toBeCloseTo(expected, 10)
-  // ...and only then that they agree with each other.
-  expect(main).toBe(renderer)
-}
+const CASES = subsets(3).map((conditions) => ({
+  name: conditions.length === 0 ? 'plain' : conditions.join(' × '),
+  conditions,
+}))
 
-describe('cost agreement — main and the renderer report the same session total', () => {
-  it('agrees on a plain successful turn', async () => {
-    await expectAgreement(
-      [
-        {
-          text: 'hi',
-          messages: [INIT, { type: 'result', subtype: 'success', total_cost_usd: 0.02 }],
-        },
-      ],
-      0.02,
-    )
+describe('cost agreement — every pair and triple of conditions, against the spend model', () => {
+  it('enumerates the conditions, all pairs, and all triples', () => {
+    const n = CONDITIONS.length
+    const pairs = (n * (n - 1)) / 2
+    const triples = (n * (n - 1) * (n - 2)) / 6
+    expect(CASES).toHaveLength(1 + n + pairs + triples)
   })
 
-  it('agrees across several turns', async () => {
-    await expectAgreement(
-      [
-        {
-          text: 'one',
-          messages: [INIT, { type: 'result', subtype: 'success', total_cost_usd: 0.1 }],
-        },
-        { text: 'two', messages: [{ type: 'result', subtype: 'success', total_cost_usd: 0.25 }] },
-        { text: 'three', messages: [{ type: 'result', subtype: 'success', total_cost_usd: 0.05 }] },
-      ],
-      0.4,
-    )
-  })
+  it.each(CASES)('$name', async ({ conditions }) => {
+    const active = new Set<Condition>(conditions)
+    const script = compose(active)
+    const outcome = await run(script, active.has('duplicate'))
 
-  it('agrees on a failed turn — an error result is still billed (§10)', async () => {
-    await expectAgreement(
-      [
-        {
-          text: 'boom',
-          messages: [
-            INIT,
-            { type: 'result', subtype: 'error_during_execution', total_cost_usd: 0.03 },
-          ],
-        },
-      ],
-      0.03,
-    )
-  })
+    // The absolute oracle first: both ledgers must equal the money the script actually spent...
+    expect(outcome.mainUsd).toBeCloseTo(script.expectedUsd, 10)
+    expect(outcome.rendererUsd).toBeCloseTo(script.expectedUsd, 10)
+    // ...and only then that they agree with each other, exactly, on both halves of the ledger.
+    expect(outcome.mainUsd).toBe(outcome.rendererUsd)
+    expect(outcome.mainOpen).toBe(script.expectedOpenAtEnd)
+    expect(outcome.rendererOpen).toBe(script.expectedOpenAtEnd)
 
-  it('agrees on a budget-capped turn — the SDK ceiling still costs what it spent', async () => {
-    await expectAgreement(
-      [
-        {
-          text: 'expensive',
-          messages: [INIT, { type: 'result', subtype: 'error_max_budget_usd', total_cost_usd: 2 }],
-        },
-      ],
-      2,
-    )
-  })
+    // No churn: a cap edit never spawns a query; only the SDK backstop's termination re-arms one.
+    expect(outcome.starts).toBe(script.expectedStarts)
+    // Every query is opened with the ABSOLUTE cap in force, never a decaying remainder.
+    for (const ceiling of outcome.ceilings) expect([CAP, 10, 1.5, 0.2]).toContain(ceiling)
+    expect(outcome.ceilings[0]).toBe(CAP)
 
-  it('agrees when the runtime emits a duplicate result for one turn', async () => {
-    // The case a naive `spendUsd += cost` in main would get wrong while the renderer got it right —
-    // exactly the silent drift this file exists to catch.
-    await expectAgreement(
-      [
-        {
-          text: 'hi',
-          messages: [
-            INIT,
-            { type: 'result', subtype: 'success', total_cost_usd: 0.04 },
-            { type: 'result', subtype: 'success', total_cost_usd: 0.04 },
-          ],
-        },
-      ],
-      0.04,
-    )
-  })
+    // Cap stops go through interrupt(), and only when the cap is genuinely below spend.
+    expect(outcome.interrupts).toBe(script.expectedInterrupts)
+    expect(outcome.budgetErrors).toBe(script.expectedBudgetErrors)
 
-  it('agrees on a stray result that no turn opened', async () => {
-    // Main used to fold this and the renderer never did. Both now ignore it.
-    const stray = [{ type: 'result', subtype: 'success', total_cost_usd: 9.99 }]
-    const queryFn = vi.fn(() => fakeHandle([INIT, ...stray])) as unknown as AgentQueryFn
-    const emitted: AgentEvent[] = []
-    const session = new AgentSession({
-      queryFn,
-      options: OPTIONS,
-      emit: (event) => emitted.push(event),
-      log: () => {},
-    })
-    // No `send()` — but a query cannot start without one, so drive the reducer side alone and assert
-    // main agrees by construction: nothing opened a turn, so nothing folds.
-    session.send('opened')
-    await vi.waitFor(() => expect(emitted.some((e) => e.type === 'turn-end')).toBe(true))
-    // The first result folds (a turn was open); a second stray one does not.
-    expect(session.estimatedSpendUsd).toBeCloseTo(9.99)
-    await session.close()
-
-    let state: Transcript = initialTranscript
-    const seen = new Set<string>()
-    // Reducer with *no* user-send at all: the stray result contributes nothing.
-    for (const raw of stray) {
-      for (const event of mapSdkMessage(raw, seen)) {
-        state = reduceTranscript(state, { type: 'agent-event', event })
-      }
-    }
-    expect(state.cost.totalUsd).toBe(0)
-  })
-
-  it('agrees on OVERLAPPING turns — Stop, retype, Send, then both results', async () => {
-    // The regression that a boolean fold flag allowed, and that agreement alone could not catch.
-    //
-    // `interrupt-requested` moves the transcript to `interrupted` immediately, while the SDK's
-    // `result` for turn A is still in flight — and the composer's only send guard is
-    // `turnState === 'streaming'`. So the user can Stop, retype and Send inside that round trip,
-    // opening turn B while A is unfolded. Both sides used to report $0.50 for $0.80 spent, in the
-    // same direction, so the cross-check stayed green while a whole turn's money vanished from the
-    // meter *and* from the guard the meter feeds.
-    const SPENT = 0.5 + 0.3
-
-    // --- main ---
-    const runtime = scriptedRuntime()
-    const queryFn = vi.fn(() => runtime.handle) as unknown as AgentQueryFn
-    const emitted: AgentEvent[] = []
-    const session = new AgentSession({
-      queryFn,
-      options: OPTIONS,
-      emit: (event) => emitted.push(event),
-      log: () => {},
-    })
-    session.send('A')
-    runtime.deliver([INIT])
-    await session.interrupt()
-    session.send('B')
-    runtime.deliver([
-      { type: 'result', subtype: 'success', total_cost_usd: 0.5 },
-      { type: 'result', subtype: 'success', total_cost_usd: 0.3 },
-    ])
-    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
-    runtime.end()
-    const mainSpend = session.estimatedSpendUsd
-    await session.close()
-
-    // --- renderer, same order ---
-    const seen = new Set<string>()
-    let state: Transcript = initialTranscript
-    state = reduceTranscript(state, { type: 'user-send', text: 'A' })
-    state = reduceTranscript(state, { type: 'interrupt-requested' })
-    state = reduceTranscript(state, { type: 'user-send', text: 'B' })
-    for (const raw of [
-      { type: 'result', subtype: 'success', total_cost_usd: 0.5 },
-      { type: 'result', subtype: 'success', total_cost_usd: 0.3 },
-    ]) {
-      for (const event of mapSdkMessage(raw, seen)) {
-        state = reduceTranscript(state, { type: 'agent-event', event })
-      }
-    }
-
-    expect(mainSpend).toBeCloseTo(SPENT, 10)
-    expect(state.cost.totalUsd).toBeCloseTo(SPENT, 10)
-    expect(mainSpend).toBe(state.cost.totalUsd)
-  })
-
-  it('agrees on OVERLAP **crossed with** DUPLICATION — the case neither mechanism handles alone', async () => {
-    // Round 1 fixed overlap with an open-turn counter. Round 2 found the same failure wearing a
-    // different hat: a counter knows how many turns are open, never *which* result belongs to which,
-    // so with two turns open a duplicated `result` consumed the second turn's fold. Both ledgers
-    // reported $0.20 for $1.10 spent — agreeing, again, while both were wrong.
-    //
-    // Overlap and duplication were each already tested. Their PRODUCT was not, and that is where the
-    // bug lived. Result identity (`uuid`, deduped in event-mapping) is what closes it; the counter
-    // alone cannot, and neither can dedup alone.
-    const messages = [
-      { type: 'result', uuid: 'r-A', subtype: 'success', total_cost_usd: 0.1 },
-      // The runtime repeats turn A's result — same uuid, so it is not a second turn.
-      { type: 'result', uuid: 'r-A', subtype: 'success', total_cost_usd: 0.1 },
-      { type: 'result', uuid: 'r-B', subtype: 'success', total_cost_usd: 1.0 },
-    ]
-    const SPENT = 1.1
-
-    const runtime = scriptedRuntime()
-    const queryFn = vi.fn(() => runtime.handle) as unknown as AgentQueryFn
-    const emitted: AgentEvent[] = []
-    const session = new AgentSession({
-      queryFn,
-      options: OPTIONS,
-      emit: (event) => emitted.push(event),
-      log: () => {},
-    })
-    session.send('A')
-    runtime.deliver([INIT])
-    await session.interrupt()
-    session.send('B')
-    runtime.deliver(messages)
-    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
-    runtime.end()
-    const mainSpend = session.estimatedSpendUsd
-    await session.close()
-
-    const seen = new Set<string>()
-    let state: Transcript = initialTranscript
-    state = reduceTranscript(state, { type: 'user-send', text: 'A' })
-    state = reduceTranscript(state, { type: 'interrupt-requested' })
-    state = reduceTranscript(state, { type: 'user-send', text: 'B' })
-    for (const raw of messages) {
-      for (const event of mapSdkMessage(raw, seen)) {
-        state = reduceTranscript(state, { type: 'agent-event', event })
-      }
-    }
-
-    expect(mainSpend).toBeCloseTo(SPENT, 10)
-    expect(state.cost.totalUsd).toBeCloseTo(SPENT, 10)
-    expect(mainSpend).toBe(state.cost.totalUsd)
-  })
-
-  it('agrees on an interrupted turn — the cost is folded, not discarded', async () => {
-    // The SDK's post-interrupt `result` lands after the turn has settled to `interrupted`. Gating on
-    // the fold flag rather than the turn state is what makes both sides count it.
-    const messages = [INIT, { type: 'result', subtype: 'success', total_cost_usd: 0.07 }]
-    const main = await mainTotal([{ text: 'stop me', messages }])
-
-    let state: Transcript = initialTranscript
-    const seen = new Set<string>()
-    state = reduceTranscript(state, { type: 'user-send', text: 'stop me' })
-    state = reduceTranscript(state, { type: 'interrupt-requested' })
-    for (const raw of messages) {
-      for (const event of mapSdkMessage(raw, seen)) {
-        state = reduceTranscript(state, { type: 'agent-event', event })
-      }
-    }
-    expect(state.turnState).toBe('interrupted')
-    expect(state.cost.totalUsd).toBeCloseTo(0.07)
-    expect(state.cost.totalUsd).toBe(main)
+    // The composer never wedges: a session that was not disposed mid-turn is never left streaming.
+    if (script.expectedOpenAtEnd === 0) expect(outcome.rendererTurnState).not.toBe('streaming')
   })
 })

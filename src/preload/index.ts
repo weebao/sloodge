@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
+import { isIpcRequestChannel, MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
 import { createAgentBridge } from './agentBridge'
 import { createExportBridge } from './exportBridge'
 import { createMenuActionHandler } from './menuActionHandler'
@@ -47,7 +47,12 @@ const { publishSlide, revokeSlide } = createSlideBridge(async (channel, payload)
  * the same shape `onMenuAction` uses, kept local because the decisions live in `agentBridge.ts`.
  */
 const agent = createAgentBridge(
-  async (channel, payload) => ipcRenderer.invoke(channel, payload),
+  async (channel, payload) => {
+    // The allow-list in `ipc-contract.ts` is enforced here, not merely documented: every call site
+    // passes a module constant today, but the preload is the boundary where that should be checked.
+    if (!isIpcRequestChannel(channel)) throw new TypeError(`unknown IPC channel: ${channel}`)
+    return ipcRenderer.invoke(channel, payload)
+  },
   (channel, handler) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown): void => handler(payload)
     ipcRenderer.on(channel, wrapped)

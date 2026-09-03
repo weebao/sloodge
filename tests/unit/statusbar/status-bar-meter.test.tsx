@@ -14,7 +14,12 @@ import type { SessionSkills } from '../../../src/renderer/src/stores/sessionMete
 afterEach(cleanup)
 
 function renderBar(
-  options: { costUsd?: number; capUsd?: number | null; skills?: SessionSkills } = {},
+  options: {
+    costUsd?: number
+    capUsd?: number | null
+    skills?: SessionSkills
+    budgetUnknown?: boolean
+  } = {},
 ): void {
   const costUsd = options.costUsd ?? 0
   render(
@@ -25,6 +30,7 @@ function renderBar(
       issueCount={0}
       sessionCostUsd={costUsd}
       budget={evaluateBudget(costUsd, options.capUsd ?? null)}
+      budgetUnknown={options.budgetUnknown ?? false}
       skills={options.skills ?? null}
     />,
   )
@@ -46,6 +52,14 @@ describe('StatusBar — cost meter', () => {
     renderBar({ costUsd: 0.34, capUsd: 2 })
     expect(cost().textContent).toContain('$0.34 / $2.00')
     expect(screen.getByTestId('statusbar-budget-bar')).toBeTruthy()
+  })
+
+  it('says the limit is unknown when the cap could not be read, rather than showing none', () => {
+    // A failed probe leaves the store unloaded, so `budget` evaluates uncapped — but main is still
+    // enforcing the real cap. A bare spend here would read as "no limit" to the user.
+    renderBar({ costUsd: 0.42, budgetUnknown: true })
+    expect(cost().textContent).toContain('limit unknown')
+    expect(cost().title).toMatch(/could not be read/i)
   })
 
   it('omits the cap and the bar when the session is uncapped', () => {

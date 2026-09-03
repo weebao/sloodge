@@ -53,6 +53,88 @@ function recordingQueryFn(): {
   return { queryFn, returns, starts: () => starts }
 }
 
+/**
+ * A faithful streaming-input runtime: one `result` per user message read off the prompt, each
+ * costing `costUsd`. This is the fake the budget tests need — a query that never spends cannot
+ * detect churn or an undercount, which is exactly how round 3's blocker hid behind `recordingQueryFn`.
+ *
+ * `streaming: true` holds each turn open until `finishTurn()` or an `interrupt()` releases it, which
+ * is how the SDK behaves: the post-interrupt `result` still arrives. `return()` releases too, so
+ * teardown never hangs on a parked generator.
+ */
+function costedQueryFn(
+  costUsd: number,
+  opts: { streaming?: boolean } = {},
+): {
+  queryFn: AgentQueryFn
+  starts: () => number
+  ceilings: () => readonly (number | undefined)[]
+  interrupts: () => number
+  streamingTurns: () => number
+  /** Every user text any query read off its prompt — proof a sent turn reached a subprocess. */
+  prompts: () => readonly string[]
+  finishTurn: () => void
+} {
+  let starts = 0
+  let interrupts = 0
+  let streaming = 0
+  const ceilings: (number | undefined)[] = []
+  const prompts: string[] = []
+  let release: (() => void) | null = null
+  const finishTurn = (): void => {
+    const resume = release
+    release = null
+    resume?.()
+  }
+  const queryFn: AgentQueryFn = (params) => {
+    starts += 1
+    ceilings.push(params.options.maxBudgetUsd)
+    const query = starts
+    let turn = 0
+    const gen = (async function* (): AsyncGenerator<unknown, void, unknown> {
+      for await (const message of params.prompt) {
+        prompts.push(message.message.content)
+        turn += 1
+        if (opts.streaming === true) {
+          streaming += 1
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise<void>((resolve) => {
+            release = resolve
+          })
+          streaming -= 1
+        }
+        yield {
+          type: 'result',
+          uuid: `q${String(query)}-r${String(turn)}`,
+          subtype: 'success',
+          total_cost_usd: costUsd,
+        }
+      }
+    })()
+    const handle = gen as unknown as AgentQueryHandle
+    handle.interrupt = async () => {
+      interrupts += 1
+      finishTurn()
+    }
+    handle.setModel = async () => undefined
+    const originalReturn = gen.return.bind(gen)
+    handle.return = ((value?: void) => {
+      finishTurn()
+      return originalReturn(value)
+    }) as AgentQueryHandle['return']
+    return handle
+  }
+  return {
+    queryFn,
+    starts: () => starts,
+    ceilings: () => ceilings,
+    interrupts: () => interrupts,
+    streamingTurns: () => streaming,
+    prompts: () => prompts,
+    finishTurn,
+  }
+}
+
 const PATHS = () => ({ cwd: '/w', configDir: '/c' })
 const NOOP = (): void => {}
 
@@ -99,24 +181,13 @@ describe('AgentService', () => {
   it('refuses a turn once the session has spent its cap — the authoritative guard (M2.5, §10)', async () => {
     // The renderer performs the same check so the composer can explain itself without a round trip,
     // but a guard that only exists in the renderer is one a renderer bug can walk past.
-    let starts = 0
-    const queryFn: AgentQueryFn = () => {
-      starts += 1
-      // One turn that ends having spent past the cap. It is not interrupted — it already ran.
-      const gen = (async function* () {
-        yield { type: 'result', subtype: 'success', total_cost_usd: 0.25 }
-      })()
-      const handle = gen as unknown as AgentQueryHandle
-      handle.interrupt = async () => undefined
-      handle.setModel = async () => undefined
-      return handle
-    }
+    const rt = costedQueryFn(0.25)
     const emitted: AgentEvent[] = []
     const emit = (event: AgentEvent): void => {
       emitted.push(event)
     }
     const service = new AgentService({
-      queryFn,
+      queryFn: rt.queryFn,
       loadCredential: async () => LIVE,
       resolvePaths: PATHS,
       loadBudgetCap: async () => 0.1,
@@ -129,7 +200,7 @@ describe('AgentService', () => {
 
     expect(await service.send(1, 'second', emit)).toEqual({ accepted: false, reason: 'budget' })
     // A blocked send never opens another query.
-    expect(starts).toBe(1)
+    expect(rt.starts()).toBe(1)
     await service.dispose(1)
   })
 
@@ -148,9 +219,9 @@ describe('AgentService', () => {
       const gen = (async function* () {
         if (first) {
           // The SDK's own ceiling fires and TERMINATES the query.
-          yield { type: 'result', subtype: 'error_max_budget_usd', total_cost_usd: 2.4 }
+          yield { type: 'result', uuid: 'r1', subtype: 'error_max_budget_usd', total_cost_usd: 2.4 }
         } else {
-          yield { type: 'result', subtype: 'success', total_cost_usd: 0.1 }
+          yield { type: 'result', uuid: 'r2', subtype: 'success', total_cost_usd: 0.1 }
         }
       })()
       const handle = gen as unknown as AgentQueryHandle
@@ -185,140 +256,163 @@ describe('AgentService', () => {
     // A genuinely new query, and it produces events rather than vanishing into a dead bridge.
     await vi.waitFor(() => expect(starts).toBe(2))
     await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
-    // ...carrying the RAISED cap's remaining budget, not the ceiling that stopped it.
-    expect(ceilings[1]).toBeCloseTo(20 - 2.4)
+    // ...carrying the RAISED cap as its backstop — the absolute cap, not a remainder.
+    expect(ceilings[1]).toBe(20)
+    expect(service).toBeDefined()
     await service.dispose(1)
   })
 
-  it('a LOWERED cap reaches the live query — a control that only loosens is not a control', async () => {
-    // `maxBudgetUsd` is per-query cumulative and cannot be changed on a running query, so arming
-    // only the *next* one left a query opened at $10 free to keep burning to $10 after the user cut
-    // their limit to $1. The turn-admission check runs between turns and cannot stop a turn already
-    // inside that allowance, so the live query has to be replaced.
-    const ceilings: (number | undefined)[] = []
-    const queryFn: AgentQueryFn = (params) => {
-      ceilings.push(params.options.maxBudgetUsd)
-      let release: (() => void) | null = null
-      const gate = new Promise<void>((resolve) => {
-        release = resolve
-      })
-      const gen = (async function* (): AsyncGenerator<unknown, void, unknown> {
-        yield {
-          type: 'result',
-          uuid: `r${String(ceilings.length)}`,
-          subtype: 'success',
-          total_cost_usd: 0.5,
-        }
-        await gate
-      })()
-      const handle = gen as unknown as AgentQueryHandle
-      handle.interrupt = async () => undefined
-      handle.setModel = async () => undefined
-      const originalReturn = gen.return.bind(gen)
-      handle.return = ((value?: void) => {
-        release?.()
-        return originalReturn(value)
-      }) as AgentQueryHandle['return']
-      return handle
+  it('does not churn the query: N cheap turns at the default cap run on ONE subprocess', async () => {
+    // Round 3's blocker. The ceiling used to be the *remaining* budget, which decays as money is
+    // spent, and the session mistook that decay for a lowered cap and replaced the live query on
+    // every send — 5 sends, 5 subprocesses, at the shipped default. The two no-churn tests could
+    // not see it because their fake never yielded a `result`, so spend never moved. This fake
+    // spends on every turn.
+    const rt = costedQueryFn(0.02)
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
     }
+    const service = new AgentService({
+      queryFn: rt.queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => 2,
+    })
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      expect(await service.send(1, `turn ${String(i)}`, emit)).toEqual({ accepted: true })
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() =>
+        expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(i + 1),
+      )
+    }
+    expect(rt.starts()).toBe(1)
+    expect(rt.ceilings()).toEqual([2])
+    expect(rt.interrupts()).toBe(0)
+    // Every accepted text reached the one query — nothing was dropped between sends.
+    expect(rt.prompts()).toEqual(['turn 0', 'turn 1', 'turn 2', 'turn 3', 'turn 4'])
+    await service.dispose(1)
+  })
+
+  it('does not churn the query when the cap is merely raised', async () => {
+    // Raising is safe to defer: the live query keeps its lower backstop, and the next send sees the
+    // new cap in the admission check. Replacing it would throw away a live conversation for nothing.
+    const rt = costedQueryFn(0.5)
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
+    }
+    let capUsd: number = 2
+    const service = new AgentService({
+      queryFn: rt.queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => capUsd,
+    })
+    expect(await service.send(1, 'first', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
+    capUsd = 20
+    service.setBudgetCap(20)
+    expect(await service.send(1, 'second', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    expect(rt.starts()).toBe(1)
+    expect(rt.interrupts()).toBe(0)
+    await service.dispose(1)
+  })
+
+  it('a cap lowered BELOW what the session has spent stops the streaming turn — through interrupt, on the same query', async () => {
+    // The one direction that cannot wait for the next send. `maxBudgetUsd` is per-query cumulative
+    // and cannot be changed on a running query, so the cap is enforced by us: main sees the folded
+    // total is already over the new cap and stops the open turn the way the Stop button would. No
+    // replacement query (round 3 replaced it and lost the in-flight result and the accepted text).
+    const rt = costedQueryFn(0.5, { streaming: true })
     const emitted: AgentEvent[] = []
     const emit = (event: AgentEvent): void => {
       emitted.push(event)
     }
     let capUsd: number = 10
     const service = new AgentService({
-      queryFn,
+      queryFn: rt.queryFn,
       loadCredential: async () => LIVE,
       resolvePaths: PATHS,
       loadBudgetCap: async () => capUsd,
     })
 
     expect(await service.send(1, 'first', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(rt.streamingTurns()).toBe(1))
+    rt.finishTurn()
     await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
-    expect(ceilings).toEqual([10])
-
-    // The user tightens the limit in Settings while the query is still live.
-    capUsd = 1
     expect(await service.send(1, 'second', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(rt.streamingTurns()).toBe(1))
 
-    // A replacement query, carrying what is left of the LOWER cap — not the $10 it was opened with.
-    await vi.waitFor(() => expect(ceilings).toHaveLength(2))
-    expect(ceilings[1]).toBeCloseTo(0.5)
+    // Settings cuts the limit below the $0.50 already spent while 'second' is streaming.
+    capUsd = 0.4
+    service.setBudgetCap(0.4)
+
+    // The turn is stopped, its cost folds like any interrupted turn, and the chat says why.
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    expect(rt.interrupts()).toBe(1)
+    expect(emitted.filter((e) => e.type === 'error' && e.kind === 'budget')).toHaveLength(1)
+    expect(rt.starts()).toBe(1)
+    expect(rt.ceilings()).toEqual([10])
+    // And the admission gate now holds the lowered cap.
+    expect(await service.send(1, 'third', emit)).toEqual({ accepted: false, reason: 'budget' })
     await service.dispose(1)
   })
 
-  it('does not churn the query when the cap is merely raised', async () => {
-    // Raising is safe to defer: the live query keeps its lower ceiling, stops early if it reaches it,
-    // and the re-arm gives the next one the raised cap. Replacing it here would throw away a live
-    // conversation for no safety gain.
-    const rec = recordingQueryFn()
-    let capUsd: number = 2
-    const service = new AgentService({
-      queryFn: rec.queryFn,
-      loadCredential: async () => LIVE,
-      resolvePaths: PATHS,
-      loadBudgetCap: async () => capUsd,
-    })
-    expect(await service.send(1, 'first', NOOP)).toEqual({ accepted: true })
-    capUsd = 20
-    expect(await service.send(1, 'second', NOOP)).toEqual({ accepted: true })
-    expect(rec.starts()).toBe(1)
-    await service.dispose(1)
-  })
-
-  it('keeps accepting turns while under the cap', async () => {
-    const rec = recordingQueryFn()
-    const service = new AgentService({
-      queryFn: rec.queryFn,
-      loadCredential: async () => LIVE,
-      resolvePaths: PATHS,
-      loadBudgetCap: async () => 2,
-    })
-    expect(await service.send(1, 'first', NOOP)).toEqual({ accepted: true })
-    expect(await service.send(1, 'second', NOOP)).toEqual({ accepted: true })
-    expect(rec.starts()).toBe(1)
-    await service.dispose(1)
-  })
-
-  it('hands the SDK the remaining budget as an in-flight ceiling', async () => {
-    let captured: number | undefined
-    const queryFn: AgentQueryFn = (params) => {
-      captured = params.options.maxBudgetUsd
-      const gen = (async function* () {})()
-      const handle = gen as unknown as AgentQueryHandle
-      handle.interrupt = async () => undefined
-      handle.setModel = async () => undefined
-      return handle
+  it('a cap lowered but still ABOVE spend leaves the streaming turn alone', async () => {
+    const rt = costedQueryFn(0.5, { streaming: true })
+    const emitted: AgentEvent[] = []
+    const emit = (event: AgentEvent): void => {
+      emitted.push(event)
     }
     const service = new AgentService({
-      queryFn,
+      queryFn: rt.queryFn,
+      loadCredential: async () => LIVE,
+      resolvePaths: PATHS,
+      loadBudgetCap: async () => 10,
+    })
+    expect(await service.send(1, 'first', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(rt.streamingTurns()).toBe(1))
+    rt.finishTurn()
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
+    expect(await service.send(1, 'second', emit)).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(rt.streamingTurns()).toBe(1))
+
+    service.setBudgetCap(5) // spent $0.50: nothing to stop
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(rt.interrupts()).toBe(0)
+    expect(rt.starts()).toBe(1)
+    rt.finishTurn()
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(2))
+    expect(emitted.filter((e) => e.type === 'error')).toHaveLength(0)
+    await service.dispose(1)
+  })
+
+  it('hands the SDK the absolute cap as the per-query backstop', async () => {
+    const rt = costedQueryFn(0.01)
+    const service = new AgentService({
+      queryFn: rt.queryFn,
       loadCredential: async () => LIVE,
       resolvePaths: PATHS,
       loadBudgetCap: async () => 2,
     })
     await service.send(1, 'hi', NOOP)
-    expect(captured).toBe(2)
+    expect(rt.ceilings()).toEqual([2])
     await service.dispose(1)
   })
 
   it('omits the ceiling when the user has configured no cap', async () => {
-    let captured: number | undefined = 999
-    const queryFn: AgentQueryFn = (params) => {
-      captured = params.options.maxBudgetUsd
-      const gen = (async function* () {})()
-      const handle = gen as unknown as AgentQueryHandle
-      handle.interrupt = async () => undefined
-      handle.setModel = async () => undefined
-      return handle
-    }
+    const rt = costedQueryFn(0.01)
     const service = new AgentService({
-      queryFn,
+      queryFn: rt.queryFn,
       loadCredential: async () => LIVE,
       resolvePaths: PATHS,
       loadBudgetCap: async () => null,
     })
     await service.send(1, 'hi', NOOP)
-    expect(captured).toBeUndefined()
+    expect(rt.ceilings()).toEqual([undefined])
     await service.dispose(1)
   })
 

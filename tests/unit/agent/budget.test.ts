@@ -14,7 +14,6 @@ import {
   isBudgetSetRequest,
   MAX_BUDGET_CAP_USD,
   parseBudgetCap,
-  remainingBudgetUsd,
 } from '../../../src/shared/agent/budget'
 
 describe('evaluateBudget — the warn/block progression', () => {
@@ -80,24 +79,6 @@ describe('canStartTurn — the turn-admission decision', () => {
     expect(canStartTurn(evaluateBudget(1.9, 2))).toBe(true) // warn still sends
     expect(canStartTurn(evaluateBudget(2, 2))).toBe(false)
     expect(canStartTurn(evaluateBudget(999, null))).toBe(true)
-  })
-})
-
-describe('remainingBudgetUsd — what main hands the SDK as maxBudgetUsd', () => {
-  it('is the whole cap for a fresh session', () => {
-    expect(remainingBudgetUsd(0, 2)).toBe(2)
-  })
-
-  it('shrinks as the session spends', () => {
-    expect(remainingBudgetUsd(0.75, 2)).toBeCloseTo(1.25)
-  })
-
-  it('is undefined when uncapped, so the option is omitted rather than sent as a sentinel', () => {
-    expect(remainingBudgetUsd(1, null)).toBeUndefined()
-  })
-
-  it('passes a remaining of zero through — an immediately-ending query is the correct outcome', () => {
-    expect(remainingBudgetUsd(5, 2)).toBe(0)
   })
 })
 

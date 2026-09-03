@@ -65,13 +65,14 @@ export type AgentQueryOptions = {
    */
   readonly skillFallbackPrompt?: string
   /**
-   * The SDK's own in-flight spend ceiling for this query (§10). The query stops when the client-side
-   * estimate crosses it and ends with `result.subtype === 'error_max_budget_usd'`.
+   * The SDK's per-query spend ceiling (§10): the user's absolute cap, set once when the query opens.
+   * The query stops when the client-side estimate crosses it and ends with
+   * `result.subtype === 'error_max_budget_usd'`.
    *
-   * This is the half of the budget guard that can act *during* a turn, which nothing on our side of
-   * the boundary can: cost only reaches us on the `result` message, and pricing tokens ourselves is
-   * exactly what §10 forbids. The renderer's turn-admission check is the other half. `undefined`
-   * means the user has configured no cap.
+   * A backstop against one runaway query, not the enforcement mechanism: the cap is enforced by
+   * `AgentService.send` (admission) and `AgentSession.setBudgetCap` (stopping an open turn once the
+   * folded total meets a lowered cap). It is never a decaying remainder — see `setBudgetCap` for why.
+   * `undefined` means the user has configured no cap.
    */
   readonly maxBudgetUsd?: number
 }

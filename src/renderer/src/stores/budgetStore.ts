@@ -19,21 +19,33 @@ export type BudgetState = {
   readonly capUsd: BudgetCap
   /** `false` until the first probe resolves. See the module docstring. */
   readonly loaded: boolean
+  /**
+   * The probe failed, as opposed to merely not having resolved. Distinct from `!loaded` because the
+   * two need different UI: "reading…" versus "could not be read — main is still enforcing a cap you
+   * cannot see here". Cleared by the next successful `setCap`.
+   */
+  readonly failed: boolean
   readonly setCap: (capUsd: BudgetCap) => void
+  readonly markFailed: () => void
   readonly reset: () => void
 }
 
 export const useBudgetStore = createStore<BudgetState>((set) => ({
   capUsd: DEFAULT_BUDGET_CAP_USD,
   loaded: false,
+  failed: false,
   setCap: (capUsd) => {
-    set({ capUsd, loaded: true })
+    set({ capUsd, loaded: true, failed: false })
+  },
+  markFailed: () => {
+    set({ failed: true })
   },
   reset: () => {
-    set({ capUsd: DEFAULT_BUDGET_CAP_USD, loaded: false })
+    set({ capUsd: DEFAULT_BUDGET_CAP_USD, loaded: false, failed: false })
   },
 }))
 
 /** Selectors kept module-level so their identity is stable across renders (`createStore`'s contract). */
 export const selectBudgetCap = (state: BudgetState): BudgetCap => state.capUsd
 export const selectBudgetLoaded = (state: BudgetState): boolean => state.loaded
+export const selectBudgetFailed = (state: BudgetState): boolean => state.failed

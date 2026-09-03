@@ -26,7 +26,7 @@ import {
   DECK_UPDATED_CHANNEL,
 } from '../shared/ipc-contract'
 import { isAgentEvent, type AgentEvent, type ApiKeyStatus } from '../shared/agent/types'
-import { DEFAULT_BUDGET_CAP_USD, isBudgetCap, type BudgetCap } from '../shared/agent/budget'
+import { isBudgetCap, type BudgetCap } from '../shared/agent/budget'
 import type { AgentSendRefusal } from '../shared/ipc-contract'
 import { deriveAuthStatus, type AuthStatus } from '../shared/agent/auth'
 import { type EndpointInfo } from '../shared/agent/endpoint'
@@ -146,14 +146,16 @@ function readEndpoint(value: unknown): EndpointInfo {
 /**
  * Narrow a cap off the wire.
  *
- * **Fails safe, not open.** A malformed reply becomes the documented default ($2.00) rather than
- * `null`: `null` means "no limit", so treating a broken message as `null` would silently uncap a
- * user who had set a budget. Between "cap something the user did not ask to cap" and "spend without
- * the limit they configured", the first is recoverable in one visit to Settings.
+ * A malformed reply **throws** rather than being replaced by a guess. `null` means "no limit", so
+ * reading a broken message as `null` would silently uncap a user who had set a budget — and reading
+ * it as the $2.00 default (round 3's version) was affirmed to the user as "Saved" and rendered as
+ * their own setting. A rejection lands in the callers' existing failure paths: the store stays
+ * unloaded, the Budget tab says the limit could not be read, and main keeps enforcing the real cap.
  */
 function readBudgetCap(response: unknown): BudgetCap {
   const value = (response as { capUsd?: unknown } | null)?.capUsd
-  return isBudgetCap(value) ? value : DEFAULT_BUDGET_CAP_USD
+  if (!isBudgetCap(value)) throw new TypeError('agent budget channel returned a malformed cap')
+  return value
 }
 
 export function createAgentBridge(

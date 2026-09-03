@@ -284,6 +284,58 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     await waitFor(() => expect(composer().disabled).toBe(false))
   })
 
+  it('a REJECTED send invoke rolls the optimistic turn back and shows calibrated copy, not the IPC text', async () => {
+    // Main opens its turn in `session.send`, the last statement of `AgentService.send` after every
+    // await, so an invoke that rejected never opened one. Round 3 skipped the rollback on the false
+    // premise that it might have — leaving the renderer a phantom turn ahead for the session's life.
+    const fake = makeFakeBridge(2)
+    fake.bridge.sendMessage = vi.fn(async () => {
+      throw new Error("Error invoking remote method 'agent:send': Error: keychain unavailable")
+    })
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('hello there')
+    await screen.findByText(/the agent turn failed/i)
+    // The raw IPC string stays in the console.
+    expect(screen.queryByText(/agent:send|keychain/i)).toBeNull()
+    expect(quiet).toHaveBeenCalled()
+    // The pair is gone, the draft is back, and no phantom turn is open: a stray result folds nothing.
+    expect(screen.queryByText('hello there', { selector: 'p' })).toBeNull()
+    expect(composer().value).toBe('hello there')
+    fake.emit({ type: 'turn-end', costUsd: 5, subtype: 'success' })
+    await waitFor(() => expect(useSessionMeterStore.getState().costUsd).toBe(0))
+    expect(composer().disabled).toBe(false)
+  })
+
+  it('an accept landing after Stop does not wipe what the user typed in between', async () => {
+    // Stop re-enables the composer while `sendMessage` is still in flight. The accept must clear
+    // only the text it sent, or the next message vanishes as it is being written.
+    const fake = makeFakeBridge(2)
+    let resolveSend: ((result: SendResult) => void) | null = null
+    fake.bridge.sendMessage = vi.fn(
+      () =>
+        new Promise<SendResult>((resolve) => {
+          resolveSend = resolve
+        }),
+    )
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+
+    send('first message')
+    await waitFor(() => expect(resolveSend).not.toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: /stop/i }))
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    fireEvent.change(composer(), { target: { value: 'typed after stop' } })
+
+    act(() => resolveSend?.({ accepted: true, reason: null }))
+    await waitFor(() => expect(fake.bridge.sendMessage).toHaveBeenCalledTimes(1))
+    expect(composer().value).toBe('typed after stop')
+  })
+
   it('publishes the session cost to the status-bar store — one accumulator, two readers', async () => {
     const fake = makeFakeBridge(2)
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }

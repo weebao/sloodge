@@ -51,10 +51,12 @@ export type ToolChip = {
 }
 
 export type ChatMessage =
-  | { readonly kind: 'user'; readonly id: string; readonly text: string }
+  | { readonly kind: 'user'; readonly id: string; readonly turnId: string; readonly text: string }
   | {
       readonly kind: 'assistant'
       readonly id: string
+      /** The send that opened this bubble (`user-send.turnId`), so a refusal can take back exactly it. */
+      readonly turnId: string
       readonly text: string
       readonly tools: readonly ToolChip[]
       /** True while this bubble is the live target of deltas/chips; false once the turn settles. */
@@ -103,16 +105,20 @@ export const initialTranscript: Transcript = {
 }
 
 export type TranscriptAction =
-  /** The user pressed Send: append their message and open a fresh streaming assistant bubble. */
-  | { readonly type: 'user-send'; readonly text: string }
+  /**
+   * The user pressed Send: append their message and open a fresh streaming assistant bubble.
+   * `turnId` is minted by the hook and stamped on both messages so `turn-refused` can name them.
+   */
+  | { readonly type: 'user-send'; readonly text: string; readonly turnId: string }
   /** The user pressed Stop: reflect the interrupt locally (the hook calls `bridge.interrupt`). */
   | { readonly type: 'interrupt-requested' }
   /**
-   * Main refused the turn we optimistically opened (its own budget check, or a credential that
-   * vanished). Rolls the optimism back: the bubbles come out, the open-turn count is released, and
-   * the composer takes the text back — see the reducer for why each of those matters.
+   * Main did not open the turn we optimistically opened — it refused (its own budget check, or a
+   * credential that vanished) or the invoke rejected before reaching the session. Rolls the optimism
+   * back: the bubbles come out, the open-turn count is released, and the composer takes the text
+   * back — see the reducer for why each of those matters.
    */
-  | { readonly type: 'turn-refused' }
+  | { readonly type: 'turn-refused'; readonly turnId: string }
   /** One event off the `agent:event` feed. */
   | { readonly type: 'agent-event'; readonly event: AgentEvent }
 
@@ -333,10 +339,12 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
     case 'user-send': {
       const userId = `u${String(state.seq)}`
       const assistantId = `a${String(state.seq + 1)}`
-      const user: ChatMessage = { kind: 'user', id: userId, text: action.text }
+      const { turnId } = action
+      const user: ChatMessage = { kind: 'user', id: userId, turnId, text: action.text }
       const assistant: ChatMessage = {
         kind: 'assistant',
         id: assistantId,
+        turnId,
         text: '',
         tools: [],
         streaming: true,
@@ -360,32 +368,28 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
 
     case 'turn-refused': {
       // The renderer opens a turn the instant the user hits Send — that is what makes the assistant
-      // bubble appear immediately — but main is the one that decides whether it runs. When main says
-      // no, all three parts of that optimism have to come back:
+      // bubble appear immediately — but main is the one that decides whether it runs. When main did
+      // not open it, all three parts of that optimism have to come back, together:
       //
       //  - the **open turn**, or the renderer stays one ahead of main's ledger forever and a later
       //    stray `result` folds into a turn that never existed (the two counts feed the same guard);
       //  - the **bubbles**, because a user message shown in the transcript reads as sent, and this
       //    one never was;
       //  - the **text**, which `ChatPanel` restores to the composer so the turn can be retried.
-      const messages = [...state.messages]
-      // Drop the optimistic pair from the tail, and only while it is still untouched: if anything
-      // streamed into that bubble the turn plainly did run, so leave the transcript alone.
-      const last = messages.at(-1)
-      const prior = messages.at(-2)
-      if (
-        last?.kind === 'assistant' &&
-        last.streaming &&
-        last.text.length === 0 &&
-        last.tools.length === 0 &&
-        prior?.kind === 'user'
-      ) {
-        messages.splice(-2, 2)
-      }
+      //
+      // Found by the id the send minted, never by tail position: a Stop pressed during the round
+      // trip settles the bubble, and a notice or a late delta from a prior turn can land behind it,
+      // and neither changes the fact that main never ran this turn.
+      const ownedByRefused = (message: ChatMessage): boolean =>
+        (message.kind === 'user' || message.kind === 'assistant') &&
+        message.turnId === action.turnId
+      const refused = state.messages.filter(ownedByRefused)
+      if (refused.length === 0) return state
+      const wasLive = refused.some((message) => message.kind === 'assistant' && message.streaming)
       return {
         ...state,
-        turnState: state.turnState === 'streaming' ? 'idle' : state.turnState,
-        messages,
+        turnState: wasLive && state.turnState === 'streaming' ? 'idle' : state.turnState,
+        messages: state.messages.filter((message) => !ownedByRefused(message)),
         cost: abandonTurn(state.cost),
       }
     }

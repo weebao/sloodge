@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentSession } from '../../../src/main/agent/session'
+import { AgentSession, QUERY_ENDED_SUBTYPE } from '../../../src/main/agent/session'
 import type {
   AgentQueryFn,
   AgentQueryHandle,
@@ -118,7 +118,14 @@ describe('AgentSession', () => {
     session.send('hi')
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'error')).toBe(true))
-    expect(emitted.at(-1)).toMatchObject({ type: 'error', kind: 'network', recoverable: true })
+    expect(emitted.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ type: 'error', kind: 'network', recoverable: true }),
+    ])
+    // The throw ended the query with the turn open: main closes that turn at $0 — once, silently,
+    // because the network error above already said why.
+    await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
+    expect(emitted.at(-1)).toEqual({ type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE })
+    expect(session.openTurns).toBe(0)
   })
 
   it('interrupt() delegates to the live handle and reports false when idle', async () => {
@@ -142,6 +149,52 @@ describe('AgentSession', () => {
     session.send('after-close')
     // No second query is started by a post-close send.
     expect(queryFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes a turn its query ended without answering — on both ledgers, with a reason', async () => {
+    // A query that ends (the SDK's ceiling with a second turn queued behind it, a stream closed
+    // unannounced) leaves a turn no `result` will close. Left alone it wedged the renderer in
+    // `streaming` with no bubble and left both open-turn counts one too high. Main is the side that
+    // can see the query end, so main ends the turn: a $0 `turn-end` the renderer folds identically,
+    // then an error the user can act on.
+    const emitted: AgentEvent[] = []
+    const queryFn = vi.fn(() =>
+      fakeHandle([initWith(['slide-deck', 'svg-animation', 'interactive-graph'])]),
+    ) as unknown as AgentQueryFn
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('hello')
+
+    await vi.waitFor(() => expect(emitted.some((e) => e.type === 'error')).toBe(true))
+    expect(emitted.filter((e) => e.type === 'turn-end')).toEqual([
+      { type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE },
+    ])
+    expect(emitted.at(-1)).toMatchObject({ type: 'error', kind: 'unknown', recoverable: true })
+    expect(session.openTurns).toBe(0)
+    expect(session.estimatedSpendUsd).toBe(0)
+    // The next send re-arms a fresh query rather than pushing into the dead one.
+    session.send('again')
+    expect(queryFn).toHaveBeenCalledTimes(2)
+    await session.close()
+  })
+
+  it('does not close open turns on dispose — the renderer is gone, and both ledgers stay symmetric', async () => {
+    const emitted: AgentEvent[] = []
+    const queryFn = vi.fn(() => fakeHandle([])) as unknown as AgentQueryFn
+    const session = new AgentSession({
+      queryFn,
+      options: OPTIONS,
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('hello')
+    await session.close()
+    expect(emitted).toEqual([])
+    expect(session.openTurns).toBe(1)
   })
 
   describe('skillStatus — the §8 assertion that the bundled skills reached the model', () => {

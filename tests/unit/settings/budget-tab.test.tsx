@@ -85,10 +85,16 @@ describe('BudgetTab — what the session has spent', () => {
     expect(document.body.textContent).toMatch(/approaching the limit/i)
   })
 
-  it('explains the blocked state, including that a running turn was allowed to finish', () => {
+  it('explains the blocked state', () => {
     loaded(2, 2.4)
     render(<BudgetTab />)
-    expect(screen.getByTestId('budget-blocked').textContent).toMatch(/allowed to finish/i)
+    expect(screen.getByTestId('budget-blocked').textContent).toMatch(/being refused/i)
+  })
+
+  it('says a running message is stopped only when the limit is lowered below what was spent', () => {
+    loaded(2, 0.4)
+    render(<BudgetTab />)
+    expect(document.body.textContent).toMatch(/allowed to finish — unless you lower the limit/i)
   })
 })
 
@@ -184,6 +190,27 @@ describe('BudgetTab — setting the cap', () => {
     expect(screen.getByTestId('budget-unloaded').textContent).toMatch(/reading your saved limit/i)
   })
 
+  it('shows no placeholder as the saved setting while the probe is pending', () => {
+    // The store seeds $2.00 with `loaded: false`. Rendering that as a ticked box and "2.00" next to
+    // a banner saying the limit is still being read is a placeholder dressed as the user's setting.
+    getBudgetCap.mockReturnValue(new Promise<BudgetCap>(() => {}))
+    render(<BudgetTab />)
+    expect(limitToggle().checked).toBe(false)
+    expect(amount().value).toBe('')
+    expect(document.body.textContent).not.toContain('of $2.00')
+  })
+
+  it('issues ONE save when the Save click also blurs the field', async () => {
+    loaded(2)
+    render(<BudgetTab />)
+    fireEvent.change(amount(), { target: { value: '7.5' } })
+    fireEvent.blur(amount())
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(setBudgetCap).toHaveBeenCalledWith(7.5))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(setBudgetCap).toHaveBeenCalledTimes(1)
+  })
+
   it('re-probes on open and enables itself once the cap arrives', async () => {
     // `useChatSession` probes once at startup and swallows failures. Opening Settings is the natural
     // place to retry, and without it a single early failure disabled this tab for the whole run.
@@ -201,8 +228,12 @@ describe('BudgetTab — setting the cap', () => {
 
     expect((await screen.findByTestId('budget-unloaded')).textContent).toMatch(/could not be read/i)
     // Editable rather than dead: main validates the save independently, so the worst case is the
-    // user setting the limit they wanted anyway.
+    // user setting the limit they wanted anyway. Nothing is pre-filled — the unknown cap is shown
+    // as unknown — so the user turns the limit on (which stores the default) and then sets theirs.
     await waitFor(() => expect(limitToggle().disabled).toBe(false))
+    expect(limitToggle().checked).toBe(false)
+    fireEvent.click(limitToggle())
+    await waitFor(() => expect(setBudgetCap).toHaveBeenCalledWith(2))
     fireEvent.change(amount(), { target: { value: '3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(setBudgetCap).toHaveBeenCalledWith(3))
@@ -226,7 +257,16 @@ describe('BudgetTab — setting the cap', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/could not be saved/i)
-    // Rolled back: the guard is enforced against main's number, so the screen must not show another.
+    // Rolled back: the guard is enforced against main's number, so the screen must not show another
+    // — in the store *and* in the field, which the store's equal-write bail-out would not repaint.
     expect(useBudgetStore.getState().capUsd).toBe(2)
+    expect(amount().value).toBe('2.00')
+  })
+
+  it('a failed probe shows the failure in the status store too, not only in this tab', async () => {
+    getBudgetCap.mockRejectedValue(new Error('EIO'))
+    render(<BudgetTab />)
+    await waitFor(() => expect(useBudgetStore.getState().failed).toBe(true))
+    expect((await screen.findByTestId('budget-unloaded')).textContent).toMatch(/could not be read/i)
   })
 })

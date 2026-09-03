@@ -21,7 +21,11 @@ const usage = (i: number, o: number, c: number): AgentUsage => ({
 })
 
 const ev = (event: AgentEvent): TranscriptAction => ({ type: 'agent-event', event })
-const sendTurn = (text: string): TranscriptAction => ({ type: 'user-send', text })
+const sendTurn = (text: string, turnId = 't0'): TranscriptAction => ({
+  type: 'user-send',
+  text,
+  turnId,
+})
 
 function run(actions: TranscriptAction[], start: Transcript = initialTranscript): Transcript {
   return actions.reduce(reduceTranscript, start)
@@ -41,12 +45,69 @@ function lastAssistant(state: Transcript): Extract<ChatMessage, { kind: 'assista
 
 /* -------------------------------------------------------------------------------------------- */
 
+describe('reduceTranscript — turn-refused (main did not open the turn)', () => {
+  it('takes back exactly the refused pair, by id, and releases the open turn', () => {
+    const state = run([sendTurn('mine', 't1'), { type: 'turn-refused', turnId: 't1' }])
+    expect(state.messages).toEqual([])
+    expect(state.turnState).toBe('idle')
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('still removes the pair after Stop settled its bubble — position and shape do not matter', () => {
+    // Round 3's rollback matched on "tail is [user, empty streaming assistant]"; a Stop during the
+    // round trip cleared `streaming` and the phantom pair survived while the ledger half ran.
+    const state = run([
+      sendTurn('mine', 't1'),
+      { type: 'interrupt-requested' },
+      { type: 'turn-refused', turnId: 't1' },
+    ])
+    expect(state.messages).toEqual([])
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('removes the pair even when a notice landed behind it, and keeps the notice', () => {
+    const state = run([
+      sendTurn('mine', 't1'),
+      ev({ type: 'skills-degraded', missing: ['svg-animation'] }),
+      { type: 'turn-refused', turnId: 't1' },
+    ])
+    expect(state.messages.map((m) => m.kind)).toEqual(['notice'])
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('refuses only the named turn, leaving a later send intact', () => {
+    // Send X, Stop, send Y, then X's refusal arrives: Y must survive.
+    const state = run([
+      sendTurn('x', 'tx'),
+      { type: 'interrupt-requested' },
+      sendTurn('y', 'ty'),
+      { type: 'turn-refused', turnId: 'tx' },
+    ])
+    expect(state.messages.map((m) => (m.kind === 'user' ? m.text : m.kind))).toEqual([
+      'y',
+      'assistant',
+    ])
+    expect(state.turnState).toBe('streaming')
+    expect(state.cost.openTurns).toBe(1)
+  })
+
+  it('is a no-op for an id it never opened', () => {
+    const before = run([sendTurn('mine', 't1')])
+    expect(reduceTranscript(before, { type: 'turn-refused', turnId: 'nope' })).toBe(before)
+  })
+})
+
 describe('reduceTranscript — user-send', () => {
   it('opens a turn: user bubble + streaming assistant bubble, turnState streaming', () => {
     const state = run([sendTurn('make a title slide')])
     expect(state.turnState).toBe('streaming')
     expect(state.messages).toHaveLength(2)
-    expect(state.messages[0]).toEqual({ kind: 'user', id: 'u0', text: 'make a title slide' })
+    expect(state.messages[0]).toEqual({
+      kind: 'user',
+      id: 'u0',
+      turnId: 't0',
+      text: 'make a title slide',
+    })
     expect(assistant(state)).toMatchObject({ text: '', tools: [], streaming: true, usage: null })
   })
 

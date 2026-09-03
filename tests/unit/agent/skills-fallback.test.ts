@@ -193,7 +193,11 @@ describe('§8 fallback restart', () => {
     await session.close()
   })
 
-  it('hands the replacement what is LEFT of the budget, not a second full cap', async () => {
+  it('hands the replacement the same absolute cap — admission bounds the session, not the ceiling', async () => {
+    // The SDK ceiling is a per-query backstop (§10, `AgentSession.setBudgetCap`); it is never a
+    // decaying remainder, because a remainder is what round 3 mistook for a lowered cap on every
+    // send. The restart happens at init with the first turn replayed, so the cap in force is the
+    // right number for the replacement too.
     const { queryFn, calls } = scriptedQueries([
       [initWith([]), { type: 'result', subtype: 'success', total_cost_usd: 0.5 }],
       [initWith([])],
@@ -210,7 +214,7 @@ describe('§8 fallback restart', () => {
     session.send('hello')
 
     await vi.waitFor(() => expect(calls).toHaveLength(2))
-    expect(calls[1]?.options.maxBudgetUsd).toBeCloseTo(1.5)
+    expect(calls[1]?.options.maxBudgetUsd).toBe(2)
     await session.close()
   })
 
@@ -249,7 +253,10 @@ describe('§8 fallback restart', () => {
     session.send('hello')
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'skills-degraded')).toBe(true))
-    expect(emitted.some((e) => e.type === 'error')).toBe(false)
+    // The loader's failure is logged, never shown as an error. (The scripted query then ends its
+    // stream with the turn unanswered, and main's own "stopped before replying" close follows —
+    // that one is about the query, not the loader.)
+    expect(emitted.some((e) => e.type === 'error' && /EACCES/.test(e.message))).toBe(false)
     await session.close()
   })
 

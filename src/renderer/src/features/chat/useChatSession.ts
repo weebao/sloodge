@@ -11,7 +11,7 @@
  * no key affordance is offered (you cannot store a key without a bridge).
  */
 
-import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { isAuthenticated, NOT_CONFIGURED, type AuthStatus } from '../../../../shared/agent/auth'
 import type { AgentEvent } from '../../../../shared/agent/types'
 import {
@@ -93,8 +93,11 @@ export function useChatSession(): ChatSession {
   const capUsd = useBudgetStore(selectBudgetCap)
   const budgetLoaded = useBudgetStore(selectBudgetLoaded)
   const setCap = useBudgetStore((state) => state.setCap)
+  const markBudgetFailed = useBudgetStore((state) => state.markFailed)
   const setCostUsd = useSessionMeterStore((state) => state.setCostUsd)
   const setSkills = useSessionMeterStore((state) => state.setSkills)
+  /** Mints the `turnId` each send is opened under, so a refusal can take back exactly that turn. */
+  const nextTurn = useRef(0)
 
   // Probe the key status and the budget cap once, and stream every agent event into the reducer. The
   // subscription and the probes share one effect because all three live and die with the bridge.
@@ -118,7 +121,9 @@ export function useChatSession(): ChatSession {
       })
       .catch(() => {
         // Leave the store unloaded rather than committing to a guessed cap: main is authoritative
-        // and enforces the real one on every send, so the local guard staying open is safe.
+        // and enforces the real one on every send, so the local guard staying open is safe. The
+        // failure is recorded so the status bar can say the cap is unknown rather than absent.
+        if (live) markBudgetFailed()
       })
     const unsubscribe = bridge.onAgentEvent((event) => {
       dispatch({ type: 'agent-event', event })
@@ -129,7 +134,7 @@ export function useChatSession(): ChatSession {
       live = false
       unsubscribe()
     }
-  }, [bridge, setAuthStatus, setCap, setSkills])
+  }, [bridge, setAuthStatus, setCap, markBudgetFailed, setSkills])
 
   // Publish the transcript's own total to the status bar. A mirror, never a second accumulator —
   // the reducer folds once per turn by the shared rule main uses (shared/agent/cost.ts).
@@ -160,19 +165,22 @@ export function useChatSession(): ChatSession {
         dispatch({ type: 'agent-event', event: budgetRefusalEvent(budget.capUsd) })
         return false
       }
-      // The transcript shows the user's own words; the agent-bound message additionally carries the
-      // serialized element context (as inert, fenced data — never executed; see `composeAgentMessage`).
-      // Opened optimistically so the assistant bubble appears the instant Send is pressed; if main
-      // refuses, `turn-refused` takes all of it back (bubbles, open turn, and the text itself).
-      dispatch({ type: 'user-send', text: trimmed })
-      const outbound = composeAgentMessage(trimmed, attachment ?? null)
+      const turnId = `t${String(nextTurn.current)}`
+      nextTurn.current += 1
       try {
+        // The transcript shows the user's own words; the agent-bound message additionally carries
+        // the serialized element context (as inert, fenced data — never executed; see
+        // `composeAgentMessage`). Composed first so a throw here opens nothing to roll back.
+        const outbound = composeAgentMessage(trimmed, attachment ?? null)
+        // Opened optimistically so the assistant bubble appears the instant Send is pressed; if main
+        // does not open a matching turn, `turn-refused` takes all of it back.
+        dispatch({ type: 'user-send', text: trimmed, turnId })
         const result = await bridge.sendMessage(outbound)
         if (result.accepted) return true
         // Main is authoritative and it said no, so roll the optimistic turn back before reporting.
         // Without this the renderer keeps an open turn main never opened, and the two counts the
         // budget guard compares drift apart permanently.
-        dispatch({ type: 'turn-refused' })
+        dispatch({ type: 'turn-refused', turnId })
         if (result.reason === 'budget') {
           // Main's ledger blocked the turn even though ours did not — a stale local cap, or spend
           // main counted that we have not folded yet.
@@ -193,18 +201,21 @@ export function useChatSession(): ChatSession {
         setAuthStatus(NOT_CONFIGURED)
         return false
       } catch (error: unknown) {
-        // `agent:send` can reject *before* the stream starts — the keychain read in `loadApiKey`,
-        // or a synchronous `query()` spawn fault. `session.consume()` only catches *streaming*
-        // errors, so without this the promise rejects unhandled and the turn is wedged in
-        // `streaming` forever with no bubble — the exact opposite of the "errors as chat bubbles"
-        // contract. Route it through the same error path a streaming failure takes.
+        // `agent:send` can reject *before* the stream starts — the keychain read in
+        // `loadCredential`, or a synchronous `query()` spawn fault. `session.consume()` only catches
+        // *streaming* errors, so without this the promise rejects unhandled and the turn is wedged
+        // in `streaming` forever with no bubble — the exact opposite of the "errors as chat bubbles"
+        // contract.
         //
-        // The turn is NOT rolled back here: unlike a refusal, a rejected invoke may well have
-        // reached main, so the safe reading is that the turn exists and failed.
-        const message = error instanceof Error ? error.message : String(error)
+        // The turn IS rolled back: main opens its turn in `session.send`, the last statement of
+        // `AgentService.send` after every await, so an invoke that rejected never reached it. The
+        // raw IPC text (channel names, main-process stack) goes to the console, not the chat.
+        // oxlint-disable-next-line no-console -- the only place the pre-stream failure is recorded.
+        console.error('agent:send rejected before the turn started', error)
+        dispatch({ type: 'turn-refused', turnId })
         dispatch({
           type: 'agent-event',
-          event: { type: 'error', kind: 'unknown', message, recoverable: true },
+          event: { type: 'error', kind: 'unknown', message: '', recoverable: true },
         })
         return false
       }

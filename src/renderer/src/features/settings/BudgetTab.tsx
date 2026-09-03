@@ -11,7 +11,7 @@
  * unsaid, turn into a support case about a number that "went missing" or "doesn't match the bill".
  */
 
-import { useCallback, useEffect, useState, type ChangeEvent, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type JSX } from 'react'
 import {
   DEFAULT_BUDGET_CAP_USD,
   evaluateBudget,
@@ -20,7 +20,12 @@ import {
   type BudgetCap,
 } from '../../../../shared/agent/budget'
 import { formatCostUsd } from '../../../../shared/agent/cost'
-import { selectBudgetCap, selectBudgetLoaded, useBudgetStore } from '../../stores/budgetStore'
+import {
+  selectBudgetCap,
+  selectBudgetFailed,
+  selectBudgetLoaded,
+  useBudgetStore,
+} from '../../stores/budgetStore'
 import { selectSessionCostUsd, useSessionMeterStore } from '../../stores/sessionMeterStore'
 import { getAgentBridge } from '../chat/agentClient'
 
@@ -32,20 +37,26 @@ function capToInput(cap: BudgetCap): string {
 export function BudgetTab(): JSX.Element {
   const storedCap = useBudgetStore(selectBudgetCap)
   const loaded = useBudgetStore(selectBudgetLoaded)
+  const probeFailed = useBudgetStore(selectBudgetFailed)
   const setCap = useBudgetStore((state) => state.setCap)
+  const markFailed = useBudgetStore((state) => state.markFailed)
   const spentUsd = useSessionMeterStore(selectSessionCostUsd)
 
-  const [limited, setLimited] = useState(storedCap !== null)
-  const [draft, setDraft] = useState(() => capToInput(storedCap))
+  // The store seeds a placeholder default before the probe resolves; it is not the user's cap and
+  // must not be rendered as one. Until `loaded`, the controls show nothing — as the status line and
+  // the guard already do — rather than a ticked box and "2.00" that silently flip a moment later.
+  const knownCap: BudgetCap = loaded ? storedCap : null
+  const [limited, setLimited] = useState(knownCap !== null)
+  const [draft, setDraft] = useState(() => capToInput(knownCap))
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
-  /** The probe failed, as opposed to merely not having resolved yet. The two need different UI. */
-  const [probeFailed, setProbeFailed] = useState(false)
   /** The user asked to remove the limit and has not confirmed it yet. */
   const [confirmingUncap, setConfirmingUncap] = useState(false)
+  /** Orders overlapping saves: only the newest one's reply may write the field or the store. */
+  const persistSeq = useRef(0)
 
   // Re-probe on open when the store has no cap yet. `useChatSession` probes once at startup and
-  // swallows a failure, which used to leave every control here disabled for the rest of the run with
+  // records a failure, which used to leave every control here disabled for the rest of the run with
   // nothing on screen explaining why. Opening Settings is the natural place to retry.
   useEffect(() => {
     if (loaded) return
@@ -55,30 +66,24 @@ export function BudgetTab(): JSX.Element {
     void bridge
       .getBudgetCap()
       .then((cap) => {
-        if (live) {
-          setCap(cap)
-          setProbeFailed(false)
-        }
+        if (live) setCap(cap)
       })
       .catch(() => {
-        if (live) setProbeFailed(true)
+        if (live) markFailed()
       })
     return () => {
       live = false
     }
-  }, [loaded, setCap])
+  }, [loaded, setCap, markFailed])
 
-  // Re-sync when the probe resolves after the dialog opened. Keyed on the stored value so a user
+  // Re-sync when the probe resolves after the dialog opened. Keyed on the known value so a user
   // mid-edit is not overwritten by their own save echoing back.
   useEffect(() => {
-    setLimited(storedCap !== null)
-    setDraft(capToInput(storedCap))
-  }, [storedCap])
+    setLimited(knownCap !== null)
+    setDraft(capToInput(knownCap))
+  }, [knownCap])
 
-  // Substitute `null` while unloaded, exactly as `useChatSession` and `AppShell` do. Reading the
-  // store's placeholder default as if it were the user's cap let this tab announce "messages are
-  // being refused" while the guard was in fact switched off.
-  const status = evaluateBudget(spentUsd, loaded ? storedCap : null)
+  const status = evaluateBudget(spentUsd, knownCap)
   // A failed probe still permits editing: a save is independently validated in main, so the worst
   // case is the user setting the cap they wanted anyway.
   const editable = loaded || probeFailed
@@ -86,27 +91,38 @@ export function BudgetTab(): JSX.Element {
   const persist = useCallback(
     (cap: BudgetCap) => {
       const bridge = getAgentBridge()
+      // Nothing to save to: neither "Saved" nor a mirror-store value main has never heard of.
+      if (bridge === undefined) return
+      persistSeq.current += 1
+      const seq = persistSeq.current
       // Optimistic: the store is the renderer's mirror and main is authoritative, so we show the
       // new cap immediately and correct it from what main actually stored.
-      const previous = storedCap
+      const previous = knownCap
       setCap(cap)
       setSaved(true)
-      if (bridge === undefined) return
       void bridge
         .setBudgetCap(cap)
         .then((stored) => {
+          if (seq !== persistSeq.current) return
           setCap(stored)
-          setProbeFailed(false)
+          // "Saved" only if main stored what was asked. A malformed reply rejects (preload) and
+          // lands below; this covers main legitimately storing something else.
+          setSaved(Object.is(stored, cap))
         })
         .catch(() => {
+          if (seq !== persistSeq.current) return
           // Roll the optimism back rather than leaving the UI showing a cap main does not have —
           // the guard would then be enforced against a different number than the one on screen.
+          // The field is reset explicitly: the store bails on an equal write, so its effect alone
+          // would not repaint a value the store never saw change.
           setCap(previous)
+          setLimited(previous !== null)
+          setDraft(capToInput(previous))
           setSaved(false)
           setError('The budget could not be saved, so the previous limit still applies.')
         })
     },
-    [setCap, storedCap],
+    [setCap, knownCap],
   )
 
   const onToggleLimit = useCallback(
@@ -156,8 +172,11 @@ export function BudgetTab(): JSX.Element {
       return
     }
     setDraft(parsed.toFixed(2))
+    // Clicking Save blurs the field first, so both handlers fire for one action; the second sees
+    // the value already stored and does nothing.
+    if (loaded && parsed === storedCap) return
     persist(parsed)
-  }, [draft, limited, persist])
+  }, [draft, limited, loaded, storedCap, persist])
 
   return (
     <div className="flex flex-col gap-4">
@@ -168,12 +187,14 @@ export function BudgetTab(): JSX.Element {
             <span aria-hidden="true">≈</span>
             <span className="sr-only">approximately </span> {formatCostUsd(spentUsd)}
           </span>
-          {!loaded ? (
-            '.'
-          ) : storedCap === null ? (
-            ' of an unlimited budget.'
+          {knownCap === null ? (
+            loaded ? (
+              ' of an unlimited budget.'
+            ) : (
+              '.'
+            )
           ) : (
-            <> of {formatCostUsd(storedCap)}.</>
+            <> of {formatCostUsd(knownCap)}.</>
           )}
         </p>
         {!loaded ? (
@@ -192,8 +213,8 @@ export function BudgetTab(): JSX.Element {
         </p>
         {status.level === 'blocked' ? (
           <p data-testid="budget-blocked" className="text-[12px] text-red-600 dark:text-red-400">
-            The budget is used up, so new messages are being refused. Any turn already running was
-            allowed to finish. Raise the limit below to continue.
+            The budget is used up, so new messages are being refused. Raise the limit below to
+            continue.
           </p>
         ) : null}
         {status.level === 'warn' ? (
@@ -278,8 +299,8 @@ export function BudgetTab(): JSX.Element {
 
         <p className="pl-5 text-[12px] text-chrome-muted dark:text-ink-muted">
           When the limit is reached Sloodge stops accepting new messages. A message already being
-          answered is never cut off part-way — the work is paid for either way, and stopping
-          mid-edit would leave the deck half-changed.
+          answered is allowed to finish — unless you lower the limit below what this session has
+          already spent, in which case it is stopped.
         </p>
       </section>
     </div>

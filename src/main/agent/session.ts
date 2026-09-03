@@ -8,6 +8,7 @@
  */
 
 import type { AgentEvent } from '../../shared/agent/types'
+import type { BudgetCap } from '../../shared/agent/budget'
 import {
   beginTurn,
   foldTurnCost,
@@ -70,6 +71,13 @@ const TERMINAL_RESULT_SUBTYPES: ReadonlySet<string> = new Set([
   'error_max_turns',
 ])
 
+/**
+ * The `turn-end` subtype main synthesises for a turn whose query ended without answering it. Not an
+ * SDK subtype — it marks a zero-cost close that `closeOpenTurns` emitted, so a reader of the event
+ * log can tell "the runtime said this turn cost $0" from "we never heard back".
+ */
+export const QUERY_ENDED_SUBTYPE = 'query_ended'
+
 export class AgentSession {
   private readonly deps: AgentSessionDeps
   /**
@@ -90,10 +98,16 @@ export class AgentSession {
    */
   private cost: CostState = INITIAL_COST_STATE
   /**
-   * Which query generation is live. Incremented by the fallback restart so the outgoing query's
-   * remaining messages are dropped instead of interleaving with the replacement's — without it, the
-   * old subprocess's `result` and the new one's `ready` would both reach the renderer and the chat
-   * would show one turn ending twice.
+   * Which query generation is live. Incremented whenever a query is replaced — the §8 fallback
+   * restart, and the re-arm after a query ends — so the outgoing query's residual messages and its
+   * drain-time retirement are ignored instead of interleaving with the replacement's. Without it the
+   * old subprocess's `result` and the new one's `ready` would both reach the renderer, and a query
+   * draining *after* its replacement opened would mark the replacement finished.
+   *
+   * A bump is only ever taken for a query that has nothing left to bill: the fallback restart happens
+   * at `system:init` (spend zero, pending turns replayed) and the re-arm happens after a terminal
+   * `result` or a drain (every open turn closed by `closeOpenTurns` first). A live query is never
+   * replaced — that was round 3's undercount.
    */
   private generation = 0
   /** See `SkillMode`. Flips exactly once, when the fallback restart opens the replacement query. */
@@ -117,27 +131,22 @@ export class AgentSession {
    * `system:init` arrives the SDK has already consumed the user's message off the bridge, so a
    * restart that did not replay would silently swallow the very turn that triggered it.
    *
-   * At most one entry in practice — the composer refuses to send while a turn is streaming — but
-   * kept as a list so a queued second send is not lost either.
+   * Usually one entry — the composer refuses to send while a turn is streaming — but a list, because
+   * Stop → retype → Send opens a second turn before the first has ended.
    */
   private pendingTexts: string[] = []
   /**
-   * The `maxBudgetUsd` the next query will be opened with (§10). Seeded from the session's options
-   * and refreshed by `AgentService` before every send, so a cap changed in Settings reaches the SDK.
+   * The user's configured spend cap (§10), or `null` for no limit. `AgentService` sets it before every
+   * send and whenever Settings saves a new one, so it is never staler than the last thing the user
+   * chose. It is the **absolute** cap — see `setBudgetCap` for how it is enforced and why the SDK's
+   * per-query ceiling is only a backstop.
    */
-  private budgetCeiling: number | undefined
+  private capUsd: BudgetCap
   /**
-   * The ceiling the **live** query was actually opened with, or `undefined` if it is uncapped.
-   * `maxBudgetUsd` is per-query cumulative and cannot be changed on a running query, so this is what
-   * the SDK is really enforcing right now — as opposed to `budgetCeiling`, which is only a promise
-   * about the next one. Lowering the cap has to compare against this or it changes nothing.
+   * A cap-triggered interrupt is in flight and its `result` has not folded yet. Stops a second cap
+   * edit, or the fold that follows, from interrupting the same turn twice and telling the user twice.
    */
-  private activeCeiling: number | undefined
-  /**
-   * The live query is capped higher than the user now allows, so it must be replaced before another
-   * turn runs. See `setBudgetCeiling`.
-   */
-  private ceilingStale = false
+  private budgetInterruptPending = false
   /**
    * The most recent `session_id` the runtime reported. Used to `resume` when we have to reopen a
    * query mid-session, so replacing it for budget reasons does not also wipe the conversation.
@@ -159,12 +168,20 @@ export class AgentSession {
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
     this.bridge = createChatBridge()
-    this.budgetCeiling = deps.options.maxBudgetUsd
+    this.capUsd = deps.options.maxBudgetUsd ?? null
   }
 
   /** Client-side cost estimate accumulated across this session's turns. */
   get estimatedSpendUsd(): number {
     return this.cost.totalUsd
+  }
+
+  /**
+   * Turns opened and not yet folded — the other half of the ledger. The renderer derives the same
+   * count from the events this session emits, and the agreement matrix asserts the two are equal.
+   */
+  get openTurns(): number {
+    return this.cost.openTurns
   }
 
   /**
@@ -187,7 +204,7 @@ export class AgentSession {
    */
   send(text: string): void {
     if (this.closed) return
-    if (this.handle === null || this.queryFinished || this.ceilingStale) this.start()
+    if (this.handle === null || this.queryFinished) this.start()
     // Opens the cost turn on the same event the renderer opens its own on, which is what makes the
     // two accumulators agree rather than merely resemble each other (shared/agent/cost.ts).
     this.cost = beginTurn(this.cost)
@@ -196,73 +213,86 @@ export class AgentSession {
   }
 
   /**
-   * Set the in-flight spend ceiling (§10). `AgentService` calls this before every send, so the
-   * ceiling is never staler than the last thing the user saved in Settings.
+   * Apply the user's cap (§10). `AgentService` calls this before every send and on every Settings
+   * save, so a change binds without waiting for the next turn.
    *
-   * **Both directions matter, and they are not symmetric.**
+   * **The cap is enforced by this class, not by the SDK.** `maxBudgetUsd` is per-query cumulative and
+   * cannot be changed on a running query, so it is handed to each query as the *absolute* cap and
+   * treated as a backstop against one runaway query — never as the session ledger. Round 3 tried to
+   * make the SDK enforce a lowered cap by replacing the live query, and the replacement is what lost
+   * an in-flight `result` and a user's accepted message; a decaying "remaining" ceiling also made
+   * every ordinary send look like a lowering. Neither mechanism exists any more. Three rules remain:
    *
-   * *Raising* is safe to defer: the live query keeps its lower ceiling, stops early if it reaches
-   * it, and `retireQuery` re-arms so the next send opens with the raised one. The user gets one
-   * extra query boundary and never overspends.
+   * 1. **Admission**: `AgentService.send` refuses a turn once `estimatedSpendUsd >= cap`. This is the
+   *    primary gate, and the only one needed for the common path.
+   * 2. **Lowered below spend while a turn is open** (`enforceCap`): the open turn is `interrupt()`ed
+   *    — the same path the Stop button takes, whose `result` folds like any other — and the chat
+   *    shows the budget error. No new query, no generation bump, nothing dropped.
+   * 3. **Anything else** — raised, or lowered but still above spend — changes nothing about the live
+   *    query. The next send sees the new cap; a query the SDK backstop stops re-arms with it.
    *
-   * *Lowering* cannot be deferred. `maxBudgetUsd` is per-query **cumulative** and the SDK offers no
-   * way to change it on a running query, so a live query opened at $10 keeps burning to $10 no
-   * matter what the user just saved — the turn-admission check runs *between* turns and cannot stop
-   * a turn already inside that allowance. A control that only moves in the permissive direction is
-   * not a safety control, so the live query is marked stale and replaced before another turn runs.
+   * What this bounds: the session cannot *start* a turn past the cap, and a turn already running is
+   * stopped as soon as main can see that the folded total has reached the cap. What it does not
+   * bound is the spend of the turn currently streaming — cost only reaches us on its `result` — which
+   * is what the per-query SDK ceiling is for.
    */
-  setBudgetCeiling(maxBudgetUsd: number | undefined): void {
-    this.budgetCeiling = maxBudgetUsd
-    if (this.handle === null || this.queryFinished) return
-    // Uncapped -> capped, or capped -> lower: the running query is enforcing something laxer than
-    // the user now allows. (`undefined` is "no ceiling", i.e. larger than any number.)
-    const liveCeilingTooHigh =
-      maxBudgetUsd !== undefined &&
-      (this.activeCeiling === undefined || maxBudgetUsd < this.activeCeiling)
-    if (liveCeilingTooHigh) this.ceilingStale = true
+  setBudgetCap(capUsd: BudgetCap): void {
+    this.capUsd = capUsd
+    this.enforceCap()
   }
 
-  /** The session's options with the current ceiling applied; omitted entirely when uncapped. */
+  /**
+   * Rule 2 of `setBudgetCap`, also run after every fold so an overlapping second turn (Stop → retype
+   * → Send) is stopped the moment the first turn's `result` carries the total past the cap.
+   *
+   * Reads only the *folded* total: the SDK gives no mid-turn price, and pricing tokens locally is what
+   * §10 forbids. Skipped for a query that has already ended — its turns close via `closeOpenTurns`.
+   */
+  private enforceCap(): void {
+    if (this.capUsd === null || this.handle === null || this.queryFinished || this.closed) return
+    if (this.cost.openTurns === 0 || this.cost.totalUsd < this.capUsd) return
+    if (this.budgetInterruptPending) return
+    this.budgetInterruptPending = true
+    void this.interrupt()
+    // Empty message on purpose: the renderer's copy table owns the budget sentence (transcript.ts).
+    this.deps.emit({ type: 'error', kind: 'budget', message: '', recoverable: true })
+  }
+
+  /** The session's options with the cap applied as the SDK backstop; omitted entirely when uncapped. */
   private queryOptions(extra?: Partial<AgentQueryOptions>): AgentQueryOptions {
     const { maxBudgetUsd: _ignored, ...rest } = this.deps.options
     return {
       ...rest,
       ...extra,
-      ...(this.budgetCeiling !== undefined ? { maxBudgetUsd: this.budgetCeiling } : {}),
+      ...(this.capUsd !== null ? { maxBudgetUsd: this.capUsd } : {}),
     }
   }
 
   private start(): void {
-    // A live query whose ceiling the user has lowered must be *replaced*: `maxBudgetUsd` is fixed
-    // for a query's lifetime, so opening a new one is the only way to make the lower cap bind.
-    if (this.handle !== null && !this.queryFinished && this.ceilingStale) {
-      const superseded = this.handle
-      const supersededConsuming = this.consuming
-      // Mute whatever the outgoing query still emits, so one turn never ends twice.
-      this.generation += 1
-      this.handle = null
-      this.queryFinished = true
-      void this.closeSuperseded(superseded, supersededConsuming)
-    }
-
     if (this.queryFinished) {
-      // Re-arming after a query ended. The old bridge's stream generator belongs to the dead query
-      // and nothing will ever drain it again, so the replacement gets a fresh one — the same repair
-      // `restartWithFallback` performs, for the same reason.
+      // Re-arming after a query ended (the SDK's ceiling, `maxTurns`, or a drain). Whatever that
+      // query left open it will never answer, so both ledgers close those turns *before* this send
+      // opens its own — and the generation moves on so the dead query's drain, which may still be in
+      // progress, cannot retire the replacement. The old bridge's stream generator belongs to the
+      // dead query and nothing will drain it again, so the replacement gets a fresh one — the same
+      // repair `restartWithFallback` performs, for the same reason.
+      // Only reachable with turns open inside the terminal-result-to-drain window, where the
+      // terminal result's own error has already explained the stop.
+      this.closeOpenTurns(true)
+      this.generation += 1
+      const dead = this.handle
+      if (dead !== null) void dead.return(undefined).catch(() => undefined)
       this.bridge.close()
       this.bridge = createChatBridge()
       this.pendingTexts = []
       this.queryFinished = false
     }
 
-    this.ceilingStale = false
-    // Record what the SDK is actually enforcing, as opposed to what we intend next time.
-    this.activeCeiling = this.budgetCeiling
-    // Reopening mid-session: carry the conversation across rather than making a budget edit cost the
+    // Reopening mid-session: carry the conversation across rather than making a budget stop cost the
     // user their chat history. Best effort — if the runtime cannot resume, the session continues
-    // without prior context and the budget bound, which is the property that must not fail, holds
-    // either way. The §8 fallback restart deliberately does NOT resume: it replays the pending turn
-    // itself, and resuming would deliver that message twice.
+    // without prior context; the cap is enforced here regardless. The §8 fallback restart
+    // deliberately does NOT resume: it replays the pending turn itself, and resuming would deliver
+    // that message twice.
     const resume = this.lastSessionId
     this.handle = this.deps.queryFn({
       prompt: this.bridge.stream(),
@@ -271,37 +301,33 @@ export class AgentSession {
     this.consuming = this.consume(this.handle, this.generation)
   }
 
-  /** Drop a query we replaced. Its outcome cannot matter — the generation guard already muted it. */
-  private async closeSuperseded(
-    handle: AgentQueryHandle,
-    consuming: Promise<void> | null,
-  ): Promise<void> {
-    try {
-      await handle.return(undefined)
-      await consuming
-    } catch {
-      // Already settled, or settled by erroring; the replacement is the live session either way.
-    }
-  }
-
   private async consume(handle: AgentQueryHandle, generation: number): Promise<void> {
+    // Whether the user has already been told why this query ended — a terminal result's own error,
+    // or the typed error below — so `closeOpenTurns` does not add a second bubble on top of it.
+    let explained = false
     try {
       for await (const raw of handle) {
-        // A superseded query may still yield buffered messages after the restart swapped it out.
-        // They describe a session the user is no longer in, so they are dropped — including any
-        // residual cost, which at init time (the only moment a restart happens) is zero.
+        // A superseded query may still yield buffered messages after it was swapped out. They
+        // describe a session the user is no longer in, so they are dropped. Safe only because a query
+        // is never superseded while it has a billable turn outstanding — see `generation`.
         if (generation !== this.generation) return
         for (const event of mapSdkMessage(raw, this.seenAssistantIds)) {
           if (event.type === 'turn-end') {
             this.cost = foldTurnCost(this.cost, event.costUsd)
-            this.pendingTexts = []
+            this.pendingTexts.shift()
+            this.budgetInterruptPending = false
             // Mark the query dead the moment its *terminating* result is seen, rather than waiting
             // for the generator to drain. Those are different instants, and a send landing between
             // them used to be pushed into the dying bridge and silently swallowed while
             // `AgentService.send` returned `accepted: true`.
-            if (TERMINAL_RESULT_SUBTYPES.has(event.subtype)) this.queryFinished = true
+            if (TERMINAL_RESULT_SUBTYPES.has(event.subtype)) {
+              this.queryFinished = true
+              explained = true
+            }
           }
           this.deps.emit(event)
+          // After the emit, so the renderer folds the result before any budget error lands.
+          if (event.type === 'turn-end') this.enforceCap()
           if (event.type === 'ready') {
             // Kept so a query we have to reopen mid-session can resume the conversation.
             this.lastSessionId = event.sessionId
@@ -319,46 +345,71 @@ export class AgentSession {
       if (this.closed || generation !== this.generation) return
       const { kind, message } = classifyException(error)
       this.deps.emit({ type: 'error', kind, message, recoverable: isRecoverable(kind) })
+      explained = true
     } finally {
-      this.retireQuery(generation)
+      this.retireQuery(generation, explained)
     }
   }
 
   /**
-   * A query has ended. Drop it and re-arm the session so the **next** send opens a fresh one.
+   * A query has ended. Flag it so the **next** send opens a fresh one, and close whatever it left open.
    *
-   * Without this the session is permanently wedged, and the guaranteed way to reach that state is
-   * the one thing this milestone is about: `maxBudgetUsd` is the whole cap, so the turn that crosses
-   * it always terminates the query with `error_max_budget_usd`. `consume` would then exit its loop
-   * leaving `handle` non-null and the bridge drained, so every later `send` skipped `start()` and
-   * pushed into a queue nothing drains — while `AgentService.send` cheerfully returned
-   * `accepted: true`. "Raise the limit in Settings and carry on", which this milestone's own spec
-   * promises twice, did nothing at all, and the composer sat in `streaming` forever.
+   * Without the flag the session is permanently wedged, and the guaranteed way to reach that state
+   * is the one thing this milestone is about: the turn that crosses `maxBudgetUsd` always terminates
+   * the query with `error_max_budget_usd`. `consume` would then exit its loop leaving `handle`
+   * non-null and the bridge drained, so every later `send` skipped `start()` and pushed into a queue
+   * nothing drains — while `AgentService.send` cheerfully returned `accepted: true`.
    *
-   * Only a *flag* is set here — `handle` deliberately stays put so `close()` can still `return()` it
-   * and the "never orphan a subprocess" teardown path (§9) is unchanged. The actual re-arm happens
+   * Only a *flag* is set for the handle — it deliberately stays put so `close()` can still `return()`
+   * it and the "never orphan a subprocess" teardown path (§9) is unchanged. The actual re-arm happens
    * in `start()`, on the next send that needs a query.
    *
    * This runs when the generator *drains*, which is strictly later than the moment the query decided
    * to stop. For the terminating results we can name (`TERMINAL_RESULT_SUBTYPES`) `consume` sets the
-   * flag at the `result` itself, closing the window where a send would otherwise be pushed into a
-   * dying bridge and swallowed while `AgentService.send` reported `accepted: true`. A residual window
-   * remains for a query that dies *without* a recognised terminal result: it is either a throw (which
-   * surfaces as an `error` event, so the turn is not silently lost) or a runtime ending its stream
-   * unannounced. Draining `pendingTexts` into the replacement was tried and rejected — a query that
-   * ends while holding an unanswered turn is indistinguishable from one that simply had nothing more
-   * to say, so replaying spawns a subprocess every time a short session winds down.
-   *
-   * The open-turn count is deliberately **not** cleared: the renderer's accumulator cannot see this
-   * event, so zeroing it here would be the one thing that makes the two ledgers disagree. A turn
-   * whose query died without a `result` stays open on both sides, symmetrically.
+   * flag at the `result` itself; a send that lands between that result and this drain re-arms in
+   * `start()`, which bumps the generation so this late retirement is ignored.
    */
-  private retireQuery(generation: number): void {
-    // Superseded by the §8 restart or a ceiling replacement: that path installed a live handle.
+  private retireQuery(generation: number, explained: boolean): void {
+    // Superseded by the §8 restart or a re-arm: that path installed a live handle.
     if (generation !== this.generation) return
     // `close()` owns teardown; re-arming a session the caller is disposing would resurrect it.
     if (this.closed) return
     this.queryFinished = true
+    this.closeOpenTurns(explained)
+  }
+
+  /**
+   * End every turn the dead query left unanswered, on both ledgers at once.
+   *
+   * A query that ends — the SDK's ceiling with a second turn still queued behind it, a runtime that
+   * closes its stream unannounced, a transport failure after the turn was accepted — leaves a turn
+   * that no `result` will ever close. Left alone, that turn sat open forever: the renderer's composer
+   * stuck on `streaming` with no bubble and no retry, and both open-turn counts one too high, so the
+   * next stray `result` would fold into a turn that no longer existed. Main is the side that can see
+   * the query end, so main closes the turn: a zero-cost `turn-end` per open turn (both accumulators
+   * fold the same `0`, so they stay equal), then one error the user can act on.
+   *
+   * Zero is the only honest cost. The turn's real `result` never arrived, so nothing was learned
+   * about what it spent; the model the matrix test checks against says the same — a turn bills at its
+   * first `result`, and this turn had none.
+   *
+   * `explained` is true when the chat already shows why the query ended (a budget stop, a transport
+   * error); then the close is silent rather than stacking a second bubble on the first.
+   */
+  private closeOpenTurns(explained: boolean): void {
+    if (this.cost.openTurns === 0) return
+    while (this.cost.openTurns > 0) {
+      this.cost = foldTurnCost(this.cost, 0)
+      this.deps.emit({ type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE })
+    }
+    this.pendingTexts = []
+    if (explained) return
+    this.deps.emit({
+      type: 'error',
+      kind: 'unknown',
+      message: 'Claude stopped before replying. Send your message again.',
+      recoverable: true,
+    })
   }
 
   /**
@@ -460,11 +511,8 @@ export class AgentSession {
     const replay = this.pendingTexts
     this.pendingTexts = []
 
-    // The replacement inherits what is *left* of the cap, not the original ceiling — otherwise a
-    // restart would quietly hand the session a second full budget (§10).
-    if (this.budgetCeiling !== undefined) {
-      this.budgetCeiling = Math.max(0, this.budgetCeiling - this.cost.totalUsd)
-    }
+    // The replacement carries the same absolute cap as any query (`queryOptions`); admission is what
+    // bounds the session, so a restart cannot hand it a second budget (§10, `setBudgetCap`).
     this.handle = this.deps.queryFn({
       prompt: this.bridge.stream(),
       options: this.queryOptions({ skillFallbackPrompt: prompt }),

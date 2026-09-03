@@ -97,13 +97,15 @@ export function foldTurnCost(state: CostState, costUsd: number): CostState {
 }
 
 /**
- * Close an opened turn that will never produce a `result`, without adding cost.
+ * Close an opened turn that main never opened, without adding cost.
  *
  * The renderer opens its turn optimistically, before main has accepted the send — that is what makes
  * the assistant bubble appear the instant you hit Send. When main then *refuses* (its own budget
- * check, or a credential that vanished), main never opened a matching turn, so the renderer would be
- * left one turn ahead forever: a later stray `result` would fold into the phantom, and the two
- * ledgers the guard depends on would disagree permanently. This is the rollback for that.
+ * check, or a credential that vanished), or the invoke rejects before reaching the session, main
+ * never opened a matching turn, so the renderer would be left one turn ahead forever: a later stray
+ * `result` would fold into the phantom, and the two ledgers the guard depends on would disagree
+ * permanently. This is the rollback for that. (A turn main *did* open and whose query then ended
+ * without answering is closed by main itself, with a zero-cost `turn-end` both sides fold.)
  */
 export function abandonTurn(state: CostState): CostState {
   if (state.openTurns === 0) return state

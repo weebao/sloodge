@@ -14,7 +14,12 @@ import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
-import { selectBudgetCap, selectBudgetLoaded, useBudgetStore } from '../stores/budgetStore'
+import {
+  selectBudgetCap,
+  selectBudgetFailed,
+  selectBudgetLoaded,
+  useBudgetStore,
+} from '../stores/budgetStore'
 import {
   selectSessionCostUsd,
   selectSessionSkills,
@@ -45,6 +50,7 @@ export function AppShell(): JSX.Element {
   const sessionSkills = useSessionMeterStore(selectSessionSkills)
   const budgetCap = useBudgetStore(selectBudgetCap)
   const budgetLoaded = useBudgetStore(selectBudgetLoaded)
+  const budgetUnknown = useBudgetStore(selectBudgetFailed)
   // Derived in a memo, never in the selector — `evaluateBudget` returns a fresh object, which as a
   // selector result would make `getSnapshot` report a change on every call (createStore's contract).
   const budget = useMemo(
@@ -177,6 +183,7 @@ export function AppShell(): JSX.Element {
         issueCount={0}
         sessionCostUsd={sessionCostUsd}
         budget={budget}
+        budgetUnknown={budgetUnknown}
         skills={sessionSkills}
         {...(canPresent ? { onPresent: startPresent } : {})}
       />
