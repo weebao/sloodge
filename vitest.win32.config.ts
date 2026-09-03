@@ -6,8 +6,8 @@
  *
  * **Why this exists.** M9.0's release job runs `pnpm test` on a Windows runner. A suite that has
  * only ever run on Linux can hide assertions comparing `path.join` output against forward-slash
- * literals, and that class reds the release job *before* packaging is reached — which is exactly
- * what round-3 review found in three agent test files. The `core.autocrlf=true` clone used to
+ * literals, and that class reds the release job *before* packaging is reached. The
+ * `core.autocrlf=true` clone used to
  * validate the CRLF fix reproduces line endings faithfully but is structurally blind to
  * `path.sep`, so it could never have caught this. Validating "Windows on Linux" needs BOTH.
  *

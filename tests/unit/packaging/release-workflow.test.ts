@@ -28,11 +28,9 @@ import { fileURLToPath } from 'node:url'
  * indentation into a key tree, so the assertions are about *structure* — "which keys exist under
  * `on`" — rather than about whether some substring happens to appear in the file.
  *
- * The reader **fails closed**: anything it cannot model throws. That is not fastidiousness, it is
- * the fix for a real hole. The first revision skipped lines its regex missed, and review found that
- * `"pull_request":`, `'workflow_dispatch':`, and `? pull_request` / `:` are all triggers GitHub
- * honours yet the reader silently ignored — so the suite stayed green while the budget rule was
- * being abandoned. See the `fails closed` describe block at the bottom, which pins that property.
+ * The reader **fails closed**: anything it cannot model throws, so a trigger spelled in a syntax it
+ * does not understand becomes red rather than invisible. `parseBlock`'s docblock explains why that
+ * is load-bearing; the `fails closed` describe block at the bottom pins it.
  */
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -455,16 +453,12 @@ describe('release workflow — build correctness', () => {
 
 describe('the tag/version guard, executed', () => {
   /**
-   * The previous revision tested this guard the weak way: assert a step with the right `name:`
-   * exists, sits before the build, and contains three substrings. Review showed that leaves four
-   * actionlint-valid neuterings GREEN — `continue-on-error: true`, inverting `!=` to `==`, an env
-   * escape hatch, and deleting the `-<suffix>` arm. The one about `continue-on-error` was the
-   * damning one, because the substring test's own comment claimed the step "must actually fail the
-   * job, not just warn" while checking nothing of the sort.
-   *
-   * So this block extracts the step's real `run:` body and EXECUTES it under bash against a matrix
-   * of (package version, tag) pairs, asserting the exit status. A guard that is only ever read is
-   * not tested; one that is run is.
+   * Asserting that a step exists, precedes the build and contains a few substrings does not test a
+   * guard: `continue-on-error: true`, an inverted comparison, a step-level env escape hatch and a
+   * deleted `-<suffix>` arm all survive that, and every one of them is actionlint-valid. So this
+   * block extracts the step's real `run:` body and EXECUTES it under bash against a matrix of
+   * (package version, tag) pairs, asserting the exit status. A guard that is only ever read is not
+   * tested; one that is run is.
    */
   const guardStep = (): YamlBlock => {
     const step = allSteps().find((entry) => entry.scalars.get('name') === TAG_VERSION_STEP)
@@ -527,9 +521,8 @@ describe('the tag/version guard, executed', () => {
   })
 
   it('fails rather than passing when the tag variable is absent entirely', () => {
-    // Note what actually catches this, since an earlier comment here overclaimed: with no
-    // GITHUB_REF_NAME the ordinary mismatch branch exits 1 anyway, so the case is covered with or
-    // without `set -u`. The strict-mode flags are pinned separately, below.
+    // With no GITHUB_REF_NAME the ordinary mismatch branch exits 1 anyway, so this case holds with
+    // or without `set -u`. The strict-mode flags are pinned separately, below.
     expect(runGuard('0.0.1', undefined)).not.toBe(0)
   })
 
@@ -615,46 +608,42 @@ describe('the tag/version guard, executed', () => {
 
 describe('release workflow — the reader fails closed', () => {
   /**
-   * A guard is only as good as its parser. The first revision of this file SKIPPED lines its regex
-   * did not match, and review found three legal spellings that GitHub honours as real triggers but
-   * that the reader ignored, leaving the suite green while the budget rule was abandoned. These
-   * tests pin the fail-closed property itself, so it cannot regress back into a silent skip.
+   * Pins the fail-closed property of `parseBlock` itself (see its docblock for why it must hold):
+   * unmodelled syntax has to become red, never invisible.
    */
-  const parse = (yaml: string): YamlBlock => parseYaml(yaml)
-
   it('sees a double-quoted trigger key', () => {
-    expect(keysOf(parse('on:\n  "pull_request":\n  push:\n'))).toEqual(['on'])
+    expect(keysOf(parseYaml('on:\n  "pull_request":\n  push:\n'))).toEqual(['on'])
     expect(
-      keysOf(parse('on:\n  "pull_request":\n  push:\n').blocks.get('on') ?? EMPTY_BLOCK),
+      keysOf(parseYaml('on:\n  "pull_request":\n  push:\n').blocks.get('on') ?? EMPTY_BLOCK),
     ).toEqual(['pull_request', 'push'])
   })
 
   it('sees a single-quoted trigger key', () => {
     expect(
-      keysOf(parse("on:\n  'workflow_dispatch':\n  push:\n").blocks.get('on') ?? EMPTY_BLOCK),
+      keysOf(parseYaml("on:\n  'workflow_dispatch':\n  push:\n").blocks.get('on') ?? EMPTY_BLOCK),
     ).toEqual(['push', 'workflow_dispatch'])
   })
 
   it('throws on YAML explicit-key syntax rather than ignoring it', () => {
-    expect(() => parse('on:\n  ? pull_request\n  :\n  push:\n')).toThrow(/unparsed YAML line/)
+    expect(() => parseYaml('on:\n  ? pull_request\n  :\n  push:\n')).toThrow(/unparsed YAML line/)
   })
 
   it('throws on any line it cannot model, rather than skipping it', () => {
-    expect(() => parse('on:\n  @not-yaml\n')).toThrow(/unparsed YAML line/)
+    expect(() => parseYaml('on:\n  @not-yaml\n')).toThrow(/unparsed YAML line/)
   })
 
   it('treats a block scalar body as opaque text, not as structure', () => {
     // Without this, the shell script inside `run: |` would trip the throw above.
-    const block = parse('run: |\n  set -euo pipefail\n  echo hi\n')
+    const block = parseYaml('run: |\n  set -euo pipefail\n  echo hi\n')
     expect(block.scalars.get('run')).toBe('set -euo pipefail\necho hi')
   })
 
   it('preserves comments and interior blank lines inside a block scalar', () => {
-    // The harness EXECUTES an extracted `run:` body, so "what we run" must be "what ships". An
-    // earlier revision assembled bodies from the comment-stripped line list, and was byte-faithful
-    // only by luck — for a step that happened to contain neither comments nor blank lines. Bodies
-    // are now read back from the raw source; this pins that so the fidelity cannot silently lapse.
-    const block = parse('run: |\n  one\n  # a comment\n\n  two\n')
+    // The harness EXECUTES an extracted `run:` body, so "what we run" must be "what ships".
+    // Assembling bodies from the comment-stripped line list is byte-faithful only for a step that
+    // happens to contain neither comments nor blank lines, so they are read back from the raw
+    // source instead and this pins it.
+    const block = parseYaml('run: |\n  one\n  # a comment\n\n  two\n')
     expect(block.scalars.get('run')).toBe('one\n# a comment\n\ntwo')
   })
 })

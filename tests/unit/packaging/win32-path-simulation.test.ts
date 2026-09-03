@@ -5,25 +5,13 @@ import { fileURLToPath } from 'node:url'
 import { REAL_FILESYSTEM_TESTS } from '../../../vitest.win32.config'
 
 /**
- * **The Windows-path simulation, and the guard on its escape hatch.**
+ * **The guard on the win32 simulation's escape hatch.** `vitest.win32.config.ts` explains what the
+ * simulation is for and why tests doing real filesystem I/O cannot be part of it.
  *
- * M9.0's release job runs `pnpm test` on `windows-latest`. Round-3 review found 14 assertions
- * comparing `path.join` output against forward-slash literals, which would have reddened the
- * release job before packaging was ever reached. The deeper finding was about method: the
- * `core.autocrlf=true` clone used to validate the CRLF blocker reproduces line endings but is
- * *structurally* blind to `path.sep`, so no amount of care with that tool could have caught this.
- * `pnpm test:win-paths` is the missing half — it aliases `node:path` to `path.win32`.
- *
- * That simulation has one honest limit: tests doing real filesystem I/O cannot work with `\`
- * separators on a Linux kernel, so they are excluded. An exclusion list is exactly the kind of
- * escape hatch that quietly grows until it covers a real bug, so this file pins it:
- *
- * - every excluded file must exist (no stale entries left behind after a rename);
- * - every excluded file must actually touch the filesystem, so a pure-logic test — the kind that
- *   *can* be simulated, and whose failure would be a genuine posix-literal bug — cannot be parked
- *   in the list to make the run green;
- * - the list stays sorted and duplicate-free, so it reads as a reviewed set rather than an
- *   accumulation.
+ * An exclusion list is the kind of escape hatch that quietly grows until it covers a real bug, so
+ * this file pins it in both directions: nothing may be excluded that could have been simulated
+ * (which would hide a genuine posix-literal failure), and nothing that touches the filesystem may
+ * be omitted (which would let the run scatter backslash-named files through the repo root).
  */
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
