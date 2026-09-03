@@ -78,10 +78,18 @@ describe('theme colour tokens', () => {
 
   it('extracts tokens through variants and opacity, and only from colour utilities', () => {
     const refs = referencedColourTokens(
-      `className="dark:bg-ink-bg text-shell-fg hover:border-accent/50 dark:border-b-ink-alt ring-offset-chrome w-7 h-ink"`,
+      `className="dark:bg-ink-bg text-shell-fg hover:border-accent/50 dark:border-b-ink-alt ring-offset-chrome inset-ring-ink inset-shadow-ink-alt w-7 h-ink"`,
       namespaces,
     )
-    expect(refs.map((r) => r.token)).toEqual(['ink-bg', 'shell-fg', 'accent', 'ink-alt', 'chrome'])
+    expect(refs.map((r) => r.token)).toEqual([
+      'ink-bg',
+      'shell-fg',
+      'accent',
+      'ink-alt',
+      'chrome',
+      'ink',
+      'ink-alt',
+    ])
   })
 
   it('every colour utility under src/renderer/src names a declared token', () => {
