@@ -48,6 +48,18 @@ describe('processTypeBreakdown', () => {
     expect(out['Tab']?.memoryMb).toMatchObject({ min: 40, max: 80 })
   })
 
+  it('leaves out only the samples where a process of the type had no reading', () => {
+    // One renderer exiting mid-sample must not null the whole Tab row for the session; with 100+
+    // renderers that happens in nearly every run.
+    const samples = [
+      sample(0, [proc('Tab', 1, 40 * MB), proc('Tab', 2, 40 * MB, null)]),
+      sample(250, [proc('Tab', 1, 40 * MB), proc('Tab', 3, 40 * MB)]),
+    ]
+    const out = processTypeBreakdown(samples, 'proc-pss-sum')
+    expect(out['Tab']?.processes.count).toBe(2)
+    expect(out['Tab']?.memoryMb).toMatchObject({ count: 1, median: 80 })
+  })
+
   it('reports null memory for a basis with no per-process reading, but still counts processes', () => {
     const samples = [sample(0, [proc('Browser', 1, 100 * MB, null), proc('Tab', 2, 40 * MB)])]
     const out = processTypeBreakdown(samples, 'proc-pss-sum')

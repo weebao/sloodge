@@ -190,7 +190,11 @@ const PROCESS_MEMORY_FIELD = {
 export type ProcessTypeBreakdown = {
   /** Processes of this type per sample. A `min` of 0 means the type was not always alive. */
   readonly processes: Summary
-  /** Memory of this type per sample on the chosen basis, or null when the basis has no per-process reading. */
+  /**
+   * Memory of this type per sample on the chosen basis. Samples in which any process of the type
+   * had no reading (it exited between `getAppMetrics()` and the `/proc` read — routine with 100+
+   * renderers) are left out, so `count` can be below `processes.count`; null if none was readable.
+   */
   readonly memoryMb: Summary | null
 }
 
@@ -214,21 +218,17 @@ export function processTypeBreakdown(
   for (const type of types) {
     const counts: number[] = []
     const memory: number[] = []
-    let readable = true
     for (const sample of samples) {
       const own = sample.processes.filter((p) => p.type === type)
       counts.push(own.length)
-      let kb = 0
-      for (const proc of own) {
-        const value = proc[field]
-        if (value === null) readable = false
-        else kb += value
+      const readings = own.map((p) => p[field])
+      if (readings.every((kb): kb is number => kb !== null)) {
+        memory.push(kbToMb(readings.reduce((sum, kb) => sum + kb, 0)))
       }
-      memory.push(kbToMb(kb))
     }
     out[type] = {
       processes: summarize(counts),
-      memoryMb: readable ? summarize(memory) : null,
+      memoryMb: memory.length > 0 ? summarize(memory) : null,
     }
   }
   return out
