@@ -12,6 +12,7 @@
  */
 
 import type { Summary } from './stats'
+import type { ProcessTypeBreakdown } from '../harness/sampler'
 
 /** Which memory series a report treats as *the* RAM number. See `perf/README.md` §"What RAM means". */
 export const RAM_BASES = ['app-metrics-working-set-sum', 'proc-pss-sum', 'proc-rss-sum'] as const
@@ -43,8 +44,12 @@ export type PerfMetrics = {
   readonly ramMb: Summary
   /** Which series `ramMb` was computed from. */
   readonly ramBasis: RamBasis
-  /** Frame intervals recorded in the renderer while the active slide animates. */
-  readonly frameIntervalMs: Summary
+  /**
+   * Frame intervals recorded in the renderer while the active slide animates. Null when the dwell
+   * recorded no frames at all (an occluded window under WSLg does this); not a budget, so an empty
+   * series is reported as absent rather than failing the run.
+   */
+  readonly frameIntervalMs: Summary | null
   /**
    * Frames missed against a 60 Hz ideal over the animation dwell — see `missedFrames` in stats.ts
    * for why this replaced a count of over-long intervals (that count is not monotonic once the
@@ -57,8 +62,8 @@ export type PerfMetrics = {
   readonly longFrameIntervals: number
   /** Median RAM with the app idle on its starter deck, before the stress deck is pushed. */
   readonly idleRamMb: number
-  /** Renderer JS heap, sampled with the same cadence as `ramMb`. */
-  readonly rendererHeapMb: Summary
+  /** Renderer JS heap, sampled with the same cadence as `ramMb`. Null if no read succeeded. */
+  readonly rendererHeapMb: Summary | null
 }
 
 export type PerfReport = {
@@ -91,6 +96,15 @@ export type PerfReport = {
   readonly ramBases: Readonly<Record<string, Summary | null>>
   /** Electron process count over the session — the driver behind the memory numbers. */
   readonly processCount: Summary | null
+  /**
+   * Memory and process count by Chromium process type, on `metrics.ramBasis`, for the whole session
+   * and for the idle window alone. This is how a reader tells "the app grew" from "the GPU process
+   * happened to be alive this time" without opening the trace.
+   */
+  readonly processTypes: {
+    readonly session: Readonly<Record<string, ProcessTypeBreakdown>>
+    readonly idle: Readonly<Record<string, ProcessTypeBreakdown>>
+  }
   /**
    * What else the host was doing while these numbers were taken. This box also runs other agents'
    * test suites, so a baseline that omits its own contention cannot be diffed honestly later.
@@ -162,6 +176,8 @@ export type BudgetCheck = {
   readonly limit: number
   readonly actual: number
   readonly unit: string
+  /** Sample count behind `actual` for series-backed budgets; null for scalar metrics. */
+  readonly samples: number | null
   readonly pass: boolean
 }
 
@@ -177,6 +193,18 @@ export function budgetActuals(metrics: PerfMetrics): Readonly<Record<string, num
 }
 
 /**
+ * Sample counts behind the series-backed budgets. A budget over zero samples is a hard failure,
+ * never a pass: `summarize` refuses an empty series, but a hand-edited or older report can still
+ * carry a `count: 0` summary whose median is 0, and 0 MB is inside every budget.
+ */
+function budgetSampleCounts(metrics: PerfMetrics): Readonly<Record<string, number>> {
+  return {
+    slideSwitchMs: metrics.slideSwitchMs.count,
+    medianRamMb: metrics.ramMb.count,
+  }
+}
+
+/**
  * Evaluate every budget against a report.
  *
  * @throws RangeError when a budget names a metric the report does not carry — a silently skipped
@@ -187,18 +215,22 @@ export function checkBudgets(
   budgets: readonly Budget[] = BUDGETS,
 ): BudgetCheck[] {
   const actuals = budgetActuals(metrics)
+  const counts = budgetSampleCounts(metrics)
   return budgets.map((budget) => {
     const actual = actuals[budget.key]
     if (actual === undefined) {
       throw new RangeError(`Budget "${budget.key}" has no matching metric in the report`)
     }
+    const samples = counts[budget.key] ?? null
+    const within = budget.strict ? actual < budget.limit : actual <= budget.limit
     return {
       key: budget.key,
       label: budget.label,
       limit: budget.limit,
       actual,
       unit: budget.unit,
-      pass: budget.strict ? actual < budget.limit : actual <= budget.limit,
+      samples,
+      pass: samples !== 0 && within,
     }
   })
 }
@@ -210,7 +242,7 @@ export type MetricDiff = {
   readonly candidate: number
   readonly deltaPct: number
   readonly unit: string
-  /** True when the candidate regressed by more than the allowed tolerance. */
+  /** True when the candidate regressed by more than the allowed tolerance, or measured nothing. */
   readonly regressed: boolean
 }
 
@@ -233,6 +265,7 @@ export function diffReports(
   if (tolerancePct < 0) throw new RangeError('Tolerance must be non-negative')
   const before = budgetActuals(baseline)
   const after = budgetActuals(candidate)
+  const candidateCounts = budgetSampleCounts(candidate)
   return budgets.map((budget) => {
     const b = before[budget.key]
     const c = after[budget.key]
@@ -247,16 +280,16 @@ export function diffReports(
       candidate: c,
       deltaPct,
       unit: budget.unit,
-      regressed: deltaPct > tolerancePct,
+      regressed: candidateCounts[budget.key] === 0 || deltaPct > tolerancePct,
     }
   })
 }
 
 /** Render budget checks as a markdown table, for pasting into a perf PR description. */
 export function budgetTable(checks: readonly BudgetCheck[]): string {
-  const rows = checks.map(
-    (check) =>
-      `| ${check.label} | ${check.actual.toFixed(1)} ${check.unit} | < ${String(check.limit)} ${check.unit} | ${check.pass ? 'PASS' : 'FAIL'} |`,
-  )
+  const rows = checks.map((check) => {
+    const measured = check.samples === 0 ? 'no samples' : `${check.actual.toFixed(1)} ${check.unit}`
+    return `| ${check.label} | ${measured} | < ${String(check.limit)} ${check.unit} | ${check.pass ? 'PASS' : 'FAIL'} |`
+  })
   return ['| Budget | Measured | Limit | Verdict |', '|---|---|---|---|', ...rows].join('\n')
 }

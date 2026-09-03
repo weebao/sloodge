@@ -15,10 +15,14 @@ explicit directive. M8.7 will add a cheap CI job that diffs _committed numbers_ 
 
 ```bash
 pnpm build                 # the harness drives out/main/index.js; it does not build for you
-pnpm perf:generate         # writes perf/decks/stress-{100,500,1000}.sloodge (+ deck-update payloads)
-pnpm perf:run --slides=500 --runs=3
+pnpm perf:generate         # writes perf/decks/stress-{25,50,100,200,300,500,1000} (+ deck-update payloads)
+pnpm perf:run --slides=100 --runs=3 --ram-basis=proc-pss-sum
 pnpm perf:diff perf/results/baseline-main.json perf/results/run-100.json
 ```
+
+The 100-slide tier is the headline. **Do not run 500 or 1000 before M8.2 lands**: on this machine
+they exhaust RAM and swap (see "The result"). The harness now fails fast when the app dies instead
+of hanging, but the machine still has to survive the attempt.
 
 `perf:diff` is the whole of what M8.7's CI job has to do: it loads two committed reports and applies
 the pure rules in `perf/lib/report.ts` — no build, no Electron, no deck. It exits `1` on a budget
@@ -29,7 +33,7 @@ Useful flags for `perf:run`:
 
 | Flag           | Default                       | Meaning                                                                                                         |
 | -------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `--slides=N`   | `500`                         | Which generated deck to use                                                                                     |
+| `--slides=N`   | `100`                         | Which generated deck to use                                                                                     |
 | `--runs=N`     | `3`                           | Whole-session repetitions; the report keeps per-run headlines                                                   |
 | `--ram-basis=` | `app-metrics-working-set-sum` | `proc-pss-sum` is the honest basis on Linux — see below                                                         |
 | `--switches=N` | `20`                          | Slide switches to time                                                                                          |
@@ -104,17 +108,21 @@ change it.
 
 ## What each metric means
 
-| Metric             | Definition                                                                                                                                                           |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `coldStartMs`      | **Upper bound.** Spawn → `#sloodge-shell` in the DOM, polled every 25 ms                                                                                             |
-| `documentLoadedMs` | **Lower bound.** Spawn → the renderer's navigation `loadEventEnd`, converted through `performance.timeOrigin`                                                        |
-| `deckOpenMs`       | `deck:updated` dispatched → every rail frame has fired `load`                                                                                                        |
-| `deckPublishMs`    | `deck:updated` dispatched → every rail frame has a `slide://` src (main holds the bytes)                                                                             |
-| `deckReadMs`       | The shipped `readDeck` unzipping the `.sloodge` from disk                                                                                                            |
-| `slideSwitchMs`    | Rail click → the canvas iframe's `load`. **Both timestamps are taken in page context**, so CDP round-trip jitter delays only when a number is read, never the number |
-| `frameIntervalMs`  | Gaps between `requestAnimationFrame` callbacks in the **app shell** while an animating slide is active                                                               |
-| `droppedFrames`    | Intervals longer than 1.5 × the 60 Hz budget, i.e. > 25 ms                                                                                                           |
-| `rendererHeapMb`   | `JSHeapUsedSize` from CDP `Performance.getMetrics`, host renderer only                                                                                               |
+| Metric               | Definition                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coldStartMs`        | **Upper bound.** Spawn → `#sloodge-shell` in the DOM, polled every 25 ms                                                                                                                                                  |
+| `documentLoadedMs`   | **Lower bound.** Spawn → the renderer's navigation `loadEventEnd`, converted through `performance.timeOrigin`                                                                                                             |
+| `deckOpenMs`         | `deck:updated` dispatched → every rail frame has fired `load`                                                                                                                                                             |
+| `deckPublishMs`      | `deck:updated` dispatched → every rail frame has a `slide://` src (main holds the bytes)                                                                                                                                  |
+| `deckReadMs`         | The shipped `readDeck` unzipping the `.sloodge` from disk                                                                                                                                                                 |
+| `slideSwitchMs`      | Rail click → the canvas iframe's `load`. **Both timestamps are taken in page context**, so CDP round-trip jitter delays only when a number is read, never the number                                                      |
+| `frameIntervalMs`    | Gaps between `requestAnimationFrame` callbacks in the **app shell** while an animating slide is active. `null` if the dwell recorded no frames                                                                            |
+| `droppedFrames`      | Frames **missed against a 60 Hz ideal** over the dwell window (`missedFrames` in `stats.ts`). The budgeted number; lower is better                                                                                        |
+| `longFrameIntervals` | Intervals longer than 1.5 × the 60 Hz budget, i.e. > 25 ms. Kept as a secondary signal; not monotonic once the frame stream collapses (see Known limits #9)                                                               |
+| `frameRateFps`       | Frames served ÷ dwell seconds. Reported, never a budget; meaningless when `hostContention.contended` is true                                                                                                              |
+| `railScrollMs`       | Summed round-trip of 25 `scrollTop` assignments on the rail, the 120 ms settle between steps **excluded** — each assignment forces a layout flush and is serviced only when the renderer's main thread is free            |
+| `rendererHeapMb`     | `JSHeapUsedSize` from CDP `Performance.getMetrics`, host renderer only. `null` if no read succeeded                                                                                                                       |
+| `processTypes`       | Per Chromium process type (Browser / GPU / Tab / Utility): process count and memory on `ramBasis`, per sample, for the whole session and for the idle window. A type's `processes.min` of 0 means it was not always alive |
 
 Cold start is deliberately a bracket. First Contentful Paint would be the ideal signal and is
 **unavailable**: the main window is created with `show: false` and revealed on `ready-to-show`, and
@@ -138,6 +146,11 @@ the slide HTML in presentation order. It is deliberately not a hash of the `.slo
 wall-clock time of the write and two archives of identical content hash differently. That is a
 property of the shipped writer, and M8.1 is not the milestone to change the product's file writer.
 `archiveBytes` _is_ stable, since the timestamp lives in an uncompressed header field.
+
+`perf:generate` **merges** into the committed hash file rather than rewriting it: tiers that were not
+regenerated are kept, and a tier whose recorded seed differs from the requested one is refused
+before any deck is built unless `--force` is passed. The default tier list is the full committed
+one, so a plain `pnpm perf:generate` reproduces the record byte for byte.
 
 Generated decks themselves are gitignored — they are large and exactly regenerable.
 
@@ -185,9 +198,12 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
    the top-level page. Because slides are same-thread subframes, a stalled shell frame does reflect
    real contention — but this does not measure a slide's internal compositor rate, and
    `droppedFrames` should be read as "the app janked", not "the animation dropped a frame".
-3. **One machine, one platform.** All numbers below are WSL2 on a 6.8 GB VM with software rendering
-   (the GPU process reports a 0-byte working set under WSLg). Windows and macOS will differ, and the
-   200 MB budget is ultimately a Windows-desktop claim.
+3. **One machine, one platform.** All numbers below are WSL2 on a 6.8 GB VM with software rendering.
+   Under WSLg the GPU process is SwiftShader and is **not reliably alive**: it was present at
+   230–240 MB PSS in some idle windows and absent in others, which is why the idle figure is stated
+   as a range below. The report's `processTypes` block records per-type presence and memory so this
+   is visible from the artifact. Windows and macOS will differ, and the 200 MB budget is ultimately a
+   Windows-desktop claim.
 4. **Sampling is 250 ms and the session is short.** A ~35-sample run is enough for a median but thin
    in the tails; `p95` and `max` should be read with that in mind. Sample counts are in the report.
 5. **`deckOpenMs` is not a wired File ▸ Open.** See above — it excludes the file dialog and folds in
@@ -205,6 +221,13 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
 9. **`droppedFrames` changed definition during M8.1.** It is now frames missed against a 60 Hz ideal
    over the dwell window, not a count of over-long intervals. The interval count is retained as
    `longFrameIntervals`. Any number quoted from before that change is not comparable.
+10. **The instrument fails loudly, never quietly.** A budgeted series with no samples (no PSS
+    readings off Linux, no canvas `load` after a switch) fails the run, prints `no samples | FAIL`
+    in the budget table and `REGRESSED` in `perf:diff` — it never reports `0.0 MB PASS`. The recorder
+    refuses to start if the canvas or rail selector no longer matches. The CDP client rejects every
+    pending and future call with `CdpClosedError` the moment a socket closes, and every call carries
+    a 30 s reply deadline, so a dead or frozen app surfaces within seconds rather than as an
+    open-ended hang (the earlier 500-slide "20 minutes of silence" was this hang).
 
 ---
 

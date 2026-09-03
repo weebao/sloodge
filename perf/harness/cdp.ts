@@ -21,7 +21,26 @@ import { setTimeout as sleep } from 'node:timers/promises'
 type PendingCall = {
   readonly resolve: (value: Record<string, unknown>) => void
   readonly reject: (error: Error) => void
+  readonly timer: NodeJS.Timeout
 }
+
+/**
+ * Raised for every call in flight, and every call made afterwards, once the socket has closed.
+ *
+ * Without this a dead peer was indistinguishable from a slow one: `send` resolved only on a reply,
+ * so after the OOM killer took the browser process every `evaluate` hung forever, `waitFor`'s guard
+ * never got another tick, and `runOnce`'s `finally { sampler.stop() }` blocked before `dispose()`.
+ * That was the README's "20 minutes of silence" on the 500-slide tier.
+ */
+export class CdpClosedError extends Error {
+  constructor(detail: string) {
+    super(`CDP socket closed: ${detail}`)
+    this.name = 'CdpClosedError'
+  }
+}
+
+/** Default per-call reply deadline. Every call the harness makes is a sub-second operation. */
+const CALL_TIMEOUT_MS = 30_000
 
 export type CdpTarget = {
   readonly type: string
@@ -37,9 +56,25 @@ export class CdpClient {
   readonly #listeners = new Map<string, ((params: Record<string, unknown>) => void)[]>()
 
   readonly #socket: WebSocket
+  #closed: CdpClosedError | null = null
 
   private constructor(socket: WebSocket) {
     this.#socket = socket
+    const fail = (detail: string): void => {
+      if (this.#closed !== null) return
+      this.#closed = new CdpClosedError(detail)
+      for (const call of this.#pending.values()) {
+        clearTimeout(call.timer)
+        call.reject(this.#closed)
+      }
+      this.#pending.clear()
+    }
+    socket.addEventListener('close', (event: CloseEvent) => {
+      fail(`code ${String(event.code)}${event.reason ? ` (${event.reason})` : ''}`)
+    })
+    socket.addEventListener('error', () => {
+      fail('socket error')
+    })
     socket.addEventListener('message', (event: MessageEvent) => {
       const raw: unknown = typeof event.data === 'string' ? JSON.parse(event.data) : null
       if (raw === null || typeof raw !== 'object') return
@@ -49,6 +84,7 @@ export class CdpClient {
         const call = this.#pending.get(id)
         if (call === undefined) return
         this.#pending.delete(id)
+        clearTimeout(call.timer)
         const error = message['error']
         if (error !== undefined) {
           call.reject(new Error(`CDP error: ${JSON.stringify(error)}`))
@@ -92,12 +128,30 @@ export class CdpClient {
     }
   }
 
-  send(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  /**
+   * Send one command. Rejects with `CdpClosedError` if the socket is (or becomes) closed, and with
+   * a plain timeout error if the peer is alive but never answers — a frozen renderer must not stall
+   * the sampler loop indefinitely either.
+   */
+  send(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = CALL_TIMEOUT_MS,
+  ): Promise<Record<string, unknown>> {
+    if (this.#closed !== null) return Promise.reject(this.#closed)
     const id = this.#nextId
     this.#nextId += 1
-    this.#socket.send(JSON.stringify({ id, method, params }))
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        this.#pending.delete(id)
+        reject(
+          new Error(
+            `CDP call ${method} (id ${String(id)}) got no reply in ${String(timeoutMs)} ms`,
+          ),
+        )
+      }, timeoutMs)
+      this.#pending.set(id, { resolve, reject, timer })
+      this.#socket.send(JSON.stringify({ id, method, params }))
     })
   }
 
@@ -174,7 +228,9 @@ export async function waitForTarget(
  * Without it, a renderer that the OOM killer took mid-phase looked exactly like a slow one: the
  * evaluate call throws, the `.catch` swallows it as `false`, and the loop polls a corpse until the
  * deadline. That cost a 500-slide run twelve minutes of silence before failing with a message that
- * named the wrong problem.
+ * named the wrong problem. A `CdpClosedError` is rethrown for the same reason: once the socket is
+ * gone there is nothing left to poll, and the guard alone cannot see a socket that closed because
+ * the *browser* process died while the child handle is still being reaped.
  */
 export async function waitFor(
   client: CdpClient,
@@ -186,7 +242,10 @@ export async function waitFor(
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     guard?.()
-    const ok = await client.evaluate<boolean>(expression).catch(() => false)
+    const ok = await client.evaluate<boolean>(expression).catch((error: unknown) => {
+      if (error instanceof CdpClosedError) throw error
+      return false
+    })
     if (ok === true) return
     await sleep(intervalMs)
   }

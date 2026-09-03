@@ -12,7 +12,12 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { buildStressDeck, deckContentHash, totalSlideBytes } from '../../../perf/lib/deck'
+import {
+  buildStressDeck,
+  deckContentHash,
+  StressDeckContractError,
+  totalSlideBytes,
+} from '../../../perf/lib/deck'
 import {
   ARCHETYPE_CYCLE,
   buildSlideHtml,
@@ -66,6 +71,17 @@ describe('determinism', () => {
 })
 
 describe('slide contract', () => {
+  it('refuses to build a deck whose slide fails the shipped linter', () => {
+    // The tests below prove the archetypes are valid; this one proves the *generator* refuses an
+    // invalid one. Without it the gate in buildStressDeck can be replaced with `{ ok: true }` and
+    // nothing goes red. A chart with zero bars emits no `[data-hover-target]`, which is SL-I01.
+    const density = { ...DEFAULT_DENSITY, chartBars: 0 }
+    expect(() => buildStressDeck({ slideCount: 4, seed: 1, density })).toThrow(
+      StressDeckContractError,
+    )
+    expect(() => buildStressDeck({ slideCount: 4, seed: 1, density })).toThrow(/SL-I01/)
+  })
+
   it('every archetype passes the shipped Tier-1 linter', () => {
     for (const archetype of ARCHETYPE_CYCLE) {
       const rng = mulberry32(99)

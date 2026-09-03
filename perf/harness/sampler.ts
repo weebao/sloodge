@@ -20,12 +20,16 @@
 
 import { readFile } from 'node:fs/promises'
 import type { CdpClient } from './cdp'
+import { summarize, type Summary } from '../lib/stats'
 
 export type ProcessMetric = {
   readonly type: string
   readonly pid: number
   readonly workingSetKb: number
   readonly cpuPercent: number
+  /** From `/proc/<pid>/smaps_rollup`; null off Linux or when the process exited mid-sample. */
+  readonly pssKb: number | null
+  readonly rssKb: number | null
 }
 
 export type Sample = {
@@ -134,14 +138,16 @@ export async function takeSample(
   let pssKb = 0
   let rssKb = 0
   let covered = 0
+  const processes: ProcessMetric[] = []
   for (const proc of snapshot.processes) {
     const memory = await readProcMemoryKb(proc.pid)
+    processes.push({ ...proc, pssKb: memory?.pss ?? null, rssKb: memory?.rss ?? null })
     if (memory === null) continue
     pssKb += memory.pss
     rssKb += memory.rss
     covered += 1
   }
-  const coverage = snapshot.processes.length === 0 ? 0 : covered / snapshot.processes.length
+  const coverage = processes.length === 0 ? 0 : covered / processes.length
   const enoughCoverage = coverage >= 0.9
   const procPssKb = enoughCoverage ? pssKb : null
   const procRssKb = enoughCoverage ? rssKb : null
@@ -164,14 +170,68 @@ export async function takeSample(
     hostMemAvailableMb: pressure.memAvailableMb,
     mainRssKb: snapshot.rssKb,
     mainHeapUsedKb: snapshot.heapUsedKb,
-    processes: snapshot.processes,
-    appMetricsWorkingSetKb: snapshot.processes.reduce((sum, p) => sum + p.workingSetKb, 0),
+    processes,
+    appMetricsWorkingSetKb: processes.reduce((sum, p) => sum + p.workingSetKb, 0),
     procPssKb,
     procRssKb,
     procCoverage: coverage,
     rendererHeapUsedKb,
-    cpuPercentTotal: snapshot.processes.reduce((sum, p) => sum + p.cpuPercent, 0),
+    cpuPercentTotal: processes.reduce((sum, p) => sum + p.cpuPercent, 0),
   }
+}
+
+/** Which per-process field a RAM basis sums. Mirrors the per-sample totals above. */
+export const PROCESS_MEMORY_FIELD = {
+  'app-metrics-working-set-sum': 'workingSetKb',
+  'proc-pss-sum': 'pssKb',
+  'proc-rss-sum': 'rssKb',
+} as const satisfies Record<string, keyof ProcessMetric>
+
+export type ProcessTypeBreakdown = {
+  /** Processes of this type per sample. A `min` of 0 means the type was not always alive. */
+  readonly processes: Summary
+  /** Memory of this type per sample on the chosen basis, or null when the basis has no per-process reading. */
+  readonly memoryMb: Summary | null
+}
+
+/**
+ * Reduce a sample window by Chromium process type (Browser / GPU / Tab / Utility …).
+ *
+ * This is what makes a RAM number's composition inspectable from the report rather than from the
+ * trace. It exists because the idle baseline turned out to hinge on one process: under WSLg the
+ * software-GL GPU process is not reliably alive, and its ~230 MB working set was the difference
+ * between a 264 MB and a 450 MB "idle" figure. Every type seen anywhere in the window contributes
+ * a value to *every* sample — zero when absent — so an intermittent process shows up as `min: 0`
+ * instead of vanishing from the summary.
+ */
+export function processTypeBreakdown(
+  samples: readonly Sample[],
+  basis: keyof typeof PROCESS_MEMORY_FIELD,
+): Readonly<Record<string, ProcessTypeBreakdown>> {
+  const field = PROCESS_MEMORY_FIELD[basis]
+  const types = [...new Set(samples.flatMap((s) => s.processes.map((p) => p.type)))].toSorted()
+  const out: Record<string, ProcessTypeBreakdown> = {}
+  for (const type of types) {
+    const counts: number[] = []
+    const memory: number[] = []
+    let readable = true
+    for (const sample of samples) {
+      const own = sample.processes.filter((p) => p.type === type)
+      counts.push(own.length)
+      let kb = 0
+      for (const proc of own) {
+        const value = proc[field]
+        if (value === null) readable = false
+        else kb += value
+      }
+      memory.push(kbToMb(kb))
+    }
+    out[type] = {
+      processes: summarize(counts),
+      memoryMb: readable ? summarize(memory) : null,
+    }
+  }
+  return out
 }
 
 /** A background sampling loop. Stops when `stop()` resolves; never throws into the session. */

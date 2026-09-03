@@ -7,7 +7,7 @@
  * report so a later reader can re-derive the summary rather than trust it.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { cpus, platform, release, tmpdir, totalmem } from 'node:os'
@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { launchApp } from '../harness/app'
 import { runSession, type SessionResult } from '../harness/session'
-import { Sampler, kbToMb, type Sample } from '../harness/sampler'
+import { Sampler, kbToMb, processTypeBreakdown, type Sample } from '../harness/sampler'
 import {
   countDroppedFrames,
   frameRateFps,
@@ -96,14 +96,13 @@ async function runOnce(options: RunOptions, index: number): Promise<SingleRun> {
   // so it is timed the same way: the shipped `writeDeck` (zip + fsync + atomic rename) over the
   // bundle just read. Measured out-of-process, so it excludes IPC and any UI the eventual File ▸ Save
   // will add — a floor, not the whole cost.
+  const savePath = join(tmpdir(), `sloodge-perf-save-${String(index)}.sloodge`)
   const writeStart = Date.now()
-  const written = await writeDeck(
-    join(tmpdir(), `sloodge-perf-save-${String(index)}.sloodge`),
-    read.bundle,
-  )
+  const written = await writeDeck(savePath, read.bundle)
   if (!written.ok)
     throw new Error(`writeDeck failed for the stress deck: ${JSON.stringify(written.error)}`)
   const deckWriteMs = Date.now() - writeStart
+  await unlink(savePath)
 
   const app = await launchApp({
     repoRoot,
@@ -169,7 +168,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     return found === undefined ? fallback : found.slice(name.length + 3)
   }
 
-  const slideCount = Number(arg('slides', '500'))
+  const slideCount = Number(arg('slides', '100'))
   const runs = Number(arg('runs', '3'))
   const options: RunOptions = {
     repoRoot,
@@ -234,24 +233,29 @@ export async function main(argv: readonly string[]): Promise<void> {
       .map(kbToMb),
   )
 
-  const emptySummary: Summary = {
-    count: 0,
-    min: 0,
-    p25: 0,
-    median: 0,
-    p75: 0,
-    p95: 0,
-    max: 0,
-    mean: 0,
-    stdDev: 0,
+  // A budgeted series with no samples is a failed run, not a 0 that happens to be under budget.
+  // `summarize` throws on an empty series; these name the cause so the fix is obvious.
+  if (allRam.length === 0) {
+    throw new Error(
+      `No RAM samples on the ${options.ramBasis} basis` +
+        (options.ramBasis === 'app-metrics-working-set-sum'
+          ? '.'
+          : ' — /proc is Linux-only; use --ram-basis=app-metrics-working-set-sum elsewhere.'),
+    )
+  }
+  if (allSwitches.length === 0) {
+    throw new Error(
+      'No slide switch produced a canvas `load`; every latency is null. The canvas iframe is not ' +
+        'reloading on switch, or the recorder is watching the wrong element.',
+    )
   }
   const metrics: PerfMetrics = {
     coldStartMs: median(collected.map((r) => r.session.coldStartMs)),
     deckOpenMs: median(collected.map((r) => r.session.deckRenderMs)),
-    slideSwitchMs: allSwitches.length > 0 ? summarize(allSwitches) : emptySummary,
-    ramMb: allRam.length > 0 ? summarize(allRam) : emptySummary,
+    slideSwitchMs: summarize(allSwitches),
+    ramMb: summarize(allRam),
     ramBasis: options.ramBasis,
-    frameIntervalMs: allFrames.length > 0 ? summarize(allFrames) : emptySummary,
+    frameIntervalMs: summarizeOrNull(allFrames),
     droppedFrames: median(
       collected.map((r) =>
         missedFrames(r.session.animationFrameCount, r.session.animationWindowMs),
@@ -271,7 +275,7 @@ export async function main(argv: readonly string[]): Promise<void> {
         })
         .filter((v) => Number.isFinite(v)),
     ),
-    rendererHeapMb: allHeap.length > 0 ? summarize(allHeap) : emptySummary,
+    rendererHeapMb: summarizeOrNull(allHeap),
   }
 
   // "Contended" is a coarse flag, not a science: a median 1-minute load above one core's worth of
@@ -328,6 +332,13 @@ export async function main(argv: readonly string[]): Promise<void> {
     processCount: summarizeOrNull(
       collected.flatMap((r) => r.samples.map((s) => s.processes.length)),
     ),
+    processTypes: {
+      session: processTypeBreakdown(
+        collected.flatMap((r) => r.samples),
+        options.ramBasis,
+      ),
+      idle: processTypeBreakdown(collected.flatMap(idleSamples), options.ramBasis),
+    },
     hostContention,
     perRun: collected.map((run) => {
       const ram = ramSeriesMb(run.samples, options.ramBasis)
@@ -349,7 +360,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       `deckPublishMs (deck:updated -> every rail frame has a slide:// src): ${collected.map((r) => String(r.session.deckPublishMs)).join(', ')}.`,
       `HTML export ms: ${collected.map((r) => String(r.session.exportHtmlMs ?? -1)).join(', ')}.`,
       `Present phase ms: ${collected.map((r) => String(r.session.presentMs)).join(', ')}.`,
-      `Rail scroll ms: ${collected.map((r) => String(r.session.railScrollMs)).join(', ')}.`,
+      `Rail scroll ms (summed round-trip of 25 scrollTop steps, settle sleeps excluded): ${collected.map((r) => String(r.session.railScrollMs)).join(', ')}.`,
       `Long-task total ms during the dwell: ${collected.map((r) => r.session.longTaskTotalMs.toFixed(0)).join(', ')}.`,
       `Peak Electron process count: ${collected.map((r) => String(r.session.processCountPeak)).join(', ')}.`,
       `Long tasks during the animation dwell: ${collected.map((r) => String(r.session.longTaskCount)).join(', ')}.`,
@@ -360,6 +371,8 @@ export async function main(argv: readonly string[]): Promise<void> {
             'CONTENDED: other processes were competing for this machine while these numbers were ' +
               'taken. Memory figures survive contention well; timing figures (cold start, slide ' +
               'switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this.',
+            'frameRateFps and droppedFrames are unreliable under contention: rAF delivery is ' +
+              'exactly what a loaded host disrupts, so the frame numbers above are not evidence.',
           ]
         : []),
       ...collected.flatMap((r, i) => r.session.warnings.map((w) => `run ${String(i + 1)}: ${w}`)),

@@ -30,6 +30,18 @@ function summary(median: number): Summary {
   }
 }
 
+const EMPTY: Summary = {
+  count: 0,
+  min: 0,
+  p25: 0,
+  median: 0,
+  p75: 0,
+  p95: 0,
+  max: 0,
+  mean: 0,
+  stdDev: 0,
+}
+
 function metrics(overrides: Partial<PerfMetrics> = {}): PerfMetrics {
   return {
     coldStartMs: 1500,
@@ -98,6 +110,16 @@ describe('checkBudgets', () => {
     ).toBe(false)
   })
 
+  it('fails a budget whose series has no samples, even though its median is under the limit', () => {
+    // A run with no RAM samples (proc-pss-sum off Linux) or no switch latencies (the canvas
+    // selector stopped matching) used to report "0.0 MB PASS". Zero data is a failed measurement.
+    const checks = checkBudgets(metrics({ ramMb: EMPTY, slideSwitchMs: EMPTY }))
+    expect(checks.find((c) => c.key === 'medianRamMb')?.pass).toBe(false)
+    expect(checks.find((c) => c.key === 'slideSwitchMs')?.pass).toBe(false)
+    expect(checks.find((c) => c.key === 'medianRamMb')?.samples).toBe(0)
+    expect(checks.find((c) => c.key === 'coldStartMs')?.samples).toBeNull()
+  })
+
   it('throws when a budget names a metric the report does not carry', () => {
     // A silently skipped budget is how a suite goes green while measuring nothing.
     expect(() =>
@@ -137,6 +159,12 @@ describe('diffReports', () => {
     expect(Number.isFinite(dropped?.deltaPct ?? Number.NaN)).toBe(true)
   })
 
+  it('marks an empty candidate series as regressed instead of a -100% improvement', () => {
+    const diff = diffReports(metrics(), metrics({ ramMb: EMPTY }))
+    expect(diff.find((d) => d.key === 'medianRamMb')?.regressed).toBe(true)
+    expect(diff.find((d) => d.key === 'coldStartMs')?.regressed).toBe(false)
+  })
+
   it('honours a custom tolerance', () => {
     const base = metrics({ coldStartMs: 1000 })
     expect(
@@ -161,6 +189,11 @@ describe('budgetTable', () => {
     expect(table).toContain('240.0 MB')
     expect(table).toContain('FAIL')
     expect(table.split('\n')).toHaveLength(BUDGETS.length + 2)
+  })
+
+  it('prints "no samples" rather than 0.0 for an empty series', () => {
+    const table = budgetTable(checkBudgets(metrics({ slideSwitchMs: EMPTY })))
+    expect(table).toContain('| Slide switch (median) | no samples | < 100 ms | FAIL |')
   })
 })
 

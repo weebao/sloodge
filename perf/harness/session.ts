@@ -59,6 +59,7 @@ export type SessionResult = {
   readonly longTaskTotalMs: number
   readonly presentMs: number
   readonly exportHtmlMs: number | null
+  /** Summed round-trip of the rail's scroll steps, settle sleeps excluded. */
   readonly railScrollMs: number
   readonly processCountPeak: number
   readonly warnings: readonly string[]
@@ -171,6 +172,22 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
 
   const installed = await page.evaluate<string>(INSTALL_RECORDER)
   if (installed !== 'installed') warnings.push(`Recorder install returned "${installed}".`)
+  // Both `load` sinks must be attached, or the switch latencies and deckRenderMs are measured
+  // against nothing: every `latencyMs` comes back null and the run would either report an empty
+  // series or wait the full render timeout. A selector rename in the app (M8b touches exactly these
+  // surfaces) has to fail the run here, in the first second, not after a multi-minute session.
+  const attached = await page.evaluate<{ canvas: boolean; rail: boolean }>(
+    `({ canvas: globalThis.${RECORDER_GLOBAL}.canvasAttached, rail: globalThis.${RECORDER_GLOBAL}.railAttached })`,
+  )
+  const unattached = [
+    ...(attached.canvas ? [] : [`canvas (${SELECTORS.canvas})`]),
+    ...(attached.rail ? [] : [`rail (${SELECTORS.rail})`]),
+  ]
+  if (unattached.length > 0) {
+    throw new Error(
+      `Recorder could not attach to ${unattached.join(' or ')}; the app's selectors have changed.`,
+    )
+  }
   sampler.mark('shell-ready')
 
   // --- Phase: idle baseline ---------------------------------------------------------------------
@@ -217,7 +234,12 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
       250,
       assertAlive,
     ).catch((error: unknown) => {
-      if (error instanceof Error && error.name === 'AppExitedError') throw error
+      if (
+        error instanceof Error &&
+        (error.name === 'AppExitedError' || error.name === 'CdpClosedError')
+      ) {
+        throw error
+      }
       warnings.push(
         'Not every rail frame fired `load` before the timeout; deckRenderMs is a floor.',
       )
@@ -227,24 +249,30 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
   sampler.mark('open:end')
 
   // --- Phase: scroll the rail -------------------------------------------------------------------
+  // `railScrollMs` is the summed round-trip of the 25 `scrollTop` assignments, with the 120 ms
+  // settle between steps *excluded*. Each assignment forces a synchronous style/layout flush and the
+  // evaluate can only be serviced when the renderer's main thread is free, so the sum tracks what
+  // the rail costs to scroll rather than how long the harness chose to sleep. (Wall time of the
+  // phase had a 3000 ms floor made of sleeps, which is what M8.3 would have been diffing.)
   sampler.mark('rail-scroll:start')
-  const railScrollStart = Date.now()
   await page.evaluate<boolean>(`(() => {
     const el = document.querySelector('${SELECTORS.railScroller}');
     if (el) el.scrollTop = 0;
     return true;
   })()`)
   const steps = 24
+  let railScrollMs = 0
   for (let step = 0; step <= steps; step += 1) {
+    const stepStart = Date.now()
     await page.evaluate<boolean>(`(() => {
       const el = document.querySelector('${SELECTORS.railScroller}');
       if (!el) return false;
       el.scrollTop = (el.scrollHeight - el.clientHeight) * ${String(step / steps)};
       return true;
     })()`)
+    railScrollMs += Date.now() - stepStart
     await sleep(120)
   }
-  const railScrollMs = Date.now() - railScrollStart
   sampler.mark('rail-scroll:end')
 
   // --- Phase: rapid slide switching -------------------------------------------------------------

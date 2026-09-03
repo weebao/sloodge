@@ -18,14 +18,71 @@
  * header field.
  */
 
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { buildStressDeck, deckContentHash, totalSlideBytes, type StressDeck } from '../lib/deck'
 import { writeDeck } from '../../src/main/document/store'
 import type { DeckBundle } from '../../src/main/document/store'
 
 export const DEFAULT_SEED = 20260801
-export const DEFAULT_SIZES: readonly number[] = [100, 500, 1000]
+/** Every committed tier, so a plain `pnpm perf:generate` regenerates the whole record. */
+export const DEFAULT_SIZES: readonly number[] = [25, 50, 100, 200, 300, 500, 1000]
+
+export type DeckHashEntry = {
+  readonly seed: number
+  readonly slideCount: number
+  readonly contentSha256: string
+  readonly archiveBytes: number
+  readonly totalSlideBytes: number
+  readonly archetypeCounts: Readonly<Record<string, number>>
+}
+
+export type DeckHashes = Readonly<Record<string, DeckHashEntry>>
+
+/**
+ * Tiers whose committed record carries a different seed than the one about to be generated.
+ *
+ * `deck-hashes.json` is the proof that M8.2–M8.7 measured the same workload, so `--seed=1` must not
+ * quietly replace the record for `stress-100` while every committed baseline still says 20260801.
+ * Checked before any deck is built, so the refusal costs nothing.
+ */
+export function seedConflicts(
+  existing: DeckHashes,
+  sizes: readonly number[],
+  seed: number,
+): readonly string[] {
+  return sizes.flatMap((slideCount) => {
+    const key = `stress-${String(slideCount)}`
+    const prior = existing[key]
+    return prior === undefined || prior.seed === seed
+      ? []
+      : [`${key} is recorded with seed ${String(prior.seed)}, requested ${String(seed)}`]
+  })
+}
+
+/**
+ * Fold freshly generated entries into the committed record, keeping every tier that was not
+ * regenerated. A routine `perf:generate --sizes=100` used to rewrite the file with one entry.
+ */
+export function mergeDeckHashes(
+  existing: DeckHashes,
+  generated: readonly GeneratedDeck[],
+): DeckHashes {
+  const merged: Record<string, DeckHashEntry> = { ...existing }
+  for (const r of generated) {
+    merged[`stress-${String(r.slideCount)}`] = {
+      seed: r.seed,
+      slideCount: r.slideCount,
+      contentSha256: r.contentSha256,
+      archiveBytes: r.archiveBytes,
+      totalSlideBytes: r.totalSlideBytes,
+      archetypeCounts: r.archetypeCounts,
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(merged).toSorted(([, a], [, b]) => a.slideCount - b.slideCount),
+  )
+}
 
 export type GeneratedDeck = {
   readonly slideCount: number
@@ -109,6 +166,17 @@ export async function main(argv: readonly string[]): Promise<void> {
           .map((s) => Number(s.trim()))
           .filter((n) => Number.isInteger(n) && n > 0)
   const seed = seedArg === undefined ? DEFAULT_SEED : Number(seedArg.slice('--seed='.length))
+  const force = argv.includes('--force')
+
+  const hashPath = join(repoRoot, 'perf', 'deck-hashes.json')
+  const existing = JSON.parse(await readFile(hashPath, 'utf8').catch(() => '{}')) as DeckHashes
+  const conflicts = seedConflicts(existing, sizes, seed)
+  if (conflicts.length > 0 && !force) {
+    throw new Error(
+      `Refusing to overwrite perf/deck-hashes.json: ${conflicts.join('; ')}. ` +
+        'Pass --force to replace the committed record.',
+    )
+  }
 
   const results: GeneratedDeck[] = []
   for (const size of sizes) {
@@ -124,23 +192,10 @@ export async function main(argv: readonly string[]): Promise<void> {
     )
   }
 
-  const hashes = Object.fromEntries(
-    results.map((r) => [
-      `stress-${String(r.slideCount)}`,
-      {
-        seed: r.seed,
-        slideCount: r.slideCount,
-        contentSha256: r.contentSha256,
-        archiveBytes: r.archiveBytes,
-        totalSlideBytes: r.totalSlideBytes,
-        archetypeCounts: r.archetypeCounts,
-      },
-    ]),
+  const hashes = mergeDeckHashes(existing, results)
+  await writeFile(hashPath, `${JSON.stringify(hashes, null, 2)}\n`, 'utf8')
+  console.log(
+    `\nWrote perf/deck-hashes.json (${String(results.length)} regenerated, ` +
+      `${String(Object.keys(hashes).length)} recorded).`,
   )
-  await writeFile(
-    join(repoRoot, 'perf', 'deck-hashes.json'),
-    `${JSON.stringify(hashes, null, 2)}\n`,
-    'utf8',
-  )
-  console.log(`\nWrote perf/deck-hashes.json (${String(results.length)} decks).`)
 }
