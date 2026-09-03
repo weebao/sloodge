@@ -41,8 +41,9 @@ Read, in this order, whichever exist:
 - `CLAUDE.md` (repo root) — binding conventions.
 - `.claude/plans/init/11-tech-stack.md` — dependency policy, pins, dependency direction,
   oxlint/Prettier decision, the "no native modules" rule.
-- `.claude/plans/init/70-testing-ci.md` — what CI actually runs (unit + lint only) and
-  why logic must be pushed into pure, Electron-free functions.
+- `.claude/plans/init/70-testing-ci.md` — what CI actually runs (unit + lint only on the
+  change you are reviewing; §6.5's release workflow also packages, but only on a `v*` tag)
+  and why logic must be pushed into pure, Electron-free functions.
 - The plan doc for the area being changed: `10-architecture.md`, `30-slide-format.md`
   (slide HTML contract), `40-design-mode.md` (iframe bridge), `50-agent-integration.md`,
   `60-export.md`.
@@ -75,8 +76,10 @@ pnpm test        # vitest run
 
 Notes that matter:
 
-- **CI runs `lint` and `test` only.** `typecheck` is your responsibility here; a type
-  error that CI would not catch is still a blocker.
+- **CI runs `lint` and `test` only** on PRs and pushes. `typecheck` is your responsibility
+  here; a type error that CI would not catch is still a blocker. (The one thing CI also
+  does is package the Windows release, but only on a `v*` tag — 70-testing-ci.md §6.5 —
+  so it still never runs on the change you are reviewing.)
 - If a command fails for a reason unrelated to the change (missing install, network),
   say so explicitly in `notes` and apply the unverified-confidence cap. Never silently
   skip.

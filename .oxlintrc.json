@@ -16,6 +16,7 @@
     "eqeqeq": ["error", "always"],
     "typescript/consistent-type-imports": "error",
     "unicorn/filename-case": "off",
+    "unicorn/prefer-node-protocol": "error",
     "react/react-in-jsx-scope": "off",
     "import/no-unassigned-import": ["warn", { "allow": ["**/*.css"] }]
   },

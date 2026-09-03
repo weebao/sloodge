@@ -161,7 +161,28 @@ Full script kept at `C:\sloodge-smoke\click2.ps1`.
 cd /mnt/c && powershell.exe -NoProfile -Command "Get-Process electron -EA SilentlyContinue | Stop-Process -Force"
 ```
 
-## 8. Packaged build (M5.2) — the supported path
+## 8. Packaged build (M5.2) — building locally
+
+> **Releases are not to be cut this way.** As of M9.0, shipping artifacts are built by
+> `.github/workflows/release.yml`: push a `v*` tag and a `windows-latest` runner builds the NSIS
+> installer and zip from a clean checkout of that tag and attaches them to the release.
+>
+> **Caveat, stated up front rather than buried in §8.5: that workflow has never executed.** It is
+> validated statically (actionlint + shellcheck), by mutation-testing its guard, and by running the
+> same commands locally, but the first real tag is the first end-to-end proof. If that first push
+> fails, debug it with the procedure below — do not quietly hand-build the artifact instead, because
+> that is the exact habit M9.0 exists to break.
+>
+> **Do not hand-build a release artifact.** A preview release was once built from a stale worktree —
+> the artifact predated a merged milestone, so an entire export format silently did nothing in the
+> shipped build, and nothing in the build reported it. A binary from a developer machine has no
+> provenance; a binary from a tag does.
+>
+> Everything below stays, for two reasons: it is still how you **debug packaging locally**, and it
+> records findings (the Wine failure, the `files`-hoisting measurements, the sibling-CLI layout)
+> that the CI path depends on but does not re-derive. §8.2 in particular is now
+> **local-debug-only** — the CI runner is natively Windows, so it needs no `--prepackaged` dance
+> and no second builder config.
 
 Verified 2026-08-01: NSIS installer built, silently installed to
 `%LOCALAPPDATA%\Programs\Sloodge`, launched, and driven through slide switch → Design Mode →
@@ -216,7 +237,14 @@ the `LD_LIBRARY_PATH` electron-builder injects, or a missing 32-bit/loader depen
 The `toolsets` key is kept regardless: it is a real electron-builder option, and it is inert on a
 Windows host (`WineVmManager.execWine` returns early when `process.platform === 'win32'`).
 
-### 8.2 Building the NSIS installer on the Windows host
+### 8.2 Building the NSIS installer on the Windows host — LOCAL DEBUG ONLY
+
+**Superseded for releases by §8.5.** This two-machine procedure exists because the dev box is Linux
+and NSIS is not buildable there; a `windows-latest` runner has no such problem and needs none of it.
+Keep it for reproducing a packaging bug on the actual Windows host, and note the specific liability
+it carries: `C:\sloodge-m52\builder\` holds a **duplicate of the repo's builder config, kept in sync
+by hand**, so anything M5.2 changes in `build.win`/`build.nsis` has to be mirrored there manually or
+the local build silently diverges from the shipped one. The CI path has one config, in the repo.
 
 Build the app dir in WSL, then let Windows do the NSIS step from the _prepackaged_ output:
 
@@ -275,6 +303,168 @@ The sibling layout is load-bearing: the SDK finds its CLI via
 `require.resolve('@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe')` anchored at `sdk.mjs`'s
 own realpath, with no PATH fallback. Both packages must be `asarUnpack`ed (a binary cannot be
 spawned from inside an archive) and must stay siblings.
+
+### 8.5 The release path (M9.0) — `.github/workflows/release.yml`
+
+Push a `v*` tag. A `windows-latest` runner checks out that tag, verifies the tag matches
+`package.json`'s version, `pnpm install --frozen-lockfile`, `pnpm test`, then
+`pnpm pack:win:release` (= `pnpm build && electron-builder --win --publish never`), and attaches
+`release/*.exe` + `release/*.zip` to the tag's GitHub release — creating it as a **draft** if it does
+not exist yet, so M9.4's human release-notes step survives.
+
+**Tag naming is enforced.** The tag must be `v<version>` where `<version>` is `package.json`'s
+`version` exactly, optionally followed by `-<suffix>` (`v0.0.1-preview`). Otherwise the job fails in
+seconds with a message naming what to change. This exists because `build.nsis.artifactName`
+interpolates the version: without the check, _any_ tag against today's `0.0.0` emits
+`sloodge-0.0.0-setup.exe`, and the two `-preview` tags already on origin would produce identically
+named artifacts that `--clobber` would overwrite on top of each other. Bump `package.json` first,
+then tag.
+
+**`.gitattributes` is load-bearing here.** `windows-latest` installs Git for Windows with no
+`/o:CRLFOption`, so `core.autocrlf=true` applies and `actions/checkout` does not override it. Without
+the repo-root `* text=auto eol=lf`, 340 files check out CRLF and `skills-contract.test.ts` reds
+(`skill.startsWith('---\n')` is false for `---\r\n`), aborting the job before packaging. Measured on
+a `core.autocrlf=true` clone: 8 failed / 2664 passed without it, fully green with it. Every other
+suite — including the byte-exact export and round-trip tests — was unaffected.
+
+If you re-measure this and get **375**, you counted a different thing. 340 is what git converts
+(`git ls-files --eol | grep -c w/crlf`): 376 tracked files, minus 35 binaries, minus 1 empty
+placeholder. Grepping the working tree for a CR byte instead returns 375, because the 35 binaries
+contain CR bytes natively and always did — before the fix and after it. Reproduce it with a
+`--no-checkout` clone followed by `git checkout <ref>`; a plain clone-then-checkout only rewrites
+files that differ between the two commits, so most keep whatever line endings the first checkout
+gave them and the count comes out far too low.
+
+**Tag-triggered and nothing else.** No `pull_request`, no `push: branches`, no `workflow_dispatch`.
+The repo's CI budget rule is unit-tests-only (70-testing-ci.md §6.1) and this does not weaken it:
+the workflow cannot fire during development, so its cost is per-release, not per-commit.
+`tests/unit/packaging/release-workflow.test.ts` asserts the trigger set exhaustively and reds if
+anyone adds one.
+
+**What M5.2's `build` block does on a Windows runner — carries over unchanged:**
+
+- `build.win.target` (nsis x64 + zip x64), `artifactName`, and the `nsis` block are platform config
+  and behave identically; the workflow deliberately does **not** pass targets on the command line,
+  so this block stays the single source of truth.
+- `asarUnpack` + `extraResources` (the M2.4 skills dir and the sibling SDK/CLI layout of §8.4) are
+  platform-independent.
+- `win.files` still needs its **full** exclusion list, duplicated rather than hoisted, for the
+  reason measured in the Gotchas table below. Nothing about a Windows runner changes that.
+- `build.toolsets.wine` is **inert** on the runner — `WineVmManager.execWine` returns early when
+  `process.platform === 'win32'`. It stays for the Linux dev box; it neither helps nor hurts in CI.
+
+**What is different, and better:**
+
+- **NSIS just works.** The one step that needs Wine — executing the built installer to emit its own
+  uninstaller (§8.1) — is a native exe run on a native Windows host. No Wine, no `--prepackaged`,
+  no second machine, no duplicated builder config.
+- **`supportedArchitectures` gets cheaper, not more expensive.** It is a cartesian product of
+  `os` x `cpu`; on the runner `current` _is_ win32/x64, so `[current, win32] x [current, x64]`
+  collapses to exactly `win32-x64`. The runner therefore does **not** download the ~275 MB Linux
+  CLI that this dev box is forced to fetch and then exclude. The
+  `!**/node_modules/@anthropic-ai/claude-agent-sdk-{darwin,linux}-*/**` line in `win.files` becomes
+  inert there — keep it, it is still load-bearing for a cross-pack from Linux.
+- **The `NODE_OPTIONS=--experimental-require-module` hazard is gone.** It was needed only because the
+  Windows host runs node v22.11.0 and electron-builder 26 `require()`s ESM-only `@noble/hashes`. The
+  runner is pinned to node 24.
+- **`ELECTRON_SKIP_BINARY_DOWNLOAD` must NOT be set**, unlike `test.yml`. Packaging needs the real
+  win32 Electron binary; the skip flag there is a unit-test optimization and would break the artifact
+  here. A test asserts its absence.
+
+**Still open / unproven:**
+
+- **The workflow has never run.** It was validated statically (actionlint 1.7.7 + shellcheck 0.10.0),
+  by mutation-testing its guard, and by running the same commands locally — but not end-to-end, since
+  no tag has been pushed. The first real tag is the first proof. The two failure modes review found
+  by reasoning rather than by running (CRLF checkout, tag/version mismatch) are now both guarded, and
+  the CRLF one was reproduced and re-verified against a `core.autocrlf=true` clone. Remaining
+  first-run risk is mostly the NSIS step itself, which has never executed on a Windows runner from
+  this config, and `gh release create/upload` behaviour against a real repo.
+- **Icons are still deferred** (see the last Gotcha): `directories.buildResources: "build"` names a
+  directory that does not exist, so CI artifacts carry the default Electron icon exactly as local
+  ones do. M9.1 must add `build/icon.png` — the CI path does not fix this.
+- **macOS is not covered.** M9.2 still builds mac artifacts on real hardware; a `macos-latest` job
+  could be added later, but it bills at 10x and signing/notarization is deferred past 0.0.1 anyway.
+
+### 8.6 Validating Windows behaviour from Linux — you need BOTH tools
+
+M9.0's release job runs `pnpm test` on `windows-latest`, on a suite that had only ever run on Linux.
+Two independent properties of a Windows checkout can red it before packaging is ever reached, and
+**each needs its own tool. Neither tool can see the other's failures**, which is exactly how the
+second one shipped after the first had been "thoroughly verified":
+
+| Property                            | Tool                                                                                    | Catches                                     |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Line endings (`core.autocrlf=true`) | a `--no-checkout` clone configured with `core.autocrlf=true`, then `git checkout <ref>` | `'---\n'` assertions against CRLF files     |
+| Path separators (`path.sep`)        | `pnpm test:win-paths` (aliases `node:path` to `path.win32`)                             | `path.join` output compared to `/`-literals |
+
+The CRLF clone reproduces line endings faithfully and is **structurally blind to `path.sep`** — it
+runs on Linux, where `path.join` still emits `/`. Round 3 found 14 posix-literal assertions in three
+agent test files that the CRLF method could never have surfaced, no matter how carefully applied.
+Run both before cutting a release.
+
+```bash
+pnpm test           # the real suite, Linux semantics
+pnpm test:win-paths # the same suite with win32 path semantics
+```
+
+`test:win-paths` **excludes tests that do real filesystem I/O** (`vitest.win32.config.ts` lists
+them). Backslash separators are not separators to a Linux kernel, so such a test gets `ENOENT` on a
+`\`-path, or writes a file whose _name_ contains a backslash and then reads an empty directory.
+Those failures say nothing about the code. Before adding anything to that list, check which kind of
+failure you have: an `ENOENT`/empty-`readdir` failure downstream of a real file operation is an
+artifact and may be excluded; a direct string comparison (`expected '\a\b' to be '/a/b'`) is a real
+bug in the class this run exists to catch, and must be fixed. `win32-path-simulation.test.ts` reds
+if a listed file does no filesystem I/O, so the list cannot quietly absorb a genuine failure.
+
+The run also proves it left nothing new in the repo root. Under win32 semantics `os.tmpdir()`
+becomes `\tmp\...`, which Linux reads as a _relative_ path, so an unlisted test that writes there
+passes while dropping backslash-named files into the repo root — three tests once left 377 of them.
+No check over test source can close that (a bare `'fs/promises'` import and a write hidden behind a
+`src/` helper both walked past the first one), so `tests/support/win32-litter-guard.ts`, a vitest
+`globalSetup`, reads the disk instead: it snapshots the repo root before the run and fails the run
+— exit 1, naming the entries — on anything new in it afterwards. Every write whose path went
+through win32 `path.join` on an absolute or tmpdir-based input lands there, including `..\x`. Two
+routes do not, and neither exists in the repo today: a worker that `process.chdir`s before writing
+(the stray lands in the repo's _parent_), and a posix string prefix concatenated with a win32 tail,
+which creates `sub\f` inside an existing directory — `git status` shows that file, but not an empty
+directory. The guard also refuses to start over strays from an earlier run. Those are usually empty
+directories, which `git status` never shows; find them with `ls -A | grep '\\'`.
+
+Still not covered by either: anything needing a real Windows kernel — case-insensitive filesystems,
+path-length limits, reserved device names (`CON`, `NUL`), and the NSIS step itself. Those are proven
+only by the runner.
+
+#### 8.6.1 What the first real tag run can still fail on
+
+No runner has executed `release.yml` yet. The `pnpm test` step is proven (2709/2709 on a real
+Windows host, from a real `core.autocrlf=true` checkout, Node 24, pnpm 11); the rest of the job is
+not. When the first run fails, read the failing step against this list first, most likely first:
+
+1. **electron-builder 26 collecting pnpm's `node_modules` on native Windows.** pnpm's virtual store
+   is junction-based, and the only NSIS build so far (§8.2) used `--prepackaged` from a Linux-built
+   app dir, so `pnpm build && electron-builder --win` end-to-end on Windows has never run.
+2. **Path-length limits under `node_modules/.pnpm/...`** during asar packing and copying. The
+   runner has `LongPathsEnabled` and Node 24 uses `\\?\` prefixes; app-builder and 7za may not.
+3. **Network fetches against `timeout-minutes: 30`.** The Electron win32 binary (postinstall),
+   `@anthropic-ai/claude-agent-sdk-win32-x64` (~275 MB) and electron-builder's nsis /
+   nsis-resources / winCodeSign downloads all happen inside the budget on a 2-vCPU runner. The
+   12–15 minute estimate is unmeasured.
+4. **`bash` resolution inside `pnpm test`.** `release-workflow.test.ts` spawns bash to execute the
+   tag guard. The windows-2022/2025 images put Git's bin ahead of System32 and have no WSL, and the
+   test prefers `%ProgramFiles%\Git\bin\bash.exe` explicitly when it exists; verified only by
+   emulating the runner's PATH order on a dev host.
+5. **`gh release view` against a DRAFT release.** `releases/tags/<tag>` returns 404 for drafts and
+   gh falls back to listing releases by tag name. Works in current gh, not exercisable offline. If
+   it breaks, the artifacts are still attached to the workflow run — upload-artifact runs first.
+6. **Load-sensitive tests** — `instrument.test.ts` "scales roughly linearly", `store.test.ts`
+   "bounded sequential extraction" — mitigated by `--retry=1` on the test step. A test that fails
+   twice is a real failure.
+7. **Missing `build/icon.png`.** `directories.buildResources` names a directory that does not
+   exist, so artifacts ship the default Electron icon. A warning, not a failure — M9.1.
+8. Action majors (`checkout@v4`, `setup-node@v4`, `upload-artifact@v4`, `pnpm/action-setup@v4`)
+   are current and `cache: pnpm` after action-setup is the right order. Nothing expected here;
+   listed so the checklist is complete.
 
 ## Gotchas summary
 

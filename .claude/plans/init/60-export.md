@@ -593,7 +593,7 @@ The report is also written to `<outPath>.sloodge-report.json` when a dev/debug s
 
 ## 7. Test strategy for export fidelity
 
-Detailed test infrastructure lives in [70-testing-ci.md](70-testing-ci.md); this section defines *what export-specific things are tested*. Note the CI constraint: **CI runs unit tests only** — everything requiring Electron or a browser is local/manual.
+Detailed test infrastructure lives in [70-testing-ci.md](70-testing-ci.md); this section defines *what export-specific things are tested*. Note the CI constraint: **CI runs unit tests only** on PRs and pushes — everything requiring Electron or a browser is local/manual. (The M9.0 release workflow does package in CI, but only on a `v*` tag; it changes nothing about export testing — see [70-testing-ci.md §6.5](70-testing-ci.md).)
 
 ### 7.1 Fixture corpus
 

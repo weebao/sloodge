@@ -21,7 +21,7 @@ Recent models (Kimi K3, Gemini Flash, Claude Opus, …) are excellent at SVG ani
 | [40-design-mode.md](40-design-mode.md) | Element picker, overlay, local property edits, AI element-context edits |
 | [50-agent-integration.md](50-agent-integration.md) | Claude Agent SDK wiring, skills, MCP tools, permissions, cost |
 | [60-export.md](60-export.md) | PPTX (pptxgenjs + raster fallback), PDF (printToPDF), HTML |
-| [70-testing-ci.md](70-testing-ci.md) | Unit/integration/visual tests, GitHub Actions (unit-only), jj stacked-PR workflow |
+| [70-testing-ci.md](70-testing-ci.md) | Unit/integration/visual tests, GitHub Actions (unit-only on PRs/pushes; tag-triggered release packaging per §6.5), jj stacked-PR workflow |
 | [80-roadmap.md](80-roadmap.md) | Milestones → incremental PR breakdown with prefixes |
 | [90-experiments.md](90-experiments.md) | Skill-iteration experiment: method, per-iteration data, results |
 | [research/](research/) | Raw research: t3code/Vite+, Agent SDK, skills best practices, design-mode tools, slides/export/Electron |
@@ -33,7 +33,7 @@ Recent models (Kimi K3, Gemini Flash, Claude Opus, …) are excellent at SVG ani
 4. **Design Mode**: compile-time stable element IDs (`data-sl-id`) injected into slide HTML; overlay hit-testing via `elementFromPoint`; local (zero-LLM) property panel edits patch source byte-spans directly (v0 lesson); AI edits get a context bundle (element HTML + computed styles + screenshot crop) à la Cursor/react-grab; accept/reject gate before writing (Onlook lesson).
 5. **Export**: PDF via `webContents.printToPDF` (one page per slide); PPTX via pptxgenjs structured conversion for text/shapes with full-slide PNG raster fallback for complex slides; animations exported as their final frame (PowerPoint can't run them — noted in UI).
 6. **Skills iterated to 100% adversarial confidence** on 7 test cases before being frozen into the app (see 90-experiments.md).
-7. **jj (Jujutsu) for stacked branches**; PRs prefixed `feat/fix/doc/chore/ci`; CI runs unit tests only (no compilation/packaging in CI — GitHub minutes are limited); config/init PRs auto-merge.
+7. **jj (Jujutsu) for stacked branches**; PRs prefixed `feat/fix/doc/chore/ci`; CI runs unit tests only on the development path (no compilation/packaging on any PR or push — GitHub minutes are limited); config/init PRs auto-merge. **Single exception (M9.0):** the release workflow packages the Windows installer in CI, triggered by a `v*` tag and nothing else, so it never fires during development — see [70-testing-ci.md §6.5](70-testing-ci.md).
 
 ## Success criteria for v1
 - Create → chat-generate a 5-slide deck → tweak an element in Design Mode → Present fullscreen → Export PDF and PPTX, all offline except Claude API calls.

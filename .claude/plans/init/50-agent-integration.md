@@ -151,7 +151,7 @@ The SDK ships the `claude` CLI as a **platform-specific optional npm dependency*
 }
 ```
 
-2. **Only the current platform's optional dep installs.** Build per-platform (macOS on macOS, Windows on Windows, via separate CI/local jobs) — never copy a `node_modules` tree across platforms. This is already implied by [70-testing-ci.md](70-testing-ci.md)'s "no packaging in CI" stance: packaging happens locally per target.
+2. **Only the current platform's optional dep installs.** Build per-platform (macOS on macOS, Windows on Windows, via separate CI/local jobs) — never copy a `node_modules` tree across platforms. **Updated by M9.0:** the "build per-platform" half is now realized *in CI* for Windows — the release workflow runs on `windows-latest`, where `current` genuinely is win32/x64, so the right CLI installs natively and `supportedArchitectures` collapses to a single variant. 70-testing-ci.md's "no packaging in CI" stance still holds for every PR and push; it no longer holds for a `v*` tag (§6.5). macOS packaging remains local, on real hardware.
 
 Resolution helper:
 
