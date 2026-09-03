@@ -471,17 +471,9 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
       event.stopPropagation()
     }
 
-    // Insert `text` at the caret without going through the clipboard, so nothing can carry markup.
+    // Insert `text` at the caret as a **text node**, so a paste can never contribute markup even if
+    // `plaintext-only` is not honoured.
     const insertPlain = (text: string): void => {
-      // `insertText` keeps the engine's own undo stack for the field intact, so it is preferred.
-      const exec = doc.execCommand as unknown
-      if (typeof exec === 'function') {
-        try {
-          if (doc.execCommand('insertText', false, text)) return
-        } catch {
-          // Fall through to the range path below.
-        }
-      }
       const selection = win.getSelection()
       if (!selection || selection.rangeCount === 0) {
         el.textContent = (el.textContent ?? '') + text
