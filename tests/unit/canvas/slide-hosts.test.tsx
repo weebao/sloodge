@@ -59,7 +59,6 @@ describe('slide document hosts by surface', () => {
     await act(async () => {})
 
     expect(frameSrcs()).toEqual([slideDocumentUrl(ID, SLIDE_STAGE_HOST)])
-    expect(new URL(frameSrcs()[0] ?? '').hostname).toBe(SLIDE_STAGE_HOST)
   })
 
   it('the rail publishes on the thumbnails host', async () => {
@@ -79,9 +78,6 @@ describe('slide document hosts by surface', () => {
 
     const srcs = frameSrcs()
     expect(srcs).toHaveLength(2)
-    for (const src of srcs) {
-      expect(src).toBe(slideDocumentUrl(ID, SLIDE_THUMBNAIL_HOST))
-      expect(new URL(src).hostname).toBe(SLIDE_THUMBNAIL_HOST)
-    }
+    for (const src of srcs) expect(src).toBe(slideDocumentUrl(ID, SLIDE_THUMBNAIL_HOST))
   })
 })

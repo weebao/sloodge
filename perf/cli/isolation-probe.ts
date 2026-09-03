@@ -75,7 +75,7 @@ type HostReport = {
   report: SlideReport
 }
 
-/** The probe document. `PROBE` is replaced per slide so a report names the slide it came from. */
+/** The probe document, numbered so a report names the slide it came from. */
 function probeSlideHtml(probe: number): string {
   return `<!doctype html>
 <html lang="en" data-sl-slide="probe-${String(probe)}">
@@ -154,9 +154,7 @@ const INSTALL_HOST_LISTENER = `(() => {
   return 'installed';
 })()`
 
-type Verdict = { failures: string[]; checks: number }
-
-function judge(reports: readonly HostReport[]): Verdict {
+function judge(reports: readonly HostReport[]): { failures: string[]; checks: number } {
   const failures: string[] = []
   let checks = 0
   const expectDenied = (label: string, outcome: Outcome): void => {

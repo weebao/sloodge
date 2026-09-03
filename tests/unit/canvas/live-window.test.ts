@@ -49,9 +49,4 @@ describe('liveSlideWindow', () => {
     expect(survivors).toEqual(after.filter((id) => before.includes(id)))
     expect(survivors).toEqual(['c', 'd'])
   })
-
-  it('honours a wider radius', () => {
-    expect(liveSlideWindow(deck, 2, 2).map((f) => f.slide)).toEqual(['a', 'b', 'c', 'd', 'e'])
-    expect(liveSlideWindow(deck, 2, 0)).toEqual([{ slide: 'c', role: 'active' }])
-  })
 })

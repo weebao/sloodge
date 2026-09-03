@@ -43,10 +43,6 @@ export class FakeIntersectionObserver {
     this.targets.clear()
   }
 
-  takeRecords(): Entry[] {
-    return []
-  }
-
   /** Report visibility for some observed targets, the way the browser would on a scroll. */
   report(visible: ReadonlyMap<Element, boolean>): void {
     const entries = [...visible].map(([target, isIntersecting]) => ({ target, isIntersecting }))

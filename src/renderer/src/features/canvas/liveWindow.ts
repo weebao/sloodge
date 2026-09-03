@@ -30,14 +30,10 @@ export const LIVE_WINDOW_RADIUS = 1
  *
  * Out-of-range `activeIndex` (no selection, empty deck) yields an empty window.
  */
-export function liveSlideWindow<T>(
-  slides: readonly T[],
-  activeIndex: number,
-  radius: number = LIVE_WINDOW_RADIUS,
-): LiveSlide<T>[] {
+export function liveSlideWindow<T>(slides: readonly T[], activeIndex: number): LiveSlide<T>[] {
   if (activeIndex < 0 || activeIndex >= slides.length) return []
-  const from = Math.max(0, activeIndex - radius)
-  const to = Math.min(slides.length - 1, activeIndex + radius)
+  const from = Math.max(0, activeIndex - LIVE_WINDOW_RADIUS)
+  const to = Math.min(slides.length - 1, activeIndex + LIVE_WINDOW_RADIUS)
   return slides.slice(from, to + 1).map((slide, offset) => ({
     slide,
     role: from + offset === activeIndex ? 'active' : 'warm',
