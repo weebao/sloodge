@@ -34,6 +34,7 @@ import {
   renderThemeBlock,
   SYSTEM_FONT_STACK,
 } from '../../src/shared/document/starter-slide'
+import type { SlideCapability, SlideKind } from '../../src/shared/document/types'
 import { encodePngDataUri } from './png'
 import { intBetween, pick, type Rng } from './prng'
 
@@ -109,18 +110,14 @@ const SERIES_COLORS: readonly string[] = [
   '#56ccf2',
 ]
 
-/** The theme-token block every slide inlines, matching the shipped starter slide's sentinel form. */
-function themeBlock(): string {
-  return renderThemeBlock()
-}
-
 /**
  * The shared skeleton. Carries exactly the substrings SL-G01/SL-G03 require
  * (`width:1280px`, `height:720px`, `box-sizing:border-box`, `margin:0`, `padding:0`) and nothing
  * that would imply a capability the archetype has not declared.
  */
 function baseCss(): string {
-  return `${themeBlock()}
+  // Theme tokens come from the shipped renderer, so slides carry the real sentinel block.
+  return `${renderThemeBlock()}
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--sl-bg)}
 .slide{width:1280px;height:720px;overflow:hidden;position:relative;box-sizing:border-box;padding:var(--sl-pad);background:var(--sl-bg);color:var(--sl-fg);font-family:${SYSTEM_FONT_STACK};font-size:20px}
@@ -445,7 +442,7 @@ ${rows.join('\n')}
 }
 
 /** The `capabilities` each archetype must declare for SL-H01 to accept it. */
-export function capabilitiesFor(archetype: Archetype): readonly string[] {
+export function capabilitiesFor(archetype: Archetype): readonly SlideCapability[] {
   switch (archetype) {
     case 'svg-animation':
       return ['css-animation', 'smil-animation']
@@ -458,7 +455,7 @@ export function capabilitiesFor(archetype: Archetype): readonly string[] {
 }
 
 /** The manifest `kind` each archetype reports, so the deck looks like a real mixed deck. */
-export function kindFor(archetype: Archetype): string {
+export function kindFor(archetype: Archetype): SlideKind {
   switch (archetype) {
     case 'svg-animation':
       return 'animation'

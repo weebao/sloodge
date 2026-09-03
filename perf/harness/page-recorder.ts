@@ -70,12 +70,6 @@ export const INSTALL_RECORDER = `(() => {
   };
   state.canvasAttached = attach(document.querySelector('${SELECTORS.canvas}'), state.canvasLoads);
   state.railAttached = attach(document.querySelector('${SELECTORS.rail}'), state.railLoads);
-  // The rail and canvas mount before any deck arrives, but re-attach on demand in case they did not.
-  state.reattach = () => {
-    state.canvasAttached = attach(document.querySelector('${SELECTORS.canvas}'), state.canvasLoads);
-    state.railAttached = attach(document.querySelector('${SELECTORS.rail}'), state.railLoads);
-  };
-
   state.clickSlide = (index) => {
     const item = document.querySelector('[data-slide-index="' + index + '"] button');
     if (!item) return null;

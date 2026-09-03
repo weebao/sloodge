@@ -16,7 +16,7 @@
  *     restored afterwards, which changes where the file lands and nothing else.
  */
 
-import { access } from 'node:fs/promises'
+import { access, stat } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { CdpClient } from './cdp'
 import { waitFor } from './cdp'
@@ -96,7 +96,6 @@ async function waitForStableFile(path: string, timeoutMs: number): Promise<boole
   while (Date.now() < deadline) {
     try {
       await access(path)
-      const { stat } = await import('node:fs/promises')
       const size = (await stat(path)).size
       if (size > 0 && size === lastSize) {
         stableTicks += 1

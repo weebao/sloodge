@@ -24,8 +24,6 @@ export type LaunchedApp = {
   readonly main: CdpClient
   /** `Date.now()` captured immediately after `spawn` — the cold-start clock's zero. */
   readonly spawnedAtMs: number
-  readonly userDataDir: string
-  readonly stderr: () => string
   /**
    * Throws if the app process has exited. Passed to every polling wait so a crashed app fails the
    * run immediately, with the app's own output, instead of timing out minutes later.
@@ -123,8 +121,6 @@ export async function launchApp(options: LaunchOptions): Promise<LaunchedApp> {
       page,
       main,
       spawnedAtMs,
-      userDataDir,
-      stderr: () => stderrBuffer,
       assertAlive: () => {
         if (child.exitCode !== null || child.signalCode !== null) {
           throw new AppExitedError(child.exitCode, child.signalCode, stderrBuffer)

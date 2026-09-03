@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   BUDGETS,
+  parseRamBasis,
+  RAM_BASES,
   budgetActuals,
   budgetTable,
   checkBudgets,
@@ -159,5 +161,18 @@ describe('budgetTable', () => {
     expect(table).toContain('240.0 MB')
     expect(table).toContain('FAIL')
     expect(table.split('\n')).toHaveLength(BUDGETS.length + 2)
+  })
+})
+
+describe('parseRamBasis', () => {
+  it('accepts every documented basis', () => {
+    for (const basis of RAM_BASES) expect(parseRamBasis(basis)).toBe(basis)
+  })
+
+  it('rejects an unknown basis instead of silently summarizing an empty series', () => {
+    // A cast here would accept `--ram-basis=pss`, then report a median over zero samples. Failing
+    // loudly is the point: this milestone exists so the RAM number cannot be quietly wrong.
+    expect(() => parseRamBasis('pss')).toThrow(RangeError)
+    expect(() => parseRamBasis('')).toThrow(RangeError)
   })
 })

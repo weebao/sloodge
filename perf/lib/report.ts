@@ -14,7 +14,23 @@
 import type { Summary } from './stats'
 
 /** Which memory series a report treats as *the* RAM number. See `perf/README.md` §"What RAM means". */
-export type RamBasis = 'app-metrics-working-set-sum' | 'proc-pss-sum' | 'proc-rss-sum'
+export const RAM_BASES = ['app-metrics-working-set-sum', 'proc-pss-sum', 'proc-rss-sum'] as const
+export type RamBasis = (typeof RAM_BASES)[number]
+
+/**
+ * Parse a `--ram-basis` argument.
+ *
+ * @throws RangeError on an unknown basis. A cast here instead would accept `--ram-basis=pss`
+ *   silently and then summarize an empty series, reporting the wrong memory number rather than
+ *   failing — the exact class of quiet error this milestone exists to avoid.
+ */
+export function parseRamBasis(value: string): RamBasis {
+  const found = RAM_BASES.find((basis) => basis === value)
+  if (found === undefined) {
+    throw new RangeError(`Unknown --ram-basis "${value}"; expected one of ${RAM_BASES.join(', ')}`)
+  }
+  return found
+}
 
 export type PerfMetrics = {
   /** Process spawn → the shell is interactive in the renderer. */

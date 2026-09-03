@@ -18,7 +18,7 @@
  * header field.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { buildStressDeck, deckContentHash, totalSlideBytes, type StressDeck } from '../lib/deck'
 import { writeDeck } from '../../src/main/document/store'
@@ -52,13 +52,13 @@ export async function generateDeck(
   seed: number,
 ): Promise<GeneratedDeck> {
   const deck = buildStressDeck({ slideCount, seed })
-  const bundle = {
+  const bundle: DeckBundle = {
     manifest: deck.manifest,
     slides: deck.slides,
     notes: deck.notes,
     theme: deck.theme,
     extras: deck.extras,
-  } as unknown as DeckBundle
+  }
 
   const name = `stress-${String(slideCount)}`
   const sloodgePath = join(outDir, `${name}.sloodge`)
@@ -79,7 +79,6 @@ export async function generateDeck(
   const payloadJson = JSON.stringify(payload)
   await writeFile(payloadPath, payloadJson, 'utf8')
 
-  const { stat } = await import('node:fs/promises')
   const archiveBytes = (await stat(sloodgePath)).size
 
   return {

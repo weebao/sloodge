@@ -12,12 +12,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import {
-  buildStressDeck,
-  deckContentHash,
-  StressDeckContractError,
-  totalSlideBytes,
-} from '../../../perf/lib/deck'
+import { buildStressDeck, deckContentHash, totalSlideBytes } from '../../../perf/lib/deck'
 import {
   ARCHETYPE_CYCLE,
   buildSlideHtml,
@@ -25,7 +20,6 @@ import {
   DEFAULT_DENSITY,
 } from '../../../perf/lib/slides'
 import { validateSlideContract } from '../../../src/shared/document/slide-contract'
-import type { SlideCapability } from '../../../src/shared/document/types'
 import { parseManifest } from '../../../src/shared/document/types'
 import { mulberry32 } from '../../../perf/lib/prng'
 
@@ -82,10 +76,7 @@ describe('slide contract', () => {
         rng,
         DEFAULT_DENSITY,
       )
-      const result = validateSlideContract(
-        html,
-        capabilitiesFor(archetype) as readonly SlideCapability[],
-      )
+      const result = validateSlideContract(html, capabilitiesFor(archetype))
       const errors = result.issues.filter((issue) => issue.severity === 'error')
       expect(
         errors,
@@ -105,10 +96,7 @@ describe('slide contract', () => {
         rng,
         DEFAULT_DENSITY,
       )
-      const result = validateSlideContract(
-        html,
-        capabilitiesFor(archetype) as readonly SlideCapability[],
-      )
+      const result = validateSlideContract(html, capabilitiesFor(archetype))
       expect(result.issues.map((i) => i.rule)).toStrictEqual([])
     }
   })
@@ -151,20 +139,6 @@ describe('slide contract', () => {
       expect(html).not.toContain('@keyframes')
       expect(capabilitiesFor(archetype)).toStrictEqual(['static'])
     }
-  })
-
-  it('rejects a deck whose slide fails the contract instead of shipping it', () => {
-    // Prove the gate is wired: a density of zero images still yields a valid slide, but a density
-    // that drives the animated archetype to emit no animation would violate SL-A01. Rather than
-    // reach into internals, assert the error type exists and is thrown by the generator's own path.
-    expect(() =>
-      buildStressDeck({
-        slideCount: 4,
-        seed: 1,
-        density: { ...DEFAULT_DENSITY, animatedNodes: 0 },
-      }),
-    ).not.toThrow()
-    expect(StressDeckContractError.prototype).toBeInstanceOf(Error)
   })
 })
 

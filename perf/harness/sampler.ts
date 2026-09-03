@@ -219,12 +219,4 @@ export class Sampler {
     await this.#loop
     this.#loop = null
   }
-
-  /** Samples between two marks, for per-phase attribution. */
-  between(fromMark: string, toMark: string): Sample[] {
-    const from = this.marks.find((m) => m.name === fromMark)
-    const to = this.marks.find((m) => m.name === toMark)
-    if (from === undefined || to === undefined) return []
-    return this.samples.filter((s) => s.t >= from.t && s.t <= to.t)
-  }
 }

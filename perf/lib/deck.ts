@@ -22,7 +22,8 @@ import {
   CANVAS_WIDTH,
   DEFAULT_THEME_PATH,
   slideFilePath,
-  type SlideCapability,
+  type DeckManifest,
+  type SlideEntry,
   type Theme,
 } from '../../src/shared/document/types'
 import {
@@ -76,7 +77,7 @@ export function stressTheme(rng: Rng): Theme {
       space: {},
     },
     version: 1,
-  } as Theme
+  }
 }
 
 export type StressDeckOptions = {
@@ -90,7 +91,7 @@ export type StressDeckOptions = {
 
 /** The pieces `packDeck` needs, plus the per-slide archetype map for reporting. */
 export type StressDeck = {
-  readonly manifest: Record<string, unknown>
+  readonly manifest: DeckManifest
   readonly slides: Record<string, string>
   readonly notes: Record<string, string>
   readonly theme: Theme
@@ -139,7 +140,7 @@ export function buildStressDeck(options: StressDeckOptions): StressDeck {
   const slideOrder: string[] = []
   const slides: Record<string, string> = {}
   const notes: Record<string, string> = {}
-  const slideEntries: Record<string, unknown> = {}
+  const slideEntries: Record<string, SlideEntry> = {}
   const archetypes: Archetype[] = []
 
   for (let index = 0; index < slideCount; index += 1) {
@@ -149,7 +150,7 @@ export function buildStressDeck(options: StressDeckOptions): StressDeck {
     const html = buildSlideHtml(archetype, id, index, rng, density)
     const capabilities = capabilitiesFor(archetype)
 
-    const result = validateSlideContract(html, capabilities as readonly SlideCapability[])
+    const result = validateSlideContract(html, capabilities)
     if (!result.ok) {
       const detail = result.issues
         .filter((i) => i.severity === 'error')
@@ -163,10 +164,10 @@ export function buildStressDeck(options: StressDeckOptions): StressDeck {
     archetypes.push(archetype)
     slideEntries[id] = {
       id,
-      file: slideFilePath(id as never),
+      file: slideFilePath(id),
       title: `${String(index + 1)}. ${archetype}`,
       kind: kindFor(archetype),
-      capabilities,
+      capabilities: [...capabilities],
       createdAt: FIXED_ISO,
       updatedAt: FIXED_ISO,
       origin: { type: 'template' },
@@ -175,7 +176,7 @@ export function buildStressDeck(options: StressDeckOptions): StressDeck {
     }
   }
 
-  const manifest: Record<string, unknown> = {
+  const manifest: DeckManifest = {
     formatVersion: 1,
     id: `d_${ulidBody(rng)}`,
     title,
@@ -211,7 +212,7 @@ export function totalSlideBytes(deck: StressDeck): number {
  * their numbers against this baseline.
  */
 export function deckContentHash(deck: StressDeck): string {
-  const order = deck.manifest['slideOrder'] as string[]
+  const order = deck.manifest.slideOrder
   const canonical = JSON.stringify({
     manifest: deck.manifest,
     slides: order.map((id) => deck.slides[id] ?? ''),
