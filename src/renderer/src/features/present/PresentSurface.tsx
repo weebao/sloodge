@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type JSX } from 'react'
 import type { SlideView } from '../../stores/deckStore'
 import { getBridge } from '../../host/bridge'
-import { SlideFrame } from '../canvas/SlideFrame'
+import { SlideStage } from '../canvas/SlideStage'
 import { fitSlide } from '../canvas/slideFit'
 import { useElementSize } from '../canvas/useElementSize'
 import { createControlsAutoHide } from './controlsAutoHide'
@@ -31,11 +31,13 @@ export type PresentSurfaceProps = {
 
 /**
  * The fullscreen presentation surface (M4.1) — the payoff of M2.0. The current slide is rendered
- * through the *same* `SlideFrame` / `slide://` delivery as the editor canvas (no second, weaker
- * render path: the sandbox and per-document CSP hold exactly as in edit view), scaled to fill the
- * screen letterboxed at 16:9. Because it is a real `slide://` document, the slide's own animations
- * and interactive JS run live — a chart stays clickable — while this shell only owns the
- * presentation-level keys, the auto-hiding controls, and the black-screen toggle.
+ * through the *same* `SlideStage` / `SlideFrame` / `slide://` delivery as the editor canvas (no
+ * second, weaker render path: the sandbox and per-document CSP hold exactly as in edit view), scaled
+ * to fill the screen letterboxed at 16:9. Because it is a real `slide://` document, the slide's own
+ * animations and interactive JS run live — a chart stays clickable — while this shell only owns the
+ * presentation-level keys, the auto-hiding controls, and the black-screen toggle. The stage keeps the
+ * next and previous slides mounted behind the current one, so advancing never shows a blank frame
+ * (M8.2).
  *
  * ## Its own state, on purpose
  *
@@ -127,7 +129,6 @@ export function PresentSurface({ slides, startIndex, onExit }: PresentSurfacePro
   }, [])
 
   const index = clampSlideIndex(state.index, slides.length)
-  const current = slides[index]
   const fit = fitSlide(size)
 
   // Stable across renders (`dispatch` and the refs never change identity) so the memoized children
@@ -153,15 +154,13 @@ export function PresentSurface({ slides, startIndex, onExit }: PresentSurfacePro
       className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black"
       onMouseMove={handleMouseMove}
     >
-      {current ? (
-        <SlideFrame
-          key={current.id}
-          html={current.html}
-          title={`Presenting: ${current.title}`}
-          scale={fit.scale}
-          interactive
-        />
-      ) : null}
+      <SlideStage
+        slides={slides}
+        activeIndex={index}
+        titlePrefix="Presenting"
+        scale={fit.scale}
+        interactive
+      />
 
       {/* The black-screen toggle. The slide stays mounted underneath, so `B` twice returns to the
           exact animation/interaction state — nothing reloads.

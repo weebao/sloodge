@@ -237,29 +237,29 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
   })()`)
   if (sent !== 'sent') throw new Error(`Could not push the deck: ${sent}`)
 
-  // Published = every rail frame has a `slide://` src (main accepted it into the registry).
+  // Published = the rail has a card per slide and every rail frame that is *mounted* has a
+  // `slide://` src (main accepted it into the registry). Since M8.2 the rail mounts a live frame
+  // only for the cards inside its scroll window, so the number of frames is a property of the
+  // rail's height, not of the deck — waiting for `slideCount` of them would never return.
   await waitFor(
     page,
-    `document.querySelectorAll('${SELECTORS.rail} iframe[src]').length >= ${String(slideCount)}`,
+    `(() => {
+      const cards = document.querySelectorAll('${SELECTORS.rail} [data-slide-index]').length;
+      const frames = Array.from(document.querySelectorAll('${SELECTORS.rail} iframe'));
+      return cards >= ${String(slideCount)} && frames.length > 0 && frames.every((f) => f.hasAttribute('src'));
+    })()`,
     600_000,
     150,
     assertAlive,
   )
   const deckPublishMs = Date.now() - openStart
 
-  // Rendered = every rail frame has fired `load`. This is the number that reflects what the user
-  // waits for; publishing only means main holds the bytes.
-  const rendered = await page
-    .evaluate<boolean>(`globalThis.${RECORDER_GLOBAL}.railLoads.length >= ${String(slideCount)}`)
-    .catch(() => false)
+  // Rendered = every mounted rail frame has fired `load`. This is the number that reflects what the
+  // user waits for; publishing only means main holds the bytes.
+  const railRendered = `globalThis.${RECORDER_GLOBAL}.railLoads.length >= document.querySelectorAll('${SELECTORS.rail} iframe').length`
+  const rendered = await page.evaluate<boolean>(railRendered).catch(() => false)
   if (!rendered) {
-    await waitFor(
-      page,
-      `globalThis.${RECORDER_GLOBAL}.railLoads.length >= ${String(slideCount)}`,
-      600_000,
-      250,
-      assertAlive,
-    ).catch((error: unknown) => {
+    await waitFor(page, railRendered, 600_000, 250, assertAlive).catch((error: unknown) => {
       rethrowUnlessTimeout(error)
       warnings.push(
         'Not every rail frame fired `load` before the timeout; deckRenderMs is a floor.',

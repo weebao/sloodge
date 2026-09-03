@@ -120,15 +120,12 @@ const SLIDE_DOCUMENT_ID_PATTERN = new RegExp(`^[0-9a-f]{${String(SLIDE_DOCUMENT_
 /**
  * A fresh document id from the platform CSPRNG.
  *
- * Hex rather than base64url because the id is a URL **host** (see `slideDocumentUrl`), and the two
- * URL parsers this value passes through disagree about host case. Chromium canonicalizes the host —
- * lowercasing it — for a registered `standard:` scheme, which is what `protocol.handle` receives.
- * Node's WHATWG `URL`, which main and the tests also use, treats `slide:` as a *non-special* scheme
- * and so runs the opaque-host parser, which preserves case: `new URL('slide://ABC/').hostname` is
- * `'ABC'` on Node 24. A lowercase-only alphabet sidesteps the disagreement entirely rather than
- * requiring every call site to know which parser it is talking to. Hex is 4 bits per character
- * against base64url's 6, which costs 32 characters instead of 22 and buys a validator that is a
- * character-class regexp with no normalization step in front of it.
+ * Hex rather than base64url so the validator is a character-class regexp with no normalization in
+ * front of it, and lowercase so the value survives both URL parsers it passes through unchanged.
+ * (Through M8.1 the id was the URL **host**, where Chromium lower-cases and Node does not; it is a
+ * path segment now, which neither parser touches, but a value that is safe as either is the safer
+ * value to keep.) Hex is 4 bits per character against base64url's 6, which costs 32 characters
+ * instead of 22.
  *
  * `globalThis.crypto` rather than `node:crypto` so this stays importable from every build target —
  * `src/shared` may not depend on anything, and the Web Crypto API is present in Node 24, in the
@@ -174,37 +171,90 @@ export function isPublishableSlideHtml(
 }
 
 /**
- * The URL a published slide is served from.
+ * The hosts slide documents are served from — one per *surface*, not one per document.
  *
- * The id is the **host**, not a path segment, so every slide document gets a distinct
- * `slide://<id>` origin. The frame is an opaque origin regardless (no `allow-same-origin`), so this
- * is belt-and-braces rather than the boundary — but it means that if the sandbox attribute is ever
- * lost, two slides still cannot script each other, and it keeps the path component constant so the
- * handler has exactly one legal path to accept.
+ * ## Why the host is a process group (M8.2)
  *
- * The belt turns out to matter more than expected. Measured in the real app
- * (`experiments/init/harness/slide-protocol-smoke.mjs`), a sandboxed `slide://` frame reports
- * `location.origin` as `slide://<id>` rather than `"null"`: Chromium derives that string from the
- * URL for a `standard:` custom scheme even when the document's security origin is opaque. The
- * document *is* opaque — in the same run `localStorage` throws `SecurityError` and every reach into
- * `parent` fails — so the string is cosmetic. But it is exactly the kind of cosmetic detail a
- * future change could start trusting, and putting the id in the host means that even a reader who
- * trusts it reaches the right conclusion.
+ * Through M8.1 the id was the host (`slide://<id>/`), so every slide document was its own origin.
+ * That was described as belt-and-braces — the frame is opaque-origin regardless — but it had a cost
+ * nobody had measured: Chromium's process model keys on a URL's **site**, and for a sandboxed frame
+ * the site is that of its precursor URL, so a hundred distinct hosts meant a hundred sandboxed
+ * renderer processes. Measured in M8.1: 105 processes and 1.7 GB PSS for a 100-slide deck, and the
+ * 500-slide deck could not be opened at all.
+ *
+ * The other extreme was measured too and rejected. With *one* host for everything (`perf:run`,
+ * 100 slides, quiet machine) the process count fell to 5 and PSS to 583 MB, but a cold slide switch
+ * went from a 54 ms median to 360 ms with a 1.7 s p95: the canvas frame, its two pre-warmed
+ * neighbours and every visible thumbnail — a dozen animating documents — were sharing one main
+ * thread, and a new slide's parse queued behind all of them.
+ *
+ * So the host names the **surface**: everything the user is looking at or about to look at — the
+ * canvas stage, Present, export — is `slides`; the rail's miniatures are `thumbnails`. Two sandboxed
+ * processes instead of a hundred, and the thumbnails' animation work can never delay the slide the
+ * user just clicked. When M8.3 replaces live miniatures with cached bitmaps the `thumbnails` process
+ * simply stops existing; nothing here needs to change.
+ *
+ * ## What the host never protected
+ *
+ * Nothing that keeps slides apart lives in the host. The frame is `sandbox="allow-scripts"` with no
+ * `allow-same-origin`, so each document is an *opaque* origin — distinct from the app, from every
+ * sibling, and from itself on reload — whatever its URL; that is what denies `parent.document`,
+ * `localStorage` and a sibling's DOM. The per-document CSP is a per-**response** header from the
+ * handler plus the injected `<meta>`, not a per-origin setting. The bridge validates messages by
+ * `event.source` identity, not by origin. All of it is exercised in the real app, for these hosts, by
+ * `pnpm perf:isolation` (`perf/cli/isolation-probe.ts`), which runs those reaches from inside running
+ * slides and reports each one denied.
+ *
+ * What the unique host *did* buy is two lesser things, stated rather than dropped silently:
+ * (1) had the `sandbox` attribute ever been lost, unique hosts would still have kept two slides from
+ * scripting each other, whereas now two slides on one surface would be same-origin — the attribute
+ * is pinned by `slide-frame.test.tsx` and by a repo-wide grep test, and `frame-src 'none'` on every
+ * slide means no slide can frame a sibling to try; (2) process-level isolation between *slides*,
+ * which is exactly what a hundred processes were. Slide-to-app isolation is unchanged: the app
+ * document is on a different site and keeps its own process.
+ *
+ * `location.origin` inside a slide now reads `slide://slides` or `slide://thumbnails` — strings that
+ * no longer look like identifiers a future reader could be tempted to trust, which closes the
+ * cosmetic concern the per-document host was originally kept for.
  */
-export function slideDocumentUrl(id: string): string {
-  return `${SLIDE_SCHEME}://${id}/`
+export const SLIDE_STAGE_HOST = 'slides'
+export const SLIDE_THUMBNAIL_HOST = 'thumbnails'
+export type SlideHost = typeof SLIDE_STAGE_HOST | typeof SLIDE_THUMBNAIL_HOST
+
+/** Every host the handler answers for. A URL on any other host is a 404, whatever its path. */
+const SLIDE_HOSTS: ReadonlySet<string> = new Set([SLIDE_STAGE_HOST, SLIDE_THUMBNAIL_HOST])
+
+/** The URL a published slide is served from: `slide://<host>/<id>/`, the id as the only path segment. */
+export function slideDocumentUrl(id: string, host: SlideHost = SLIDE_STAGE_HOST): string {
+  return `${SLIDE_SCHEME}://${host}/${id}/`
 }
 
-/** The only path the handler serves. Anything else is a 404. */
-export const SLIDE_DOCUMENT_PATH = '/'
+/** The only path shape the handler serves: `/<id>/`, nothing more and nothing less. */
+const SLIDE_DOCUMENT_PATH_PATTERN = new RegExp(
+  `^/([0-9a-f]{${String(SLIDE_DOCUMENT_ID_LENGTH)}})/$`,
+)
 
 /**
- * The id inside a `slide://` URL, or `null` if this is not one.
+ * The id inside an already-parsed `slide://` URL, or `null` if this is not one of ours — wrong
+ * scheme, wrong host, or any path other than exactly `/<id>/`.
+ *
+ * Shared by the handler (`resolveSlideRequest`) and the renderer's revoke path so that what main
+ * *accepts* and what the renderer *emits* are one definition. The pathname is matched after the
+ * URL parser has normalized it, never as a raw string: `slide://slides/<id>/x/../` is the same
+ * resource as `slide://slides/<id>/` and must be answered the same way, and a check-then-use across
+ * two parsers is how allow-lists leak (the same reasoning as `toSafeExternalUrl` in
+ * `src/main/security/externalUrls.ts`).
+ */
+export function slideDocumentIdFromParsedUrl(url: URL): string | null {
+  if (url.protocol !== `${SLIDE_SCHEME}:` || !SLIDE_HOSTS.has(url.hostname)) return null
+  return SLIDE_DOCUMENT_PATH_PATTERN.exec(url.pathname)?.[1] ?? null
+}
+
+/**
+ * The id inside a `slide://` URL string, or `null` if this is not one.
  *
  * Used by the renderer's revoke path, which is handed back the URL it was given rather than the id
- * it never saw. Parsing rather than string-slicing because the value has round-tripped through the
- * DOM (an iframe `src` attribute) and a check-then-use across two different parsers is how
- * allow-lists leak — the same reasoning as `toSafeExternalUrl` in `src/main/security/externalUrls.ts`.
+ * it never saw, after that value has round-tripped through the DOM as an iframe `src`.
  */
 export function slideDocumentIdFromUrl(url: string): string | null {
   let parsed: URL
@@ -213,6 +263,5 @@ export function slideDocumentIdFromUrl(url: string): string | null {
   } catch {
     return null
   }
-  if (parsed.protocol !== `${SLIDE_SCHEME}:`) return null
-  return isSlideDocumentId(parsed.hostname) ? parsed.hostname : null
+  return slideDocumentIdFromParsedUrl(parsed)
 }

@@ -406,7 +406,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       `Cold start is a bracket; documentLoadedMs (lower bound, navigation loadEventEnd) per run: ${collected.map((r) => r.session.documentLoadedMs.toFixed(0)).join(', ')}.`,
       `deckReadMs (unzip only, shipped readDeck, per run): ${collected.map((r) => String(r.deckReadMs)).join(', ')}.`,
       `deckWriteMs (zip + fsync + rename, shipped writeDeck, per run): ${collected.map((r) => String(r.deckWriteMs)).join(', ')}.`,
-      `deckPublishMs (deck:updated -> every rail frame has a slide:// src): ${collected.map((r) => String(r.session.deckPublishMs)).join(', ')}.`,
+      `deckPublishMs (deck:updated -> every mounted rail frame has a slide:// src): ${collected.map((r) => String(r.session.deckPublishMs)).join(', ')}.`,
       `HTML export ms: ${collected.map((r) => String(r.session.exportHtmlMs ?? -1)).join(', ')}.`,
       `Present phase ms: ${collected.map((r) => String(r.session.presentMs)).join(', ')}.`,
       `Rail scroll ms (summed round-trip of 25 scrollTop steps, settle sleeps excluded): ${collected.map((r) => String(r.session.railScrollMs)).join(', ')}.`,

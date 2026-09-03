@@ -49,11 +49,13 @@ export type SlideFrameProps = {
    * selection button behind the frame rather than being swallowed by the slide's own handlers.
    */
   interactive?: boolean
-  className?: string
+  className?: string | undefined
   /**
-   * Delivery seam, defaulted to whichever transport this host supports. Injected only by tests,
-   * which is what makes "the previous URL was released before the next one was used" an assertion
-   * rather than a hope — happy-dom has neither a real blob store nor a main process to observe.
+   * Delivery seam, defaulted to the stage transport for this host. The rail injects the
+   * `thumbnails`-host factory so its miniatures land in their own renderer process (M8.2); tests
+   * inject stubs, which is what makes "the previous URL was released before the next one was used"
+   * an assertion rather than a hope — happy-dom has neither a real blob store nor a main process
+   * to observe.
    *
    * Named `slideUrls` rather than M1.3's `objectUrls` because a `slide://` URL is not an object
    * URL, and a seam whose name asserts the implementation is a seam nobody swaps.
@@ -64,7 +66,13 @@ export type SlideFrameProps = {
    * postMessage bridge and validate message source identity against it. Only the canvas passes one;
    * rail thumbnails do not participate in the bridge.
    */
-  frameRef?: RefObject<HTMLIFrameElement | null>
+  frameRef?: RefObject<HTMLIFrameElement | null> | undefined
+  /**
+   * The iframe's `load` — fired once the slide document has committed. `SlideStage` uses it to hold
+   * the ±1 pre-warm back until the active slide is up, so neighbours never compete with the slide
+   * the user is waiting for.
+   */
+  onLoad?: () => void
 }
 
 function SlideFrameInner({
@@ -75,6 +83,7 @@ function SlideFrameInner({
   className,
   slideUrls,
   frameRef,
+  onLoad,
 }: SlideFrameProps): JSX.Element {
   // Keyed on the document text alone, so a scale change never mints a new URL and never reloads
   // the frame — a reload loses animation phase and any interactive state, on every window resize.
@@ -110,20 +119,25 @@ function SlideFrameInner({
 
   return (
     <div className={className} style={boxStyle}>
-      <iframe
-        ref={frameRef}
-        title={title}
-        sandbox={SLIDE_SANDBOX}
-        referrerPolicy="no-referrer"
-        allow=""
-        // `undefined` for the one render before the effect mints the URL: an iframe with no src
-        // shows about:blank, which is the right empty state.
-        src={src ?? undefined}
-        tabIndex={interactive ? undefined : -1}
-        aria-hidden={interactive ? undefined : 'true'}
-        className="block border-0"
-        style={frameStyle}
-      />
+      {/* No iframe until the URL exists. An iframe created without `src` navigates to about:blank
+          first, and that navigation fires `load` — a load that is not the slide's, which would open
+          `SlideStage`'s pre-warm gate early and make a switch look ~0 ms in the harness. The empty
+          box is the same blank the about:blank document would have painted. */}
+      {src === null ? null : (
+        <iframe
+          ref={frameRef}
+          title={title}
+          sandbox={SLIDE_SANDBOX}
+          referrerPolicy="no-referrer"
+          allow=""
+          src={src}
+          onLoad={onLoad}
+          tabIndex={interactive ? undefined : -1}
+          aria-hidden={interactive ? undefined : 'true'}
+          className="block border-0"
+          style={frameStyle}
+        />
+      )}
     </div>
   )
 }
@@ -137,7 +151,8 @@ function SlideFrameInner({
  * The canvas gets the same guarantee for free while resizing: only `scale` changes, so React
  * updates one style property and `useSlideUrl`'s effect never re-runs.
  *
- * Naive-but-correct is the M1.3 target: every slide in the deck is a live frame. Virtualization
- * (mount only the visible window) is M8.3.
+ * Which slides get a frame at all is decided above this component: `SlideStage` mounts the active
+ * slide and its ±1 neighbours, and `ThumbnailPreview` mounts a miniature only while its card is in
+ * the rail's scroll window (M8.2). Everything else is held as serialized source.
  */
 export const SlideFrame = memo(SlideFrameInner)

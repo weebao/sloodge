@@ -15,6 +15,7 @@ import { AppShell } from '../../src/renderer/src/app/AppShell'
 import { useDesignStore } from '../../src/renderer/src/features/design/designStore'
 import { createStarterDeck, useDeckStore } from '../../src/renderer/src/stores/deckStore'
 import type { MenuAction } from '../../src/shared/ipc-contract'
+import { installFakeIntersectionObserver } from './deck/fake-intersection-observer'
 
 const NOW = 1_770_000_000_000
 
@@ -34,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('AppShell', () => {
@@ -67,8 +69,15 @@ describe('AppShell', () => {
     expect(within(status).getByRole('button', { name: /present/i })).toBeTruthy()
   })
 
-  it('renders one live sandboxed frame per slide, plus the canvas', () => {
+  it('renders the canvas frame at once and a thumbnail frame only once the rail sees its card', () => {
+    const observers = installFakeIntersectionObserver()
     const { container } = render(<AppShell />)
+
+    // One document: the canvas. The rail's three cards are placeholders until the observer reports
+    // them on screen, and the canvas's neighbours wait for the active frame to load (M8.2).
+    expect(container.querySelectorAll('iframe')).toHaveLength(1)
+
+    observers.instances[0]?.reportAll(true)
 
     const frames = [...container.querySelectorAll('iframe')]
     // Three rail thumbnails + the canvas, all showing the same documents.

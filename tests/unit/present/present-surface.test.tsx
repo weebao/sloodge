@@ -49,6 +49,23 @@ describe('PresentSurface rendering', () => {
   })
 })
 
+describe('PresentSurface pre-warm (M8.2)', () => {
+  it('keeps the outgoing slide mounted and the next one pre-warmed, so advancing never blanks', () => {
+    renderSurface(0)
+    const alpha = screen.getByTitle('Presenting: Alpha')
+    // Only the current slide until it has loaded; then its neighbour warms behind it.
+    expect(screen.queryByTitle('Preloading: Beta')).toBeNull()
+    fireEvent.load(alpha)
+    const beta = screen.getByTitle('Preloading: Beta')
+
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' })
+
+    // The same two iframe elements, roles swapped — nothing navigated, nothing went blank.
+    expect(screen.getByTitle('Presenting: Beta')).toBe(beta)
+    expect(screen.getByTitle('Preloading: Alpha')).toBe(alpha)
+  })
+})
+
 describe('PresentSurface navigation keys', () => {
   it('advances on ArrowRight / Space / PageDown and goes back on ArrowLeft', () => {
     renderSurface(0)

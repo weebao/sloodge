@@ -8,6 +8,8 @@ import {
   SLIDE_CSP,
   SLIDE_DOCUMENT_ID_LENGTH,
   SLIDE_SCHEME,
+  SLIDE_STAGE_HOST,
+  SLIDE_THUMBNAIL_HOST,
   slideDocumentIdFromUrl,
   slideDocumentUrl,
 } from '../../../src/shared/slide-protocol'
@@ -59,27 +61,50 @@ describe('slide document ids', () => {
 })
 
 describe('slide document urls', () => {
-  it('put the id in the host so each slide gets its own origin', () => {
+  /**
+   * One host per *surface*, not per document (M8.2). Chromium groups sandboxed frames into renderer
+   * processes by *site*, so a per-document host was a per-document process — 105 of them for a
+   * 100-slide deck. The isolation between slides never came from the host (the frame is
+   * opaque-origin from its sandbox), which `perf/cli/isolation-probe.ts` demonstrates in the real app.
+   */
+  it('put the stage host first and carry the id as the only path segment', () => {
     const id = createSlideDocumentId()
     const url = new URL(slideDocumentUrl(id))
 
     expect(url.protocol).toBe(`${SLIDE_SCHEME}:`)
-    expect(url.hostname).toBe(id)
-    // One legal path, so the handler has exactly one thing to accept and no path to resolve.
-    expect(url.pathname).toBe('/')
+    expect(url.hostname).toBe(SLIDE_STAGE_HOST)
+    expect(url.pathname).toBe(`/${id}/`)
+    expect(new URL(slideDocumentUrl(createSlideDocumentId())).hostname).toBe(url.hostname)
   })
 
-  it('round-trips an id back out of the url', () => {
+  it('put thumbnails on their own host, so the rail gets its own renderer process', () => {
     const id = createSlideDocumentId()
-    expect(slideDocumentIdFromUrl(slideDocumentUrl(id))).toBe(id)
+    const url = new URL(slideDocumentUrl(id, SLIDE_THUMBNAIL_HOST))
+
+    expect(url.hostname).toBe(SLIDE_THUMBNAIL_HOST)
+    expect(url.hostname).not.toBe(SLIDE_STAGE_HOST)
+    expect(url.pathname).toBe(`/${id}/`)
   })
+
+  it.each([SLIDE_STAGE_HOST, SLIDE_THUMBNAIL_HOST] as const)(
+    'round-trips an id back out of a %s url',
+    (host) => {
+      const id = createSlideDocumentId()
+      expect(slideDocumentIdFromUrl(slideDocumentUrl(id, host))).toBe(id)
+    },
+  )
 
   it.each([
     ['a blob url', 'blob:http://localhost/abc'],
-    ['an http url with an id host', `http://${'a'.repeat(32)}/`],
-    ['a lookalike scheme', `slides://${'a'.repeat(32)}/`],
+    ['an http url with the same shape', `http://${SLIDE_STAGE_HOST}/${'a'.repeat(32)}/`],
+    ['a lookalike scheme', `slides://${SLIDE_STAGE_HOST}/${'a'.repeat(32)}/`],
     ['a malformed url', 'slide//nope'],
-    ['a slide url with a bad host', 'slide://not-an-id/'],
+    ['the pre-M8.2 id-as-host form', `slide://${'a'.repeat(32)}/`],
+    ['an unknown host', `slide://elsewhere/${'a'.repeat(32)}/`],
+    ['a slide url with a bad id', `slide://${SLIDE_STAGE_HOST}/not-an-id/`],
+    ['an id without its trailing slash', `slide://${SLIDE_STAGE_HOST}/${'a'.repeat(32)}`],
+    ['a nested path under an id', `slide://${SLIDE_STAGE_HOST}/${'a'.repeat(32)}/index.html`],
+    ['the host alone', `slide://${SLIDE_STAGE_HOST}/`],
   ])('refuses to extract an id from %s', (_label, url) => {
     expect(slideDocumentIdFromUrl(url)).toBeNull()
   })

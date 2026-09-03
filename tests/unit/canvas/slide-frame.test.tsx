@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SlideFrame, SLIDE_SANDBOX } from '../../../src/renderer/src/features/canvas/SlideFrame'
 import type { SlideUrlFactory } from '../../../src/renderer/src/features/canvas/useSlideUrl'
@@ -150,6 +150,43 @@ describe('SlideFrame scaling', () => {
     expect(frame().getAttribute('aria-hidden')).toBeNull()
   })
 })
+
+describe('SlideFrame mounting', () => {
+  /**
+   * No iframe until the URL exists (M8.2). An `<iframe>` created without `src` navigates to
+   * about:blank and fires `load` for it — a load that is not the slide's, which would open
+   * `SlideStage`'s pre-warm gate early and time a switch at ~0 ms in the perf harness.
+   */
+  it('creates the iframe only once the url has been minted', async () => {
+    const urls = deferredUrls()
+    const { container } = render(
+      <SlideFrame html={HTML} title="slide" scale={1} slideUrls={urls} />,
+    )
+
+    // The box is there (layout is stable); the frame is not.
+    expect(container.firstElementChild).not.toBeNull()
+    expect(container.querySelector('iframe')).toBeNull()
+
+    await act(async () => {
+      urls.resolve('about:blank#late')
+    })
+
+    expect(frame().getAttribute('src')).toBe('about:blank#late')
+  })
+})
+
+/** A `slide://`-shaped factory whose publish round-trip the test completes by hand. */
+function deferredUrls(): SlideUrlFactory & { resolve: (url: string) => void } {
+  const factory = {
+    create: () =>
+      new Promise<string>((done) => {
+        factory.resolve = done
+      }),
+    revoke: (): void => undefined,
+    resolve: (_url: string): void => undefined,
+  }
+  return factory
+}
 
 describe('SlideFrame document stability', () => {
   // A new `src` reloads the document: animations restart from frame zero and any interactive state

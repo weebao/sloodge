@@ -18,6 +18,7 @@ pnpm build                 # the harness drives out/main/index.js; it does not b
 pnpm perf:generate         # writes perf/decks/stress-{25,50,100,200,300,500,1000} (+ deck-update payloads)
 pnpm perf:run --slides=100 --runs=3 --ram-basis=proc-pss-sum
 pnpm perf:diff perf/results/baseline-main.json perf/results/run-100.json
+pnpm perf:isolation        # M8.2: containment probe for the shipped slide:// hosts (see below)
 ```
 
 The 100-slide tier is the headline. **Do not run 500 or 1000 before M8.2 lands**: on this machine
@@ -112,8 +113,8 @@ change it.
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `coldStartMs`        | **Upper bound.** Spawn → `#sloodge-shell` in the DOM, polled every 25 ms                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `documentLoadedMs`   | **Lower bound.** Spawn → the renderer's navigation `loadEventEnd`, converted through `performance.timeOrigin`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `deckOpenMs`         | `deck:updated` dispatched → every rail frame has fired `load`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `deckPublishMs`      | `deck:updated` dispatched → every rail frame has a `slide://` src (main holds the bytes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `deckOpenMs`         | `deck:updated` dispatched → every **mounted** rail frame has fired `load`. Since M8.2 the rail mounts a frame only for the cards in its scroll window, so this is the rail's first paint, not the whole deck              |
+| `deckPublishMs`      | `deck:updated` dispatched → every mounted rail frame has a `slide://` src (main holds the bytes)                                                                                                                          |
 | `deckReadMs`         | The shipped `readDeck` unzipping the `.sloodge` from disk                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `slideSwitchMs`      | Rail click → the canvas iframe's `load`. **Both timestamps are taken in page context**, so CDP round-trip jitter delays only when a number is read, never the number. A load is a click's only if it landed before the next click — a click on the already-active slide fires no `load`, and a `src` swap cancels the navigation in flight, so the one `load` that follows belongs to the later click. The harness waits up to 2 s for each click's own load and then settles 220 ms before the next, so the click window of ~2.2 s — not the 220 ms settle — is the slowest switch this can see. **`count + unmeasuredSwitches` should equal `--runs` × `--switches`**; a shortfall means a rail item was missing from the DOM and the run's `notes` say which |
 | `unmeasuredSwitches` | Switches whose `load` never arrived before the next click. They are **censored, not dropped**: kept out of `slideSwitchMs` (their true latency is unknown, bounded below by the 2 s wait) and counted here instead, so a series that is short is short visibly. Expected 0 on a healthy run; any other value is a slow-switch signal a median alone cannot show, which is why the budget table says `WARN` and `perf:diff` treats **any non-zero value in the candidate** as a slide-switch regression — against 0, not against the baseline's own count, so a baseline that censored switches cannot buy a candidate that many slow switches for free                                                                                                          |
@@ -387,3 +388,101 @@ series taken during M8.1 development is the one to believe, and it degrades clea
 
 At 200 slides the shell served 9 frames in 4.8 s, and those frames spanned only 268 ms of that
 window — the renderer was not producing frames at all for the remaining ~4.5 s.
+
+---
+
+## M8.2 — lazy mounting, and what it did to these numbers
+
+M8.2 changed what the harness measures in two places, both disclosed in the metric table above:
+`deckOpenMs`/`deckPublishMs` now wait for every **mounted** rail frame rather than one frame per
+slide, because the rail only mounts frames inside its scroll window; and a canvas frame is created
+only once its URL exists, so a switch's first `load` is the slide's (a bare `<iframe>` fires `load`
+for `about:blank` first, which made a switch look like 6 ms in an early run).
+
+### Before / after, 100-slide deck, `proc-pss-sum`, 3 runs each
+
+| Metric                        | M8.1 baseline |  M8.2 (shipped) | Note                          |
+| ----------------------------- | ------------: | --------------: | ----------------------------- |
+| Electron processes (median)   |           105 |           **6** | peak 106 → 6                  |
+| Median PSS during the session |       1680 MB |      **527 MB** | p95 1903 → 624                |
+| Idle PSS (starter deck)       |        460 MB |          442 MB | unchanged — see "the floor"   |
+| Deck open (`deckOpenMs`)      |       1943 ms |          500 ms | definition changed, see above |
+| Slide switch (median / p95)   |   61 / 288 ms | **38 / 210 ms** | timing; contended host        |
+| Cold start                    |       1158 ms |         1083 ms | timing; contended host        |
+
+Both runs were taken on a contended host (median 1-minute load 5.7 for the M8.2 run, 9.8
+for the baseline, on 16 cores), so the timing rows are indicative only; the process and PSS rows
+reproduce within a few percent under load (see "Contention" above) and are the claim.
+
+### The three URL shapes that were measured
+
+All three runs use the same lazy mounting; only `slideDocumentUrl` differs. Taken with the harness at
+`0c3bc6d`, before the M8.1 round-1 fix — that fix changed how the harness fails and what it reports
+per process type, not how it counts processes or sums PSS.
+
+| URL shape                       | Processes (median / peak) | PSS median | Switch median / p95 | Long shell frames |
+| ------------------------------- | ------------------------: | ---------: | ------------------: | ----------------: |
+| `slide://<id>/` (per document)  |                   14 / 26 |     640 MB |         54 / 268 ms |                53 |
+| `slide://slides/<id>/` (one)    |                     5 / 5 |     583 MB |   **360 / 1691 ms** |               125 |
+| `slide://<surface>/<id>/` (two) |                     6 / 6 |     551 MB |         40 / 135 ms |                83 |
+
+One host for everything is the smallest and the slowest: the canvas frame, its two pre-warmed
+neighbours and every visible thumbnail — a dozen animating documents — share one renderer main
+thread, so a cold switch's parse queues behind them. Per-surface hosts (`slides` for the stage,
+Present and export; `thumbnails` for the rail) cost one more process and keep the thumbnails' work
+off the stage's thread. That is what shipped. Containment for the shipped hosts is demonstrated by
+`pnpm perf:isolation` — see below.
+
+### Scaling after M8.2
+
+| Slides | Processes (median / peak) | Median PSS | Idle PSS | Deck open | Slide switch (median) | Host load |
+| -----: | ------------------------: | ---------: | -------: | --------: | --------------------: | --------: |
+|    100 |                     6 / 6 |     527 MB |   442 MB |    500 ms |                    38 |       5.7 |
+|    500 |                     6 / 6 |     594 MB |   447 MB |    480 ms |                    83 |      16.7 |
+|   1000 |                     6 / 6 |     662 MB |   446 MB |    525 ms |                    46 |       8.8 |
+
+The 500- and 1000-slide tiers, which could not be opened at all before (M8.1 watched `MemAvailable`
+hit 0 and 2 GB of swap fill), now open in about half a second and produce reports. Process count is
+flat at 6 from 3 slides to 1000; PSS grows with the deck only through the store's serialized source
+and main's registry entries for the mounted documents.
+
+### The floor, and what the 200 MB budget is made of
+
+Idle on the 3-slide starter deck, measured per process from `/proc/<pid>/smaps_rollup` six seconds
+after launch on a quiet machine (the harness's own idle window starts at 0.6 s and reads ~445 MB
+while the app is still settling):
+
+| Process                      |        PSS |
+| ---------------------------- | ---------: |
+| Browser (main)               |     117 MB |
+| GPU                          |     162 MB |
+| Utility (network service)    |      24 MB |
+| Tab — the app's renderer     |      50 MB |
+| Tab — sandboxed `slides`     |      24 MB |
+| Tab — sandboxed `thumbnails` |      26 MB |
+| **Total**                    | **403 MB** |
+
+353 MB of that exists before a single slide document does. The two slide processes hold all five
+of the starter deck's documents for ~50 MB together. Under a 100-slide deck the session median
+sits ~100–150 MB above idle, which is the ~13 mounted documents (3 on the stage, ~10 thumbnails)
+plus the deck's source in the renderer store and main's registry — roughly 1 MB per slide of
+serialized HTML for the stress decks, and nothing per slide beyond that. The 200 MB median is
+therefore no longer a question of deck size or of anything M8.2 could reach; it is Electron's fixed
+multi-process baseline (the GPU process alone is 80 % of the budget). Whether that is M8.6's
+startup/process audit or a budget revision is the next decision, and this report is the input to
+it.
+
+### `pnpm perf:isolation`
+
+The URL change is safe only if nothing that keeps slides apart lived in the per-document host. This
+probe launches the built app, pushes a three-slide deck whose slides are probes, and from inside each
+running slide reaches for the host (`parent.document`, `top.document`, `parent.sloodge`), every
+sibling frame (its `document`, `localStorage`, and navigating it), its own storage (`localStorage`,
+`sessionStorage`, `indexedDB`, `document.cookie`) and the network (`fetch` of its own URL). Each
+slide reports over `parent.postMessage`, and the page records `event.origin` and which iframe
+`event.source` is. It exits non-zero if any reach succeeds. Results for the shipped hosts are in
+`perf/results/isolation-m82.json` (110 of 110 denied, `event.origin === "null"` throughout, 6
+processes for 5 mounted frames on 2 hosts); the per-document and single-host variants are in
+`isolation-variant-per-document-host.json` and `isolation-variant-single-host.json` for comparison —
+same 110 of 110, at 9 and 5 processes. (The two variants' `perf:run` reports were taken on the
+pre-round-1 harness and are not committed; their numbers are the table above.)

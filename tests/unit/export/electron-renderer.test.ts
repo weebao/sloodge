@@ -69,7 +69,8 @@ vi.mock('electron', () => ({ BrowserWindow: mocks.FakeWindow }))
 
 const { createOffscreenPdfRenderer } = await import('../../../src/main/export/electron-renderer')
 const { SlideRegistry } = await import('../../../src/main/slide/registry')
-const { slideDocumentUrl, isSlideDocumentId } = await import('../../../src/shared/slide-protocol')
+const { slideDocumentUrl, slideDocumentIdFromUrl, isSlideDocumentId } =
+  await import('../../../src/shared/slide-protocol')
 
 afterEach(() => {
   mocks.instances.length = 0
@@ -145,7 +146,7 @@ describe('createOffscreenPdfRenderer', () => {
     const win = mocks.instances[0]!
     const loadedUrl = win.webContents.loadURL.mock.calls[0]?.[0] as string
     expect(loadedUrl.startsWith('slide://')).toBe(true)
-    const id = new URL(loadedUrl).hostname
+    const id = slideDocumentIdFromUrl(loadedUrl) ?? ''
     expect(isSlideDocumentId(id)).toBe(true)
     expect(loadedUrl).toBe(slideDocumentUrl(id))
 

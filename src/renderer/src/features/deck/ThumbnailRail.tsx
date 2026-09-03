@@ -10,8 +10,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from 'react'
-import { SlideFrame } from '../canvas/SlideFrame'
-import { fitSlide, SLIDE_SIZE } from '../canvas/slideFit'
 import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
 import {
@@ -19,23 +17,8 @@ import {
   type MenuCloseReason,
   type SlideContextMenuItem,
 } from './SlideContextMenu'
-
-/**
- * Thumbnail width in CSS px, and with it the mini-frame's scale.
- *
- * A constant, not a measurement: the rail is a fixed 188px column (`w-[188px]`) minus its 12px
- * gutters, the 12px slide-number column and the 8px gap. Every card is therefore the same known
- * width, and hard-coding it avoids a `ResizeObserver` per thumbnail — the one place in this
- * milestone where per-slide cost multiplies by deck length.
- */
-export const THUMBNAIL_WIDTH = 144
-
-/** The card is exactly 16:9, so the fit is width-bound; going through `fitSlide` keeps the one
- *  scaling rule in one place rather than open-coding a division here. */
-const THUMBNAIL_FIT = fitSlide({
-  width: THUMBNAIL_WIDTH,
-  height: (THUMBNAIL_WIDTH * SLIDE_SIZE.height) / SLIDE_SIZE.width,
-})
+import { THUMBNAIL_LIVE_MARGIN, THUMBNAIL_WIDTH, ThumbnailPreview } from './ThumbnailPreview'
+import { createVisibilityTracker, type VisibilityTracker } from './visibilityTracker'
 
 /** Hoisted: the width is a constant, so the style object is one allocation for the whole rail. */
 const THUMBNAIL_BOX_STYLE = { width: `${String(THUMBNAIL_WIDTH)}px` } as const
@@ -52,6 +35,8 @@ type ThumbnailCardProps = {
   selected: boolean
   dragging: boolean
   dropEdge: DropEdge | null
+  /** The rail's shared scroll-visibility observer; decides whether this card's miniature is live. */
+  visibility: VisibilityTracker | null
   onSelect: (id: SlideId) => void
   onOpenMenu: (id: SlideId, x: number, y: number) => void
   onDragStartCard: (index: number) => void
@@ -74,6 +59,7 @@ const ThumbnailCard = memo(function ThumbnailCard({
   selected,
   dragging,
   dropEdge,
+  visibility,
   onSelect,
   onOpenMenu,
   onDragStartCard,
@@ -183,15 +169,7 @@ const ThumbnailCard = memo(function ThumbnailCard({
           }`}
           style={THUMBNAIL_BOX_STYLE}
         >
-          {/* `interactive={false}`: the mini-render is a picture of the slide, so pointer events
-              pass through to the button and the frame stays out of the tab order — otherwise an
-              interactive slide would eat the click that is supposed to select it. */}
-          <SlideFrame
-            html={slide.html}
-            title={slide.title}
-            scale={THUMBNAIL_FIT.scale}
-            interactive={false}
-          />
+          <ThumbnailPreview slide={slide} visibility={visibility} />
         </span>
         <span className="sr-only">
           Slide {number} thumbnail: {slide.title}
@@ -226,10 +204,11 @@ type MenuState = { slideId: SlideId; x: number; y: number }
  * lands at the front. It is also the difference between a reorder that can be tested with a
  * synthetic drag event and one that needs a real layout engine to mean anything.
  *
- * Every slide in the deck is a mounted frame. That is the naive shape on purpose — correctness
- * first, and a 20-slide deck is 20 static documents. Virtualizing to the visible window (and
- * swapping settled frames for captured bitmaps) is M8.3, where there is a perf budget to measure
- * against.
+ * Every slide has a card in the DOM, but only the cards inside the scroll window hold a live frame
+ * (M8.2): one `IntersectionObserver` rooted at the scroller tells each `ThumbnailPreview` whether it
+ * is on screen, and the rest are placeholders. So the rail's document count is a function of its
+ * height, not of the deck's length. Virtualizing the *cards* too, and swapping settled frames for
+ * cached bitmaps, is M8.3.
  */
 export function ThumbnailRail({
   slides,
@@ -245,6 +224,21 @@ export function ThumbnailRail({
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const railRef = useRef<HTMLElement | null>(null)
   const restoreFocus = useRef(false)
+
+  // The scroller is state rather than a ref because the tracker needs the element and the cards
+  // need the tracker — both arrive after the first commit, and only a state change re-renders the
+  // cards with it. Created in an effect so StrictMode's double render cannot leak an observer.
+  const [scroller, setScroller] = useState<HTMLOListElement | null>(null)
+  const [visibility, setVisibility] = useState<VisibilityTracker | null>(null)
+  useEffect(() => {
+    if (scroller === null) return undefined
+    const tracker = createVisibilityTracker(scroller, THUMBNAIL_LIVE_MARGIN)
+    setVisibility(tracker)
+    return () => {
+      tracker.disconnect()
+      setVisibility(null)
+    }
+  }, [scroller])
 
   const closeMenu = useCallback((reason: MenuCloseReason) => {
     // Only when the user finished *with the menu*. On an outside press they are already somewhere
@@ -342,7 +336,7 @@ export function ThumbnailRail({
         Slides
       </h2>
 
-      <ol className="flex-1 space-y-1 overflow-y-auto px-3 pb-2">
+      <ol ref={setScroller} className="flex-1 space-y-1 overflow-y-auto px-3 pb-2">
         {slides.map((slide, index) => (
           <ThumbnailCard
             key={slide.id}
@@ -351,6 +345,7 @@ export function ThumbnailRail({
             slide={slide}
             selected={slide.id === currentSlideId}
             dragging={dragIndex === index}
+            visibility={visibility}
             dropEdge={
               dragIndex === null || overIndex !== index || dragIndex === index
                 ? null

@@ -8,13 +8,15 @@ import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
 import { useElementInspect } from '../design/useElementInspect'
-import { SlideFrame } from './SlideFrame'
+import { SlideStage } from './SlideStage'
 import { fitSlide } from './slideFit'
 import { useElementSize } from './useElementSize'
 
 export type SlideCanvasProps = {
-  /** The selected slide, or `null` for a deck with no slides. */
-  slide: SlideView | null
+  /** The deck in presentation order. */
+  slides: readonly SlideView[]
+  /** The selected slide's index, or `-1` for a deck with no selection. */
+  currentIndex: number
 }
 
 /**
@@ -24,10 +26,15 @@ export type SlideCanvasProps = {
  * is a 1280px layout, so upscaling it interpolates text that a presenter will read at native size
  * anyway, and it would make the editing canvas disagree with the exported pixels.
  *
+ * The frame itself is one of the `SlideStage`'s: the selected slide visible, its ±1 neighbours
+ * mounted but hidden so a step either way is instant (M8.2). The overlay, the bridge and the
+ * property panel all bind to the *active* frame through `frameRef`, which the stage re-points as the
+ * selection moves.
+ *
  * ## Design Mode delivery
  *
- * With Design Mode on, the frame receives the **instrumented** document — the same source with a
- * `data-sl-id` on every addressable element (`instrument`) plus the in-frame agent script
+ * With Design Mode on, the active frame receives the **instrumented** document — the same source
+ * with a `data-sl-id` on every addressable element (`instrument`) plus the in-frame agent script
  * (`injectDesignBridge`) — instead of the raw slide. Both are render artifacts that never reach disk
  * (§1.1). The selection overlay is laid over the frame and swallows pointer events so the slide's own
  * handlers stay frozen while selecting (§2.1). Turning Design Mode off swaps the raw document back
@@ -36,12 +43,13 @@ export type SlideCanvasProps = {
  * The instrumented HTML is memoized on `(id, html)` so toggling zoom never re-parses; a new URL only
  * mints when the bytes actually change (see `useSlideUrl`).
  */
-export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
+export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Element {
   const [matRef, mat] = useElementSize<HTMLDivElement>()
   const fit = useMemo(() => fitSlide(mat, { maxScale: 1 }), [mat])
   const designEnabled = useDesignStore((state) => state.enabled)
   const frameRef = useRef<HTMLIFrameElement>(null)
 
+  const slide = slides[currentIndex] ?? null
   const designModeActive = designEnabled && slide !== null
 
   // The computed-styles bridge client, shared with the property panel's "Ask Claude about this
@@ -54,9 +62,8 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
   })
 
   // Only pay for the parse + instrument + inject while Design Mode is on for this slide.
-  const html = useMemo(() => {
-    if (slide === null) return ''
-    if (!designEnabled) return slide.html
+  const activeHtml = useMemo(() => {
+    if (slide === null || !designEnabled) return undefined
     const map = buildSlideMap(slide.id, slide.html)
     return injectDesignBridge(instrument(map))
   }, [slide, designEnabled])
@@ -78,10 +85,12 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
       >
         {slide ? (
           <div className="relative" style={stageStyle}>
-            <SlideFrame
-              html={html}
+            <SlideStage
+              slides={slides}
+              activeIndex={currentIndex}
+              activeHtml={activeHtml}
               frameRef={frameRef}
-              title={`Slide: ${slide.title}`}
+              titlePrefix="Slide"
               scale={fit.scale}
               // The slide must not receive pointer events while Design Mode's overlay is capturing
               // them — otherwise a click would reach both the overlay and the slide's own handlers.
@@ -89,7 +98,7 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
               // `outline` rather than `border`: an outline is painted outside the box without
               // joining the layout, so the framed slide stays exactly the scaled 16:9 rectangle
               // `fitSlide` computed instead of being two pixels wider than it.
-              className="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
+              frameClassName="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
             />
             {designModeActive ? (
               <>

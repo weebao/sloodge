@@ -425,9 +425,11 @@ Critically **`allow-same-origin` is omitted**, so the frame is an opaque origin:
 
 Content is delivered over a **URL** rather than `srcdoc` (a real navigation keeps the frame in its own
 opaque origin cleanly, gives DevTools a real document URL for Design Mode debugging, and avoids
-HTML-escaping the whole document into an attribute). As of M2.0 that URL is `slide://<id>/` under
+HTML-escaping the whole document into an attribute). As of M2.0 that URL is a `slide://` one under
 Electron and a blob URL in a plain-browser host; either way it is released when the slide unmounts or
-its html changes.
+its html changes. As of M8.2 the `slide://` URL is `slide://<surface>/<id>/` — the host names the
+*surface* (`slides` for the canvas stage, Present and export; `thumbnails` for the rail), not the
+document; see the M8.2 note below for why.
 
 > **Correction (M1.3, 2026-07-31) — blob does not escape CSP inheritance.**
 > This section was written on the assumption that a blob-loaded frame, unlike `srcdoc`, is governed
@@ -474,9 +476,9 @@ its html changes.
 >   smoke probe asserts containment from inside a *running* slide: `parent.document`,
 >   `parent.location`, `top.document`, `opener` and `parent.sloodge` are all unreachable and
 >   `localStorage` throws `SecurityError`. (Note that a sandboxed `slide://` frame nonetheless
->   reports `location.origin` as `slide://<id>`, not `"null"` — Chromium derives that string from the
->   URL for a `standard:` scheme even when the security origin is opaque. Cosmetic, but the reason
->   the id is the URL host rather than a path segment.)
+>   reports `location.origin` as `slide://<host>`, not `"null"` — Chromium derives that string from
+>   the URL for a `standard:` scheme even when the security origin is opaque. Cosmetic; through M8.1
+>   it was the reason the id was the URL host rather than a path segment.)
 > - The plain-browser fallback (evidence recorder, happy-dom unit tests) keeps blob delivery and
 >   therefore keeps the old limitation; the host gate is in
 >   `src/renderer/src/features/canvas/slideUrlFactory.ts`.
@@ -530,8 +532,41 @@ slide, distinct from the "agent" SDK — rename to `slide-runtime.ts` in code) i
 Mode's hit-testing and the build-step controller inside the frame. It never receives secrets and
 never gets a preload.
 
-**Thumbnails** use the same iframe recipe at CSS `transform: scale(0.15)` with
-`pointer-events: none`, virtualized so only visible thumbnails are live frames.
+**Thumbnails** use the same iframe recipe at CSS `transform: scale(0.1125)` with
+`pointer-events: none`; since M8.2 a thumbnail is a live frame only while its card is inside the
+rail's scroll window (`ThumbnailPreview`, one `IntersectionObserver` for the rail) and a titled
+placeholder otherwise. M8.3 replaces the placeholder with a cached bitmap and virtualizes the cards.
+
+> **M8.2 — lazy mounting, and the host is a process group, not an identity.** M8.1 measured the
+> shipped app at 105 Electron processes and 1725 MB median PSS for a 100-slide deck, ~450 MB idle
+> on the 3-slide starter deck, and unable to open 500 slides at all. Two causes, both structural:
+> every slide was mounted at once (the rail held a live frame per slide), and every slide was its
+> own `slide://<id>` **site**, so Chromium's site-per-process model (and `IsolateSandboxedIframes`,
+> which groups sandboxed frames per site) gave each one a renderer process at ~11–14 MB PSS.
+>
+> M8.2 changes both. The canvas and Present render through `SlideStage`, which mounts the active
+> slide and its ±1 neighbours (hidden, `inert`, pre-warmed *after* the active frame has loaded) and
+> nothing else; the rail mounts a frame only for cards in its scroll window. And the URL became
+> `slide://<surface>/<id>/`. Three shapes were measured with the M8.1 harness on the 100-slide deck
+> (all with lazy mounting): the original per-document host — 14 processes (26 peak while the rail
+> scrolls), 640 MB, 54 ms median switch; **one host for everything** — 5 processes, 583 MB, but a
+> **360 ms median / 1.7 s p95 switch**, because a dozen animating documents (stage + thumbnails)
+> then share one main thread and a cold slide's parse queues behind them; and **one host per
+> surface** (`slides` / `thumbnails`), which keeps the thumbnails' work off the stage's thread. The
+> last is what shipped; its numbers are in `perf/README.md`.
+>
+> None of the properties in this section depended on the per-document host, and
+> `pnpm perf:isolation` (`perf/cli/isolation-probe.ts`) now demonstrates that in the real app for
+> the shipped hosts: from inside running slides, `parent.document`, `top.document`,
+> `parent.sloodge`, every sibling frame's `document`/`localStorage`/navigation, the slide's own
+> `localStorage`/`sessionStorage`/`indexedDB`/`document.cookie`, and `fetch` of its own URL are all
+> denied (110 of 110 reaches), the host sees `event.origin === "null"` for every message, and
+> `event.source` still resolves each message to exactly one iframe. Two lesser things the unique
+> host did provide are given up knowingly: a second line of defence against the `sandbox` attribute
+> ever being lost (it is pinned by two tests, and `frame-src 'none'` means no slide can frame a
+> sibling to exploit it), and process-level isolation between *slides* — slide-to-app isolation is
+> unchanged. If M4.7's separate-window Present ever wants per-slide fault isolation back, a host
+> per slide *for that surface only* is a one-line change in `slideDocumentUrl`.
 
 **Present mode** promotes the active slide to a `WebContentsView` (§8) for process-level fault
 isolation — a slide that hangs its JS must not freeze the app during a talk.

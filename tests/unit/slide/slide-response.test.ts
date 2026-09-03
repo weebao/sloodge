@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { SlideRegistry } from '../../../src/main/slide/registry'
 import { resolveSlideRequest, slideResponseHeaders } from '../../../src/main/slide/slideResponse'
-import { SLIDE_CSP, slideDocumentUrl } from '../../../src/shared/slide-protocol'
+import {
+  SLIDE_CSP,
+  SLIDE_STAGE_HOST,
+  SLIDE_THUMBNAIL_HOST,
+  slideDocumentIdFromUrl,
+  slideDocumentUrl,
+} from '../../../src/shared/slide-protocol'
 
 function published(html: string): { registry: SlideRegistry; url: string } {
   const registry = new SlideRegistry()
@@ -63,7 +69,7 @@ describe('resolveSlideRequest', () => {
   it('404s an id after it is revoked', () => {
     const html = '<html>gone</html>'
     const { registry, url } = published(html)
-    const id = new URL(url).hostname
+    const id = slideDocumentIdFromUrl(url)
 
     expect(resolveSlideRequest(registry, { url }).status).toBe(200)
     registry.revoke(id)
@@ -112,18 +118,19 @@ describe('resolveSlideRequest', () => {
   })
 
   /**
-   * `slide://<id>/x/../` normalizes to `slide://<id>/` in the URL parser, before this function sees
-   * a pathname — so it serves the document, and that is correct rather than a bypass: the id is the
-   * *host*, and the host is unchanged. Pinned because "a traversal resolved to content" reads like
-   * a finding until you notice that there is only ever one document per host and no filesystem
-   * underneath. Comparing `request.url` as a raw string instead would have been the real bug.
+   * `slide://slides/<id>/x/../` normalizes to `slide://slides/<id>/` in the URL parser, before this
+   * function sees a pathname — so it serves the document, and that is correct rather than a bypass:
+   * it is the same resource, and there is no filesystem underneath for a `..` to climb. Pinned
+   * because "a traversal resolved to content" reads like a finding until you notice that the only
+   * thing a path can resolve *to* is a registry key. Comparing `request.url` as a raw string
+   * instead would have been the real bug.
    */
-  it('serves the document for a path that normalizes back to the root', () => {
+  it('serves the document for a path that normalizes back to the document', () => {
     const { registry, url } = published('<html>secret</html>')
     const response = resolveSlideRequest(registry, { url: `${url}x/../` })
 
     expect(response.status).toBe(200)
-    expect(new URL(`${url}x/../`).pathname).toBe('/')
+    expect(new URL(`${url}x/../`).pathname).toBe(new URL(url).pathname)
   })
 
   it.each(['POST', 'PUT', 'DELETE', 'HEAD'])('refuses %s with a 405', (method) => {
@@ -139,21 +146,36 @@ describe('resolveSlideRequest', () => {
     expect(resolveSlideRequest(registry, { url: 'not a url' }).status).toBe(400)
   })
 
-  // Node's URL leaves `slide://<id>` with an empty pathname (non-special scheme), while Chromium
-  // canonicalizes the trailing slash in before `protocol.handle` sees it. Unreachable in
-  // production, but a host-only URL must not 404 in a way indistinguishable from a registry miss.
-  it('serves the document for the host-only url form', () => {
-    const { registry, url } = published('<html>x</html>')
-    const hostOnly = url.replace(/\/$/, '')
+  // The accepted path is exactly `/<id>/`. The id without its slash, the host alone, and the
+  // pre-M8.2 id-as-host form are all 404s, so there is one legal spelling of every document.
+  it.each([
+    ['the id without its trailing slash', (url: string) => url.replace(/\/$/, '')],
+    ['the host alone', () => `slide://${SLIDE_STAGE_HOST}/`],
+    ['an unknown host', (url: string) => url.replace(`//${SLIDE_STAGE_HOST}/`, '//elsewhere/')],
+    ['the id as the host', (url: string) => `slide://${slideDocumentIdFromUrl(url) ?? ''}/`],
+  ])('404s %s', (_label, mangle) => {
+    const { registry, url } = published('<html>secret</html>')
+    const response = resolveSlideRequest(registry, { url: mangle(url) })
 
-    expect(new URL(hostOnly).pathname).toBe('')
-    expect(resolveSlideRequest(registry, { url: hostOnly }).status).toBe(200)
+    expect(response.status).toBe(404)
+    expect(response.body).not.toContain('secret')
   })
 
-  it('404s a url on another scheme even when the host is a valid id', () => {
-    const { registry, url } = published('<html>secret</html>')
-    const id = new URL(url).hostname
+  // The same document is reachable on every surface host; the host chooses a process, not a key.
+  it('serves the document on the thumbnails host too', () => {
+    const { registry, url } = published('<html>mini</html>')
+    const id = slideDocumentIdFromUrl(url) ?? ''
+    const response = resolveSlideRequest(registry, {
+      url: slideDocumentUrl(id, SLIDE_THUMBNAIL_HOST),
+    })
 
-    expect(resolveSlideRequest(registry, { url: `http://${id}/` }).status).toBe(404)
+    expect(response.status).toBe(200)
+    expect(response.body).toBe('<html>mini</html>')
+  })
+
+  it('404s a url on another scheme even with the same host and path', () => {
+    const { registry, url } = published('<html>secret</html>')
+
+    expect(resolveSlideRequest(registry, { url: url.replace(/^slide:/, 'http:') }).status).toBe(404)
   })
 })
