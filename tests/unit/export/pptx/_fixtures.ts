@@ -3,7 +3,13 @@ import type {
   MeasureResult,
   NodeStyle,
   SlideNode,
+  TransformSpec,
 } from '../../../../src/shared/export/pptx/node'
+
+/** A transformed ancestor carrying only a computed `transform` matrix — the common case. */
+export function ancestorMatrix(transform: string): TransformSpec {
+  return { transform, rotate: 'none', scale: 'none', translate: 'none' }
+}
 
 const NO_BORDER: BorderSide = { width: '0px', style: 'none', color: 'rgb(0, 0, 0)' }
 
@@ -43,10 +49,14 @@ export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
     backdropFilter: 'none',
     mixBlendMode: 'normal',
     transform: 'none',
+    rotate: 'none',
+    scale: 'none',
+    translate: 'none',
     clipPath: 'none',
     writingMode: 'horizontal-tb',
     overflow: 'visible',
     position: 'static',
+    listStyleType: 'disc',
     ...overrides,
   }
 }
@@ -72,6 +82,7 @@ export function makeNode(
     href: null,
     listType: null,
     svgPrimitiveCount: 0,
+    inSvg: false,
     src: null,
     layoutW: 100,
     layoutH: 50,
@@ -80,6 +91,8 @@ export function makeNode(
     effectiveOpacity: 1,
     paintedPseudoCount: 0,
     escapingDescendants: 0,
+    clippedTextPx: 0,
+    unmodelledProperties: [],
     style: makeStyle(style),
     ...rest,
   }

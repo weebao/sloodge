@@ -1,10 +1,11 @@
 /**
  * The confidence scorer and per-slide tier decision (M4.3 / 60-export.md §3.4). Pure and
  * table-driven, so every signal's deduction and every cap are asserted by unit tests. The raster
- * threshold is pinned by two fixtures whose *computed* scores straddle it — one at 72 (must stay
- * structured) and one at 63 (must route to raster) — so moving the threshold to 90 reds the first and
+ * threshold is pinned by two fixtures whose *computed* scores straddle it — one at 71 (must stay
+ * structured) and one at 68 (must route to raster) — so moving the threshold to 90 reds the first and
  * to 60 reds the second (`confidence.test.ts`), rather than the self-referential check a
- * threshold-vs-constant assertion would give.
+ * threshold-vs-constant assertion would give. `assess.ts`'s `BOX_TOLERANCE_PCT` is pinned the same
+ * way, by two computed deviations that straddle it (`fidelity-assess.test.ts`).
  *
  * The score starts at 100 and loses points for features PowerPoint cannot represent. It is computed
  * from the measurement pass alone — no rendering comparison at decision time. Separately, a small set
@@ -25,9 +26,19 @@
  *   threshold on its own so `auto` ships an honest picture.
  *
  * `confidence.test.ts` asserts every weight against its floor; softening one reds a test.
+ *
+ * ## The world is closed (M4.8a; review r2)
+ *
+ * Every signal above is a named construct somebody thought to add — a deny-list, which two review
+ * rounds showed cannot converge: whatever is not on it scores 100. `unmodelledProperty` inverts the
+ * default. The measurement pass censuses every computed longhand against `properties.ts`'s explicit
+ * modelled set, and a property in neither set costs a WRONG-class deduction *and is named in the
+ * reasons*. A slide reaches the structured tier only when the pipeline can account for everything
+ * the oracle can see; an unfamiliar property fails toward an honest picture.
  */
 
-import type { MeasureResult, SlideNode } from './node'
+import type { MeasureResult, SlideNode, TransformSpec } from './node'
+import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../types'
 import type { SlideTier } from './types'
 
 /** At or above this score, an `auto` slide is converted structurally; below it, rasterized. */
@@ -47,6 +58,11 @@ export const SCORE_WEIGHTS = {
    * A gradient/`url()` background on an element (not the body): the pure walk has no pixels for it
    * and emits no shape, so text that sat on the panel lands on the slide colour. Wrong, not plainer —
    * until M4.8c captures the region.
+   *
+   * The weight is the **ceiling** of an area-scaled deduction, not a flat charge (review r2). Flat,
+   * it fired identically for a full-bleed panel and for a 120×40 decorative pill, so one pill
+   * rasterized a slide whose title and three paragraphs were perfectly editable. See
+   * `elementImageDeduction`.
    */
   elementImageBackground: 35,
   insetShadowEach: 12,
@@ -54,7 +70,12 @@ export const SCORE_WEIGHTS = {
   textShadow: 12,
   filter: 25,
   mixBlend: 20,
-  clipPath: 20,
+  /**
+   * A clipped element is not dropped, it is emitted as its full unclipped shape — PowerPoint gets a
+   * pink SQUARE where the reader sees a circle. That is wrong output, not plainer output, so it sits
+   * in `WRONG_CONSTRUCT_WEIGHTS` and crosses the raster threshold on its own (review r2).
+   */
+  clipPath: 35,
   /** Rotation and uniform scale are modelled (`rot`, scaled box and font size); still a reflow risk. */
   transformSimilarity: 5,
   /** Skew, flip, non-uniform scale, 3D: flattened to an upright axis-aligned box. Wrong. */
@@ -81,7 +102,46 @@ export const SCORE_WEIGHTS = {
   pseudoElement: 35,
   /** `overflow: hidden|clip` with a descendant outside the box: PowerPoint cannot clip it. */
   clippedOverflow: 35,
+  /**
+   * A leaf whose own text its own `overflow` cuts off — the `text-overflow: ellipsis` headline, the
+   * fixed-height tile showing three lines of six. PowerPoint has no clipping, so the *whole* string
+   * ships: the reader's truncated headline arrives at full length and the tile spills over the
+   * footer. A content difference visible on the Chromium side, not merely a reflow risk (review r2).
+   */
+  clippedText: 35,
+  /**
+   * The closed-world signal: a computed property set to a non-initial value that `properties.ts`
+   * claims neither to emit nor to score. Nobody knows what it does to the output, so the honest
+   * outcome is a picture — an unfamiliar property must fail toward raster, never toward a confident
+   * 100. Promoting one out of this bucket is a deliberate edit to `MODELLED_PROPERTIES`.
+   */
+  unmodelledProperty: 35,
 } as const
+
+/**
+ * The share of the slide a gradient must cover for `elementImageBackground` to reach its ceiling.
+ * Below it the deduction scales linearly from `DROPPED_CONSTRUCT_FLOOR`, so a decorative pill costs
+ * a few points and a hero panel rasterizes. `WRONG_CONSTRUCT_FLOOR` is crossed at ~8.3 % of the
+ * slide — about 350×220 px, a panel rather than a badge.
+ */
+export const ELEMENT_IMAGE_SATURATION_FRACTION = 0.1
+
+/** Below this many clipped pixels, a leaf's `scrollHeight` excess is line-box rounding, not truncation. */
+export const CLIPPED_TEXT_MIN_PX = 2
+
+const SLIDE_AREA_PX = SLIDE_WIDTH_PX * SLIDE_HEIGHT_PX
+
+/**
+ * The deduction for element gradient/image backgrounds covering `area` px² in total. Area-aware
+ * because `coveredFraction` already knew 97.5 % of a pill-decorated slide was representable while a
+ * flat 35 rasterized it anyway (review r2).
+ */
+export function elementImageDeduction(area: number): number {
+  if (area <= 0) return 0
+  const reach = Math.min(1, area / SLIDE_AREA_PX / ELEMENT_IMAGE_SATURATION_FRACTION)
+  const span = SCORE_WEIGHTS.elementImageBackground - DROPPED_CONSTRUCT_FLOOR
+  return Math.round(DROPPED_CONSTRUCT_FLOOR + span * reach)
+}
 
 /** Weights whose construct is merely absent from the output. Each must be ≥ `DROPPED_CONSTRUCT_FLOOR`. */
 export const DROPPED_CONSTRUCT_WEIGHTS = [
@@ -89,7 +149,6 @@ export const DROPPED_CONSTRUCT_WEIGHTS = [
   'textShadow',
   'filter',
   'mixBlend',
-  'clipPath',
   'svgEach',
   'imageEach',
   'canvas',
@@ -98,10 +157,13 @@ export const DROPPED_CONSTRUCT_WEIGHTS = [
 /** Weights whose construct would render wrong. Each must be ≥ `WRONG_CONSTRUCT_FLOOR`. */
 export const WRONG_CONSTRUCT_WEIGHTS = [
   'elementImageBackground',
+  'clipPath',
   'transformOther',
   'bareText',
   'pseudoElement',
   'clippedOverflow',
+  'clippedText',
+  'unmodelledProperty',
 ] as const satisfies readonly (keyof typeof SCORE_WEIGHTS)[]
 
 /** The result of scoring one slide. `hardBlocker` non-null forces raster whatever the score. */
@@ -162,10 +224,18 @@ export type TransformDecomposition =
   { kind: 'identity' } | { kind: 'similarity'; deg: number; scale: number } | { kind: 'other' }
 
 /**
- * Chromium serializes matrices to six decimals, so a real `rotate(28deg)` arrives as
- * `matrix(0.882948, 0.469472, -0.469472, 0.882948, 0, 0)` with a² + b² = 1.0000011. A 1e-6 tolerance
- * called that `other` and shipped the element upright in an axis-aligned box (review r1). 1e-4 admits
- * the rounding with two orders of margin and still rejects any authored skew or non-uniform scale.
+ * The slack on "is this matrix a rotation times a uniform scale", tested as `a = d` and `b = −c`.
+ *
+ * Chromium's own rotations never need it: it writes `a` and `d` from the same rounded cosine and
+ * `b`/`c` from the same rounded sine, so `|a − d|` and `|b + c|` are **exactly** 0 across a full turn
+ * (verified over a 3601-step sweep, and pinned below). The tolerance exists for a hand-authored
+ * `matrix()` whose values were typed to fewer digits; 1e-4 corresponds to a skew of 0.006°, far below
+ * anything visible, and still rejects any real skew or non-uniform scale.
+ *
+ * What review r1 actually hit was a different test entirely — an orthonormality check, `|a² + b² − 1|
+ * < 1e-6`, which a serialized `rotate(28deg)` fails at 1.1e-6. Modelling the scale removed that check
+ * rather than loosening it: a matrix is a similarity because `a = d` and `b = −c`, whatever its
+ * magnitude.
  */
 export const MATRIX_TOLERANCE = 1e-4
 /** Below this, a decomposed angle is layout noise, not a rotation. */
@@ -188,6 +258,73 @@ export function decomposeTransform(transform: string): TransformDecomposition {
   const scale = Math.hypot(a, b)
   if (scale < MATRIX_TOLERANCE) return OTHER
   const deg = (Math.atan2(b, a) * 180) / Math.PI
+  if (Math.abs(deg) < ROTATION_EPSILON_DEG && Math.abs(scale - 1) < MATRIX_TOLERANCE)
+    return IDENTITY
+  return { kind: 'similarity', deg, scale }
+}
+
+/**
+ * CSS's standalone `rotate:`. `none` is identity; a bare `<angle>`, `z <angle>` or the `0 0 1
+ * <angle>` axis form is a plane rotation. Any other axis is a 3D rotation with no `rot` equivalent.
+ */
+function decomposeRotateProperty(value: string): TransformDecomposition {
+  const t = value.trim().toLowerCase()
+  if (t === '' || t === 'none') return IDENTITY
+  const m = /^(?:z\s+|0\s+0\s+1\s+)?(-?\d+(?:\.\d+)?)deg$/.exec(t)
+  if (m === null) return OTHER
+  const deg = parseFloat(m[1] ?? '')
+  if (!Number.isFinite(deg)) return OTHER
+  return Math.abs(deg) < ROTATION_EPSILON_DEG ? IDENTITY : { kind: 'similarity', deg, scale: 1 }
+}
+
+/**
+ * CSS's standalone `scale:`. Uniform in the plane is modelled (the box and font size multiply);
+ * anything anisotropic or mirrored has no single size to emit, exactly like `transform: scale(2, 1)`.
+ */
+function decomposeScaleProperty(value: string): TransformDecomposition {
+  const t = value.trim().toLowerCase()
+  if (t === '' || t === 'none') return IDENTITY
+  const parts = t.split(/\s+/).map((p) => parseFloat(p) * (p.endsWith('%') ? 0.01 : 1))
+  if (parts.length < 1 || parts.length > 3 || parts.some((n) => !Number.isFinite(n))) return OTHER
+  const [sx, sy = sx, sz = 1] = parts as [number, number?, number?]
+  if (
+    sx <= 0 ||
+    sy <= 0 ||
+    Math.abs(sx - sy) > MATRIX_TOLERANCE ||
+    Math.abs(sz - 1) > MATRIX_TOLERANCE
+  )
+    return OTHER
+  return Math.abs(sx - 1) < MATRIX_TOLERANCE ? IDENTITY : { kind: 'similarity', deg: 0, scale: sx }
+}
+
+/**
+ * Total rotation and uniform scale of one element's four transform properties, composed in the order
+ * CSS Transforms Level 2 mandates — `translate`, then `rotate`, then `scale`, then `transform`.
+ * (Similarities commute, so the order does not change the angle or the scale; it is followed anyway
+ * because the *classification* must be order-independent for the right reason, not by luck.)
+ *
+ * `translate` is always identity here: the measured `getBoundingClientRect` is post-transform, so a
+ * translation is already in the box the walker is handed.
+ *
+ * Reading `transform` alone reported `none` for an element rotated with the standalone `rotate:`
+ * property, which then shipped upright at `rot=0` in its axis-aligned bounding box — research
+ * §1.3(b) reached through the modern syntax (review r2).
+ */
+export function decomposeTransformSpec(spec: TransformSpec): TransformDecomposition {
+  let deg = 0
+  let scale = 1
+  const parts: TransformDecomposition[] = [
+    decomposeRotateProperty(spec.rotate),
+    decomposeScaleProperty(spec.scale),
+    decomposeTransform(spec.transform),
+  ]
+  for (const part of parts) {
+    if (part.kind === 'other') return OTHER
+    if (part.kind === 'similarity') {
+      deg += part.deg
+      scale *= part.scale
+    }
+  }
   if (Math.abs(deg) < ROTATION_EPSILON_DEG && Math.abs(scale - 1) < MATRIX_TOLERANCE)
     return IDENTITY
   return { kind: 'similarity', deg, scale }
@@ -237,12 +374,17 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
     else if (n.style.position === 'sticky') hardBlocker = 'position: sticky'
   }
 
-  // --- Element gradient/image backgrounds: no shape is emitted for them ---
-  const imageBackgrounds = nodes.filter((n) => paintsImage(n.style.backgroundImage)).length
-  if (imageBackgrounds > 0)
+  // --- Element gradient/image backgrounds: no shape is emitted for them, scaled by how much of
+  // the slide they cover, so a hero panel rasterizes and a decorative pill costs a few points ---
+  const gradients = nodes.filter((n) => paintsImage(n.style.backgroundImage))
+  const gradientArea = sum(gradients, (n) => Math.max(0, n.w) * Math.max(0, n.h))
+  if (gradients.length > 0)
     deduct(
-      SCORE_WEIGHTS.elementImageBackground,
-      `${String(imageBackgrounds)} element gradient/image background(s) — no shape emitted`,
+      elementImageDeduction(gradientArea),
+      `${String(gradients.length)} element gradient/image background(s) over ${(
+        (100 * gradientArea) /
+        SLIDE_AREA_PX
+      ).toFixed(1)}% of the slide — no shape emitted`,
     )
 
   // --- Inset shadows (outer ones are emitted as PowerPoint shadows) ---
@@ -269,8 +411,8 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
 
   // --- Transforms, own and inherited: rotation/uniform scale are modelled, the rest flatten ---
   const transforms = nodes
-    .flatMap((n) => [n.style.transform, ...n.ancestorTransforms])
-    .map(decomposeTransform)
+    .flatMap((n) => [n.style, ...n.ancestorTransforms])
+    .map(decomposeTransformSpec)
   if (transforms.some((t) => t.kind === 'other'))
     deduct(SCORE_WEIGHTS.transformOther, 'skew/flip/3D transform — flattened to an upright box')
   else if (transforms.some((t) => t.kind === 'similarity'))
@@ -341,6 +483,19 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
       SCORE_WEIGHTS.clippedOverflow,
       `${String(escaping)} element(s) clipped by overflow would spill out`,
     )
+
+  // --- Text a leaf's own overflow truncates: PowerPoint ships the whole string instead ---
+  const truncated = nodes.filter((n) => n.clippedTextPx >= CLIPPED_TEXT_MIN_PX)
+  if (truncated.length > 0)
+    deduct(
+      SCORE_WEIGHTS.clippedText,
+      `${String(truncated.length)} text box(es) truncated on screen would ship in full`,
+    )
+
+  // --- The closed world: any property nobody claims to emit or score (see `properties.ts`) ---
+  const unmodelled = [...new Set(nodes.flatMap((n) => n.unmodelledProperties))].toSorted()
+  if (unmodelled.length > 0)
+    deduct(SCORE_WEIGHTS.unmodelledProperty, `un-modelled CSS: ${unmodelled.join(', ')}`)
 
   return { score: Math.max(0, Math.min(100, score)), reasons, hardBlocker }
 }

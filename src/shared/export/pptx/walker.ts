@@ -21,7 +21,9 @@
  *
  * `getBoundingClientRect` returns the axis-aligned bounds of a transformed element, so placing a
  * rotated element at its measured rect gave a 90° label a 21 px-wide box and no `rot`. The walker
- * decomposes the total transform (own plus every transformed ancestor) into an angle and a uniform
+ * decomposes the total transform — all four of `transform`, `rotate`, `scale` and `translate`, own
+ * plus every transformed ancestor's, since the standalone properties do not fold into the computed
+ * `transform` (review r2) — into an angle and a uniform
  * scale and hands PowerPoint the **unrotated** box: the bounds of a rectangle rotated about its centre
  * are symmetric about that centre, so the centre is exact for any composition of rotations, scales and
  * translations, and the size is the layout box (`offsetWidth`/`offsetHeight`) times the scale rather
@@ -48,7 +50,7 @@
 import { boxToInches, pxToPoints } from './geometry'
 import { alphaToTransparency, parseCssColor } from './color'
 import {
-  decomposeTransform,
+  decomposeTransformSpec,
   firstFontFamily,
   paintsImage,
   ROTATION_EPSILON_DEG,
@@ -225,9 +227,13 @@ function toShadow(boxShadow: string, opacity: number): ShadowSpec | null {
       .map((n) => parseFloat(n))
     const alpha = color.alpha * opacity
     if (alpha < OPAQUE_ENOUGH) return null
+    // Chromium's serialization is always well-formed, but these four numbers are the only values
+    // that reach pptxgenjs without passing through `parseCssColor` or the clamped
+    // `alphaToTransparency`, so they are guarded like every other forwarded number.
+    if (![dx, dy, blur].every((n) => Number.isFinite(n))) return null
     return {
       color: color.hex,
-      blurPt: pxToPoints(blur),
+      blurPt: pxToPoints(Math.max(0, blur)),
       offsetPt: pxToPoints(Math.hypot(dx, dy)),
       angleDeg: ((((Math.atan2(dy, dx) * 180) / Math.PI) % 360) + 360) % 360,
       opacity: alpha,
@@ -268,8 +274,12 @@ function textRunFor(node: SlideNode, scale: number): TextRunSpec {
   const family = firstFontFamily(s.fontFamily)
   if (family !== '') run.fontFace = family
   if (s.fontSize > 0) run.fontSize = pxToPoints(s.fontSize * scale)
-  if (node.listType === 'ol') run.bullet = { type: 'number' }
-  else if (node.listType === 'ul') run.bullet = true
+  // `list-style: none` is how a chip/tag/nav row is built out of a `<ul>`; emitting a bullet there
+  // invents a glyph the reader never saw (review r2).
+  if (s.listStyleType !== 'none') {
+    if (node.listType === 'ol') run.bullet = { type: 'number' }
+    else if (node.listType === 'ul') run.bullet = true
+  }
   if (node.href !== null && node.href !== '') run.hyperlink = node.href
   return run
 }
@@ -290,8 +300,8 @@ function lineSpacingMultiple(lineHeight: string, fontSize: number): number | und
 function effectiveTransform(node: SlideNode): { deg: number; scale: number } | null {
   let deg = 0
   let scale = 1
-  for (const transform of [node.style.transform, ...node.ancestorTransforms]) {
-    const d = decomposeTransform(transform)
+  for (const spec of [node.style, ...node.ancestorTransforms]) {
+    const d = decomposeTransformSpec(spec)
     if (d.kind === 'other') return null
     if (d.kind === 'similarity') {
       deg += d.deg

@@ -30,18 +30,40 @@ export type TruthText = {
   fontWeight: string
   fontStyle: string
   textTransform: string
-  /** The parent element's own computed transform, or `'none'`. */
+  /** The parent element's own four transform properties, as computed. */
   transform: string
+  rotate: string
+  scale: string
+  translate: string
   /** True when this text node or an ancestor carries a non-identity transform. */
   transformed: boolean
+  /**
+   * The parent element's axis-aligned bounds and its untransformed layout box. When these disagree
+   * the element is rotated or scaled by *something*; the oracle never asks by what, which is what
+   * stops it sharing the exporter's blindness. An element shipped at its bounds with `rot=0` is the
+   * exact signature of research §1.3(b), whether the angle came from a `transform` matrix or from
+   * the standalone `rotate:` property (review r2).
+   */
+  hostW: number
+  hostH: number
+  hostLayoutW: number
+  hostLayoutH: number
+  /**
+   * True when a clipping ancestor cuts this text off — the `text-overflow: ellipsis` headline, the
+   * fixed-height tile showing three lines of six. PowerPoint cannot clip, so the exporter ships the
+   * whole string and it overflows (review r2).
+   */
+  clipped: boolean
+  /** True when the reader sees a list marker beside this text (`list-style-type` is not `none`). */
+  bulleted: boolean
   /** Own `opacity` times every ancestor's — the alpha these glyphs actually paint at. */
   opacity: number
   /**
-   * Uniform scale the transform chain applies, as √|det| of each 2D matrix. Glyphs render at
-   * `fontSizePx * scale`, which is what the exporter must emit; `matrix3d` counts as 1 (it is
-   * un-modelled and scored as such).
+   * Uniform scale the transform chain applies, as √|det| of each 2D matrix times each standalone
+   * `scale:` property. Glyphs render at `fontSizePx * renderedScale`, which is what the exporter
+   * must emit; `matrix3d` counts as 1 (it is un-modelled and scored as such).
    */
-  scale: number
+  renderedScale: number
 }
 
 export type TruthBox = {
@@ -57,6 +79,12 @@ export type TruthBox = {
   borderPx: number
   borderColor: string | null
   transform: string
+  rotate: string
+  scale: string
+  translate: string
+  /** The untransformed layout box, against `w`/`h`'s bounds; see `TruthText.hostLayoutW`. */
+  layoutW: number
+  layoutH: number
   /** Own `opacity` times every ancestor's — the alpha this box actually paints at. */
   opacity: number
 }
@@ -91,11 +119,42 @@ export function groundTruthScript(): string {
     const p = m[1].split(/[,/\\s]+/).filter(Boolean).map(parseFloat);
     return p.length > 3 ? p[3] : 1;
   };
+  const spec = (cs) => ({ transform: cs.transform, rotate: cs.rotate || 'none', scale: cs.scale || 'none', translate: cs.translate || 'none' });
+  const isTransformed = (t) => t.transform !== 'none' || t.rotate !== 'none' || t.scale !== 'none' || t.translate !== 'none';
   const transformedAncestor = (el) => {
     for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
-      if (getComputedStyle(p).transform !== 'none') return true;
+      if (isTransformed(spec(getComputedStyle(p)))) return true;
     }
     return false;
+  };
+  // Bounds vs layout box, measured rather than parsed. \`getBoundingClientRect\` is the axis-aligned
+  // footprint AFTER the transform; \`offsetWidth\`/\`offsetHeight\` is the box before it. They disagree
+  // exactly when the element is rotated or scaled, by any syntax at all.
+  const layoutBox = (el) => ({
+    layoutW: el.offsetWidth > 0 ? el.offsetWidth : el.getBoundingClientRect().width,
+    layoutH: el.offsetHeight > 0 ? el.offsetHeight : el.getBoundingClientRect().height,
+  });
+  const clips = (v) => v === 'hidden' || v === 'clip' || v === 'scroll' || v === 'auto';
+  // Does a clipping ancestor cut this rect off in a way PowerPoint will NOT reproduce? Only the
+  // part of the text inside the slide viewport counts: a watermark bled off the top edge is cropped
+  // by PowerPoint's own slide boundary just as it is by \`body { overflow: hidden }\`, so that is not
+  // a loss. Text cut off by an INNER box is, because PowerPoint has no clipping at all.
+  const clippedBy = (el, b) => {
+    const left = Math.max(b.left, 0), top = Math.max(b.top, 0);
+    const right = Math.min(b.right, window.innerWidth), bottom = Math.min(b.bottom, window.innerHeight);
+    if (right - left < 0.5 || bottom - top < 0.5) return false;
+    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+      const pcs = getComputedStyle(p);
+      if (!clips(pcs.overflowX) && !clips(pcs.overflowY)) continue;
+      const pr = p.getBoundingClientRect();
+      if (left < pr.left - 0.5 || top < pr.top - 0.5 || right > pr.right + 0.5 || bottom > pr.bottom + 0.5) return true;
+    }
+    return false;
+  };
+  const bulletedText = (el) => {
+    const li = el.closest('li');
+    if (!li) return false;
+    return getComputedStyle(li).listStyleType !== 'none';
   };
   // Uniform scale of one computed transform: sqrt of the 2D determinant's magnitude. A flip
   // (det < 0) and a skew (det = 1) both scale glyphs by 1, which is what a reader sees.
@@ -115,7 +174,18 @@ export function groundTruthScript(): string {
   };
   const opacityOf = (el) =>
     chainProduct(el, (cs) => (Number.isFinite(parseFloat(cs.opacity)) ? parseFloat(cs.opacity) : 1));
-  const scaleChain = (el) => chainProduct(el, (cs) => scaleOf(cs.transform));
+  // The standalone \`scale:\` property multiplies glyphs exactly like a \`transform: scale()\` and
+  // does NOT fold into the computed transform, so the rendered size needs both (review r2).
+  const scalePropOf = (v) => {
+    const t = (v || 'none').trim();
+    if (t === 'none' || t === '') return 1;
+    const p = t.split(/\\s+/).map((n) => parseFloat(n) * (n.endsWith('%') ? 0.01 : 1));
+    if (p.some((n) => !Number.isFinite(n))) return 1;
+    const sx = p[0], sy = p.length > 1 ? p[1] : p[0];
+    const det = Math.abs(sx * sy);
+    return det > 0 ? Math.sqrt(det) : 1;
+  };
+  const scaleChain = (el) => chainProduct(el, (cs) => scaleOf(cs.transform) * scalePropOf(cs.scale));
   const pseudos = [];
   const pseudoPaints = (el, which) => {
     const ps = getComputedStyle(el, which);
@@ -145,8 +215,11 @@ export function groundTruthScript(): string {
       x: b.x, y: b.y, w: b.width, h: b.height,
       color: toHex(cs.color), colorAlpha: alphaOf(cs.color), fontSizePx: parseFloat(cs.fontSize),
       fontWeight: cs.fontWeight, fontStyle: cs.fontStyle, textTransform: cs.textTransform,
-      transform: cs.transform, transformed: transformedAncestor(el),
-      opacity: opacityOf(el), scale: scaleChain(el),
+      ...spec(cs), transformed: transformedAncestor(el),
+      hostW: el.getBoundingClientRect().width, hostH: el.getBoundingClientRect().height,
+      hostLayoutW: layoutBox(el).layoutW, hostLayoutH: layoutBox(el).layoutH,
+      clipped: clippedBy(el, b), bulleted: bulletedText(el),
+      opacity: opacityOf(el), renderedScale: scaleChain(el),
     });
   }
   const boxes = [];
@@ -163,7 +236,8 @@ export function groundTruthScript(): string {
       boxes.push({
         tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height,
         bg: bgAlpha > 0.03 ? toHex(cs.backgroundColor) : null, bgAlpha, hasGradient,
-        borderPx, borderColor: borderPx > 0 ? toHex(cs.borderTopColor) : null, transform: cs.transform,
+        borderPx, borderColor: borderPx > 0 ? toHex(cs.borderTopColor) : null,
+        ...spec(cs), ...layoutBox(el),
         opacity: opacityOf(el),
       });
     }

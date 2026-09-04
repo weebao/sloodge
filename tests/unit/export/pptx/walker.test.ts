@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { slideTextForNotes, walkSlide } from '../../../../src/shared/export/pptx/walker'
 import type { ShapeSpec } from '../../../../src/shared/export/pptx/types'
-import { makeMeasure, makeNode, uniformBorder } from './_fixtures'
+import { ancestorMatrix, makeMeasure, makeNode, uniformBorder } from './_fixtures'
 
 const textShapes = (shapes: ShapeSpec[]): Extract<ShapeSpec, { kind: 'text' }>[] =>
   shapes.filter((s): s is Extract<ShapeSpec, { kind: 'text' }> => s.kind === 'text')
@@ -58,6 +58,21 @@ describe('walkSlide text mapping', () => {
     expect(shapes[0]!.runs[0]!.bullet).toBe(true)
     expect(shapes[1]!.runs[0]!.bullet).toEqual({ type: 'number' })
     expect(shapes[2]!.runs[0]!.hyperlink).toBe('https://x.test')
+  })
+
+  it('emits no bullet for a `list-style: none` chip row', () => {
+    // A `<ul style="list-style: none">` used as a chip/tag/nav row is one of the commonest patterns
+    // in generated slide HTML; it used to ship one `<a:buChar>` per chip, glyphs the reader never
+    // saw and the metric could not see either (review r2).
+    const chip = makeNode({
+      tag: 'li',
+      isLeaf: true,
+      text: 'Discovery',
+      listType: 'ul',
+      style: { listStyleType: 'none' },
+    })
+    const [shape] = textShapes(walkSlide(makeMeasure([chip])).shapes)
+    expect(shape!.runs[0]!.bullet).toBeUndefined()
   })
 
   it('does not double-render: a non-leaf with no paint contributes no shape', () => {
@@ -170,7 +185,7 @@ describe('walkSlide rotation (M4.8a)', () => {
       layoutW: 50,
       layoutH: 100,
       style: { backgroundColor: 'rgb(0, 0, 0)' },
-      ancestorTransforms: [ROT_90],
+      ancestorTransforms: [ancestorMatrix(ROT_90)],
     })
     const shape = walkSlide(makeMeasure([node])).shapes[0]!
     expect(shape.kind).toBe('rect')

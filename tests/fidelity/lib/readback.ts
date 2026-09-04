@@ -41,6 +41,12 @@ export type ReadbackShape = {
   line: string | null
   /** True when the shape carries an outer shadow (`<a:outerShdw>`). */
   hasOuterShadow: boolean
+  /**
+   * Paragraphs carrying a bullet glyph (`<a:buChar>`) or auto-number (`<a:buAutoNum>`). Parsed so
+   * `assess.ts` can see a bullet the reader never had — a `list-style: none` chip row used to ship
+   * three of them with nothing in the metric able to notice (review r2).
+   */
+  bullets: number
 }
 
 export type ReadbackSlide = {
@@ -118,7 +124,12 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
   const rotRaw = attr(xfrmTag, 'rot')
   const rot = rotRaw === null ? 0 : parseInt(rotRaw, 10) / OOXML_ROT_PER_DEGREE
   const spPr = /<p:spPr\b[\s\S]*?<\/p:spPr>/.exec(xml)?.[0] ?? ''
-  const spPrNoLine = spPr.replace(/<a:ln\b[\s\S]*?<\/a:ln>/, '')
+  // An outer shadow's colour sits in `<a:effectLst>` inside `<a:spPr>`; a shape with no solid fill
+  // would otherwise report the SHADOW's colour as its fill, and `carrierOf` would pair a painted box
+  // against it. Stripped for the line read too, symmetrically with `fillOpacity` below.
+  const spPrNoLine = spPr
+    .replace(/<a:ln\b[\s\S]*?<\/a:ln>/, '')
+    .replace(/<a:effectLst>[\s\S]*?<\/a:effectLst>/, '')
   const ln = /<a:ln\b[\s\S]*?<\/a:ln>/.exec(spPr)?.[0] ?? ''
   const txBody = /<p:txBody>[\s\S]*?<\/p:txBody>/.exec(xml)?.[0] ?? ''
   const runs = parseRuns(txBody)
@@ -133,9 +144,10 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
     runs,
     text: normalizeWhitespace(runs.map((r) => r.text).join('')),
     fill: firstSrgb(spPrNoLine),
-    fillOpacity: firstAlpha(spPrNoLine.replace(/<a:effectLst>[\s\S]*?<\/a:effectLst>/, '')),
+    fillOpacity: firstAlpha(spPrNoLine),
     line: ln === '' ? null : firstSrgb(ln),
     hasOuterShadow: /<a:outerShdw\b/.test(spPr),
+    bullets: [...txBody.matchAll(/<a:buChar\b|<a:buAutoNum\b/g)].length,
   }
 }
 

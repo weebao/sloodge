@@ -26,11 +26,29 @@
  *
  * Text size is compared against *rendered* glyph size (`fontSizePx × scale`), not the authored
  * `font-size`, so a `scale(1.4)` stat cannot read "exact" while shipping 1.4× too small.
+ *
+ * ## Closing the world here too (M4.8a, review r2)
+ *
+ * r2 showed the oracle could still share the exporter's blindness: `mask-image`, `-webkit-text-
+ * stroke`, invented bullets, clipped text and the standalone `rotate:` property all read as clean
+ * because `truth.ts` recorded exactly the facts the walker already knew. Four checks close that:
+ *
+ * - **rotation is measured, not declared** — an element whose axis-aligned bounds disagree with its
+ *   layout box is rotated or scaled by *something*, and shipping it at those bounds with `rot = 0`
+ *   is caught whether or not the corpus declared the angle and whatever syntax produced it;
+ * - **clipped text** — a string the browser cuts off that the file carries in full;
+ * - **bullets** — glyphs the file invents for a list the reader sees unbulleted;
+ * - **the property census** — `measure.nodes[].unmodelledProperties`, the exporter's own report of
+ *   CSS nobody claims to model. Reading it here is not circular: it is the pipeline declaring a
+ *   blindness, which is exactly what the metric should surface by name.
+ *
+ * Colour and size mismatches are folded in as well, since §5.2 lists both as targets in their own
+ * right and the headline "N slides scoring ≥ 90 that drop a construct" should not exclude them.
  */
 
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../src/shared/export/types'
 import { pxToPoints } from '../../../src/shared/export/pptx/geometry'
-import { decomposeTransform } from '../../../src/shared/export/pptx/confidence'
+import { decomposeTransformSpec } from '../../../src/shared/export/pptx/confidence'
 import type { MeasureResult, SlideNode } from '../../../src/shared/export/pptx/node'
 import type { SlideTier } from '../../../src/shared/export/pptx/types'
 import type { CorpusSlide } from './corpus'
@@ -51,6 +69,10 @@ export const OPACITY_SIGNIFICANT = 0.95
 export const OPACITY_TOLERANCE = 0.05
 /** Below this effective alpha a paint is invisible to a reader, so nothing need be emitted for it. */
 const INVISIBLE_ALPHA = 0.03
+/** Slack on "the bounds disagree with the layout box"; below it the difference is layout rounding. */
+export const TRANSFORM_BOUNDS_TOLERANCE_PX = 1
+/** How far the two bounds/layout ratios may diverge and still be one uniform scale (px rounding). */
+export const UNIFORM_SCALE_TOLERANCE = 0.02
 
 export type SlideAssessment = {
   file: string
@@ -76,6 +98,14 @@ export type SlideAssessment = {
   opacityWrong: string[]
   /** Painting `::before`/`::after` in the source. Nothing can be emitted for them. */
   pseudoTotal: number
+  /** Text the browser clips that the file nonetheless carries in full. */
+  truncatedShipped: string[]
+  /** Bullet glyphs the emitted file invents for a list the reader sees unbulleted. */
+  bulletsInvented: number
+  /** Rotations the oracle measured from the rendered quad that the file does not carry. */
+  rotationLost: string[]
+  /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
+  unmodelledProperties: string[]
   rotationsExpected: number
   rotationsOk: number
   rotationDetails: string[]
@@ -134,6 +164,38 @@ function boxDeviationPct(
   )
 }
 
+/**
+ * Bounds that disagree with the layout box in a way a **uniform scale cannot explain** — which is to
+ * say, the element is rotated (or skewed, or in 3D).
+ *
+ * Scaling W×H by k gives bounds kW×kH, so both ratios are k and the walker's `rot = 0` placement is
+ * correct. Rotating by θ gives `W·c + H·s` by `W·s + H·c`, whose ratios differ unless W = H — so a
+ * rotated *square* is the one case this cannot separate from a scale, and is left to the corpus's
+ * declared rotations. Everything else, including the standalone `rotate:` property, shows up here
+ * without the oracle parsing a line of CSS.
+ */
+function rotatedBoundsSignature(w: number, h: number, layoutW: number, layoutH: number): boolean {
+  if (layoutW <= 0 || layoutH <= 0) return false
+  if (
+    Math.abs(w - layoutW) <= TRANSFORM_BOUNDS_TOLERANCE_PX &&
+    Math.abs(h - layoutH) <= TRANSFORM_BOUNDS_TOLERANCE_PX
+  )
+    return false
+  const ratioW = w / layoutW
+  const ratioH = h / layoutH
+  const spread = Math.abs(ratioW - ratioH) / Math.max(ratioW, ratioH)
+  return spread > UNIFORM_SCALE_TOLERANCE
+}
+
+/** The §1.3(b) signature: emitted at the axis-aligned bounds of a transform, with no `rot` at all. */
+function shippedUpright(shape: ReadbackShape, boundsW: number, boundsH: number): boolean {
+  return (
+    shape.rot === 0 &&
+    Math.abs(shape.w - boundsW) <= TRANSFORM_BOUNDS_TOLERANCE_PX &&
+    Math.abs(shape.h - boundsH) <= TRANSFORM_BOUNDS_TOLERANCE_PX
+  )
+}
+
 /** The alpha a truth box's background actually paints at: its own alpha times inherited opacity. */
 function boxAlpha(b: TruthBox): number {
   return b.bgAlpha * b.opacity
@@ -166,20 +228,25 @@ function insideBox(shape: ReadbackShape, box: TruthBox): boolean {
  * matched by a shape of the same size *and* the same fill hex — position alone would pass a shape
  * that happens to sit there in another colour. A border-only box is carried either by an outline at
  * the same place or, when the border is not uniform on all four sides, by edge rects inside it.
+ *
+ * The pairing is a **bijection**: `used` is carried across the whole `truth.boxes` loop, so one
+ * emitted shape cannot stand in for several painted boxes. Without it, a card and a full-bleed inner
+ * overlay both `#FFFFFF` at the same rect both paired against the single shape that survived, and
+ * dropping one of them left no trace (review r2).
  */
 function carrierOf(
   shapes: readonly ReadbackShape[],
   box: TruthBox,
   bgVisible: boolean,
+  used: ReadonlySet<ReadbackShape>,
 ): ReadbackShape | null {
-  if (bgVisible)
-    return shapes.find((s) => s.kind === 'sp' && s.fill === box.bg && samePlace(s, box)) ?? null
+  const free = shapes.filter((s) => s.kind === 'sp' && !used.has(s))
+  if (bgVisible) return free.find((s) => s.fill === box.bg && samePlace(s, box)) ?? null
   return (
-    shapes.find(
+    free.find(
       (s) =>
-        s.kind === 'sp' &&
-        ((s.line === box.borderColor && samePlace(s, box)) ||
-          (s.fill === box.borderColor && insideBox(s, box))),
+        (s.line === box.borderColor && samePlace(s, box)) ||
+        (s.fill === box.borderColor && insideBox(s, box)),
     ) ?? null
   )
 }
@@ -229,7 +296,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
     // Glyphs render at `font-size × scale`; comparing against the authored size would call a
     // `scale(1.4)` stat exact while it ships 1.4× too small.
-    const wantPt = pxToPoints(t.fontSizePx * t.scale)
+    const wantPt = pxToPoints(t.fontSizePx * t.renderedScale)
     if (
       run?.sizePt !== null &&
       run?.sizePt !== undefined &&
@@ -256,6 +323,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
 
   // --- Painted boxes: every background/border a reader sees must be an emitted shape (M4.8a) ---
   const paintedLost: string[] = []
+  const carried = new Set<ReadbackShape>()
   let paintedTotal = 0
   let paintedKept = 0
   for (const b of truth.boxes) {
@@ -270,7 +338,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       continue
     }
     paintedTotal += 1
-    const carrier = carrierOf(readback.shapes, b, bgVisible)
+    const carrier = carrierOf(readback.shapes, b, bgVisible, carried)
     if (carrier === null) {
       paintedLost.push(
         `box: ${b.tag} ${bgVisible ? `#${String(b.bg)}` : `border #${String(b.borderColor)}`} ${b.w.toFixed(0)}×${b.h.toFixed(0)}`,
@@ -278,6 +346,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       continue
     }
     paintedKept += 1
+    carried.add(carrier)
     const wantAlpha = bgVisible ? boxAlpha(b) : b.opacity
     if (
       wantAlpha < OPACITY_SIGNIFICANT &&
@@ -313,9 +382,53 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   // --- Transforms no `rot` can express: the element ships upright, which is wrong, not plainer ---
   const flattened = new Set<string>()
   for (const t of texts)
-    if (decomposeTransform(t.transform).kind === 'other') flattened.add(`text "${expectedText(t)}"`)
+    if (decomposeTransformSpec(t).kind === 'other') flattened.add(`text "${expectedText(t)}"`)
   for (const b of truth.boxes)
-    if (decomposeTransform(b.transform).kind === 'other') flattened.add(`box ${b.tag}`)
+    if (decomposeTransformSpec(b).kind === 'other') flattened.add(`box ${b.tag}`)
+
+  // --- Rotation, from geometry rather than from a corpus declaration. This is the check that does
+  // not share the exporter's blindness: an element whose axis-aligned bounds disagree with its
+  // layout box is transformed by SOMETHING, and the oracle never asks by what. Shipping it at those
+  // bounds with rot = 0 is precisely research §1.3(b)'s signature — a 90° label in a 21 px-wide box.
+  const rotationLost: string[] = []
+  for (const t of texts) {
+    // Already named as an un-decomposable transform: report each loss once.
+    if (flattened.has(`text "${expectedText(t)}"`)) continue
+    if (!rotatedBoundsSignature(t.hostW, t.hostH, t.hostLayoutW, t.hostLayoutH)) continue
+    const holder = runsContaining(readback, expectedText(t))[0]
+    if (holder === undefined) continue
+    if (shippedUpright(holder, t.hostW, t.hostH))
+      rotationLost.push(
+        `text "${expectedText(t)}": ${t.hostLayoutW.toFixed(0)}×${t.hostLayoutH.toFixed(0)} renders as ${t.hostW.toFixed(0)}×${t.hostH.toFixed(0)} but ships upright at its bounds`,
+      )
+  }
+  for (const b of truth.boxes) {
+    if (flattened.has(`box ${b.tag}`)) continue
+    if (!rotatedBoundsSignature(b.w, b.h, b.layoutW, b.layoutH)) continue
+    const carrier = readback.shapes.find((sh) => sh.kind === 'sp' && shippedUpright(sh, b.w, b.h))
+    if (carrier !== undefined)
+      rotationLost.push(
+        `box ${b.tag}: ${b.layoutW.toFixed(0)}×${b.layoutH.toFixed(0)} renders as ${b.w.toFixed(0)}×${b.h.toFixed(0)} but ships upright at its bounds`,
+      )
+  }
+
+  // --- Text the browser cuts off but the file carries whole: PowerPoint has no clipping ---
+  const truncatedShipped: string[] = []
+  for (const t of texts) {
+    if (!t.clipped) continue
+    const expected = expectedText(t)
+    if (runsContaining(readback, expected).length > 0) truncatedShipped.push(expected)
+  }
+
+  // --- Bullets: a `list-style: none` chip row must not arrive with invented glyphs ---
+  const bulletsExpected = texts.filter((t) => t.bulleted).length
+  const bulletsEmitted = readback.shapes.reduce((n, sh) => n + sh.bullets, 0)
+  const bulletsInvented = Math.max(0, bulletsEmitted - bulletsExpected)
+
+  // --- The closed-world signal, as the measurement pass reported it (see `properties.ts`) ---
+  const unmodelledProperties = [
+    ...new Set(measure.nodes.flatMap((n) => n.unmodelledProperties)),
+  ].toSorted()
 
   const constructsLost: string[] = []
   if (structured) {
@@ -326,6 +439,15 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     // must therefore keep the slide out of the structured tier, not pass as a clean 100.
     for (const ps of truth.pseudos) constructsLost.push(`pseudo: ${ps.hostTag}${ps.which}`)
     for (const f of flattened) constructsLost.push(`transform flattened: ${f}`)
+    constructsLost.push(...rotationLost.map((r) => `rotation wrong: ${r}`))
+    for (const t of truncatedShipped) constructsLost.push(`clipped text shipped in full: "${t}"`)
+    if (bulletsInvented > 0)
+      constructsLost.push(`${String(bulletsInvented)} invented bullet glyph(s)`)
+    for (const p of unmodelledProperties) constructsLost.push(`un-modelled CSS: ${p}`)
+    // §5.2 lists exact hex colour and exact font size as targets in their own right, so a run
+    // shipped in the wrong colour is a lost construct too, not merely a separate assertion.
+    constructsLost.push(...colorWrong.map((c) => `colour wrong: ${c}`))
+    constructsLost.push(...sizeWrong.map((c) => `size wrong: ${c}`))
     if (rotationsOk < corpus.rotations.length)
       constructsLost.push(
         `rotation: ${String(corpus.rotations.length - rotationsOk)} of ${String(corpus.rotations.length)} dropped`,
@@ -352,6 +474,10 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     paintedLost,
     opacityWrong,
     pseudoTotal: truth.pseudos.length,
+    truncatedShipped,
+    bulletsInvented,
+    rotationLost,
+    unmodelledProperties,
     rotationsExpected: corpus.rotations.length,
     rotationsOk,
     rotationDetails,

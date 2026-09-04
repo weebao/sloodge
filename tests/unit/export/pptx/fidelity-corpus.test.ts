@@ -17,7 +17,7 @@ import { CORPUS, recordedFileName, type RecordedSlide } from '../../../fidelity/
 import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback'
 
 /**
- * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 14-slide corpus.
+ * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 18-slide corpus.
  *
  * The inputs are recordings made by `tests/fidelity/harness.ts` from the *real* export window: the
  * measurement pass production consumed, and an independent ground truth (text nodes via `Range`,
@@ -35,7 +35,10 @@ import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback
  * full-bleed-picture case. From M4.8a review r1: restoring the `!node.isLeaf` guard in `walker.ts`
  * reds the x1 painted-box case; putting `MATRIX_TOLERANCE` back to 1e-6 reds the 28°/62° case;
  * removing the opacity fold reds the ghost-watermark case; removing the `truth.boxes` pairing in
- * `assess.ts` reds the x1 painted-box case and the old-scorer case's box entries.
+ * `assess.ts` reds the x1 painted-box case and the old-scorer case's box entries. From review r2:
+ * deleting the property census in `node.ts` reds the x7 and x8 cases; dropping the standalone
+ * `rotate`/`scale` from `NodeStyle` reds x10; restoring the unconditional `run.bullet` reds the x8
+ * bullet case; deleting the `clippedTextPx` measurement reds x9.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -98,9 +101,42 @@ async function readbackOf(file: string, fidelity: PptxFidelity): Promise<Readbac
   return readbackPptx(bytes)[0]!
 }
 
+/**
+ * Every slide forced structured and handed a bare `score: 100, reasons: []` — the shape of the
+ * pre-M4.8a pipeline's output, which had no deductions for any of this. Judged by the CURRENT
+ * assessor, this is the retroactive "how many silent lies were shipping" figure.
+ */
+async function assessAsOldExporter(): Promise<SlideAssessment[]> {
+  const out: SlideAssessment[] = []
+  for (const [i, recorded] of loadRecorded().entries()) {
+    const corpus = CORPUS[i]!
+    const plan = planSlide({
+      measure: recorded.measure,
+      fidelity: 'editable',
+      rasterDataUrl: PNG,
+      backgroundDataUrl: null,
+    })
+    // oxlint-disable-next-line no-await-in-loop -- one small deck per slide, in order
+    const bytes = await writeDeckPptx({ title: corpus.file, author: 'test', slides: [plan] })
+    out.push(
+      assessSlide({
+        corpus,
+        truth: recorded.truth,
+        measure: recorded.measure,
+        readback: readbackPptx(bytes)[0]!,
+        tier: 'structured',
+        score: 100,
+        reasons: [],
+      }),
+    )
+  }
+  return out
+}
+
 const recorded = loadRecorded()
 const x1Readback = await readbackOf('x1-ghost-opacity.html', 'editable')
 const x4Readback = await readbackOf('x4-shadows.html', 'auto')
+const asOldExporter = await assessAsOldExporter()
 const auto = await assessAll('auto')
 const editable = await assessAll('editable')
 const summary = summarize(auto)
@@ -118,9 +154,9 @@ describe('fidelity corpus recordings', () => {
   })
 
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(14)
+    expect(recorded).toHaveLength(18)
     expect(summary.textTotal).toBeGreaterThan(40)
-    expect(summary.rotationsExpected).toBe(9)
+    expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
   })
 
@@ -213,6 +249,13 @@ describe('§5.2 targets over the corpus', () => {
       expect(assessed.constructsLost).toContain('pseudo: h1::before')
     })
 
+    it('x1: a dropped painted box is named as a lost construct, not just counted', () => {
+      // Pins the `truth.boxes` pairing itself: without it, `paintedLost` never reaches
+      // `constructsLost` and the corpus-wide silent-lie assertions pass over a missing panel.
+      const x2 = editable.find((a) => a.file === 'x2-gradient-panel.html')!
+      expect(x2.constructsLost.some((c) => c.startsWith('box: '))).toBe(true)
+    })
+
     it('x1: every painted box survives — the empty divider and the clipped blob included', () => {
       // Before the paint rule dropped its `!node.isLeaf` guard, a childless painted <div> hit neither
       // walker branch and vanished with no coverage note at all.
@@ -268,6 +311,103 @@ describe('§5.2 targets over the corpus', () => {
       expect(forced.constructsLost.some((c) => c.startsWith('transform flattened'))).toBe(true)
       expect(auto.find((a) => a.file === 'x5-scale-skew-flip.html')!.tier).toBe('raster')
     })
+  })
+
+  /**
+   * Review r2's blockers. Each of these slides went through the REAL export path scoring 90–100 with
+   * `constructsLost: []`, because the metric measured only the constructs somebody had thought to
+   * name. They are fixtures now so the closed-world census cannot quietly re-open.
+   */
+  describe('the constructs review r2 caught the metric not measuring', () => {
+    const find = (file: string) => auto.find((a) => a.file === file)!
+    const forced = (file: string) => editable.find((a) => a.file === file)!
+
+    it('x7: a masked panel is named by the census and routes to raster (was 90, structured)', () => {
+      // Emitted a 1280×420 opaque navy rect where the reader sees a 60px strip, and a 940×220 rose
+      // rect the reader never sees at all, both painting over the text.
+      expect(find('x7-masked-panel.html').tier).toBe('raster')
+      expect(forced('x7-masked-panel.html').unmodelledProperties).toContain('mask-image')
+      expect(forced('x7-masked-panel.html').constructsLost).toContain('un-modelled CSS: mask-image')
+    })
+
+    it('x8: hollow outlined type is named, and the `list-style: none` chips ship no bullets', () => {
+      const x8 = forced('x8-hollow-type.html')
+      expect(x8.unmodelledProperties).toEqual([
+        '-webkit-text-fill-color',
+        '-webkit-text-stroke-width',
+      ])
+      expect(find('x8-hollow-type.html').tier).toBe('raster')
+      // The chip row is a `<ul style="list-style: none">`: three `<a:buChar>` used to ship.
+      expect(x8.bulletsInvented).toBe(0)
+    })
+
+    it('x8: the emitted file carries no bullet glyph at all', async () => {
+      const x8 = await readbackOf('x8-hollow-type.html', 'editable')
+      expect(x8.shapes.reduce((n, s) => n + s.bullets, 0)).toBe(0)
+      expect(x8.shapes.filter((s) => s.text !== '').length).toBeGreaterThanOrEqual(6)
+    })
+
+    it('x9: text the browser truncates is not shipped whole (was 100, text 3/3, clean)', () => {
+      const x9 = forced('x9-clipped-text.html')
+      expect(x9.truncatedShipped).toHaveLength(2)
+      expect(x9.truncatedShipped[0]).toContain('Consolidated quarterly revenue')
+      expect(
+        x9.constructsLost.filter((c) => c.startsWith('clipped text shipped in full')),
+      ).toHaveLength(2)
+      expect(find('x9-clipped-text.html').tier).toBe('raster')
+      expect(find('x9-clipped-text.html').reasons.some((r) => r.includes('truncated'))).toBe(true)
+    })
+
+    it('x10: the standalone `rotate:` property carries a correct rot (was rot=0 at confidence 100)', () => {
+      // research §1.3(b) reached through CSS Transforms Level 2's syntax: `rotate: 20deg` does not
+      // fold into the computed `transform`, so the label shipped upright in a 307×172 box.
+      const x10 = find('x10-rotate-property.html')
+      expect(x10.tier).toBe('structured')
+      expect(x10.rotationsOk, x10.rotationDetails.join('\n')).toBe(1)
+      expect(x10.rotationDetails[0]).not.toContain('rot=0.00')
+      expect(x10.constructsLost).toEqual([])
+      expect(x10.silentLie).toBe(false)
+    })
+
+    it('x10: the standalone `scale:` property reaches the emitted glyph size', () => {
+      // 46px × 1.6 × 0.75 = 55.2pt. Reading `transform` alone would call the unscaled 34.5pt exact.
+      expect(forced('x10-rotate-property.html').sizeWrong).toEqual([])
+    })
+
+    it('the oracle catches a rotation shipped upright without being told an angle', () => {
+      // `rotationLost` is derived from bounds-vs-layout geometry, not from `corpus.rotations`, so a
+      // rotation nobody declared is still caught. Nothing in the corpus trips it today.
+      expect(auto.flatMap((a) => a.rotationLost)).toEqual([])
+      expect(editable.flatMap((a) => a.rotationLost)).toEqual([])
+    })
+  })
+
+  /**
+   * The §5.2 headline row, both ways round. The research measured 2/8 slides scoring ≥ 90 while
+   * dropping a load-bearing construct; that number was itself an undercount, because the metric of
+   * the day could only see three classes of construct.
+   *
+   * What this measures precisely: the **scorer** removed (every slide forced structured at a bare
+   * `score: 100, reasons: []`) while the current walker still emits. So it is the retroactive cost
+   * of having no deductions, not of the old walker as well — `x10-rotate-property` is absent from
+   * the list for exactly that reason, since the walker now reads the standalone `rotate:` and gets
+   * it right whatever the score says. The old walker's losses are pinned by mutation instead, one
+   * fix at a time (see the module docstring).
+   */
+  it('the retroactive figure: with no deductions, 8 of 18 slides are silent lies', () => {
+    const lying = asOldExporter.filter((a) => a.silentLie).map((a) => a.file)
+    expect(lying).toEqual([
+      '01-title-body.html',
+      'x1-ghost-opacity.html',
+      'x2-gradient-panel.html',
+      'x5-scale-skew-flip.html',
+      'x6-vertical-br.html',
+      'x7-masked-panel.html',
+      'x8-hollow-type.html',
+      'x9-clipped-text.html',
+    ])
+    // …and the shipped pipeline, over the same corpus, lies about none.
+    expect(summary.silentLies).toEqual([])
   })
 
   it('01-title-body routes to raster in auto: its bare text beside <strong>/<em> would be dropped', () => {

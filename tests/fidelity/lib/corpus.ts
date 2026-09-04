@@ -4,10 +4,11 @@
  * discovers them — but rotations and a painted body background are, because "did the exporter keep
  * it" is only checkable against a statement of what was there.
  *
- * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x6` were written by the r1
- * reviewer *against* the finished exporter, not alongside it: each one reproduced a construct that
- * scored 90+ while vanishing from the `.pptx`. They are in the corpus so the next tuning pass cannot
- * quietly fit the scorer to the eight slides it was born with.
+ * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x10` were written *against*
+ * the finished exporter, not alongside it: each one reproduced a construct that scored 85–100 while
+ * vanishing from — or arriving wrong in — the `.pptx`. `x1`–`x6` came from review r1, `x7`–`x9` from
+ * r2's probe set, and `x10` reproduces the standalone `rotate:`/`scale:` properties. They are in the
+ * corpus so the next tuning pass cannot quietly fit the scorer to the eight slides it was born with.
  */
 
 import type { MeasureResult } from '../../../src/shared/export/pptx/node'
@@ -63,6 +64,17 @@ export const CORPUS: readonly CorpusSlide[] = [
   { file: 'x4-shadows.html', rotations: [], bodyImage: false },
   { file: 'x5-scale-skew-flip.html', rotations: [], bodyImage: false },
   { file: 'x6-vertical-br.html', rotations: [], bodyImage: false },
+  // Out-of-corpus probes from review r2, promoted the same way.
+  { file: 'x7-masked-panel.html', rotations: [], bodyImage: false },
+  { file: 'x8-hollow-type.html', rotations: [], bodyImage: false },
+  { file: 'x9-clipped-text.html', rotations: [], bodyImage: false },
+  {
+    file: 'x10-rotate-property.html',
+    // Authored with the standalone `rotate:` property, which does not fold into the computed
+    // `transform` — the element shipped upright at rot=0 until r2 (research §1.3(b)).
+    rotations: [{ text: 'ROTATED 20', deg: 20 }],
+    bodyImage: false,
+  },
 ]
 
 /**

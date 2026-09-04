@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CLIPPED_TEXT_MIN_PX,
   DROPPED_CONSTRUCT_FLOOR,
   MATRIX_TOLERANCE,
+  decomposeTransformSpec,
+  elementImageDeduction,
   DROPPED_CONSTRUCT_WEIGHTS,
   PPTX_HIGH_CONFIDENCE,
   PPTX_TIER_THRESHOLD,
@@ -15,7 +18,7 @@ import {
   paintsImage,
   scoreSlide,
 } from '../../../../src/shared/export/pptx/confidence'
-import { makeMeasure, makeNode } from './_fixtures'
+import { ancestorMatrix, makeMeasure, makeNode } from './_fixtures'
 
 /**
  * The confidence scorer (§3.4) — table-driven. Each signal asserts its exact deduction and cap, the
@@ -28,16 +31,43 @@ describe('scoreSlide deductions', () => {
     expect(scoreSlide(makeMeasure(nodes)).score).toBe(100)
   })
 
-  it('deducts for an element gradient/image background: no shape is emitted for it', () => {
-    const one = [makeNode({ style: { backgroundImage: 'linear-gradient(red, blue)' } })]
-    expect(scoreSlide(makeMeasure(one)).score).toBe(100 - SCORE_WEIGHTS.elementImageBackground)
-    // One occurrence is enough to route `auto` to an honest raster (review r1: a full-bleed gradient
-    // wrapper scored 88 and shipped its pale text on a white slide).
-    expect(scoreSlide(makeMeasure(one)).score).toBeLessThan(PPTX_TIER_THRESHOLD)
-    const many = Array.from({ length: 5 }, () =>
-      makeNode({ style: { backgroundImage: 'url("a.png")' } }),
+  /**
+   * The deduction is **area-scaled**, not flat (review r2). Flat, it could not tell "the gradient IS
+   * the slide" from "the gradient is a 120×40 badge": a 0.52 %-area decorative pill rasterized a
+   * slide whose title and three paragraphs were perfectly editable, while `coveredFraction` already
+   * knew 97.5 % of it was representable.
+   */
+  it('deducts for an element gradient/image background, scaled by the area it covers', () => {
+    const fullBleed = [
+      makeNode({ w: 1280, h: 720, style: { backgroundImage: 'linear-gradient(red, blue)' } }),
+    ]
+    expect(scoreSlide(makeMeasure(fullBleed)).score).toBe(
+      100 - SCORE_WEIGHTS.elementImageBackground,
     )
-    expect(scoreSlide(makeMeasure(many)).score).toBe(100 - SCORE_WEIGHTS.elementImageBackground)
+    // A full-bleed gradient wrapper still routes `auto` to an honest raster — research §1.3(a).
+    expect(scoreSlide(makeMeasure(fullBleed)).score).toBeLessThan(PPTX_TIER_THRESHOLD)
+
+    // A 120×40 decorative pill is 0.52 % of the slide. It must leave the high-confidence band (the
+    // paint really is missing) without taking the whole slide's editable text down with it.
+    const pill = [
+      makeNode({ w: 120, h: 40, style: { backgroundImage: 'linear-gradient(red, blue)' } }),
+    ]
+    const pillScore = scoreSlide(makeMeasure(pill)).score
+    expect(pillScore).toBeGreaterThanOrEqual(PPTX_TIER_THRESHOLD)
+    expect(pillScore).toBeLessThan(PPTX_HIGH_CONFIDENCE)
+
+    // Flattening the deduction back to a constant reds this: area has to change the answer.
+    expect(pillScore).toBeGreaterThan(scoreSlide(makeMeasure(fullBleed)).score)
+    expect(elementImageDeduction(0)).toBe(0)
+    expect(elementImageDeduction(20 * 20)).toBe(DROPPED_CONSTRUCT_FLOOR)
+  })
+
+  it('a gradient panel large enough to carry text crosses the raster threshold on its own', () => {
+    // ~8.3 % of the slide is where the area-scaled deduction reaches WRONG_CONSTRUCT_FLOOR.
+    const panel = [
+      makeNode({ w: 400, h: 240, style: { backgroundImage: 'linear-gradient(red, blue)' } }),
+    ]
+    expect(scoreSlide(makeMeasure(panel)).score).toBeLessThan(PPTX_TIER_THRESHOLD)
   })
 
   it('deducts for filter/blend/clip-path', () => {
@@ -104,9 +134,11 @@ describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', ()
   })
 
   it('classifies an inherited skew as `other` (a rotated ancestor as a similarity)', () => {
-    const skewChild = makeNode({ ancestorTransforms: ['matrix(1, 0.5, 0, 1, 0, 0)'] })
+    const skewChild = makeNode({
+      ancestorTransforms: [ancestorMatrix('matrix(1, 0.5, 0, 1, 0, 0)')],
+    })
     expect(scoreSlide(makeMeasure([skewChild])).score).toBe(100 - SCORE_WEIGHTS.transformOther)
-    const rotChild = makeNode({ ancestorTransforms: ['matrix(0, 1, -1, 0, 0, 0)'] })
+    const rotChild = makeNode({ ancestorTransforms: [ancestorMatrix('matrix(0, 1, -1, 0, 0, 0)')] })
     expect(scoreSlide(makeMeasure([rotChild])).score).toBe(100 - SCORE_WEIGHTS.transformSimilarity)
   })
 
@@ -130,6 +162,98 @@ describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', ()
 })
 
 /**
+ * The closed world (review r2). The three earlier signals in this file are a deny-list — each names
+ * a construct somebody thought of — and two review rounds showed that cannot converge. The census
+ * inverts the default: a computed property in neither set of `properties.ts` costs a WRONG-class
+ * deduction and is named in the reasons, so an unfamiliar property routes to an honest raster.
+ */
+describe('un-modelled CSS properties fail toward raster', () => {
+  it('deducts for any property the pipeline neither emits nor scores, and names it', () => {
+    const masked = makeNode({ unmodelledProperties: ['mask-image'] })
+    const { score, reasons } = scoreSlide(makeMeasure([masked]))
+    expect(score).toBe(100 - SCORE_WEIGHTS.unmodelledProperty)
+    expect(chooseTier(score, 'auto', null)).toBe('raster')
+    expect(reasons.some((r) => r.includes('un-modelled CSS: mask-image'))).toBe(true)
+  })
+
+  it('names every distinct property once, however many elements carry it', () => {
+    const nodes = [
+      makeNode({ unmodelledProperties: ['-webkit-text-stroke-width', '-webkit-text-fill-color'] }),
+      makeNode({ unmodelledProperties: ['-webkit-text-stroke-width'] }),
+    ]
+    const { score, reasons } = scoreSlide(makeMeasure(nodes))
+    expect(score).toBe(100 - SCORE_WEIGHTS.unmodelledProperty)
+    const named = reasons.find((r) => r.startsWith('un-modelled CSS'))
+    expect(named).toBe('un-modelled CSS: -webkit-text-fill-color, -webkit-text-stroke-width')
+  })
+
+  it('a slide using only modelled CSS still scores 100 — the census is not a blanket charge', () => {
+    expect(scoreSlide(makeMeasure([makeNode({ isLeaf: true, text: 'Hi' })])).score).toBe(100)
+  })
+})
+
+describe('text a leaf clips itself is not shipped whole', () => {
+  it('deducts for a truncated leaf, and ignores sub-pixel line-box rounding', () => {
+    const clipped = makeNode({ isLeaf: true, text: 'Consolidated quarterly…', clippedTextPx: 400 })
+    expect(scoreSlide(makeMeasure([clipped])).score).toBe(100 - SCORE_WEIGHTS.clippedText)
+    const rounding = makeNode({
+      isLeaf: true,
+      text: 'Fits',
+      clippedTextPx: CLIPPED_TEXT_MIN_PX - 1,
+    })
+    expect(scoreSlide(makeMeasure([rounding])).score).toBe(100)
+  })
+})
+
+/**
+ * CSS Transforms Level 2's standalone properties. They do NOT fold into the computed `transform`, so
+ * an element carrying `rotate: 20deg` was measured as `transform: 'none'` and shipped upright at
+ * `rot = 0` in a box twice as tall as its text — research §1.3(b) through the modern syntax.
+ */
+describe('decomposeTransformSpec', () => {
+  it('reads the standalone rotate property, including its axis forms', () => {
+    expect(decomposeTransformSpec(spec({ rotate: '20deg' }))).toMatchObject({ deg: 20, scale: 1 })
+    expect(decomposeTransformSpec(spec({ rotate: 'z 20deg' }))).toMatchObject({ deg: 20 })
+    expect(decomposeTransformSpec(spec({ rotate: '0 0 1 20deg' }))).toMatchObject({ deg: 20 })
+    // An x/y axis is a 3D rotation with no `rot` equivalent.
+    expect(decomposeTransformSpec(spec({ rotate: 'x 20deg' })).kind).toBe('other')
+  })
+
+  it('reads the standalone scale property, uniform only', () => {
+    expect(decomposeTransformSpec(spec({ scale: '1.6' }))).toMatchObject({ scale: 1.6, deg: 0 })
+    expect(decomposeTransformSpec(spec({ scale: '1.6 1.6' }))).toMatchObject({ scale: 1.6 })
+    expect(decomposeTransformSpec(spec({ scale: '160%' }))).toMatchObject({ scale: 1.6 })
+    expect(decomposeTransformSpec(spec({ scale: '2 1' })).kind).toBe('other')
+    expect(decomposeTransformSpec(spec({ scale: '-1' })).kind).toBe('other')
+  })
+
+  it('treats translate as identity: the measured rect is already post-transform', () => {
+    expect(decomposeTransformSpec(spec({ translate: '120px 20px' })).kind).toBe('identity')
+    expect(decomposeTransformSpec(spec({})).kind).toBe('identity')
+  })
+
+  it('composes the properties with the transform matrix: angles add, scales multiply', () => {
+    const composed = decomposeTransformSpec(
+      spec({ rotate: '20deg', scale: '2', transform: 'matrix(0, 1.5, -1.5, 0, 0, 0)' }),
+    )
+    expect(composed.kind).toBe('similarity')
+    if (composed.kind === 'similarity') {
+      expect(composed.deg).toBeCloseTo(110, 6)
+      expect(composed.scale).toBeCloseTo(3, 6)
+    }
+    // One un-decomposable component poisons the whole composition.
+    expect(decomposeTransformSpec(spec({ rotate: '20deg', scale: '2 1' })).kind).toBe('other')
+  })
+
+  it('scores a standalone rotate as a modelled transform, not as nothing at all', () => {
+    const rotated = makeNode({ style: { rotate: '20deg' } })
+    expect(scoreSlide(makeMeasure([rotated])).score).toBe(100 - SCORE_WEIGHTS.transformSimilarity)
+    const skewed = makeNode({ style: { scale: '2 1' } })
+    expect(scoreSlide(makeMeasure([skewed])).score).toBe(100 - SCORE_WEIGHTS.transformOther)
+  })
+})
+
+/**
  * The weights are not taste: review r1 found un-modelled constructs shipping at 85–92 with the
  * construct silently gone — above the raster threshold, so `auto` never fell back. Each weight
  * therefore has a floor set by what its absence does to the output (see `confidence.ts`).
@@ -148,6 +272,17 @@ describe('un-modelled constructs cannot ship quietly', () => {
       expect(chooseTier(100 - SCORE_WEIGHTS[key], 'auto', null), key).toBe('raster')
     }
   })
+})
+
+/** A `TransformSpec` with only the properties a case exercises set. */
+const spec = (
+  o: Partial<{ transform: string; rotate: string; scale: string; translate: string }>,
+): { transform: string; rotate: string; scale: string; translate: string } => ({
+  transform: 'none',
+  rotate: 'none',
+  scale: 'none',
+  translate: 'none',
+  ...o,
 })
 
 const toSixDecimals = (n: number): string => (Math.round(n * 1e6) / 1e6).toString()
@@ -308,11 +443,15 @@ describe('the raster threshold is pinned to concrete scores (not the constant)',
   ]
 
   // A slide computed at 68 — just BELOW 70 — must route to raster. Mutating the threshold to 60
-  // reds this (68 ≥ 60 → structured). Score = 100 − 20 (clip-path) − 12 (inset shadow) = 68.
+  // reds this (68 ≥ 60 → structured). Score = 100 − 20 (mix-blend) − 12 (text-shadow) = 68.
   const justBelow = [
-    makeNode({ tag: 'h1', isLeaf: true, text: 'Title' }),
-    makeNode({ isLeaf: false, style: { clipPath: 'circle(40%)' } }),
-    makeNode({ isLeaf: false, style: { boxShadow: 'inset 0 0 4px rgb(0, 0, 0)' } }),
+    makeNode({
+      tag: 'h1',
+      isLeaf: true,
+      text: 'Title',
+      style: { textShadow: '0 2px 4px rgb(0, 0, 0)' },
+    }),
+    makeNode({ isLeaf: false, style: { mixBlendMode: 'multiply' } }),
   ]
 
   it('computes the straddling scores exactly (pins the scorer weights)', () => {

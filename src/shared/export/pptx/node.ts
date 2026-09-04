@@ -11,13 +11,42 @@
  * The script is kept here as a source string — like `slideReadinessScript` — so the one thing a unit
  * test *can* pin about it (that it applies the leaf-text rule, the paint rule, and rejects invisible
  * nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
+ *
+ * ## The style subset is no longer the whole story (M4.8a, review r2)
+ *
+ * `NodeStyle` is the set of computed values the walker and scorer *read*. It used to also be, by
+ * omission, the set of CSS the pipeline claimed to understand — so a property nobody had listed
+ * (`mask-image`, `-webkit-text-stroke`, the standalone `rotate:`) was silently absent from the
+ * measurement and therefore silently absent from the score. `unmodelledProperties` closes that:
+ * every element is censused against `properties.ts`'s explicit modelled set, and anything set to a
+ * non-initial value that nobody has claimed is reported by name. See `properties.ts` for the
+ * taxonomy and how to extend it.
  */
+
+import {
+  CURRENTCOLOR_PROPERTIES,
+  LAYOUT_RESOLVED_PROPERTIES,
+  MAX_UNMODELLED_PER_NODE,
+  MODELLED_PROPERTIES,
+} from './properties'
 
 /** One side of a CSS border, as `getComputedStyle` reports it. */
 export type BorderSide = { width: string; style: string; color: string }
 
+/**
+ * The four properties that build an element's transform, as CSS Transforms Level 2 defines them.
+ * The standalone `translate`/`rotate`/`scale` do **not** fold into the computed `transform`, so
+ * reading `transform` alone reported `none` for an element the reader sees rotated (review r2).
+ */
+export type TransformSpec = {
+  transform: string
+  rotate: string
+  scale: string
+  translate: string
+}
+
 /** The computed-style subset the walker and scorer read. All strings are `getComputedStyle` values. */
-export type NodeStyle = {
+export type NodeStyle = TransformSpec & {
   fontFamily: string
   /** Resolved font size in CSS px. */
   fontSize: number
@@ -45,11 +74,12 @@ export type NodeStyle = {
   filter: string
   backdropFilter: string
   mixBlendMode: string
-  transform: string
   clipPath: string
   writingMode: string
   overflow: string
   position: string
+  /** `none` on a `list-style: none` chip row, where emitting a bullet invents a glyph (review r2). */
+  listStyleType: string
 }
 
 /** One visible element from the measurement pass. Boxes are in CSS px, relative to the viewport. */
@@ -74,6 +104,8 @@ export type SlideNode = {
   listType: 'ul' | 'ol' | null
   /** For `<svg>`: count of drawable primitives (rect/circle/ellipse/line/path/polygon/polyline). */
   svgPrimitiveCount: number
+  /** True for an `<svg>` and everything inside one — the census does not apply (see `properties.ts`). */
+  inSvg: boolean
   /** `<img>` current source, else `null`. */
   src: string | null
   /**
@@ -83,8 +115,8 @@ export type SlideNode = {
    */
   layoutW: number
   layoutH: number
-  /** Computed `transform` of every transformed ancestor, nearest first. Empty in the common case. */
-  ancestorTransforms: string[]
+  /** Every transformed ancestor's four transform properties, nearest first. Empty in the common case. */
+  ancestorTransforms: TransformSpec[]
   /**
    * Direct text-node children with content on a NON-leaf element — text no leaf owns, which the
    * leaf-text rule drops (`<p>a <b>b</b> c</p>` → 2). Always 0 on a leaf. Scored as a loss until
@@ -107,6 +139,18 @@ export type SlideNode = {
    * no clipping, so each would spill out of the box; scored as an un-modelled construct.
    */
   escapingDescendants: number
+  /**
+   * Px of this leaf's **own text** that its own `overflow` clips away (`scrollWidth − clientWidth`,
+   * or the block-axis equivalent). PowerPoint cannot clip, so the whole string ships and overflows:
+   * an ellipsised headline arrives at full length, a three-of-six-lines tile spills over the footer
+   * (review r2). Always 0 on a non-leaf — a child escaping a clip is `escapingDescendants`.
+   */
+  clippedTextPx: number
+  /**
+   * Computed properties set to a non-initial value that `properties.ts` claims neither to emit nor to
+   * score — the closed-world signal. Names only, deduped, capped at `MAX_UNMODELLED_PER_NODE`.
+   */
+  unmodelledProperties: string[]
   style: NodeStyle
 }
 
@@ -126,6 +170,10 @@ export type MeasureResult = {
  */
 export function slideMeasurementScript(): string {
   return `(() => {
+  const MODELLED = new Set(${JSON.stringify(MODELLED_PROPERTIES)});
+  const LAYOUT_RESOLVED = new Set(${JSON.stringify(LAYOUT_RESOLVED_PROPERTIES)});
+  const CURRENTCOLOR = new Set(${JSON.stringify(CURRENTCOLOR_PROPERTIES)});
+  const MAX_UNMODELLED = ${String(MAX_UNMODELLED_PER_NODE)};
   const alphaOf = (c) => {
     const m = /^rgba?\\(([^)]+)\\)$/.exec(c.trim());
     if (!m) return c === 'transparent' ? 0 : 1;
@@ -144,6 +192,8 @@ export function slideMeasurementScript(): string {
     cs.display !== 'none' && cs.visibility !== 'hidden' && effectiveOpacity(el) > 0.01 &&
     r.width > 0.5 && r.height > 0.5;
   const side = (cs, s) => ({ width: cs['border' + s + 'Width'], style: cs['border' + s + 'Style'], color: cs['border' + s + 'Color'] });
+  const transformSpec = (cs) => ({ transform: cs.transform, rotate: cs.rotate || 'none', scale: cs.scale || 'none', translate: cs.translate || 'none' });
+  const transformed = (t) => t.transform !== 'none' || t.rotate !== 'none' || t.scale !== 'none' || t.translate !== 'none';
   const pseudoPaints = (el, which) => {
     const ps = getComputedStyle(el, which);
     if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal') return false;
@@ -161,6 +211,58 @@ export function slideMeasurementScript(): string {
     }
     return n;
   };
+  // How much of a leaf's OWN text its own overflow cuts off. \`scrollWidth\`/\`scrollHeight\` include
+  // the overflowing content; \`clientWidth\`/\`clientHeight\` are the visible padding box.
+  const clippedTextPx = (el, cs, isLeaf) => {
+    if (!isLeaf || (el.textContent || '').trim() === '') return 0;
+    let px = 0;
+    if (clips(cs.overflowX)) px = Math.max(px, el.scrollWidth - el.clientWidth);
+    if (clips(cs.overflowY)) px = Math.max(px, el.scrollHeight - el.clientHeight);
+    return Math.max(0, px);
+  };
+  // The baseline every element is censused against: its own tag's computed style under the UA
+  // stylesheet alone. A single \`all: initial\` probe is NOT enough — the HTML UA stylesheet sets
+  // \`unicode-bidi: isolate\` on block containers but not on inline ones, so one baseline flagged
+  // either every <div> or every <span> depending which way it was read.
+  //
+  // The probes live in a shadow root whose host carries \`all: initial\`, which buys two things the
+  // slide document cannot: author CSS does not cross the shadow boundary, so a \`div { … }\` rule
+  // cannot mask the very signal the census is looking for; and inherited properties reach the
+  // probes at their initial values rather than the slide's, so an authored \`direction: rtl\` still
+  // reads as a deviation. \`direction\` is set explicitly because CSS Cascade §3.2 excludes it (and
+  // \`unicode-bidi\`) from \`all\`, so the host cannot express its initial value any other way.
+  const probeHost = document.createElement('div');
+  probeHost.setAttribute('style', 'all: initial; direction: ltr; position: fixed; top: -99999px; left: -99999px;');
+  document.documentElement.appendChild(probeHost);
+  const probeRoot = probeHost.attachShadow({ mode: 'open' });
+  const baselines = new Map();
+  const baselineFor = (tag) => {
+    let known = baselines.get(tag);
+    if (known) return known;
+    const probe = document.createElement(tag);
+    probeRoot.appendChild(probe);
+    const cs = getComputedStyle(probe);
+    known = new Map();
+    for (let i = 0; i < cs.length; i++) known.set(cs.item(i), cs.getPropertyValue(cs.item(i)));
+    probe.remove();
+    baselines.set(tag, known);
+    return known;
+  };
+  const watch = [];
+  for (const name of baselineFor('div').keys()) if (!MODELLED.has(name) && !LAYOUT_RESOLVED.has(name)) watch.push(name);
+  const censusOf = (cs, tag) => {
+    const baseline = baselineFor(tag);
+    const out = [];
+    for (const name of watch) {
+      const value = cs.getPropertyValue(name);
+      const want = CURRENTCOLOR.has(name) ? cs.color : baseline.get(name);
+      if (value !== want) {
+        out.push(name);
+        if (out.length >= MAX_UNMODELLED) break;
+      }
+    }
+    return out;
+  };
   const SVG_PRIMS = 'rect,circle,ellipse,line,path,polygon,polyline';
   const nodes = [];
   const all = document.body ? document.body.querySelectorAll('*') : [];
@@ -171,10 +273,11 @@ export function slideMeasurementScript(): string {
     if (!visible(el, cs, r)) continue;
     const isLeaf = el.children.length === 0;
     const tag = el.tagName.toLowerCase();
+    const inSvg = el.namespaceURI === 'http://www.w3.org/2000/svg' || el.closest('svg') !== null;
     const ancestorTransforms = [];
     for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
-      const t = getComputedStyle(p).transform;
-      if (t && t !== 'none') ancestorTransforms.push(t);
+      const t = transformSpec(getComputedStyle(p));
+      if (transformed(t)) ancestorTransforms.push(t);
     }
     let bareTextCount = 0;
     if (!isLeaf) for (const c of el.childNodes) if (c.nodeType === 3 && (c.textContent || '').trim() !== '') bareTextCount++;
@@ -192,6 +295,7 @@ export function slideMeasurementScript(): string {
       href: tag === 'a' ? el.getAttribute('href') : null,
       listType,
       svgPrimitiveCount: tag === 'svg' ? el.querySelectorAll(SVG_PRIMS).length : 0,
+      inSvg,
       src: tag === 'img' ? (el.currentSrc || el.src || null) : null,
       layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
       layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
@@ -200,6 +304,10 @@ export function slideMeasurementScript(): string {
       effectiveOpacity: effectiveOpacity(el),
       paintedPseudoCount: (pseudoPaints(el, '::before') ? 1 : 0) + (pseudoPaints(el, '::after') ? 1 : 0),
       escapingDescendants: escapingDescendants(el, cs, r),
+      clippedTextPx: clippedTextPx(el, cs, isLeaf),
+      // SVG interiors are accounted for wholesale by the SVG deduction and the coverage metric —
+      // the walker never emits them — so a per-property census there would say nothing new.
+      unmodelledProperties: inSvg ? [] : censusOf(cs, tag),
       style: {
         fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',
@@ -209,11 +317,14 @@ export function slideMeasurementScript(): string {
         borderRadius: cs.borderRadius,
         borderTop: side(cs, 'Top'), borderRight: side(cs, 'Right'), borderBottom: side(cs, 'Bottom'), borderLeft: side(cs, 'Left'),
         boxShadow: cs.boxShadow, filter: cs.filter, backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
-        mixBlendMode: cs.mixBlendMode, transform: cs.transform, clipPath: cs.clipPath || 'none',
+        mixBlendMode: cs.mixBlendMode, clipPath: cs.clipPath || 'none',
         writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position,
+        listStyleType: cs.listStyleType || 'none',
+        ...transformSpec(cs),
       },
     });
   }
+  probeHost.remove();
   const bodyCs = document.body ? getComputedStyle(document.body) : null;
   const hasAnimation =
     (typeof document.getAnimations === 'function' && document.getAnimations().length > 0) ||

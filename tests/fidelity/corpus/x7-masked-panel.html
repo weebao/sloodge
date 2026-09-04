@@ -1,0 +1,73 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #ffffff;
+  }
+  h1 {
+    position: absolute;
+    left: 80px;
+    top: 250px;
+    width: 900px;
+    font-size: 54px;
+    font-weight: 800;
+    color: #0f172a;
+  }
+  p {
+    position: absolute;
+    left: 80px;
+    top: 340px;
+    width: 820px;
+    font-size: 24px;
+    color: #334155;
+    line-height: 1.5;
+  }
+  /* A navy band. The reader sees only the top 60px: the mask hides the rest. */
+  .band {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1280px;
+    height: 420px;
+    background: #1e3a8a;
+    -webkit-mask-image: linear-gradient(to bottom, #000 0 60px, transparent 60px);
+    mask-image: linear-gradient(to bottom, #000 0 60px, transparent 60px);
+  }
+  /* Fully masked out: the reader sees nothing here at all. */
+  .ghost {
+    position: absolute;
+    left: 60px;
+    top: 230px;
+    width: 940px;
+    height: 220px;
+    background: #f43f5e;
+    -webkit-mask-image: linear-gradient(transparent, transparent);
+    mask-image: linear-gradient(transparent, transparent);
+  }
+  .stamp {
+    position: absolute;
+    right: 80px;
+    bottom: 70px;
+    font-size: 18px;
+    color: #64748b;
+  }
+</style>
+<div class="band"></div>
+<h1>Masked paint is not measured</h1>
+<p>The navy band is masked to a 60px rule and the rose card is masked away entirely.</p>
+<div class="ghost"></div>
+<div class="stamp">Fidelity probe x7</div>
