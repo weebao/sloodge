@@ -19,6 +19,13 @@ const slides: SlideView[] = titles.map((title) => ({
   html: `<!doctype html><html><body>${title}</body></html>`,
 }))
 
+/** The deck with C moved one slot later: A B D C E. */
+const movedDeck: SlideView[] = [slides[0]!, slides[1]!, slides[3]!, slides[2]!, slides[4]!]
+
+/** A stand-in for Design Mode's instrumentation: a marker on the body, same bytes otherwise. */
+const documentFor = (_id: SlideId, html: string): string =>
+  html.replace('<body>', '<body data-instrumented>')
+
 /**
  * The stage's frames go through `SlideFrame`'s default (blob) transport, and happy-dom cannot fetch
  * a `blob:` URL, so the object-URL API is stubbed to about:blank as in `slide-frame.test.tsx`. The
@@ -147,7 +154,7 @@ describe('SlideStage mounting policy', () => {
     expect(frameRef.current).toBe(screen.getByTitle('Slide: D'))
   })
 
-  it('gives the Design Mode document to the active frame only', async () => {
+  it('gives the Design Mode document to every mounted frame, not just the active one', async () => {
     const blobs: Blob[] = []
     vi.spyOn(URL, 'createObjectURL').mockImplementation((source) => {
       blobs.push(source as Blob)
@@ -155,17 +162,87 @@ describe('SlideStage mounting policy', () => {
     })
     vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined)
 
-    render(stage(2, { activeHtml: '<!doctype html><html><body>instrumented</body></html>' }))
+    render(stage(2, { documentFor }))
     fireEvent.load(screen.getByTitle('Slide: C'))
 
     const documents = await Promise.all(blobs.map(async (blob) => blob.text()))
-    const instrumented = documents.filter((doc) => doc.includes('instrumented'))
-    expect(instrumented).toHaveLength(1)
     expect(documents).toHaveLength(3)
-    // The active frame got it; the neighbours got their stored source.
-    expect(screen.getByTitle('Slide: C').getAttribute('src')).toBe('about:blank#0')
-    expect(documents[0]).toContain('instrumented')
-    expect(documents[1]).toContain('>B<')
-    expect(documents[2]).toContain('>D<')
+    for (const doc of documents) expect(doc).toContain('data-instrumented')
+    expect(documents.filter((doc) => doc.includes('>C<'))).toHaveLength(1)
+  })
+
+  /**
+   * The load-count semantics of a step (M8.2 round 1). Every frame in the window shows the same
+   * kind of document, so promoting a neighbour swaps nothing: one step is exactly one URL mint — the
+   * cold neighbour entering the window — and no surviving frame's `src` changes. This is the same
+   * number with Design Mode off; round 0 instrumented the active frame only, and a step then
+   * re-minted both the incoming and the outgoing frame (three mints, two reloads).
+   */
+  it.each([
+    ['off', undefined],
+    ['on', documentFor],
+  ])('with Design Mode %s, a step mints one URL and changes no surviving frame', (_label, docs) => {
+    let mints = 0
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+      mints += 1
+      return `about:blank#${String(mints)}`
+    })
+    const { rerender } = render(stage(2, { documentFor: docs }))
+    fireEvent.load(screen.getByTitle('Slide: C'))
+    for (const frame of frames()) fireEvent.load(frame)
+    expect(mints).toBe(3)
+    const c = screen.getByTitle('Slide: C')
+    const d = screen.getByTitle('Preloading: D')
+    const [cSrc, dSrc] = [c.getAttribute('src'), d.getAttribute('src')]
+
+    rerender(stage(3, { documentFor: docs }))
+
+    expect(mints).toBe(4)
+    expect(screen.getByTitle('Slide: D').getAttribute('src')).toBe(dSrc)
+    expect(screen.getByTitle('Preloading: C').getAttribute('src')).toBe(cSrc)
+    expect(titlesOf()).toEqual(['Preloading: C', 'Slide: D', 'Preloading: E'])
+  })
+
+  it('toggling Design Mode re-mints every mounted frame, once', () => {
+    let mints = 0
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => {
+      mints += 1
+      return `about:blank#${String(mints)}`
+    })
+    const { rerender } = render(stage(2))
+    fireEvent.load(screen.getByTitle('Slide: C'))
+    for (const frame of frames()) fireEvent.load(frame)
+    expect(mints).toBe(3)
+
+    rerender(stage(2, { documentFor }))
+    expect(mints).toBe(6)
+    rerender(stage(2, { documentFor }))
+    expect(mints).toBe(6)
+  })
+
+  /**
+   * Frames are ordered by id, never by deck position (`liveSlideWindow`). Moving the selected slide
+   * one slot changes the deck-ordered window from [B, C, D] to [D, C, E]; if the DOM followed deck
+   * order React would move C's wrapper, and a re-inserted iframe reloads its document. The visible
+   * slide must stay exactly where it is, and its element must be the same one.
+   */
+  it('moving the active slide in the deck moves no frame in the DOM', () => {
+    const { rerender } = render(stage(2))
+    fireEvent.load(screen.getByTitle('Slide: C'))
+    for (const frame of frames()) fireEvent.load(frame)
+    const c = screen.getByTitle('Slide: C')
+    const d = screen.getByTitle('Preloading: D')
+    const before = frames()
+
+    // A B C D E → A B D C E, C still selected (now index 3): the window is D, C, E.
+    rerender(
+      <SlideStage slides={movedDeck} activeIndex={3} scale={0.5} titlePrefix="Slide" interactive />,
+    )
+
+    expect(screen.getByTitle('Slide: C')).toBe(c)
+    expect(screen.getByTitle('Preloading: D')).toBe(d)
+    const survivors = (list: HTMLIFrameElement[]) => list.filter((f) => f === c || f === d)
+    expect(survivors(frames())).toEqual(survivors(before))
+    expect(titlesOf()).toEqual(['Slide: C', 'Preloading: D', 'Preloading: E'])
   })
 })

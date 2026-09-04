@@ -14,6 +14,7 @@ import {
   checkBudgets,
   diffReports,
   reportProblems,
+  METRIC_DEFINITIONS,
   type PerfMetrics,
 } from '../../../perf/lib/report'
 import type { Summary } from '../../../perf/lib/stats'
@@ -213,6 +214,56 @@ describe('diffReports', () => {
 
   it('rejects a negative tolerance', () => {
     expect(() => diffReports(metrics(), metrics(), -1)).toThrow(RangeError)
+  })
+
+  /**
+   * A metric whose *definition* changed between the two reports is not compared: M8.2 redefined
+   * `deckOpenMs` from "a frame per slide" to "every mounted frame", and a diff that scored the
+   * 1943 → 500 ms drop as an improvement would be scoring the redefinition. A report without the
+   * field predates it and is version 1 throughout.
+   */
+  it('does not score a metric whose definition version differs, and says which versions', () => {
+    const diff = diffReports(
+      metrics({ deckOpenMs: 4000 }),
+      metrics({ deckOpenMs: 100 }),
+      10,
+      BUDGETS,
+      {
+        baseline: {},
+        candidate: METRIC_DEFINITIONS,
+      },
+    ).find((d) => d.key === 'deckOpenMs')
+    expect(diff?.definition).toEqual({ baseline: 1, candidate: 2 })
+    expect(diff?.regressed).toBe(false)
+
+    const worse = diffReports(
+      metrics({ deckOpenMs: 100 }),
+      metrics({ deckOpenMs: 4000 }),
+      10,
+      BUDGETS,
+      {
+        baseline: {},
+        candidate: METRIC_DEFINITIONS,
+      },
+    ).find((d) => d.key === 'deckOpenMs')
+    expect(worse?.regressed).toBe(false)
+  })
+
+  it('scores a metric normally when both reports carry the same definition version', () => {
+    const same = { baseline: METRIC_DEFINITIONS, candidate: METRIC_DEFINITIONS }
+    const diff = diffReports(
+      metrics({ deckOpenMs: 100 }),
+      metrics({ deckOpenMs: 4000 }),
+      10,
+      BUDGETS,
+      same,
+    )
+    expect(diff.find((d) => d.key === 'deckOpenMs')?.regressed).toBe(true)
+    expect(diff.every((d) => d.definition.baseline === d.definition.candidate)).toBe(true)
+  })
+
+  it('pins deckOpenMs at definition version 2 since M8.2', () => {
+    expect(METRIC_DEFINITIONS['deckOpenMs']).toBe(2)
   })
 })
 

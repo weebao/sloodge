@@ -1,4 +1,4 @@
-import { memo, useMemo, type JSX, type RefObject } from 'react'
+import { memo, useCallback, useMemo, type JSX, type RefObject } from 'react'
 import { SLIDE_SIZE } from './slideFit'
 import { useSlideUrl, type SlideUrlFactory } from './useSlideUrl'
 
@@ -68,11 +68,13 @@ export type SlideFrameProps = {
    */
   frameRef?: RefObject<HTMLIFrameElement | null> | undefined
   /**
-   * The iframe's `load` — fired once the slide document has committed. `SlideStage` uses it to hold
-   * the ±1 pre-warm back until the active slide is up, so neighbours never compete with the slide
-   * the user is waiting for.
+   * The iframe's `load`, with the html of the document that loaded. `SlideStage` uses it to hold
+   * the ±1 pre-warm back until the active slide's *current* document is up, so neighbours never
+   * compete with the slide the user is waiting for. The html is passed because a `load` alone does
+   * not say which document it was: after an html change the frame keeps its old `src` until the new
+   * URL is minted, and a load that fires meanwhile belongs to the old document.
    */
-  onLoad?: () => void
+  onLoad?: (html: string) => void
 }
 
 function SlideFrameInner({
@@ -88,6 +90,9 @@ function SlideFrameInner({
   // Keyed on the document text alone, so a scale change never mints a new URL and never reloads
   // the frame — a reload loses animation phase and any interactive state, on every window resize.
   const src = useSlideUrl(html, slideUrls)
+  const handleLoad = useCallback(() => {
+    if (src !== null) onLoad?.(src.html)
+  }, [src, onLoad])
 
   // `Math.max(NaN, 0)` is NaN, which yields `width: "NaNpx"` and `transform: scale(NaN)` — both
   // invalid declarations that CSS drops, leaving a full-size 1280px frame bursting out of its
@@ -130,8 +135,8 @@ function SlideFrameInner({
           sandbox={SLIDE_SANDBOX}
           referrerPolicy="no-referrer"
           allow=""
-          src={src}
-          onLoad={onLoad}
+          src={src.url}
+          onLoad={handleLoad}
           tabIndex={interactive ? undefined : -1}
           aria-hidden={interactive ? undefined : 'true'}
           className="block border-0"

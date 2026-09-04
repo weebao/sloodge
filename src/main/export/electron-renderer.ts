@@ -7,7 +7,7 @@
  * ## Secure sandbox reuse (task requirement 3 / 60-export.md §1.2)
  *
  * There is no weaker render path for export. The slide HTML is published into the *same*
- * `SlideRegistry` the canvas publishes to, served from `slide://<id>/` with the identical CSP
+ * `SlideRegistry` the canvas publishes to, served from `slide://stage-<id>/<id>/` with the identical CSP
  * response header, and the window's `webPreferences` are as locked as the editor's: `sandbox: true`,
  * `contextIsolation: true`, `nodeIntegration: false`, and no preload — so the slide's own scripts run
  * (that is what `slide://` is for) but reach neither the app nor the network (`connect-src 'none'`

@@ -121,11 +121,10 @@ const SLIDE_DOCUMENT_ID_PATTERN = new RegExp(`^[0-9a-f]{${String(SLIDE_DOCUMENT_
  * A fresh document id from the platform CSPRNG.
  *
  * Hex rather than base64url so the validator is a character-class regexp with no normalization in
- * front of it, and lowercase so the value survives both URL parsers it passes through unchanged.
- * (Through M8.1 the id was the URL **host**, where Chromium lower-cases and Node does not; it is a
- * path segment now, which neither parser touches, but a value that is safe as either is the safer
- * value to keep.) Hex is 4 bits per character against base64url's 6, which costs 32 characters
- * instead of 22.
+ * front of it, and lowercase so the value survives both URL parsers it passes through unchanged —
+ * it is a path segment everywhere and, on the stage, part of the **host** as well, where Chromium
+ * lower-cases and Node does not. Hex is 4 bits per character against base64url's 6, which costs 32
+ * characters instead of 22.
  *
  * `globalThis.crypto` rather than `node:crypto` so this stays importable from every build target —
  * `src/shared` may not depend on anything, and the Web Crypto API is present in Node 24, in the
@@ -171,9 +170,22 @@ export function isPublishableSlideHtml(
 }
 
 /**
- * The hosts slide documents are served from — one per *surface*, not one per document.
+ * Which *surface* a slide document is delivered to. The surface decides the URL's host, and the
+ * host decides the renderer process — see `slideDocumentHost`.
+ */
+export type SlideSurface = 'stage' | 'thumbnails'
+
+/**
+ * The host every rail miniature is served from. Stage documents have no shared host; theirs is
+ * derived from the id (`stage-<id>`), one per document.
+ */
+export const SLIDE_THUMBNAIL_HOST = 'thumbnails'
+const SLIDE_STAGE_HOST_PREFIX = 'stage-'
+
+/**
+ * The host a document is served from: `stage-<id>` for the stage, `thumbnails` for the rail.
  *
- * ## Why the host is a process group (M8.2)
+ * ## The host is a process group (M8.2)
  *
  * Through M8.1 the id was the host (`slide://<id>/`), so every slide document was its own origin.
  * That was described as belt-and-braces — the frame is opaque-origin regardless — but it had a cost
@@ -188,11 +200,25 @@ export function isPublishableSlideHtml(
  * neighbours and every visible thumbnail — a dozen animating documents — were sharing one main
  * thread, and a new slide's parse queued behind all of them.
  *
- * So the host names the **surface**: everything the user is looking at or about to look at — the
- * canvas stage, Present, export — is `slides`; the rail's miniatures are `thumbnails`. Two sandboxed
- * processes instead of a hundred, and the thumbnails' animation work can never delay the slide the
- * user just clicked. When M8.3 replaces live miniatures with cached bitmaps the `thumbnails` process
- * simply stops existing; nothing here needs to change.
+ * So the host names the process group the document should land in, and the two surfaces need
+ * different groupings:
+ *
+ * - **Stage** (the canvas, Present, export): one host — and so one process — **per document**.
+ *   The stage holds at most three documents (the active slide and its ±1 neighbours), so this is
+ *   three processes, not a hundred; and it is what keeps a runaway neighbour from stalling the
+ *   slide the user is looking at. Measured with all stage documents on one shared host: a hidden
+ *   neighbour running `while (true) {}` froze the active slide's script for the whole observation
+ *   window, in the editor and in Present (where slide N+1 is pre-warmed behind slide N), and the
+ *   only recovery was Chromium discarding the process when a far slide was selected. That is the
+ *   "a hung slide must not freeze the talk" case the roadmap's M4.7 exists for, and it must not be
+ *   introduced by a perf change. `pnpm perf:isolation` runs that exact scenario and asserts the
+ *   active slide's heartbeat continues.
+ * - **Thumbnails** (the rail): one shared host for every miniature. A rail of a dozen animating
+ *   miniatures in one process is one process instead of a dozen, and their work can never delay
+ *   the slide the user just clicked. What is accepted here is that a runaway *thumbnail* freezes
+ *   the other miniatures while its card is in view — a frozen rail is tolerable where a frozen
+ *   active slide is not. When M8.3 replaces live miniatures with cached bitmaps this process simply
+ *   stops existing; nothing here needs to change.
  *
  * ## What the host never protected
  *
@@ -205,28 +231,34 @@ export function isPublishableSlideHtml(
  * `pnpm perf:isolation` (`perf/cli/isolation-probe.ts`), which runs those reaches from inside running
  * slides and reports each one denied.
  *
- * What the unique host *did* buy is two lesser things, stated rather than dropped silently:
- * (1) had the `sandbox` attribute ever been lost, unique hosts would still have kept two slides from
- * scripting each other, whereas now two slides on one surface would be same-origin — the attribute
- * is pinned by `slide-frame.test.tsx` and by a repo-wide grep test, and `frame-src 'none'` on every
- * slide means no slide can frame a sibling to try; (2) process-level isolation between *slides*,
- * which is exactly what a hundred processes were. Slide-to-app isolation is unchanged: the app
- * document is on a different site and keeps its own process.
+ * What the unique host *did* buy on the thumbnails surface, stated rather than dropped silently:
+ * had the `sandbox` attribute ever been lost, unique hosts would still have kept two miniatures from
+ * scripting each other, whereas now two miniatures would be same-origin. The attribute is pinned by
+ * `slide-frame.test.tsx` and by a repo-wide grep test, and `frame-src 'none'` on every slide means
+ * no slide can frame a sibling to try. Slide-to-app isolation is unchanged: the app document is on a
+ * different site and keeps its own process.
  *
- * `location.origin` inside a slide now reads `slide://slides` or `slide://thumbnails` — strings that
- * no longer look like identifiers a future reader could be tempted to trust, which closes the
- * cosmetic concern the per-document host was originally kept for.
+ * ## The residual: a slide can move itself between surfaces
+ *
+ * The handler serves a registered id on either surface's host, so a slide can navigate itself from
+ * `slide://stage-<id>/<id>/` to `slide://thumbnails/<id>/` or back. Nothing confidential changes —
+ * it is the same document in the same opaque-origin frame — and the availability consequence is
+ * small and stated: a stage document that moves to the thumbnails host can stall the rail, which
+ * any thumbnail can already do; a thumbnail that moves to `stage-<its own id>` gets a process of
+ * its own (~25 MB) and can stall nothing but itself. It cannot join the active slide's process,
+ * because that host carries the active slide's 128-bit id, which it does not have.
+ *
+ * `location.origin` inside a stage slide reads `slide://stage-<its own id>` — a value the slide
+ * already knows from `location.href`, and one nothing in the app trusts: the bridge authenticates
+ * by `event.source`, never by origin (`frameScript.ts`, `useDesignBridge.ts`).
  */
-export const SLIDE_STAGE_HOST = 'slides'
-export const SLIDE_THUMBNAIL_HOST = 'thumbnails'
-export type SlideHost = typeof SLIDE_STAGE_HOST | typeof SLIDE_THUMBNAIL_HOST
-
-/** Every host the handler answers for. A URL on any other host is a 404, whatever its path. */
-const SLIDE_HOSTS: ReadonlySet<string> = new Set([SLIDE_STAGE_HOST, SLIDE_THUMBNAIL_HOST])
+export function slideDocumentHost(id: string, surface: SlideSurface): string {
+  return surface === 'stage' ? `${SLIDE_STAGE_HOST_PREFIX}${id}` : SLIDE_THUMBNAIL_HOST
+}
 
 /** The URL a published slide is served from: `slide://<host>/<id>/`, the id as the only path segment. */
-export function slideDocumentUrl(id: string, host: SlideHost = SLIDE_STAGE_HOST): string {
-  return `${SLIDE_SCHEME}://${host}/${id}/`
+export function slideDocumentUrl(id: string, surface: SlideSurface = 'stage'): string {
+  return `${SLIDE_SCHEME}://${slideDocumentHost(id, surface)}/${id}/`
 }
 
 /** The only path shape the handler serves: `/<id>/`, nothing more and nothing less. */
@@ -236,18 +268,23 @@ const SLIDE_DOCUMENT_PATH_PATTERN = new RegExp(
 
 /**
  * The id inside an already-parsed `slide://` URL, or `null` if this is not one of ours — wrong
- * scheme, wrong host, or any path other than exactly `/<id>/`.
+ * scheme, any path other than exactly `/<id>/`, or a host that is neither `thumbnails` nor the
+ * stage host *for that id*. A stage URL therefore names its document twice and the two must agree;
+ * `slide://stage-<a>/<b>/` is a 404, not document `b` in `a`'s process.
  *
  * Shared by the handler (`resolveSlideRequest`) and the renderer's revoke path so that what main
  * *accepts* and what the renderer *emits* are one definition. The pathname is matched after the
- * URL parser has normalized it, never as a raw string: `slide://slides/<id>/x/../` is the same
- * resource as `slide://slides/<id>/` and must be answered the same way, and a check-then-use across
- * two parsers is how allow-lists leak (the same reasoning as `toSafeExternalUrl` in
+ * URL parser has normalized it, never as a raw string: `slide://thumbnails/<id>/x/../` is the same
+ * resource as `slide://thumbnails/<id>/` and must be answered the same way, and a check-then-use
+ * across two parsers is how allow-lists leak (the same reasoning as `toSafeExternalUrl` in
  * `src/main/security/externalUrls.ts`).
  */
 export function slideDocumentIdFromParsedUrl(url: URL): string | null {
-  if (url.protocol !== `${SLIDE_SCHEME}:` || !SLIDE_HOSTS.has(url.hostname)) return null
-  return SLIDE_DOCUMENT_PATH_PATTERN.exec(url.pathname)?.[1] ?? null
+  if (url.protocol !== `${SLIDE_SCHEME}:`) return null
+  const id = SLIDE_DOCUMENT_PATH_PATTERN.exec(url.pathname)?.[1]
+  if (id === undefined) return null
+  const host = url.hostname
+  return host === SLIDE_THUMBNAIL_HOST || host === slideDocumentHost(id, 'stage') ? id : null
 }
 
 /**

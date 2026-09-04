@@ -3,8 +3,6 @@ import { SlideRegistry } from '../../../src/main/slide/registry'
 import { resolveSlideRequest, slideResponseHeaders } from '../../../src/main/slide/slideResponse'
 import {
   SLIDE_CSP,
-  SLIDE_STAGE_HOST,
-  SLIDE_THUMBNAIL_HOST,
   slideDocumentIdFromUrl,
   slideDocumentUrl,
 } from '../../../src/shared/slide-protocol'
@@ -146,12 +144,22 @@ describe('resolveSlideRequest', () => {
     expect(resolveSlideRequest(registry, { url: 'not a url' }).status).toBe(400)
   })
 
-  // The accepted path is exactly `/<id>/`. The id without its slash, the host alone, and the
-  // pre-M8.2 id-as-host form are all 404s, so there is one legal spelling of every document.
+  // The accepted path is exactly `/<id>/` on the id's own stage host or the thumbnails host. The id
+  // without its slash, the host alone, the pre-M8.2 id-as-host form, the round-0 shared `slides`
+  // host and another document's stage host are all 404s, so there are exactly two legal spellings
+  // of every document — one per surface — and neither can be used to reach a different document.
   it.each([
     ['the id without its trailing slash', (url: string) => url.replace(/\/$/, '')],
-    ['the host alone', () => `slide://${SLIDE_STAGE_HOST}/`],
-    ['an unknown host', (url: string) => url.replace(`//${SLIDE_STAGE_HOST}/`, '//elsewhere/')],
+    ['the host alone', (url: string) => url.replace(/[0-9a-f]{32}\/$/, '')],
+    ['an unknown host', (url: string) => url.replace(/\/\/stage-[0-9a-f]{32}\//, '//elsewhere/')],
+    [
+      'the shared stage host of M8.2 round 0',
+      (url: string) => url.replace(/\/\/stage-[0-9a-f]{32}\//, '//slides/'),
+    ],
+    [
+      "another document's stage host",
+      (url: string) => url.replace(/\/\/stage-[0-9a-f]{32}\//, `//stage-${'b'.repeat(32)}/`),
+    ],
     ['the id as the host', (url: string) => `slide://${slideDocumentIdFromUrl(url) ?? ''}/`],
   ])('404s %s', (_label, mangle) => {
     const { registry, url } = published('<html>secret</html>')
@@ -161,12 +169,12 @@ describe('resolveSlideRequest', () => {
     expect(response.body).not.toContain('secret')
   })
 
-  // The same document is reachable on every surface host; the host chooses a process, not a key.
+  // The same document is reachable on both surfaces; the host chooses a process, not a key.
   it('serves the document on the thumbnails host too', () => {
     const { registry, url } = published('<html>mini</html>')
     const id = slideDocumentIdFromUrl(url) ?? ''
     const response = resolveSlideRequest(registry, {
-      url: slideDocumentUrl(id, SLIDE_THUMBNAIL_HOST),
+      url: slideDocumentUrl(id, 'thumbnails'),
     })
 
     expect(response.status).toBe(200)

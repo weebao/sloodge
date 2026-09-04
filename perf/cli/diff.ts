@@ -88,14 +88,20 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   console.log(`\n${budgetTable(checkBudgets(candidate.metrics))}`)
 
-  const diffs = diffReports(baseline.metrics, candidate.metrics, tolerance)
+  const diffs = diffReports(baseline.metrics, candidate.metrics, tolerance, undefined, {
+    baseline: baseline.metricDefinitions ?? {},
+    candidate: candidate.metricDefinitions ?? {},
+  })
   console.log('\n| Metric | Baseline | Candidate | Delta | |')
   console.log('|---|---|---|---|---|')
   for (const d of diffs) {
     const sign = d.deltaPct >= 0 ? '+' : ''
+    const comparable = d.definition.baseline === d.definition.candidate
     console.log(
       `| ${d.label} | ${d.baseline.toFixed(1)} ${d.unit} | ${d.candidate.toFixed(1)} ${d.unit} | ` +
-        `${sign}${d.deltaPct.toFixed(1)}% | ${d.regressed ? 'REGRESSED' : 'ok'} |`,
+        (comparable
+          ? `${sign}${d.deltaPct.toFixed(1)}% | ${d.regressed ? 'REGRESSED' : 'ok'} |`
+          : `n/a | NOT COMPARED: definition v${String(d.definition.baseline)} vs v${String(d.definition.candidate)} |`),
     )
   }
   console.log(idleRamRow(baseline.metrics.idleRamMb, candidate.metrics.idleRamMb))
@@ -112,6 +118,16 @@ export async function main(argv: readonly string[]): Promise<void> {
           ? ' — a candidate that leaves any switch unmeasured counts as a slide-switch regression.'
           : '.'),
     )
+  }
+
+  for (const d of diffs) {
+    if (d.definition.baseline !== d.definition.candidate) {
+      console.log(
+        `WARNING: ${d.key} is defined differently in the two reports (v${String(d.definition.baseline)} ` +
+          `vs v${String(d.definition.candidate)}); its delta is not a change in the app and it is excluded ` +
+          `from the regression check. See METRIC_DEFINITIONS in perf/lib/report.ts.`,
+      )
+    }
   }
 
   const budgetFailures = checkBudgets(candidate.metrics).filter((c) => !c.pass)

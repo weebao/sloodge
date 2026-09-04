@@ -18,8 +18,8 @@
 
 import { access, stat } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
-import type { CdpClient } from './cdp'
-import { waitFor, WaitTimeoutError } from './cdp'
+import { AppExitedError } from './app'
+import { CdpClosedError, waitFor, WaitTimeoutError, type CdpClient } from './cdp'
 import {
   INSTALL_RECORDER,
   LAST_SWITCH_LOADED,
@@ -237,17 +237,37 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
   })()`)
   if (sent !== 'sent') throw new Error(`Could not push the deck: ${sent}`)
 
-  // Published = the rail has a card per slide and every rail frame that is *mounted* has a
-  // `slide://` src (main accepted it into the registry). Since M8.2 the rail mounts a live frame
-  // only for the cards inside its scroll window, so the number of frames is a property of the
-  // rail's height, not of the deck — waiting for `slideCount` of them would never return.
+  // Adopted = the rail has a card per slide.
+  const railCards = `${SELECTORS.rail} [data-slide-index]`
   await waitFor(
     page,
-    `(() => {
-      const cards = document.querySelectorAll('${SELECTORS.rail} [data-slide-index]').length;
-      const frames = Array.from(document.querySelectorAll('${SELECTORS.rail} iframe'));
-      return cards >= ${String(slideCount)} && frames.length > 0 && frames.every((f) => f.hasAttribute('src'));
-    })()`,
+    `document.querySelectorAll('${railCards}').length >= ${String(slideCount)}`,
+    600_000,
+    150,
+    assertAlive,
+  )
+
+  // Since M8.2 the rail mounts a live frame only for the cards inside its scroll window, so the
+  // number of frames is a property of the rail's height, not of the deck — waiting for `slideCount`
+  // of them would never return. But *zero* of them, with every card in place, means the rail's
+  // visibility gate never fired, and that has to fail here with a reason rather than after the
+  // ten-minute publish timeout below. The first frames mount on the observer's first callback, so
+  // ten seconds is generous even on a loaded host.
+  const railFrames = `document.querySelectorAll('${SELECTORS.rail} iframe')`
+  await waitFor(page, `${railFrames}.length > 0`, 10_000, 150, assertAlive).catch(
+    (error: unknown) => {
+      if (error instanceof AppExitedError || error instanceof CdpClosedError) throw error
+      throw new Error(
+        `The rail shows ${String(slideCount)} cards but mounted no frame within 10 s: the ` +
+          'thumbnail visibility gate (ThumbnailPreview / IntersectionObserver) never went live.',
+      )
+    },
+  )
+
+  // Published = every mounted rail frame has a `slide://` src (main accepted it into the registry).
+  await waitFor(
+    page,
+    `Array.from(${railFrames}).every((f) => f.hasAttribute('src'))`,
     600_000,
     150,
     assertAlive,

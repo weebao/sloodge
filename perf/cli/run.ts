@@ -32,6 +32,7 @@ import {
 import {
   budgetTable,
   checkBudgets,
+  METRIC_DEFINITIONS,
   parseRamBasis,
   reportProblems,
   type PerfMetrics,
@@ -349,6 +350,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   const report: PerfReport = {
     schema: 1,
     commit: gitSha(repoRoot),
+    metricDefinitions: METRIC_DEFINITIONS,
     generatedAt: new Date().toISOString(),
     deck: {
       slideCount,

@@ -10,24 +10,40 @@ import { SlideFrame } from './SlideFrame'
  * style toggle rather than a navigation. Both the editor canvas and Present render through this, so
  * the two surfaces share one mounting policy and one pre-warm order.
  *
- * ## Deck-ordered, keyed by id
+ * ## Keyed by id, ordered by id
  *
- * Frames are rendered in deck order and keyed by slide id (`liveSlideWindow`). Moving to a
- * neighbour therefore appends one frame at one end and drops one at the other; the frame that was
- * active stays exactly where it is in the DOM and merely becomes hidden. That is what makes the
- * switch instant and preserves the outgoing slide's animation phase and interactive state. Any
- * scheme that reordered children would move an `<iframe>` element, and a moved iframe reloads.
+ * Frames are keyed by slide id and rendered in id order (`liveSlideWindow`), never in deck order.
+ * Any transition — a step, a jump, a reorder of the deck around or of the selected slide — is then
+ * inserts and removes only: the frame that was active stays exactly where it is in the DOM and merely
+ * becomes hidden. That is what makes the switch instant and preserves the outgoing slide's animation
+ * phase and interactive state. Any scheme that moved a child would move an `<iframe>` element, and
+ * a moved iframe reloads.
+ *
+ * ## Every frame shows the same *kind* of document
+ *
+ * `documentFor` (Design Mode's instrumented copy) is applied to every frame in the window, not just
+ * the active one. The alternative — instrument only the active frame, keep neighbours on their stored
+ * source — was tried first and costs more than it saves: a step then changes the document of *both*
+ * the incoming frame (raw → instrumented) and the outgoing one (instrumented → raw), which is two
+ * reloads and three publishes per step where a step with Design Mode off is none, and the incoming
+ * frame's reload is invisible to the pre-warm gate. Instrumenting a neighbour is one parse in the
+ * app renderer when it enters the window; it is memoized per frame, so a step costs one parse — the
+ * new neighbour's — and zero reloads, exactly as with Design Mode off. Toggling Design Mode swaps
+ * all mounted documents at once, which is the one moment three frames reload together.
  *
  * ## Neighbours warm *after* the active slide has loaded
  *
  * A cold jump mounts the target first and its *cold* neighbours only once the target's frame has
- * fired `load`. Mounting all three at once would have the neighbours' publish round-trips, parses
- * and script contend with the slide the user is actually waiting for — measurably so when the three
- * share a renderer process. A neighbour that is already loaded (it was in the previous window)
- * stays mounted throughout; unmounting it to re-mount it a moment later would be the reload the
- * window exists to avoid. The bookkeeping is a set of loaded slide ids, added on `load` and dropped
- * on unmount, so an id that leaves the window and later returns is cold again rather than being
- * treated as loaded because it once was.
+ * fired `load` **for the document it is currently showing**. Mounting all three at once would have
+ * the neighbours' publish round-trips and parses contend with the slide the user is actually waiting
+ * for — in main's registry and the app renderer even now that each stage document has its own
+ * process. A neighbour that is already loaded (it was in the previous window) stays mounted
+ * throughout; unmounting it to re-mount it a moment later would be the reload the window exists to
+ * avoid. The bookkeeping is a map from slide id to the html its frame last fired `load` for, added
+ * on `load` and dropped on unmount, so an id that leaves the window and later returns is cold again
+ * rather than being treated as loaded because it once was — and a frame whose document changed
+ * under it (an edit, or Design Mode toggling) is not treated as loaded on the strength of the old
+ * document's `load`.
  *
  * ## What is *not* here
  *
@@ -41,11 +57,11 @@ export type SlideStageProps = {
   /** Index of the active slide; out of range renders nothing. */
   activeIndex: number
   /**
-   * The document the active frame shows *instead of* its stored html — Design Mode's instrumented
-   * copy. Neighbours always show their stored source; instrumenting a slide nobody can select
-   * elements on would be parse work for nothing.
+   * The document a frame shows *instead of* the slide's stored html — Design Mode's instrumented
+   * copy. Applied to every mounted frame (see above); memoized per frame on the slide's html, so
+   * give it a stable identity.
    */
-  activeHtml?: string | undefined
+  documentFor?: ((id: SlideId, html: string) => string) | undefined
   /** CSS scale for every frame; see `fitSlide`. */
   scale: number
   /** The active frame's accessible name is `${titlePrefix}: ${slide.title}`. */
@@ -61,7 +77,7 @@ export type SlideStageProps = {
 export function SlideStage({
   slides,
   activeIndex,
-  activeHtml,
+  documentFor,
   scale,
   titlePrefix,
   interactive,
@@ -69,22 +85,27 @@ export function SlideStage({
   frameClassName,
 }: SlideStageProps): JSX.Element {
   const frames = useMemo(() => liveSlideWindow(slides, activeIndex), [slides, activeIndex])
-  const [loaded, setLoaded] = useState<ReadonlySet<SlideId>>(() => new Set())
+  const [loaded, setLoaded] = useState<ReadonlyMap<SlideId, string>>(() => new Map())
 
-  const markLoaded = useCallback((id: SlideId) => {
-    setLoaded((previous) => (previous.has(id) ? previous : new Set(previous).add(id)))
+  const markLoaded = useCallback((id: SlideId, html: string) => {
+    setLoaded((previous) =>
+      previous.get(id) === html ? previous : new Map(previous).set(id, html),
+    )
   }, [])
   const markGone = useCallback((id: SlideId) => {
     setLoaded((previous) => {
       if (!previous.has(id)) return previous
-      const next = new Set(previous)
+      const next = new Map(previous)
       next.delete(id)
       return next
     })
   }, [])
 
+  const documentOf = (slide: SlideView): string =>
+    documentFor === undefined ? slide.html : documentFor(slide.id, slide.html)
+
   const active = frames.find((frame) => frame.role === 'active')
-  const warmReady = active !== undefined && loaded.has(active.slide.id)
+  const warmReady = active !== undefined && loaded.get(active.slide.id) === documentOf(active.slide)
 
   return (
     <div className="relative">
@@ -93,7 +114,7 @@ export function SlideStage({
           <StageFrame
             key={slide.id}
             slide={slide}
-            html={role === 'active' && activeHtml !== undefined ? activeHtml : slide.html}
+            documentFor={documentFor}
             role={role}
             scale={scale}
             titlePrefix={titlePrefix}
@@ -111,14 +132,14 @@ export function SlideStage({
 
 type StageFrameProps = {
   slide: SlideView
-  html: string
+  documentFor: ((id: SlideId, html: string) => string) | undefined
   role: LiveSlideRole
   scale: number
   titlePrefix: string
   interactive: boolean
   frameRef: RefObject<HTMLIFrameElement | null> | undefined
   frameClassName: string | undefined
-  onLoaded: (id: SlideId) => void
+  onLoaded: (id: SlideId, html: string) => void
   onGone: (id: SlideId) => void
 }
 
@@ -129,7 +150,7 @@ type StageFrameProps = {
  */
 function StageFrame({
   slide,
-  html,
+  documentFor,
   role,
   scale,
   titlePrefix,
@@ -141,8 +162,18 @@ function StageFrame({
 }: StageFrameProps): JSX.Element {
   const isActive = role === 'active'
 
+  // Per frame, on the slide's own html: a step re-instruments only the frame that just entered the
+  // window, and a deck update that rebuilds the `SlideView` objects re-instruments nothing.
+  const html = useMemo(
+    () => (documentFor === undefined ? slide.html : documentFor(slide.id, slide.html)),
+    [documentFor, slide.id, slide.html],
+  )
+
   useEffect(() => () => onGone(slide.id), [slide.id, onGone])
-  const handleLoad = useCallback(() => onLoaded(slide.id), [slide.id, onLoaded])
+  const handleLoad = useCallback(
+    (loadedHtml: string) => onLoaded(slide.id, loadedHtml),
+    [slide.id, onLoaded],
+  )
 
   return (
     <div

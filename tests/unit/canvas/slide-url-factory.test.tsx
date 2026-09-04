@@ -11,7 +11,7 @@ import {
   type SlideProtocolBridge,
 } from '../../../src/renderer/src/features/canvas/slideUrlFactory'
 import type { SloodgeBridge } from '../../../src/renderer/src/host/bridge'
-import { SLIDE_THUMBNAIL_HOST, slideDocumentUrl } from '../../../src/shared/slide-protocol'
+import { slideDocumentUrl } from '../../../src/shared/slide-protocol'
 
 const ID = 'b'.repeat(32)
 
@@ -109,21 +109,21 @@ describe('the slide:// transport', () => {
   })
 
   // The host is the process group (M8.2): the thumbnail factory mints thumbnail-host urls from the
-  // same publish, and revokes by the same id — main never sees the host.
-  it('mints urls on the requested host and revokes them by id', async () => {
+  // same publish, and revokes by the same id — main never sees the surface.
+  it('mints urls for the requested surface and revokes them by id', async () => {
     const bridge = fakeBridge()
-    const urls = createProtocolSlideUrls(bridge, SLIDE_THUMBNAIL_HOST)
+    const urls = createProtocolSlideUrls(bridge, 'thumbnails')
 
     const url = await urls.create('<html>mini</html>')
-    expect(url).toBe(slideDocumentUrl(ID, SLIDE_THUMBNAIL_HOST))
+    expect(url).toBe(slideDocumentUrl(ID, 'thumbnails'))
     expect(url).not.toBe(slideDocumentUrl(ID))
 
     urls.revoke(url)
     expect(bridge.revoked).toEqual([ID])
   })
 
-  it('memoizes one default factory per host', () => {
-    expect(defaultSlideUrls(SLIDE_THUMBNAIL_HOST)).toBe(defaultSlideUrls(SLIDE_THUMBNAIL_HOST))
+  it('memoizes one default factory per surface', () => {
+    expect(defaultSlideUrls('thumbnails')).toBe(defaultSlideUrls('thumbnails'))
     expect(defaultSlideUrls()).toBe(defaultSlideUrls())
   })
 

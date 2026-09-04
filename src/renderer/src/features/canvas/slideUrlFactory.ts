@@ -1,8 +1,7 @@
 import {
-  SLIDE_STAGE_HOST,
   slideDocumentIdFromUrl,
   slideDocumentUrl,
-  type SlideHost,
+  type SlideSurface,
 } from '../../../../shared/slide-protocol'
 import { getBridge } from '../../host/bridge'
 import { blobSlideUrls } from './blobSlideUrls'
@@ -73,17 +72,18 @@ export function getSlideProtocolBridge(): SlideProtocolBridge | undefined {
  * it fails are a torn-down window and a double-revoke, both of which mean the document is already
  * gone — which is the outcome the caller wanted.
  *
- * `host` picks the URL's host and with it the renderer process the frame lands in (M8.2 — see
- * `slideDocumentUrl`): the stage and Present publish on the default `slides`, the rail's miniatures
- * on `thumbnails`, so a dozen animating thumbnails never share a main thread with the slide the
- * user is looking at. Main does not care which; the id is the key either way.
+ * `surface` picks the URL's host and with it the renderer process the frame lands in (M8.2 — see
+ * `slideDocumentHost`): the stage and Present get a host per document, the rail's miniatures share
+ * `thumbnails`, so a dozen animating thumbnails never share a main thread with the slide the user is
+ * looking at, and neither does a hung neighbour. Main does not care which; the id is the key either
+ * way.
  */
 export function createProtocolSlideUrls(
   bridge: SlideProtocolBridge,
-  host: SlideHost = SLIDE_STAGE_HOST,
+  surface: SlideSurface = 'stage',
 ): SlideUrlFactory {
   return {
-    create: async (html) => slideDocumentUrl(await bridge.publishSlide(html), host),
+    create: async (html) => slideDocumentUrl(await bridge.publishSlide(html), surface),
     revoke: (url) => {
       const id = slideDocumentIdFromUrl(url)
       if (id === null) return
@@ -97,15 +97,15 @@ export function createProtocolSlideUrls(
 /** The transport for this host: `slide://` under Electron, blob URLs everywhere else. */
 export function createSlideUrlFactory(
   bridge: SlideProtocolBridge | undefined = getSlideProtocolBridge(),
-  host: SlideHost = SLIDE_STAGE_HOST,
+  surface: SlideSurface = 'stage',
 ): SlideUrlFactory {
-  return bridge === undefined ? blobSlideUrls : createProtocolSlideUrls(bridge, host)
+  return bridge === undefined ? blobSlideUrls : createProtocolSlideUrls(bridge, surface)
 }
 
-const cached = new Map<SlideHost, SlideUrlFactory>()
+const cached = new Map<SlideSurface, SlideUrlFactory>()
 
 /**
- * The process-wide factory for a host, memoized — one instance per host, for the life of the
+ * The process-wide factory for a surface, memoized — one instance per surface, for the life of the
  * renderer.
  *
  * The memo is not a performance tweak — it is a correctness requirement. This is `useSlideUrl`'s
@@ -118,11 +118,11 @@ const cached = new Map<SlideHost, SlideUrlFactory>()
  * reset hook and none is needed: the gating decision is tested through `createSlideUrlFactory`,
  * which takes the bridge as an argument.
  */
-export function defaultSlideUrls(host: SlideHost = SLIDE_STAGE_HOST): SlideUrlFactory {
-  let factory = cached.get(host)
+export function defaultSlideUrls(surface: SlideSurface = 'stage'): SlideUrlFactory {
+  let factory = cached.get(surface)
   if (factory === undefined) {
-    factory = createSlideUrlFactory(getSlideProtocolBridge(), host)
-    cached.set(host, factory)
+    factory = createSlideUrlFactory(getSlideProtocolBridge(), surface)
+    cached.set(surface, factory)
   }
   return factory
 }

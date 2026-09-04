@@ -1,14 +1,15 @@
 /**
- * `pnpm perf:isolation` — the containment evidence behind M8.2's URL change.
+ * `pnpm perf:isolation` — the containment and availability evidence behind M8.2's URL change.
  *
  * M8.2 moved slide documents from `slide://<id>/` (one host, therefore one *site* and one renderer
- * process per slide) to `slide://slides/<id>/` (one host for all). The claim that justifies it is
- * that nothing keeping slides apart ever lived in the host: the frame's `sandbox="allow-scripts"`
- * makes every document an opaque origin whatever its URL. A claim like that is not something to
- * argue from the spec in a PR description; this script *runs* the reaches from inside real slides
- * in the real, built app and reports each one.
+ * process per slide) to `slide://<host>/<id>/`, where the host is a process group: `stage-<id>` for
+ * the stage (still one process per document, but the stage holds at most three) and one shared
+ * `thumbnails` host for the rail. Two claims justify it, and this script tests both in the real,
+ * built app rather than arguing them from the spec.
  *
- * It launches the app exactly as `perf:run` does (fresh profile, no production hooks), pushes a
+ * **Containment.** Nothing keeping slides apart ever lived in the host: the frame's
+ * `sandbox="allow-scripts"` makes every document an opaque origin whatever its URL. The script
+ * launches the app exactly as `perf:run` does (fresh profile, no production hooks), pushes a
  * three-slide deck whose slides are probes, and from inside each running slide document attempts:
  *
  *  - the host: `parent.document`, `top.document`, `parent.sloodge` (the preload bridge)
@@ -22,8 +23,18 @@
  * iframe.contentWindow`), shown to still resolve each message to exactly one frame when every
  * frame shares a host.
  *
+ * **Availability.** With every stage document on one shared host (M8.2 round 0), a hidden
+ * neighbour running `while (true) {}` froze the *active* slide's script for the whole observation
+ * window — measured, and the reason the stage host became per-document. The second scenario pushes
+ * a deck whose slides post a heartbeat every 50 ms and whose +1 neighbour hangs itself after 2.5 s,
+ * then measures the longest gap in the active slide's heartbeat over the next six seconds. The
+ * active slide must keep beating; the rail's miniature of the same slide is *expected* to stall,
+ * because every miniature shares the hung slide's thumbnail process — that residual is reported,
+ * not asserted, and is the documented trade (see `slideDocumentHost`).
+ *
  * The run ends by asking main for `app.getAppMetrics()`, so the same report that shows containment
- * also shows the process count the change is for. Exit status is non-zero if any reach succeeded.
+ * also shows the process count the change is for. Exit status is non-zero if any reach succeeded or
+ * if the hung neighbour stalled the active slide.
  *
  * Local-only tooling, like the rest of `perf/`: it needs a display and the built app.
  */
@@ -41,6 +52,21 @@ const CDP_PORT = 9700
 const INSPECT_PORT = 9800
 const REPORTS_GLOBAL = '__sloodgeIsolationReports'
 const MESSAGE_KEY = '__sloodgeIsolationProbe'
+const BEATS_GLOBAL = '__sloodgeHeartbeats'
+const HEARTBEAT_KEY = '__sloodgeHeartbeat'
+const HANG_KEY = '__sloodgeHang'
+const HEARTBEAT_INTERVAL_MS = 50
+/** How long the neighbour behaves before it hangs itself; the stage must have warmed it by then. */
+const HANG_AFTER_MS = 2500
+/** How long the active slide's heartbeat is watched once the neighbour has hung. */
+const HANG_OBSERVE_MS = 6000
+/**
+ * The longest heartbeat gap the active slide may show while its neighbour hangs. Under a shared
+ * stage host the measured gap was the whole window (5.7–9.9 s); a healthy 50 ms beat on a loaded
+ * developer box shows gaps of a few hundred ms. Two seconds separates the two by an order of
+ * magnitude either way.
+ */
+const HEARTBEAT_STALL_MS = 2000
 
 /** One attempted reach: either it produced a value (the boundary failed) or it threw. */
 type Outcome = { ok: true; value: string } | { ok: false; error: string }
@@ -154,6 +180,98 @@ const INSTALL_HOST_LISTENER = `(() => {
   return 'installed';
 })()`
 
+type Beat = {
+  t: number
+  probe: number
+  /** Host of the iframe `event.source` belongs to: `stage-<id>` or `thumbnails`. */
+  host: string
+}
+
+type HangMark = { t: number; probe: number; host: string }
+
+type HeartbeatSeries = {
+  beats: number
+  /** Longest silence, in ms, between window start, consecutive beats and window end. */
+  maxGapMs: number
+}
+
+/**
+ * A slide that posts a heartbeat every `HEARTBEAT_INTERVAL_MS`; the one with `hangAfterMs` announces
+ * itself and then spins forever. The announcement is what pins the observation window to the moment
+ * the process actually stopped, rather than to the deck push.
+ */
+function heartbeatSlideHtml(probe: number, hangAfterMs: number | null): string {
+  const hang =
+    hangAfterMs === null
+      ? ''
+      : `setTimeout(() => {
+  parent.postMessage({ ${HANG_KEY}: { probe: ${String(probe)} } }, '*');
+  for (;;) {}
+}, ${String(hangAfterMs)});`
+  return `<!doctype html>
+<html lang="en" data-sl-slide="heartbeat-${String(probe)}">
+<head><meta charset="utf-8"><title>Heartbeat ${String(probe)}</title>
+<style>html,body{margin:0;width:1280px;height:720px;overflow:hidden;background:#fff;font:48px sans-serif}</style></head>
+<body><div style="padding:80px">heartbeat probe ${String(probe)}</div>
+<script>
+let n = 0;
+setInterval(() => {
+  parent.postMessage({ ${HEARTBEAT_KEY}: { probe: ${String(probe)}, n: n++ } }, '*');
+}, ${String(HEARTBEAT_INTERVAL_MS)});
+${hang}
+</script>
+</body>
+</html>
+`
+}
+
+const INSTALL_HEARTBEAT_LISTENER = `(() => {
+  const w = globalThis;
+  if (w.${BEATS_GLOBAL}) return 'already-installed';
+  const state = { beats: [], hangs: [] };
+  w.${BEATS_GLOBAL} = state;
+  const hostOf = (source) => {
+    const frame = Array.from(document.querySelectorAll('iframe')).find((f) => f.contentWindow === source);
+    const src = frame ? frame.getAttribute('src') : null;
+    try { return src ? new URL(src).hostname : ''; } catch (e) { return ''; }
+  };
+  window.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.${HEARTBEAT_KEY}) {
+      state.beats.push({ t: performance.now(), probe: data.${HEARTBEAT_KEY}.probe, host: hostOf(event.source) });
+    } else if (data.${HANG_KEY}) {
+      state.hangs.push({ t: performance.now(), probe: data.${HANG_KEY}.probe, host: hostOf(event.source) });
+    }
+  });
+  return 'installed';
+})()`
+
+function heartbeatSeries(
+  beats: readonly Beat[],
+  probe: number,
+  onStage: boolean,
+  windowStart: number,
+  windowEnd: number,
+): HeartbeatSeries {
+  const times = beats
+    .filter(
+      (b) =>
+        b.probe === probe &&
+        b.host.startsWith('stage-') === onStage &&
+        b.t >= windowStart &&
+        b.t <= windowEnd,
+    )
+    .map((b) => b.t)
+    .toSorted((a, b) => a - b)
+  const edges = [windowStart, ...times, windowEnd]
+  let maxGapMs = 0
+  for (let i = 1; i < edges.length; i += 1) {
+    maxGapMs = Math.max(maxGapMs, edges[i]! - edges[i - 1]!)
+  }
+  return { beats: times.length, maxGapMs: Math.round(maxGapMs) }
+}
+
 function judge(reports: readonly HostReport[]): { failures: string[]; checks: number } {
   const failures: string[] = []
   let checks = 0
@@ -262,8 +380,95 @@ export async function main(argv: readonly string[]): Promise<void> {
     for (const proc of sample.processes) byType[proc.type] = (byType[proc.type] ?? 0) + 1
 
     const verdict = judge(reports)
+
+    // --- Scenario 2: a hung neighbour --------------------------------------------------------------
+    // Same app, second deck. Slide 0 is selected, so slide 1 is the +1 neighbour the stage keeps
+    // warm behind it (and a live miniature in the rail); slide 1 hangs itself after HANG_AFTER_MS.
+    const hangDeck = buildStressDeck({ slideCount: 3, seed: 2 })
+    const hangSlides: Record<string, string> = {}
+    hangDeck.manifest.slideOrder.forEach((id, index) => {
+      hangSlides[id] = heartbeatSlideHtml(index, index === 1 ? HANG_AFTER_MS : null)
+    })
+    const hangPayloadPath = join(scratch, 'hang-deck.json')
+    await writeFile(
+      hangPayloadPath,
+      JSON.stringify({
+        manifest: hangDeck.manifest,
+        slides: hangSlides,
+        notes: hangDeck.notes,
+        theme: hangDeck.theme,
+      }),
+      'utf8',
+    )
+    const beatsInstalled = await app.page.evaluate<string>(INSTALL_HEARTBEAT_LISTENER)
+    if (beatsInstalled !== 'installed') {
+      throw new Error(`heartbeat listener install returned ${beatsInstalled}`)
+    }
+    const hangSent = await app.main.evaluate<string>(`(() => {
+      const { BrowserWindow } = process.mainModule.require('electron');
+      const fs = process.mainModule.require('fs');
+      const windows = BrowserWindow.getAllWindows();
+      if (windows.length === 0) return 'no-window';
+      const payload = JSON.parse(fs.readFileSync(${JSON.stringify(hangPayloadPath)}, 'utf8'));
+      windows[0].webContents.send('deck:updated', payload);
+      return 'sent';
+    })()`)
+    if (hangSent !== 'sent') throw new Error(`could not push the hang deck: ${hangSent}`)
+
+    // The neighbour announces its hang from both of its frames (stage and rail); wait for the
+    // stage one, which is the process under test.
+    await waitFor(
+      app.page,
+      `globalThis.${BEATS_GLOBAL}.hangs.some((h) => h.host.startsWith('stage-'))`,
+      60_000,
+      100,
+      app.assertAlive,
+    )
+    await sleep(HANG_OBSERVE_MS + 1000)
+
+    const { beats, hangs } = await app.page.evaluate<{ beats: Beat[]; hangs: HangMark[] }>(
+      `({ beats: globalThis.${BEATS_GLOBAL}.beats.slice(), hangs: globalThis.${BEATS_GLOBAL}.hangs.slice() })`,
+    )
+    const hungAt = hangs.find((h) => h.host.startsWith('stage-'))?.t ?? Number.NaN
+    // Start the window half a second after the announcement so the spin has certainly begun.
+    const windowStart = hungAt + 500
+    const windowEnd = windowStart + HANG_OBSERVE_MS
+    const activeStage = heartbeatSeries(beats, 0, true, windowStart, windowEnd)
+    const activeRail = heartbeatSeries(beats, 0, false, windowStart, windowEnd)
+    const hungStage = heartbeatSeries(beats, 1, true, windowStart, windowEnd)
+    const hangSample = await takeSample(app.main, app.page, app.spawnedAtMs)
+    const hangFrameSrcs = await app.page.evaluate<string[]>(
+      `Array.from(document.querySelectorAll('iframe')).map((f) => f.getAttribute('src') || '')`,
+    )
+
+    const hangFailures: string[] = []
+    if (hungStage.beats > 0) {
+      hangFailures.push(
+        `the hang probe kept beating (${String(hungStage.beats)} beats); the scenario did not run`,
+      )
+    }
+    if (activeStage.maxGapMs > HEARTBEAT_STALL_MS) {
+      hangFailures.push(
+        `hung neighbour stalled the active slide: max heartbeat gap ${String(activeStage.maxGapMs)} ms ` +
+          `over a ${String(HANG_OBSERVE_MS)} ms window (limit ${String(HEARTBEAT_STALL_MS)} ms)`,
+      )
+    }
+    const hungNeighbour = {
+      hangAfterMs: HANG_AFTER_MS,
+      observeMs: HANG_OBSERVE_MS,
+      stallLimitMs: HEARTBEAT_STALL_MS,
+      activeSlideOnStage: activeStage,
+      activeSlideInRail: activeRail,
+      hungSlideOnStage: hungStage,
+      railStalled: activeRail.maxGapMs > HEARTBEAT_STALL_MS,
+      mountedFrames: hangFrameSrcs.length,
+      distinctHosts: new Set(hangFrameSrcs.map((src) => new URL(src).host)).size,
+      processes: hangSample.processes.length,
+      failures: hangFailures,
+    }
+
     const result = {
-      urlShape: frameSrcs[0]?.replace(/[0-9a-f]{32}/, '<id>') ?? '',
+      urlShape: frameSrcs[0]?.replace(/[0-9a-f]{32}/g, '<id>') ?? '',
       mountedFrames: frameSrcs.length,
       distinctHosts: new Set(frameSrcs.map((src) => new URL(src).host)).size,
       processes: { total: sample.processes.length, byType },
@@ -271,6 +476,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       checks: verdict.checks,
       failures: verdict.failures,
       originsSeenBySlides: [...new Set(reports.map((r) => JSON.stringify(r.report.origin)))],
+      hungNeighbour,
       reports,
     }
 
@@ -283,7 +489,14 @@ export async function main(argv: readonly string[]): Promise<void> {
             `${String(result.processes.total)} Electron processes for ${String(result.mountedFrames)} mounted frames on ${String(result.distinctHosts)} host(s).`
         : `\nBREACH: ${String(verdict.failures.length)} of ${String(verdict.checks)} reaches succeeded.`,
     )
-    if (verdict.failures.length > 0) process.exitCode = 1
+    console.log(
+      hangFailures.length === 0
+        ? `ISOLATED: the active slide kept beating while its +1 neighbour hung — max gap ${String(activeStage.maxGapMs)} ms ` +
+            `(${String(activeStage.beats)} beats in ${String(HANG_OBSERVE_MS)} ms). Rail miniature of the same slide: ` +
+            `max gap ${String(activeRail.maxGapMs)} ms, ${String(activeRail.beats)} beats${hungNeighbour.railStalled ? ' (stalled, as documented)' : ''}.`
+        : `STALLED: ${hangFailures.join('; ')}`,
+    )
+    if (verdict.failures.length > 0 || hangFailures.length > 0) process.exitCode = 1
   } finally {
     await app.dispose()
     await rm(scratch, { recursive: true, force: true })

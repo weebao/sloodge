@@ -1,6 +1,7 @@
 import { useMemo, useRef, type JSX } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { instrument } from '../../../../shared/design/instrument'
+import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
 import { ArrangeBar } from '../design/ArrangeBar'
@@ -27,21 +28,25 @@ export type SlideCanvasProps = {
  * anyway, and it would make the editing canvas disagree with the exported pixels.
  *
  * The frame itself is one of the `SlideStage`'s: the selected slide visible, its ±1 neighbours
- * mounted but hidden so a step either way is instant (M8.2). The overlay, the bridge and the
- * property panel all bind to the *active* frame through `frameRef`, which the stage re-points as the
- * selection moves.
+ * mounted but hidden so a step either way is instant, with Design Mode on or off (M8.2). The
+ * overlay, the bridge and the property panel all bind to the *active* frame through `frameRef`,
+ * which the stage re-points as the selection moves.
  *
  * ## Design Mode delivery
  *
- * With Design Mode on, the active frame receives the **instrumented** document — the same source
+ * With Design Mode on, every mounted frame receives the **instrumented** document — the same source
  * with a `data-sl-id` on every addressable element (`instrument`) plus the in-frame agent script
  * (`injectDesignBridge`) — instead of the raw slide. Both are render artifacts that never reach disk
- * (§1.1). The selection overlay is laid over the frame and swallows pointer events so the slide's own
- * handlers stay frozen while selecting (§2.1). Turning Design Mode off swaps the raw document back
- * and unmounts the overlay, restoring full slide interactivity.
+ * (§1.1). The selection overlay is laid over the active frame and swallows pointer events so the
+ * slide's own handlers stay frozen while selecting (§2.1). Turning Design Mode off swaps the raw
+ * documents back and unmounts the overlay, restoring full slide interactivity.
  *
- * The instrumented HTML is memoized on `(id, html)` so toggling zoom never re-parses; a new URL only
- * mints when the bytes actually change (see `useSlideUrl`).
+ * Neighbours get the instrumented document too, so that a step swaps no documents and reloads no
+ * frame (see `SlideStage`). Their bridge scripts are dormant: the overlay talks only to the frame
+ * behind `frameRef` and drops any message whose `event.source` is another window, and a hidden,
+ * `inert` frame receives no input to hit-test. The instrumentation is memoized per frame on the
+ * slide's html inside the stage, so zooming never re-parses and a new URL only mints when the bytes
+ * actually change (see `useSlideUrl`).
  */
 export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Element {
   const [matRef, mat] = useElementSize<HTMLDivElement>()
@@ -61,12 +66,15 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
     enabled: designModeActive,
   })
 
-  // Only pay for the parse + instrument + inject while Design Mode is on for this slide.
-  const activeHtml = useMemo(() => {
-    if (slide === null || !designEnabled) return undefined
-    const map = buildSlideMap(slide.id, slide.html)
-    return injectDesignBridge(instrument(map))
-  }, [slide, designEnabled])
+  // Only pay for the parse + instrument + inject while Design Mode is on. Stable across renders so
+  // the stage's per-frame memo holds; the stage calls it once per frame per html.
+  const documentFor = useMemo(
+    () =>
+      designEnabled
+        ? (id: SlideId, html: string) => injectDesignBridge(instrument(buildSlideMap(id, html)))
+        : undefined,
+    [designEnabled],
+  )
 
   // Memoized so the relative wrapper's style is not a fresh object on every render (react-perf).
   const stageStyle = useMemo(
@@ -88,7 +96,7 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
             <SlideStage
               slides={slides}
               activeIndex={currentIndex}
-              activeHtml={activeHtml}
+              documentFor={documentFor}
               frameRef={frameRef}
               titlePrefix="Slide"
               scale={fit.scale}

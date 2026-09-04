@@ -1,5 +1,4 @@
 import { useRef, type JSX } from 'react'
-import { SLIDE_THUMBNAIL_HOST } from '../../../../shared/slide-protocol'
 import type { SlideView } from '../../stores/deckStore'
 import { SlideFrame } from '../canvas/SlideFrame'
 import { fitSlide, SLIDE_SIZE } from '../canvas/slideFit'
@@ -56,10 +55,11 @@ export type ThumbnailPreviewProps = {
  * to the button and the frame stays out of the tab order — otherwise an interactive slide would eat
  * the click that is supposed to select it.
  *
- * Miniatures publish on the `thumbnails` host, which puts them in their own renderer process: a
- * rail of animating miniatures must never share a main thread with the slide on the canvas (see
- * `slideDocumentUrl`). Under Electron that is a different process; in a browser host both hosts
- * fall back to the same blob factory.
+ * Miniatures publish on the `thumbnails` surface, which puts them all in one renderer process of
+ * their own: a rail of animating miniatures must never share a main thread with the slide on the
+ * canvas, and one process for the rail is the accepted place where a runaway thumbnail can freeze
+ * its neighbours (see `slideDocumentHost`). In a browser host both surfaces fall back to the same
+ * blob factory.
  */
 export function ThumbnailPreview({ slide, visibility }: ThumbnailPreviewProps): JSX.Element {
   const boxRef = useRef<HTMLDivElement>(null)
@@ -73,7 +73,7 @@ export function ThumbnailPreview({ slide, visibility }: ThumbnailPreviewProps): 
           title={slide.title}
           scale={THUMBNAIL_FIT.scale}
           interactive={false}
-          slideUrls={defaultSlideUrls(SLIDE_THUMBNAIL_HOST)}
+          slideUrls={defaultSlideUrls('thumbnails')}
         />
       ) : (
         <span
