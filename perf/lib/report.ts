@@ -44,8 +44,9 @@ export type PerfMetrics = {
   /**
    * Switches whose `load` never landed inside the harness's wait bound. They are censored, not
    * dropped: `slideSwitchMs.count + unmeasuredSwitches` is the number of clicks issued, so a series
-   * that is short is short *visibly*. Expected to be 0; any other value is a slow-switch signal that
-   * the median alone would not show.
+   * that is short is short *visibly*. Expected to be 0 on a healthy run, which is why `diffReports`
+   * treats any non-zero value in a candidate as a slide-switch regression: it is a slow-switch
+   * signal the median alone would not show.
    */
   readonly unmeasuredSwitches: number
   /** Total memory across every Electron process, sampled through the whole session. */
@@ -376,8 +377,8 @@ export type MetricDiff = {
   readonly deltaPct: number
   readonly unit: string
   /**
-   * True when the candidate regressed by more than the allowed tolerance, measured nothing, or
-   * left more switches unmeasured than the baseline did — a censored switch is a slow one.
+   * True when the candidate regressed by more than the allowed tolerance, measured nothing, or left
+   * any switch unmeasured — a censored switch is a slow one, and a healthy run leaves none.
    */
   readonly regressed: boolean
 }
@@ -391,6 +392,12 @@ export type MetricDiff = {
  * A baseline of 0 is treated as "no percentage is meaningful" and yields a 0 % delta rather than
  * `Infinity`; that only arises for `droppedFrames`, where the absolute budget check is the real
  * gate anyway.
+ *
+ * `unmeasuredSwitches` is judged against zero rather than against the baseline's own count. The
+ * click sequence never clicks the already-active slide, so a healthy run censors nothing; comparing
+ * against a baseline that carries a count would let exactly that many too-slow-to-see switches
+ * through on a strict-rise test. The five committed baselines predate that click sequence and carry
+ * counts no current run can reproduce — their `notes` say so.
  */
 export function diffReports(
   baseline: PerfMetrics,
@@ -402,7 +409,6 @@ export function diffReports(
   const before = budgetActuals(baseline)
   const after = budgetActuals(candidate)
   const candidateCounts = budgetSampleCounts(candidate)
-  const unmeasuredBefore = budgetUnmeasured(baseline)
   const unmeasuredAfter = budgetUnmeasured(candidate)
   return budgets.map((budget) => {
     const b = before[budget.key]
@@ -421,7 +427,7 @@ export function diffReports(
       regressed:
         candidateCounts[budget.key] === 0 ||
         deltaPct > tolerancePct ||
-        (unmeasuredAfter[budget.key] ?? 0) > (unmeasuredBefore[budget.key] ?? 0),
+        (unmeasuredAfter[budget.key] ?? 0) > 0,
     }
   })
 }

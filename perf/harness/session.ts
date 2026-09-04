@@ -43,13 +43,16 @@ export type SwitchRecord = {
 }
 
 /**
- * How long a click waits for its own canvas `load` before the next click is issued. This, not the
- * inter-click settle, is the ceiling on the latency the instrument can observe: a switch slower than
- * it is recorded as censored (`>= SWITCH_LOAD_WAIT_MS`) and counted, never silently dropped.
+ * How long a click waits for its own canvas `load` before the harness stops waiting on it. A load
+ * landing during the settle that follows is still this click's, so the ceiling on an observable
+ * latency is the whole click window — this plus `SWITCH_SETTLE_MS`, ~2.2 s — not this wait alone. A
+ * switch slower than the window is recorded as censored and counted, never silently dropped, and
+ * its `latencyMs` is the window: `>= SWITCH_LOAD_WAIT_MS` is the bound that holds however the
+ * settle is tuned.
  */
 export const SWITCH_LOAD_WAIT_MS = 2000
 /** Pause after a load (or after the wait gives up) before the next click, to keep the cadence rapid rather than instant. */
-const SWITCH_SETTLE_MS = 220
+export const SWITCH_SETTLE_MS = 220
 
 /** Poll interval for shell detection. The resulting error is the cold-start upper bound's precision. */
 const SHELL_POLL_MS = 25
@@ -246,12 +249,7 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
       250,
       assertAlive,
     ).catch((error: unknown) => {
-      if (
-        error instanceof Error &&
-        (error.name === 'AppExitedError' || error.name === 'CdpClosedError')
-      ) {
-        throw error
-      }
+      if (!(error instanceof WaitTimeoutError)) throw error
       warnings.push(
         'Not every rail frame fired `load` before the timeout; deckRenderMs is a floor.',
       )
@@ -439,10 +437,11 @@ export type SwitchPhaseOptions = {
  *
  * Indices are spread across the deck rather than sequential, so the measurement includes the cost of
  * jumping to a slide whose frame is far outside the rail's current scroll window. Each click then
- * waits — bounded by `loadWaitMs` — for its own `load` before the settle and the next click. Without
- * that wait the inter-click gap was the ceiling on observable latency: anything slower than ~220 ms
- * lost its load to the next click and vanished from the series, which is the one shape of regression
- * (a stall every few switches) that a median gate would then wave through.
+ * waits — bounded by `loadWaitMs` — for its own `load` before the settle and the next click, so the
+ * ceiling on an observable latency is `loadWaitMs + settleMs`. Without that wait the settle alone
+ * was that ceiling: anything slower than ~220 ms lost its load to the next click and vanished from
+ * the series, which is the one shape of regression (a stall every few switches) that a median gate
+ * would then wave through.
  */
 export async function switchSlides(
   options: SwitchPhaseOptions,
@@ -480,8 +479,9 @@ export async function switchSlides(
   const unmeasured = switches.filter((s) => s.censored).length
   if (unmeasured > 0) {
     warnings.push(
-      `${String(unmeasured)} of ${String(switches.length)} switches produced no canvas load within ` +
-        `${String(loadWaitMs)} ms; recorded as >= that bound and left out of slideSwitchMs.`,
+      `${String(unmeasured)} of ${String(switches.length)} switches produced no canvas load before ` +
+        `the next click ${String(loadWaitMs + settleMs)} ms later; recorded as ` +
+        `>= ${String(loadWaitMs)} ms and left out of slideSwitchMs.`,
     )
   }
   return { switches, warnings }

@@ -108,8 +108,8 @@ export async function main(argv: readonly string[]): Promise<void> {
     console.log(
       `\nUnmeasured switches (no canvas load within the wait bound): baseline ` +
         `${String(unmeasured.baseline)}, candidate ${String(unmeasured.candidate)}` +
-        (unmeasured.candidate > unmeasured.baseline
-          ? ' — the rise counts as a slide-switch regression.'
+        (unmeasured.candidate > 0
+          ? ' — a candidate that leaves any switch unmeasured counts as a slide-switch regression.'
           : '.'),
     )
   }

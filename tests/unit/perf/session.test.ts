@@ -100,7 +100,7 @@ describe('switchSlides', () => {
     expect(switches[1]?.loadAt).toBeNull()
     expect(switches[1]?.latencyMs).toBeGreaterThanOrEqual(60)
     expect(warnings).toStrictEqual([
-      '1 of 3 switches produced no canvas load within 60 ms; recorded as >= that bound and left out of slideSwitchMs.',
+      '1 of 3 switches produced no canvas load before the next click 70 ms later; recorded as >= 60 ms and left out of slideSwitchMs.',
     ])
   })
 

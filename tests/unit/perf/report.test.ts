@@ -176,20 +176,27 @@ describe('diffReports', () => {
     expect(diff.find((d) => d.key === 'coldStartMs')?.regressed).toBe(false)
   })
 
-  it('flags a rise in unmeasured switches as a regression even when the median improved', () => {
+  it('flags any unmeasured switch in the candidate as a regression even when the median improved', () => {
     // A switch too slow for the instrument to see is a slow switch. Before the harness waited for
     // each load, such switches simply left the series and a bimodal regression passed the median.
     const base = metrics({ unmeasuredSwitches: 0 })
     const slower = diffReports(base, metrics({ slideSwitchMs: summary(40), unmeasuredSwitches: 1 }))
     expect(slower.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(true)
     expect(slower.find((d) => d.key === 'coldStartMs')?.regressed).toBe(false)
+    // Judged against 0, not against the baseline's own count: a baseline that censored switches
+    // must not buy a candidate that many too-slow-to-see switches for free.
     const same = diffReports(metrics({ unmeasuredSwitches: 3 }), metrics({ unmeasuredSwitches: 3 }))
-    expect(same.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(false)
+    expect(same.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(true)
     const fewer = diffReports(
       metrics({ unmeasuredSwitches: 3 }),
       metrics({ unmeasuredSwitches: 1 }),
     )
-    expect(fewer.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(false)
+    expect(fewer.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(true)
+    const clean = diffReports(
+      metrics({ unmeasuredSwitches: 3 }),
+      metrics({ unmeasuredSwitches: 0 }),
+    )
+    expect(clean.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(false)
   })
 
   it('honours a custom tolerance', () => {

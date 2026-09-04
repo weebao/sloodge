@@ -17,6 +17,7 @@ import { launchApp } from '../harness/app'
 import {
   runSession,
   SWITCH_LOAD_WAIT_MS,
+  SWITCH_SETTLE_MS,
   type SessionResult,
   type SwitchRecord,
 } from '../harness/session'
@@ -278,20 +279,40 @@ export async function main(argv: readonly string[]): Promise<void> {
       .map(kbToMb),
   )
 
-  // A budgeted series with no samples is a failed run, not a 0 that happens to be under budget.
-  // `summarize` throws on an empty series; these name the cause so the fix is obvious.
+  const trace = collected.map((run, i) => ({
+    run: i,
+    marks: run.marks,
+    samples: run.samples,
+    switches: run.session.switches,
+    frameIntervalsMs: run.session.activeSlideFrameIntervalsMs,
+  }))
+
+  // A budgeted series with no samples is a failed run, not a 0 that happens to be under budget, and
+  // `summarize` refuses an empty series — so there is no honest report to write. The trace still
+  // holds every sample the session did collect, so it is kept and the verdict is delivered through
+  // the same channel as a schema failure: a named problem and a non-zero exit, never a lost run.
+  const unusable: string[] = []
   if (allRam.length === 0) {
-    throw new Error(
+    unusable.push(
       `No RAM samples on the ${options.ramBasis} basis (proc-* bases need Linux /proc).`,
     )
   }
   if (allSwitches.length === 0) {
-    throw new Error(
-      'No slide switch produced a canvas `load` within the wait bound; every switch is unmeasured. ' +
+    unusable.push(
+      'No slide switch produced a canvas `load` before the next click; every switch is unmeasured. ' +
         'The canvas iframe is not reloading on switch, the recorder is watching the wrong element, ' +
         'every switch targeted the already-active slide (a 1-slide deck), or every switch took ' +
-        `longer than ${String(SWITCH_LOAD_WAIT_MS)} ms.`,
+        `longer than ${String(SWITCH_LOAD_WAIT_MS + SWITCH_SETTLE_MS)} ms.`,
     )
+  }
+  if (unusable.length > 0) {
+    const tracePath = await writeTrace(trace, options.outFile)
+    console.log(`\nTrace:  ${tracePath}`)
+    console.error(
+      `\nNo report was written; the trace above is the run:\n  ${unusable.join('\n  ')}`,
+    )
+    process.exitCode = 1
+    return
   }
   const metrics: PerfMetrics = {
     coldStartMs: median(collected.map((r) => r.session.coldStartMs)),
@@ -425,17 +446,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     ],
   }
 
-  const { tracePath, problems } = await writeRunArtifacts(
-    report,
-    collected.map((run, i) => ({
-      run: i,
-      marks: run.marks,
-      samples: run.samples,
-      switches: run.session.switches,
-      frameIntervalsMs: run.session.activeSlideFrameIntervalsMs,
-    })),
-    options.outFile,
-  )
+  const { tracePath, problems } = await writeRunArtifacts(report, trace, options.outFile)
 
   console.log(`\n${budgetTable(checkBudgets(metrics))}`)
   console.log(`\nReport: ${options.outFile}`)
@@ -462,9 +473,15 @@ export async function writeRunArtifacts(
 ): Promise<{ tracePath: string; problems: string[] }> {
   const json = `${JSON.stringify(report, null, 2)}\n`
   await writeFile(outFile, json, 'utf8')
+  const tracePath = await writeTrace(trace, outFile)
+  return { tracePath, problems: reportProblems(JSON.parse(json)) }
+}
+
+/** The raw series, beside the report and named after it. Written even when no report can be. */
+async function writeTrace(trace: unknown, outFile: string): Promise<string> {
   const tracePath = outFile.replace(/\.json$/, '.trace.json')
   await writeFile(tracePath, `${JSON.stringify(trace, null, 2)}\n`, 'utf8')
-  return { tracePath, problems: reportProblems(JSON.parse(json)) }
+  return tracePath
 }
 
 function measuredLatencies(switches: readonly SwitchRecord[]): number[] {
