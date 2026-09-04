@@ -90,16 +90,85 @@ export interface DesignBridgeApi {
     onResult?: (result: SlEditResponse) => void,
   ) => void
   /**
-   * Bind an edit sender to the frame and slide that are current **now**, and return it. Everything
+   * Bind a text-edit session's channel to the frame and slide that are current **now**. Everything
    * else here addresses whatever `frameRef` points at when it is called, which is right for a live
    * gesture and wrong for ending a session the user has already navigated away from: since M8.2 the
    * outgoing slide's frame stays mounted (hidden and `inert`) while `frameRef` and `slideId` move
    * on, so a `cancel` sent afterwards would name the *new* slide and be rejected by the old frame's
    * own slide guard — leaving its element `contenteditable` with text the document does not have.
    * Pinning at `begin` is the same "capture at the start of the gesture" discipline the drag path
-   * uses for its pointer target. The sender is a no-op once its frame is gone.
+   * uses for its pointer target. The channel is a no-op once its frame is gone.
    */
-  readonly pinEdit: (slId: string) => (action: SlEditAction) => void
+  readonly pinEdit: (slId: string) => PinnedEdit
+}
+
+/**
+ * A text-edit session's private channel to the frame its caret is actually in — what `pinEdit`
+ * hands back.
+ */
+export interface PinnedEdit {
+  /** Post one action to the pinned frame. A no-op once that frame is gone. */
+  readonly send: (action: SlEditAction) => void
+  /**
+   * Close the session and report the text it ends with — **and keep listening for the answer after
+   * this bridge has been torn down**, which is the whole reason it is not just `send('commit')`.
+   *
+   * Turning Design Mode off (the toggle, or Present) unmounts the overlay, and with it the bridge's
+   * `message` listener, in the same React commit that the click produces. The text the user typed is
+   * in the frame and reaches the parent only over postMessage, so a session ended by that click has
+   * nobody left to hear it: before this existed the caret was cancelled instead and the typing was
+   * silently thrown away (round-7 major). The one-shot listener below is deliberately not the
+   * bridge's — it belongs to the session, outlives the hook, and settles on whichever comes first:
+   * the answer to the `commit` it sends, or the `SL_EDIT` event the frame already posted when the
+   * click moved focus out of it. `onText` is called exactly once; `null` means the frame never
+   * answered (it is gone, or its script is dead) and the caller should put the element back rather
+   * than write text it cannot vouch for.
+   */
+  readonly finish: (onText: (text: string | null) => void) => void
+}
+
+/**
+ * How long a `finish` waits for a frame that may never answer. Generous, because it costs nothing —
+ * the listener is one-shot and the caller has already dropped the session — and because the round
+ * trip crosses a process boundary while the renderer is mid-teardown.
+ */
+const FINISH_TIMEOUT_MS = 2000
+
+/**
+ * Listen, once, for the text a finishing session ends with. Same two checks every accepted frame
+ * message gets (`isMessageFromFrame`, then `parseFrameMessage`'s shape and slide guard), because
+ * being outside the bridge's listener changes nothing about what may be trusted.
+ */
+function listenForFinalText(
+  frame: HTMLIFrameElement,
+  slide: string,
+  slId: string,
+  requestId: number,
+  onText: (text: string | null) => void,
+): void {
+  let timer = 0
+  const settle = (text: string | null): void => {
+    window.removeEventListener('message', handler)
+    window.clearTimeout(timer)
+    onText(text)
+  }
+  const handler = (event: MessageEvent): void => {
+    if (!isMessageFromFrame(event, frame.contentWindow)) return
+    const message = parseFrameMessage(event.data, slide)
+    if (message === null) return
+    // The answer to the `commit` this was armed for...
+    if (isEditResponseMessage(message) && message.id === requestId) {
+      settle(message.payload === null ? null : message.payload.text)
+      return
+    }
+    // ...or the event the frame posted when focus left it, which carries the same text and, on the
+    // path this exists for, was already in flight before the `commit` went out.
+    if (isEditEventMessage(message) && message.payload.slId === slId) settle(message.payload.text)
+  }
+  window.addEventListener('message', handler)
+  timer = window.setTimeout(() => {
+    settle(null)
+  }, FINISH_TIMEOUT_MS)
 }
 
 export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
@@ -184,6 +253,10 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
       window.removeEventListener('message', handler)
       pendingMap.clear()
       pendingElementsMap.clear()
+      // An edit request outstanding when the listener goes — the slide moved on between a `begin`
+      // and the frame's answer — is answered `null` rather than dropped on the floor. The frame may
+      // have opened a caret by then, and a caller told nothing would never close it (round-7 nit).
+      for (const cb of pendingEditsMap.values()) cb(null)
       pendingEditsMap.clear()
     }
   }, [enabled, slideId, frameRef])
@@ -232,13 +305,30 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
       // detached one. A frame that unmounted has no `contentWindow` at all, which is the no-op.
       const frame = frameRef.current
       const pinnedSlide = slideId
-      return (action) => {
-        const frameWindow = frame?.contentWindow
-        if (!frameWindow) return
-        frameWindow.postMessage(
-          makeEditRequest(nextId.current(), pinnedSlide, { slId, action }),
-          '*',
-        )
+      return {
+        send: (action) => {
+          const frameWindow = frame?.contentWindow
+          if (!frameWindow) return
+          frameWindow.postMessage(
+            makeEditRequest(nextId.current(), pinnedSlide, { slId, action }),
+            '*',
+          )
+        },
+        finish: (onText) => {
+          const frameWindow = frame?.contentWindow
+          // A frame that is gone can neither answer nor still have something to say: a message from
+          // a window that no longer exists fails `isMessageFromFrame`, so there is nothing to wait
+          // for and the caller is told at once.
+          if (!frame || !frameWindow) {
+            onText(null)
+            return
+          }
+          const id = nextId.current()
+          // Armed before the request goes out — which also catches the `SL_EDIT` a blur posted a
+          // moment ago, already in flight on the path this exists for.
+          listenForFinalText(frame, pinnedSlide, slId, id, onText)
+          frameWindow.postMessage(makeEditRequest(id, pinnedSlide, { slId, action: 'commit' }), '*')
+        },
       }
     },
     [frameRef, slideId],

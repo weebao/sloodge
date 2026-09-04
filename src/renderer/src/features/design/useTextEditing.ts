@@ -58,6 +58,8 @@
  * | `Escape`       | **Commits** and returns to selection (§9.3; PowerPoint keeps the text too).   |
  * | `Tab`          | Commits and returns to selection.                                            |
  * | Click elsewhere| Commits (the frame's `blur`).                                                 |
+ * | Design Mode off| **Commits** — the session is finished on the way out (round-7).               |
+ * | Present        | Commits by that same path: Present forces Design Mode off.                    |
  *
  * `Enter` does not insert a line break in *any* element, heading or paragraph, and that is a
  * deliberate limit rather than an oversight. A raw newline in a text node renders as a space, so
@@ -115,6 +117,24 @@
  * discipline the drag path applies to its pointer target. The one end that does not need it is
  * `SL_READY`, where the element itself is gone.
  *
+ * ## Leaving Design Mode finishes the session rather than dropping it
+ *
+ * Turning Design Mode off — the toggle, `Ctrl/⌘+D`, or Present, which forces it off — unmounts the
+ * overlay, and with it the bridge listener that would have heard the frame’s `SL_EDIT`. The click
+ * that does it also blurs the editing host, so the frame ends its own session and keeps the typed
+ * text; the parent simply was not listening any more. Round 6 cancelled that caret at unmount, which
+ * put the pre-edit text back and threw the user’s sentence away without saying so (round-7 major,
+ * 3/3 in the built app) — someone who types and then hits Present to see how it looks has not asked
+ * to lose the words, and every other exit from a session keeps them.
+ *
+ * So unmount *finishes* the session instead: `PinnedEdit.finish` sends the frame a `commit` and
+ * hears the answer on a one-shot listener of its own, which outlives this hook by design (see
+ * `useDesignBridge`). The answer is the same string whichever state the frame is in — a session it
+ * still has open ends with `endEdit(false)`, one it already closed on the blur answers from the live
+ * DOM — and it goes through the same `commitText` as every other exit, so an over-cap or forbidden
+ * value is still refused and put back. Only a frame that never answers falls back to cancelling:
+ * text the parent could not read is text it cannot vouch for.
+ *
  * ## The untrusted-text rule
  *
  * The committed string arrives over postMessage from a realm the slide's own JS shares, so it is
@@ -124,7 +144,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SlEditAction, SlEditEventPayload } from '../../../../shared/design/bridge-protocol'
+import type { SlEditEventPayload } from '../../../../shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import {
   resolveTextEdit,
@@ -136,7 +156,7 @@ import { resolveElement } from '../../../../shared/design/property-model'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 import { setActiveTextEditSession } from './textEditSession'
-import type { DesignBridgeApi } from './useDesignBridge'
+import type { DesignBridgeApi, PinnedEdit } from './useDesignBridge'
 
 export interface TextEditingOptions {
   readonly slideId: string
@@ -205,9 +225,9 @@ const BLOCK_NOTICE: Readonly<Record<TextEditBlock, string>> = {
  * `cancel` just restored and writes the same value. It is the one-two `commitText` already sends for
  * a refused commit.
  */
-function endFrameCaret(send: ((action: SlEditAction) => void) | null): void {
-  send?.('cancel')
-  send?.('revert')
+function endFrameCaret(session: PinnedEdit | null): void {
+  session?.send('cancel')
+  session?.send('revert')
 }
 
 /** The Edit-menu label for a committed text edit, trimmed so the menu stays readable. */
@@ -232,14 +252,21 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   const editingRef = useRef(editing)
   // The open session's sender, pinned to the frame the caret is actually in. Set when the frame
   // confirms a `begin` and cleared by every path that ends the session.
-  const sessionFrameRef = useRef<((action: SlEditAction) => void) | null>(null)
+  const sessionFrameRef = useRef<PinnedEdit | null>(null)
   useEffect(() => {
     const previous = editingRef.current
     editingRef.current = editing
     // An open session always knows which frame its caret is in, however the flag came to be set.
-    // `beginEdit` pins before it asks, which is the frame that will answer; this fills in for any
-    // other way the store can open one, so `cancelSession` never has nothing to talk to.
-    if (editing !== null && sessionFrameRef.current === null) {
+    // `beginEdit` pins before it asks, which is the frame that will answer; this fills in for the
+    // other way the store can open one — `beginEditing` called directly — so `cancelSession` never
+    // has nothing to talk to.
+    //
+    // `previous === null` is what makes that a pin rather than a re-pin, and it is load-bearing:
+    // this effect also re-runs whenever `pinEdit` changes identity, which is on every slide change,
+    // while `editing` is still set. Pinning there would bind an open session to the *incoming*
+    // frame, and the slide switch that follows would cancel the caret on a frame that never had one
+    // — the round-5 blocker, from the other end.
+    if (previous === null && editing !== null && sessionFrameRef.current === null) {
       sessionFrameRef.current = pinEdit(editing)
     }
     // The store closed the session behind this hook's back — `setSelection` of another element, a
@@ -303,24 +330,38 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       pendingRef.current = slId
       // The frame this caret will live in, captured before the request rather than in the reply —
       // the same frame `requestEdit` is about to address, whatever the bridge is bound to later.
-      const sendToFrame = pinEdit(slId)
+      const session = pinEdit(slId)
       requestEdit(slId, 'begin', (result) => {
-        if (pendingRef.current !== slId) return
+        // A newer request superseded this one: the user asked for another element before the frame
+        // answered. The frame may have opened this caret anyway and nothing here will ever own it,
+        // so close it rather than leave a `contenteditable` with no session behind it.
+        if (pendingRef.current !== slId) {
+          session.send('cancel')
+          return
+        }
         pendingRef.current = null
+        // `null` is the frame saying it has no such element — or the bridge answering for a frame
+        // that never will, because the slide moved on under the request. Same treatment either way:
+        // close whatever may have opened, and say so rather than do nothing visible.
+        if (result === null) {
+          session.send('cancel')
+          setNotice(BLOCK_NOTICE['unknown-element'])
+          return
+        }
         // The frame judges editability on its live DOM, which author JS may have changed since the
         // source was parsed (a script that split the text into spans). Declined means no caret, and
         // `editing` was never set, so nothing is stranded — but it still has to be said out loud.
-        if (result === null || !result.editing) {
+        if (!result.editing) {
           setNotice(BLOCK_NOTICE['mixed-content'])
           return
         }
         // The selection moved on while the frame was answering: the caret it just opened is on an
         // element nobody has selected, so close it rather than draw a caret frame around another.
         if (useDesignStore.getState().selection?.slId !== slId) {
-          sendToFrame('cancel')
+          session.send('cancel')
           return
         }
-        sessionFrameRef.current = sendToFrame
+        sessionFrameRef.current = session
         editingRef.current = slId
         beginEditing(slId)
       })
@@ -334,7 +375,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    * then writes at most one `setSlideHtml` — the whole session's undo entry.
    */
   const commitText = useCallback(
-    (slId: string, text: string, sendToFrame: ((action: SlEditAction) => void) | null): void => {
+    (slId: string, text: string, session: PinnedEdit | null): void => {
       const source = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (source === undefined) return
       const outcome = resolveTextEdit(buildSlideMap(slideId, source), slId, text)
@@ -343,7 +384,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       // Refused. The frame is still showing the value that was turned down, so put it back before
       // anything else can make the mismatch look like a save — see the header.
       if (outcome.kind === 'refused') {
-        sendToFrame?.('revert')
+        session?.send('revert')
         setNotice(REFUSAL_NOTICE[outcome.reason])
         return
       }
@@ -358,25 +399,44 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       // element is dropped here, before it can reach the source map.
       if (editingRef.current !== payload.slId) return
       // Read before the drop clears it: a refusal has to reach the frame this session was in.
-      const sendToFrame = sessionFrameRef.current
+      const session = sessionFrameRef.current
       dropSession()
-      commitText(payload.slId, payload.text, sendToFrame)
+      commitText(payload.slId, payload.text, session)
     },
     [dropSession, commitText],
   )
 
-  // Unmount with a session open — Design Mode turned off, the deck emptied. The bridge's listener is
-  // already gone (it is declared before this hook in the overlay) and postMessage is asynchronous, so
-  // the frame cannot be asked for its text from here. What saves the text on those paths is the
-  // frame's own `blur`: a click on the Design Mode toggle, on Present, or the Settings accelerator
-  // moves focus out of the frame, which commits, before React unmounts anything (all three executed
-  // in Electron, round 2). So reaching this with the flag still set means nothing was committed, and
-  // the caret is cancelled rather than left behind on a frame that may outlive this hook.
+  // The commit a finishing session lands on, held in a ref rather than named in the effect below:
+  // `commitText` is a fresh function on every slide change, and naming it in that effect's deps
+  // would run the cleanup on every slide change — turning an ordinary switch into an unmount.
+  const commitTextRef = useRef(commitText)
+  useEffect(() => {
+    commitTextRef.current = commitText
+  }, [commitText])
+
+  // Unmount with a session open — Design Mode turned off, Present, the deck emptied. The bridge's
+  // listener goes with the overlay in the same commit, so the frame's own `SL_EDIT` has nobody left
+  // to reach; `finish` brings a one-shot listener of its own for exactly that reason, and the typed
+  // text is committed rather than discarded (see the header). The store flag drops immediately
+  // either way: it must never outlive the overlay, whatever the frame goes on to answer.
   useEffect(() => {
     return () => {
-      if (editingRef.current !== null) cancelSession()
+      const slId = editingRef.current
+      const session = sessionFrameRef.current
+      if (slId === null) return
+      dropSession()
+      if (session === null) return
+      session.finish((text) => {
+        // The frame never answered: it is gone, or its script is dead. Put the element back rather
+        // than leave it showing text no document contains (round-6).
+        if (text === null) {
+          endFrameCaret(session)
+          return
+        }
+        commitTextRef.current(slId, text, session)
+      })
     }
-  }, [cancelSession])
+  }, [dropSession])
 
   // The slide changed under an open session. The `slId` refers to the *previous* slide's map, so
   // committing would write the wrong element; the session is abandoned instead.

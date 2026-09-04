@@ -39,6 +39,12 @@ const SLIDE_HTML = `<!doctype html><html><body>
 </div>
 </body></html>`
 
+/** Two elements a caret can open on, for the paths that need a second one to move to. */
+const TWO_EDITABLE = SLIDE_HTML.replace(
+  '<p class="mixed">Revenue <b>18%</b> Q3</p>',
+  '<p class="second">Second line</p>',
+)
+
 let slideId = ''
 
 function seedDeck(html = SLIDE_HTML): string {
@@ -101,6 +107,12 @@ interface FrameView {
    * the parent an `SL_EDIT` event it may or may not still be listening for. Returns that payload.
    */
   readonly blur: () => SlEditEventPayload | null
+  /**
+   * The node leaves the frame's document — author JS replacing a block, say. `frameScript` answers
+   * for an element it cannot find with `null`, and `revertEdit`'s `doc.contains` guard refuses to
+   * write into one; both are things the parent has to cope with.
+   */
+  readonly remove: (slId: string) => void
 }
 
 /**
@@ -112,10 +124,17 @@ interface FrameView {
  * difference the blocker turned on. This mirrors `frameScript.ts` instead: the open `session`, the
  * `lastEnded` that `revert` rewinds to, the text each element renders, and `applyEdit`'s branches.
  */
-function frameModel(textOf: (slId: string) => string): FrameView & {
+function frameModel(
+  textOf: (slId: string) => string,
+  // The frame judges editability on its live DOM, which author JS may have changed since the source
+  // was parsed — the one thing the parent cannot decide for itself, and the reason `begin` has a
+  // refusal at all.
+  frameEditable: (slId: string) => boolean = () => true,
+): FrameView & {
   readonly apply: (slId: string, action: SlEditAction) => SlEditResponse
 } {
   const rendered = new Map<string, string>()
+  const gone = new Set<string>()
   let session: { slId: string; original: string } | null = null
   let lastEnded: { slId: string; original: string } | null = null
 
@@ -142,22 +161,27 @@ function frameModel(textOf: (slId: string) => string): FrameView & {
     if (action === 'begin') {
       endEdit(false)
       lastEnded = null
+      // `beginEdit`'s two refusals, which have different shapes: no such node at all, and a node the
+      // live DOM says cannot host a caret.
+      if (gone.has(slId)) return null
+      if (!frameEditable(slId)) return { slId, text: shows(slId), editing: false }
       session = { slId, original: shows(slId) }
       return { slId, text: session.original, editing: true }
     }
     if (action === 'revert') {
       const last = lastEnded
       lastEnded = null
-      // That element, once, and only if there is a closed session to rewind — `revertEdit`'s own
+      // That element, once, and only while it is still in the document — `revertEdit`'s own three
       // guards, which are what make a parent that sends it unconditionally harmless.
-      if (last === null || last.slId !== slId) return null
+      if (last === null || last.slId !== slId || gone.has(slId)) return null
       rendered.set(slId, last.original)
       return { slId, text: last.original, editing: false }
     }
     // Anything but the open session touches nothing. This is the branch the blocker lands on: a
-    // re-render blurred the host first, so `cancel` arrives with no session left to cancel.
+    // re-render blurred the host first, so `cancel` arrives with no session left to cancel — and
+    // where the element has left the document there is nothing to answer for at all.
     if (session === null || session.slId !== slId)
-      return { slId, text: shows(slId), editing: false }
+      return gone.has(slId) ? null : { slId, text: shows(slId), editing: false }
     if (action === 'undo' || action === 'redo') return { slId, text: shows(slId), editing: true }
     return { slId, text: endEdit(action === 'cancel'), editing: false }
   }
@@ -174,6 +198,9 @@ function frameModel(textOf: (slId: string) => string): FrameView & {
       if (session === null) return null
       const { slId } = session
       return { slId, text: endEdit(false), reason: 'blur' }
+    },
+    remove: (slId) => {
+      gone.add(slId)
     },
   }
 }
@@ -195,6 +222,12 @@ interface Harness {
   readonly pinned: { slId: string; slide: string; action: SlEditAction }[]
   /** Every `onResult` the hook handed over, in request order, for tests that answer by hand. */
   readonly replies: ((result: SlEditResponse) => void)[]
+  /**
+   * Every `finish` callback the hook handed over — the answer a session leaving with the overlay is
+   * waiting for. A deaf frame leaves them here so a test can answer late, or not at all, which is
+   * the whole difficulty of that path.
+   */
+  readonly finishers: ((text: string | null) => void)[]
   /** The frame for `slide` (the current one by default), to ask what it is showing. */
   readonly frame: (slide?: string) => FrameView
 }
@@ -209,15 +242,20 @@ interface Harness {
  * reply channel to the test, which then speaks for the frame — so its model is deliberately left
  * out of those exchanges rather than asserting things the test just contradicted.
  */
-function frameStub(currentSlide: () => string, confirm: boolean) {
+function frameStub(
+  currentSlide: () => string,
+  confirm: boolean,
+  frameEditable?: (slId: string) => boolean,
+) {
   const sent: Harness['sent'] = []
   const pinned: Harness['pinned'] = []
   const replies: Harness['replies'] = []
+  const finishers: Harness['finishers'] = []
   const frames = new Map<string, ReturnType<typeof frameModel>>()
   const frameOf = (slide: string): ReturnType<typeof frameModel> => {
     const known = frames.get(slide)
     if (known !== undefined) return known
-    const fresh = frameModel(documentTextOf)
+    const fresh = frameModel(documentTextOf, frameEditable)
     frames.set(slide, fresh)
     return fresh
   }
@@ -232,16 +270,32 @@ function frameStub(currentSlide: () => string, confirm: boolean) {
   )
   const pinEdit = vi.fn((slId: string) => {
     const slide = currentSlide()
-    return (action: SlEditAction): void => {
+    const apply = (action: SlEditAction): SlEditResponse => {
       pinned.push({ slId, slide, action })
-      frameOf(slide).apply(slId, action)
+      return frameOf(slide).apply(slId, action)
+    }
+    return {
+      send: (action: SlEditAction): void => {
+        apply(action)
+      },
+      // `finish` is a `commit` plus a listener that outlives the bridge (see `PinnedEdit`). The
+      // frame does the same thing to its document either way; what a deaf frame withholds is the
+      // answer, which is exactly the gap the parent has to survive.
+      finish: (onText: (text: string | null) => void): void => {
+        const answer = apply('commit')
+        if (!confirm) {
+          finishers.push(onText)
+          return
+        }
+        onText(answer === null ? null : answer.text)
+      },
     }
   })
-  return { requestEdit, pinEdit, sent, pinned, replies, frameOf }
+  return { requestEdit, pinEdit, sent, pinned, replies, finishers, frameOf }
 }
 
-function mount(confirm = true): Harness {
-  const stub = frameStub(() => slideId, confirm)
+function mount(confirm = true, frameEditable?: (slId: string) => boolean): Harness {
+  const stub = frameStub(() => slideId, confirm, frameEditable)
   const { result } = renderHook(() =>
     useTextEditing({ slideId, requestEdit: stub.requestEdit, pinEdit: stub.pinEdit }),
   )
@@ -250,6 +304,7 @@ function mount(confirm = true): Harness {
     sent: stub.sent,
     pinned: stub.pinned,
     replies: stub.replies,
+    finishers: stub.finishers,
     frame: (slide = slideId) => stub.frameOf(slide),
   }
 }
@@ -444,15 +499,34 @@ describe('useTextEditing — the frame is the source of truth for session start'
     expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
   })
 
-  it('unmounting with a session open clears the flag and asks the frame for nothing', () => {
-    // The bridge's listener is gone before this cleanup runs, so a `commit` request could never be
-    // answered (round-2 review, minor 3); the frame's blur is what commits on every real path.
+  it('unmounting with a session open finishes it, and what was typed is kept', () => {
+    // Design Mode turned off, or Present. The overlay goes and the bridge's listener with it, so the
+    // session is finished on a channel that outlives both — `PinnedEdit.finish` — rather than
+    // cancelled, which is what silently threw the typing away (round-7 major).
     const harness = mount()
     const id = idOfClass('title')
     open(harness, id)
+    act(() => {
+      harness.frame().type('Typed then left')
+    })
+
     cleanup()
+
     expect(useDesignStore.getState().editing).toBeNull()
-    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'commit' }])
+    expect(currentHtml()).toContain('Typed then left')
+    // Still one entry for the whole session: leaving is an end, not a second edit.
+    expect(undoDepth()).toBe(1)
+  })
+
+  it('unmounting a session that changed nothing writes nothing', () => {
+    const harness = mount()
+    open(harness, idOfClass('title'))
+
+    cleanup()
+
+    expect(undoDepth()).toBe(0)
+    expect(currentHtml()).toBe(SLIDE_HTML)
   })
 })
 
@@ -814,9 +888,31 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
     expect(harness.frame().shows(id)).toBe('Old title')
   })
 
-  it('unmounting over a frame that blurred first leaves nothing typed behind', () => {
-    // Design Mode off, or Present: the toggle's own click blurs the frame, and the commit that
-    // blur posts may not have been delivered by the time React tears this hook down.
+  it('unmounting over a frame that blurred first keeps the text, and the two agree', () => {
+    // Design Mode off, or Present: the toggle's own click blurs the frame, so the session is already
+    // closed and the text it kept has been posted to a parent that is no longer listening. Round 6
+    // put the element back, which is consistent but throws the sentence away; asking the frame for
+    // the text it is showing keeps both properties at once.
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    act(() => {
+      harness.frame().type('Typed then blurred')
+    })
+    harness.frame().blur()
+
+    cleanup()
+
+    expect(harness.frame().shows(id)).toBe('Typed then blurred')
+    expect(currentHtml()).toContain('Typed then blurred')
+    // The point of the round-6 fix survives: no frame shows text the document does not have.
+    expect(harness.frame().shows(id)).toBe(documentTextOf(id))
+  })
+
+  it('unmounting over a frame with nothing left to answer for writes nothing', () => {
+    // The fallback, and the reason `finish` reports `null` rather than an empty string: text the
+    // parent could not read is text it cannot write. Here the frame's own JS replaced the element
+    // after the blur closed the session, so there is no node left to answer from.
     const harness = mount()
     const id = idOfClass('title')
     open(harness, id)
@@ -824,10 +920,57 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
       harness.frame().type('GHOST')
     })
     harness.frame().blur()
+    harness.frame().remove(id)
 
     cleanup()
 
-    expect(harness.frame().shows(id)).toBe('Old title')
+    expect(harness.pinned).toEqual([
+      { slId: id, slide: slideId, action: 'commit' },
+      { slId: id, slide: slideId, action: 'cancel' },
+      { slId: id, slide: slideId, action: 'revert' },
+    ])
+    expect(currentHtml()).toBe(SLIDE_HTML)
+    expect(undoDepth()).toBe(0)
+  })
+
+  it('a frame that answers after the overlay has gone still lands its text', () => {
+    // The real answer is a postMessage round trip that crosses a process boundary while React is
+    // mid-teardown, so it arrives strictly later than the cleanup that asked for it.
+    const harness = mount(false)
+    const id = idOfClass('title')
+    open(harness, id)
+    act(() => {
+      harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+
+    cleanup()
+    expect(harness.finishers).toHaveLength(1)
+    act(() => {
+      harness.finishers[0]!('Late but ours')
+    })
+
+    expect(currentHtml()).toContain('Late but ours')
+    expect(undoDepth()).toBe(1)
+  })
+
+  it('a refusal that arrives after the overlay has gone still puts the frame back', () => {
+    const harness = mount(false)
+    const id = idOfClass('title')
+    open(harness, id)
+    act(() => {
+      harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+
+    cleanup()
+    act(() => {
+      harness.finishers[0]!('x'.repeat(MAX_TEXT_LENGTH + 1))
+    })
+
+    expect(undoDepth()).toBe(0)
+    expect(harness.pinned).toEqual([
+      { slId: id, slide: slideId, action: 'commit' },
+      { slId: id, slide: slideId, action: 'revert' },
+    ])
   })
 })
 
@@ -1010,12 +1153,24 @@ function mountSwitchable(): {
 } {
   let bound = slideId
   const stub = frameStub(() => bound, true)
+  // The real `pinEdit` is a `useCallback` on `[frameRef, slideId]`, so its identity changes on every
+  // slide change and effects that name it in their deps re-run mid-session. Modelling that here is
+  // what makes this harness able to say anything about *when* a session is pinned.
+  type PinFor = (slId: string) => ReturnType<typeof stub.pinEdit>
+  const pins = new Map<string, PinFor>()
+  const pinFor = (slide: string): PinFor => {
+    const known = pins.get(slide)
+    if (known !== undefined) return known
+    const fresh: PinFor = (slId) => stub.pinEdit(slId)
+    pins.set(slide, fresh)
+    return fresh
+  }
   const { result, rerender } = renderHook(
     (props: { slideId: string }) =>
       useTextEditing({
         slideId: props.slideId,
         requestEdit: stub.requestEdit,
-        pinEdit: stub.pinEdit,
+        pinEdit: pinFor(props.slideId),
       }),
     { initialProps: { slideId } },
   )
@@ -1141,6 +1296,49 @@ describe('useTextEditing — a caret is cancelled on its own frame, not the curr
     expect(harness.result.current.notice).not.toBeNull()
   })
 
+  it('a session opened in the store pins the frame it is in, not the one the bridge moves to', () => {
+    // `beginEditing` called directly is the one way a session can open without `beginEdit` having
+    // pinned it, and the effect that fills that in re-runs on every slide change (the real `pinEdit`
+    // is a new function per slide). It must pin at the open and never again: a re-pin mid-session
+    // would bind the caret to the incoming frame, and the switch would cancel a frame that never
+    // had one.
+    const id = idOfClass('title')
+    const harness = mountSwitchable()
+    const opened = slideId
+    act(() => {
+      select(id)
+      useDesignStore.getState().beginEditing(id)
+    })
+    expect(harness.result.current.editing).toBe(id)
+
+    harness.switchTo('some-other-slide')
+
+    expect(harness.pinned).toEqual([
+      { slId: id, slide: opened, action: 'cancel' },
+      { slId: id, slide: opened, action: 'revert' },
+    ])
+    expect(harness.frame(opened).isEditing(id)).toBe(false)
+  })
+
+  it('a begin the user superseded closes the caret the frame may have opened for it', () => {
+    // Two double-clicks in quick succession. The first frame answer is no longer wanted, but the
+    // frame acted on it: it set `contenteditable` and focused the element before answering. Dropping
+    // that answer silently leaves a caret no parent state knows about (round-7 nit).
+    slideId = seedDeck(TWO_EDITABLE)
+    const harness = mount(false)
+    const first = idOfClass('title')
+    const second = idOfClass('second')
+    open(harness, first)
+    open(harness, second)
+
+    act(() => {
+      harness.replies[0]!({ slId: first, text: 'Old title', editing: true })
+    })
+
+    expect(harness.result.current.editing).toBeNull()
+    expect(harness.pinned).toEqual([{ slId: first, slide: slideId, action: 'cancel' }])
+  })
+
   it('a committed session cancels nothing — the frame already ended it', () => {
     const harness = mount()
     const id = idOfClass('title')
@@ -1186,6 +1384,41 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
       harness.result.current.beginEdit('sl-not-here')
     })
     expect(harness.result.current.notice).toContain('no longer on this slide')
+  })
+
+  it('the frame declining a begin from its own model says so, and opens nothing', () => {
+    // The same refusal as the test below, but spoken by the frame rather than by the test: the
+    // session-modelling stub can decline too, so this path is not only ever seen through a frame
+    // the test is speaking for.
+    const title = idOfClass('title')
+    const harness = mount(true, (slId) => slId !== title)
+
+    act(() => {
+      select(title)
+      harness.result.current.beginEdit(title)
+    })
+
+    expect(harness.result.current.editing).toBeNull()
+    expect(harness.result.current.notice).toContain('formatting')
+    expect(harness.frame().isEditing(title)).toBe(false)
+  })
+
+  it('an element the frame does not have at all is closed rather than left open', () => {
+    // `beginEdit` answers `null` for an sl-id the frame cannot find — a different refusal from "not
+    // editable", and one where a caret must not be assumed absent: the same `null` is what the
+    // bridge answers with when the slide moves on under an unanswered request.
+    const harness = mount()
+    const id = idOfClass('title')
+    harness.frame().remove(id)
+
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+
+    expect(harness.result.current.editing).toBeNull()
+    expect(harness.result.current.notice).toContain('no longer on this slide')
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'cancel' }])
   })
 
   it('the frame declining a begin on its live DOM says so too', () => {
