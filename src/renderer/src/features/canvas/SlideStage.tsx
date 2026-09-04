@@ -101,11 +101,11 @@ export function SlideStage({
     })
   }, [])
 
-  const documentOf = (slide: SlideView): string =>
-    documentFor === undefined ? slide.html : documentFor(slide.id, slide.html)
-
-  const active = frames.find((frame) => frame.role === 'active')
-  const warmReady = active !== undefined && loaded.get(active.slide.id) === documentOf(active.slide)
+  const active = frames.find((frame) => frame.role === 'active')?.slide
+  const warmReady =
+    active !== undefined &&
+    loaded.get(active.id) ===
+      (documentFor === undefined ? active.html : documentFor(active.id, active.html))
 
   return (
     <div className="relative">
