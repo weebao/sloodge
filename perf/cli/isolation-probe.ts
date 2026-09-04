@@ -309,12 +309,15 @@ export async function main(argv: readonly string[]): Promise<void> {
     slides[id] = probeSlideHtml(index)
   })
   const payload = { manifest: deck.manifest, slides, notes: deck.notes, theme: deck.theme }
-  const scratch = await mkdtemp(join(tmpdir(), 'sloodge-isolation-'))
-  const payloadPath = join(scratch, 'probe-deck.json')
-  await writeFile(payloadPath, JSON.stringify(payload), 'utf8')
 
   const app = await launchApp({ repoRoot, cdpPort: CDP_PORT, inspectPort: INSPECT_PORT, display })
+  // The scratch deck is created inside the `try` that disposes the app, so every exit removes both.
+  // A launch that never returns — a stale bundle, or no display — leaves nothing behind at all.
+  let scratch: string | null = null
   try {
+    scratch = await mkdtemp(join(tmpdir(), 'sloodge-isolation-'))
+    const payloadPath = join(scratch, 'probe-deck.json')
+    await writeFile(payloadPath, JSON.stringify(payload), 'utf8')
     await waitFor(
       app.page,
       `!!document.querySelector('#sloodge-shell')`,
@@ -497,6 +500,6 @@ export async function main(argv: readonly string[]): Promise<void> {
     if (verdict.failures.length > 0 || hangFailures.length > 0) process.exitCode = 1
   } finally {
     await app.dispose()
-    await rm(scratch, { recursive: true, force: true })
+    if (scratch !== null) await rm(scratch, { recursive: true, force: true })
   }
 }
