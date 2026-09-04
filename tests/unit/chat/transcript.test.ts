@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../../src/shared/agent/types'
+import {
+  AGENT_ERROR_KINDS,
+  type AgentEvent,
+  type AgentUsage,
+} from '../../../src/shared/agent/types'
 import {
   errorCopy,
   initialTranscript,
@@ -21,7 +25,11 @@ const usage = (i: number, o: number, c: number): AgentUsage => ({
 })
 
 const ev = (event: AgentEvent): TranscriptAction => ({ type: 'agent-event', event })
-const sendTurn = (text: string): TranscriptAction => ({ type: 'user-send', text })
+const sendTurn = (text: string, turnId = 't0'): TranscriptAction => ({
+  type: 'user-send',
+  text,
+  turnId,
+})
 
 function run(actions: TranscriptAction[], start: Transcript = initialTranscript): Transcript {
   return actions.reduce(reduceTranscript, start)
@@ -41,17 +49,77 @@ function lastAssistant(state: Transcript): Extract<ChatMessage, { kind: 'assista
 
 /* -------------------------------------------------------------------------------------------- */
 
+describe('reduceTranscript — turn-refused (main did not open the turn)', () => {
+  it('takes back exactly the refused pair, by id, and releases the open turn', () => {
+    const state = run([sendTurn('mine', 't1'), { type: 'turn-refused', turnId: 't1' }])
+    expect(state.messages).toEqual([])
+    expect(state.turnState).toBe('idle')
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('still removes the pair after Stop settled its bubble — position and shape do not matter', () => {
+    // Round 3's rollback matched on "tail is [user, empty streaming assistant]"; a Stop during the
+    // round trip cleared `streaming` and the phantom pair survived while the ledger half ran.
+    const state = run([
+      sendTurn('mine', 't1'),
+      { type: 'interrupt-requested' },
+      { type: 'turn-refused', turnId: 't1' },
+    ])
+    expect(state.messages).toEqual([])
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('removes the pair even when a notice landed behind it, and keeps the notice', () => {
+    const state = run([
+      sendTurn('mine', 't1'),
+      ev({ type: 'skills-degraded', missing: ['svg-animation'] }),
+      { type: 'turn-refused', turnId: 't1' },
+    ])
+    expect(state.messages.map((m) => m.kind)).toEqual(['notice'])
+    expect(state.cost.openTurns).toBe(0)
+  })
+
+  it('refuses only the named turn, leaving a later send intact', () => {
+    // Send X, Stop, send Y, then X's refusal arrives: Y must survive.
+    const state = run([
+      sendTurn('x', 'tx'),
+      { type: 'interrupt-requested' },
+      sendTurn('y', 'ty'),
+      { type: 'turn-refused', turnId: 'tx' },
+    ])
+    expect(state.messages.map((m) => (m.kind === 'user' ? m.text : m.kind))).toEqual([
+      'y',
+      'assistant',
+    ])
+    expect(state.turnState).toBe('streaming')
+    expect(state.cost.openTurns).toBe(1)
+  })
+
+  it('is a no-op for an id it never opened', () => {
+    const before = run([sendTurn('mine', 't1')])
+    expect(reduceTranscript(before, { type: 'turn-refused', turnId: 'nope' })).toBe(before)
+  })
+})
+
 describe('reduceTranscript — user-send', () => {
   it('opens a turn: user bubble + streaming assistant bubble, turnState streaming', () => {
     const state = run([sendTurn('make a title slide')])
     expect(state.turnState).toBe('streaming')
     expect(state.messages).toHaveLength(2)
-    expect(state.messages[0]).toEqual({ kind: 'user', id: 'u0', text: 'make a title slide' })
+    expect(state.messages[0]).toEqual({
+      kind: 'user',
+      id: 'u0',
+      turnId: 't0',
+      text: 'make a title slide',
+    })
     expect(assistant(state)).toMatchObject({ text: '', tools: [], streaming: true, usage: null })
   })
 
   it('mints unique ids across turns from the in-state counter', () => {
-    const state = run([sendTurn('one'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const state = run([
+      sendTurn('one'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const next = run([sendTurn('two')], state)
     const ids = next.messages.map((m) => m.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -125,35 +193,52 @@ describe('reduceTranscript — turn-end', () => {
     const state = run([
       sendTurn('hi'),
       ev({ type: 'assistant-delta', text: 'ok' }),
-      ev({ type: 'turn-end', costUsd: 0.0123, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.0123, generation: 0, subtype: 'success' }),
     ])
     expect(state.turnState).toBe('idle')
     expect(assistant(state).streaming).toBe(false)
-    expect(state.costUsd).toBeCloseTo(0.0123)
+    expect(state.cost.totalUsd).toBeCloseTo(0.0123)
   })
 
-  it('accumulates cost across turns', () => {
-    let state = run([sendTurn('a'), ev({ type: 'turn-end', costUsd: 0.1, subtype: 'success' })])
-    state = run([sendTurn('b'), ev({ type: 'turn-end', costUsd: 0.25, subtype: 'success' })], state)
-    expect(state.costUsd).toBeCloseTo(0.35)
+  it('reads the running total the runtime reports, not a sum of the results', () => {
+    // `total_cost_usd` is the subprocess's cumulative total: a $0.10 turn then a $0.25 turn arrive
+    // as 0.10 and 0.35, and the session spent $0.35 — not $0.45 (shared/agent/cost.ts).
+    let state = run([
+      sendTurn('a'),
+      ev({ type: 'turn-end', snapshotUsd: 0.1, generation: 0, subtype: 'success' }),
+    ])
+    state = run(
+      [
+        sendTurn('b'),
+        ev({ type: 'turn-end', snapshotUsd: 0.35, generation: 0, subtype: 'success' }),
+      ],
+      state,
+    )
+    expect(state.cost.totalUsd).toBeCloseTo(0.35)
   })
 
   it('a second turn-end for a settled turn is a no-op and never re-folds cost', () => {
-    const once = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' })])
+    const once = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
+    ])
     const twice = reduceTranscript(
       once,
-      ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
     )
     expect(twice).toBe(once)
-    expect(twice.costUsd).toBeCloseTo(0.05)
+    expect(twice.cost.totalUsd).toBeCloseTo(0.05)
   })
 })
 
 describe('reduceTranscript — cost folds exactly once per turn (order-independent)', () => {
   it('streaming -> turn-end -> idle folds the cost once', () => {
-    const state = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' })])
+    const state = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
+    ])
     expect(state.turnState).toBe('idle')
-    expect(state.costUsd).toBeCloseTo(0.05)
+    expect(state.cost.totalUsd).toBeCloseTo(0.05)
   })
 
   it('streaming -> error -> turn-end folds the failed turn cost once, keeping error', () => {
@@ -161,10 +246,10 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
     const state = run([
       sendTurn('hi'),
       ev({ type: 'error', kind: 'network', message: 'ECONNREFUSED', recoverable: true }),
-      ev({ type: 'turn-end', costUsd: 0.03, subtype: 'error_during_execution' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.03, generation: 0, subtype: 'error_during_execution' }),
     ])
     expect(state.turnState).toBe('error')
-    expect(state.costUsd).toBeCloseTo(0.03)
+    expect(state.cost.totalUsd).toBeCloseTo(0.03)
   })
 
   it('streaming -> interrupt -> turn-end folds the interrupted turn cost once', () => {
@@ -173,20 +258,20 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
     const state = run([
       sendTurn('hi'),
       { type: 'interrupt-requested' },
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
     ])
     expect(state.turnState).toBe('interrupted')
-    expect(state.costUsd).toBeCloseTo(0.04)
+    expect(state.cost.totalUsd).toBeCloseTo(0.04)
   })
 
   it('an interrupted turn does not double-fold on a duplicate post-interrupt result', () => {
     const state = run([
       sendTurn('hi'),
       { type: 'interrupt-requested' },
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
     ])
-    expect(state.costUsd).toBeCloseTo(0.04)
+    expect(state.cost.totalUsd).toBeCloseTo(0.04)
   })
 })
 
@@ -218,11 +303,11 @@ describe('reduceTranscript — errors', () => {
   it('a failed turn (turn-end then error) reads error, and still folds the error result cost', () => {
     const state = run([
       sendTurn('hi'),
-      ev({ type: 'turn-end', costUsd: 0.02, subtype: 'error_max_turns' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.02, generation: 0, subtype: 'error_max_turns' }),
       ev({ type: 'error', kind: 'max-turns', message: 'Turn ended', recoverable: true }),
     ])
     expect(state.turnState).toBe('error')
-    expect(state.costUsd).toBeCloseTo(0.02)
+    expect(state.cost.totalUsd).toBeCloseTo(0.02)
   })
 })
 
@@ -239,7 +324,10 @@ describe('reduceTranscript — interrupt', () => {
   })
 
   it('interrupt-requested while idle is a no-op', () => {
-    const before = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const before = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const after = reduceTranscript(before, { type: 'interrupt-requested' })
     expect(after).toBe(before)
   })
@@ -252,7 +340,10 @@ describe('reduceTranscript — out-of-turn events are inert', () => {
   })
 
   it('a delta after the bubble settled does not reopen it', () => {
-    const settled = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const settled = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const after = reduceTranscript(settled, ev({ type: 'assistant-delta', text: 'late' }))
     expect(assistant(after).text).toBe('')
   })
@@ -286,7 +377,7 @@ describe('reduceTranscript — a second turn targets its own bubble', () => {
     let state = run([
       sendTurn('first'),
       ev({ type: 'assistant-delta', text: 'one' }),
-      ev({ type: 'turn-end', costUsd: 0, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
     ])
     state = run([sendTurn('second'), ev({ type: 'assistant-delta', text: 'two' })], state)
 
@@ -329,20 +420,10 @@ describe('toolChipStyle', () => {
 })
 
 describe('errorCopy', () => {
-  const kinds: AgentErrorKind[] = [
-    'auth',
-    'rate-limit',
-    'overloaded',
-    'network',
-    'budget',
-    'max-turns',
-    'interrupted',
-    'runtime-missing',
-    'unknown',
-  ]
-
   it('returns non-empty copy for every kind', () => {
-    for (const kind of kinds) expect(errorCopy(kind, '').length).toBeGreaterThan(0)
+    // Driven off the shared list rather than a hand-kept copy of it: a kind added to
+    // `AGENT_ERROR_KINDS` with no sentence would otherwise ship as a blank chat bubble.
+    for (const kind of AGENT_ERROR_KINDS) expect(errorCopy(kind, '').length).toBeGreaterThan(0)
   })
 
   it('surfaces the raw message for an unknown kind, and a generic line when it is empty', () => {

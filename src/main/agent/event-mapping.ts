@@ -7,6 +7,10 @@
  *  - assistant content is nested at `message.message.content`, never `message.content`;
  *  - assistant usage must be deduplicated by `message.message.id`, because parallel tool calls emit
  *    several assistant messages sharing one id with identical usage.
+ *
+ * `result` messages are deduplicated the same way, by their `uuid`. That is a *cost* invariant
+ * rather than a display one: the accumulator downstream counts open turns, so it cannot distinguish
+ * a repeated `result` from a second turn's `result`, and only this layer has the identity that can.
  */
 
 import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../shared/agent/types'
@@ -54,6 +58,11 @@ export function classifyAssistantError(error: string): AgentErrorKind {
 /**
  * Map an error `result.subtype` to a kind, or `null` for `subtype: "success"` and any non-error
  * subtype (the turn still ended; we emit `turn-end`, not `error`).
+ *
+ * Anything the SDK prefixes `error_` that we do not recognise is `unknown` rather than `null`. The
+ * old `default: null` rendered an unrecognised failure as a clean successful turn — and M2.5 made
+ * that costlier, since a future `error_max_budget_*` variant would bill the user and show success.
+ * An unfamiliar error is still an error.
  */
 export function classifyResultSubtype(subtype: string): AgentErrorKind | null {
   switch (subtype) {
@@ -65,7 +74,7 @@ export function classifyResultSubtype(subtype: string): AgentErrorKind | null {
     case 'error_max_structured_output_retries':
       return 'unknown'
     default:
-      return null
+      return subtype.startsWith('error') ? 'unknown' : null
   }
 }
 
@@ -178,10 +187,12 @@ export function toolChipLabel(toolName: string): string {
 
 /**
  * Translate one SDK message into zero or more `AgentEvent`s. `seen` carries the assistant-id dedup
- * set across a turn — pass the same Set for the whole `for await` loop. Unrecognised messages map to
- * `[]`, which is how the ~30 SDK message types M2.1 ignores are handled.
+ * set across a turn — pass the same Set for the whole `for await` loop. `generation` is the query
+ * this message came from (`AgentSession.generation`), stamped on `turn-end` so the cost fold knows
+ * which subprocess's running total it is reading. Unrecognised messages map to `[]`, which is how
+ * the ~30 SDK message types M2.1 ignores are handled.
  */
-export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
+export function mapSdkMessage(raw: unknown, seen: Set<string>, generation: number): AgentEvent[] {
   const message = asRecord(raw)
   if (!message) return []
   const type = message['type']
@@ -206,15 +217,34 @@ export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
   }
 
   if (type === 'result') {
+    // Deduplicate the result itself by its `uuid` (present on `SDKResultSuccess`), reusing the same
+    // `seen` set the assistant-id dedup uses. Without this the cost accumulator cannot tell a
+    // *duplicated* `result` from a *second turn's* `result` — it only counts open turns — so a
+    // duplicate arriving while two turns are open (Stop, retype, Send) silently consumed the second
+    // turn's fold and its money vanished from the meter and the guard. Dedup belongs here, where the
+    // identity actually is, rather than in the arithmetic downstream that cannot see it.
+    const resultId = asString(message['uuid'])
+    if (resultId !== null) {
+      if (seen.has(resultId)) return []
+      seen.add(resultId)
+    }
     const subtype = asString(message['subtype']) ?? 'unknown'
-    const costUsd = asFiniteNumber(message['total_cost_usd'])
-    const events: AgentEvent[] = [{ type: 'turn-end', costUsd, subtype }]
+    // `total_cost_usd` is the subprocess's CUMULATIVE total, not this turn's price. Read from the
+    // bundled CLI 2.1.220: `Ot.totalCostUSD += e` per API call, `vS()` reads it, every result builder
+    // writes `total_cost_usd: vS()`, and no per-turn reset is ever called. It is passed through as a
+    // snapshot for `shared/agent/cost.ts` to take the maximum of — never for anyone to add up.
+    const snapshotUsd = asFiniteNumber(message['total_cost_usd'])
+    const events: AgentEvent[] = [{ type: 'turn-end', snapshotUsd, generation, subtype }]
     const kind = classifyResultSubtype(subtype)
     if (kind !== null) {
       events.push({
         type: 'error',
         kind,
-        message: `Turn ended: ${subtype}`,
+        // Only `unknown` carries the raw subtype. For kinds the renderer has calibrated copy for,
+        // the copy table owns the wording and this must stay empty — `errorCopy` prefers a non-empty
+        // message, so a diagnostic string here would put "Turn ended: error_max_budget_usd" on
+        // screen instead of the sentence written for that case (M2.5).
+        message: kind === 'unknown' ? `Turn ended: ${subtype}` : '',
         recoverable: isRecoverable(kind),
       })
     }

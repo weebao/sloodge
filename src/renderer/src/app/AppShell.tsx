@@ -14,6 +14,18 @@ import { StatusBar } from '../features/statusbar/StatusBar'
 import { useDesignStore } from '../features/design/designStore'
 import { useDesignModeKey } from '../features/design/useDesignModeKey'
 import { selectCurrentIndex, selectSlideViews, useDeckStore } from '../stores/deckStore'
+import {
+  selectBudgetCap,
+  selectBudgetFailed,
+  selectBudgetLoaded,
+  useBudgetStore,
+} from '../stores/budgetStore'
+import {
+  selectSessionCostUsd,
+  selectSessionSkills,
+  useSessionMeterStore,
+} from '../stores/sessionMeterStore'
+import { evaluateBudget } from '../../../shared/agent/budget'
 import { useAgentDeckEditor } from './useAgentDeckEditor'
 import { useAgentDeckSync } from './useAgentDeckSync'
 import { menuOwnsEditAccelerators, useMenuActions } from './useMenuActions'
@@ -31,6 +43,20 @@ import { useUndoRedoKeys } from './useUndoRedoKeys'
  * contract in `stores/createStore.ts`. The derivations happen in `useMemo` below.
  */
 export function AppShell(): JSX.Element {
+  // The status bar's live segments (M2.5). Published by `useChatSession` into two small stores
+  // rather than lifted through props: `ChatPanel` owns the session and is a *sibling* of the bar, so
+  // hoisting it here would re-render the canvas and the rail on every streamed token.
+  const sessionCostUsd = useSessionMeterStore(selectSessionCostUsd)
+  const sessionSkills = useSessionMeterStore(selectSessionSkills)
+  const budgetCap = useBudgetStore(selectBudgetCap)
+  const budgetLoaded = useBudgetStore(selectBudgetLoaded)
+  const budgetUnknown = useBudgetStore(selectBudgetFailed)
+  // Derived in a memo, never in the selector — `evaluateBudget` returns a fresh object, which as a
+  // selector result would make `getSnapshot` report a change on every call (createStore's contract).
+  const budget = useMemo(
+    () => evaluateBudget(sessionCostUsd, budgetLoaded ? budgetCap : null),
+    [sessionCostUsd, budgetCap, budgetLoaded],
+  )
   const deck = useDeckStore((state) => state.deck)
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const currentSlideId = useDeckStore((state) => state.currentSlideId)
@@ -155,7 +181,10 @@ export function AppShell(): JSX.Element {
         slideCount={slides.length}
         themeName="Ocean"
         issueCount={0}
-        sessionCost="$0.00"
+        sessionCostUsd={sessionCostUsd}
+        budget={budget}
+        budgetUnknown={budgetUnknown}
+        skills={sessionSkills}
         {...(canPresent ? { onPresent: startPresent } : {})}
       />
       {presentFrom !== null ? (

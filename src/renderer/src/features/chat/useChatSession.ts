@@ -11,15 +11,44 @@
  * no key affordance is offered (you cannot store a key without a bridge).
  */
 
-import { useCallback, useEffect, useMemo, useReducer } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import { isAuthenticated, NOT_CONFIGURED, type AuthStatus } from '../../../../shared/agent/auth'
+import type { AgentEvent } from '../../../../shared/agent/types'
+import {
+  budgetRefusalMessage,
+  canStartTurn,
+  evaluateBudget,
+  type BudgetCap,
+  type BudgetStatus,
+} from '../../../../shared/agent/budget'
 import { selectAuthLoaded, selectAuthStatus, useAuthStore } from '../../stores/authStore'
+import { selectBudgetCap, selectBudgetLoaded, useBudgetStore } from '../../stores/budgetStore'
+import { useSessionMeterStore } from '../../stores/sessionMeterStore'
 import {
   composeAgentMessage,
   type ElementContextBundle,
 } from '../../../../shared/design/element-context'
 import { getAgentBridge } from './agentClient'
 import { initialTranscript, reduceTranscript, type Transcript } from './transcript'
+
+/**
+ * The chat-visible refusal, raised locally so the composer explains itself without a round trip.
+ *
+ * Carries `budgetRefusalMessage(cap)` as its message so the bubble names the number the user is
+ * arguing with — `errorCopy` prefers a non-empty message for `budget`. The SDK's own mid-turn
+ * `error_max_budget_usd` arrives with an empty message and falls through to the generic sentence,
+ * because it knows only a subtype.
+ */
+function budgetRefusalEvent(capUsd: BudgetCap): AgentEvent {
+  return {
+    type: 'error',
+    kind: 'budget',
+    message: budgetRefusalMessage(capUsd),
+    // Recoverable: raising the cap in Settings makes the very next send work. A dead end would be
+    // wrong copy for a state the user can clear in two clicks.
+    recoverable: true,
+  }
+}
 
 export type ChatSession = {
   readonly transcript: Transcript
@@ -36,11 +65,21 @@ export type ChatSession = {
   /** False when this renderer has no agent bridge (browser host / older preload). */
   readonly hasBridge: boolean
   /**
+   * The session against its spend cap (M2.5, §10). `level: 'blocked'` means `send` will refuse; the
+   * composer renders the cap line from this rather than recomputing it.
+   */
+  readonly budget: BudgetStatus
+  /**
    * Send the given text as a user turn. No-op while streaming, or for empty/whitespace text. When an
    * element context bundle is attached, the transcript still shows the user's plain words while the
    * message that crosses to the agent carries the serialized context (§6.1) — see `composeAgentMessage`.
+   *
+   * Resolves to whether the turn was **accepted by main**. `false` means nothing will run — no
+   * bridge, a turn already streaming, empty text, the local budget guard refusing, or main refusing
+   * (M2.5) — which the composer awaits so it clears the draft and the context chip only for a turn
+   * genuinely on its way, rather than eating a message that was never sent.
    */
-  readonly send: (text: string, attachment?: ElementContextBundle | null) => void
+  readonly send: (text: string, attachment?: ElementContextBundle | null) => Promise<boolean>
   /** Stop the in-flight turn (the Stop button). */
   readonly interrupt: () => void
 }
@@ -51,9 +90,17 @@ export function useChatSession(): ChatSession {
   const authStatus = useAuthStore(selectAuthStatus)
   const authLoaded = useAuthStore(selectAuthLoaded)
   const setAuthStatus = useAuthStore((state) => state.setStatus)
+  const capUsd = useBudgetStore(selectBudgetCap)
+  const budgetLoaded = useBudgetStore(selectBudgetLoaded)
+  const setCap = useBudgetStore((state) => state.setCap)
+  const markBudgetFailed = useBudgetStore((state) => state.markFailed)
+  const setCostUsd = useSessionMeterStore((state) => state.setCostUsd)
+  const setSkills = useSessionMeterStore((state) => state.setSkills)
+  /** Mints the `turnId` each send is opened under, so a refusal can take back exactly that turn. */
+  const nextTurn = useRef(0)
 
-  // Probe the key status once and stream every agent event into the reducer. The subscription and
-  // the probe share one effect because both live and die with the bridge.
+  // Probe the key status and the budget cap once, and stream every agent event into the reducer. The
+  // subscription and the probes share one effect because all three live and die with the bridge.
   useEffect(() => {
     if (bridge === undefined) return undefined
     let live = true
@@ -67,57 +114,121 @@ export function useChatSession(): ChatSession {
         // Settings link to a user who is already set up, which their first send corrects.
         if (live) setAuthStatus(NOT_CONFIGURED)
       })
+    void bridge
+      .getBudgetCap()
+      .then((cap) => {
+        if (live) setCap(cap)
+      })
+      .catch(() => {
+        // Leave the store unloaded rather than committing to a guessed cap: main is authoritative
+        // and enforces the real one on every send, so the local guard staying open is safe. The
+        // failure is recorded so the status bar can say the cap is unknown rather than absent.
+        if (live) markBudgetFailed()
+      })
     const unsubscribe = bridge.onAgentEvent((event) => {
       dispatch({ type: 'agent-event', event })
+      // Status-bar telemetry rides the same feed; the transcript treats it as a no-op.
+      if (event.type === 'skills-status') setSkills(event.status)
     })
     return () => {
       live = false
       unsubscribe()
     }
-  }, [bridge, setAuthStatus])
+  }, [bridge, setAuthStatus, setCap, markBudgetFailed, setSkills])
+
+  // Publish the transcript's own total to the status bar. A mirror, never a second accumulator —
+  // the reducer folds once per turn by the shared rule main uses (shared/agent/cost.ts).
+  const costUsd = transcript.cost.totalUsd
+  useEffect(() => {
+    setCostUsd(costUsd)
+  }, [costUsd, setCostUsd])
+
+  const budget = useMemo(
+    // An unresolved probe reads as uncapped: see `budgetStore`'s docstring for why the local guard
+    // fails open here rather than enforcing a cap the user may not have set.
+    () => evaluateBudget(costUsd, budgetLoaded ? capUsd : null),
+    [costUsd, capUsd, budgetLoaded],
+  )
 
   const send = useCallback(
-    (text: string, attachment?: ElementContextBundle | null) => {
+    async (text: string, attachment?: ElementContextBundle | null): Promise<boolean> => {
       const trimmed = text.trim()
-      if (trimmed.length === 0) return
-      if (transcript.turnState === 'streaming') return
-      if (bridge === undefined) return
-      // The transcript shows the user's own words; the agent-bound message additionally carries the
-      // serialized element context (as inert, fenced data — never executed; see `composeAgentMessage`).
-      dispatch({ type: 'user-send', text: trimmed })
-      const outbound = composeAgentMessage(trimmed, attachment ?? null)
-      void bridge
-        .sendMessage(outbound)
-        .then((accepted) => {
-          // The credential was removed between the status probe and this send: surface it as a
-          // chat-visible auth error rather than a silently swallowed turn, and re-gate the composer.
-          if (!accepted) {
-            dispatch({
-              type: 'agent-event',
-              event: {
-                type: 'error',
-                kind: 'auth',
-                message: 'No Claude credential is configured.',
-                recoverable: false,
-              },
-            })
-            setAuthStatus(NOT_CONFIGURED)
-          }
-        })
-        .catch((error: unknown) => {
-          // `agent:send` can reject *before* the stream starts — the keychain read in `loadApiKey`,
-          // or a synchronous `query()` spawn fault. `session.consume()` only catches *streaming*
-          // errors, so without this the promise rejects unhandled and the turn is wedged in
-          // `streaming` forever with no bubble — the exact opposite of the "errors as chat bubbles"
-          // contract. Route it through the same error path a streaming failure takes.
-          const message = error instanceof Error ? error.message : String(error)
+      if (trimmed.length === 0) return false
+      if (transcript.turnState === 'streaming') return false
+      if (bridge === undefined) return false
+      // The budget guard, checked *before* the turn is opened (M2.5, §10). Refusing here rather than
+      // after `user-send` keeps a blocked send out of the transcript entirely: the user's words stay
+      // in the composer to retry once they raise the cap, instead of becoming a message that was
+      // never sent. A turn already in flight is never interrupted — see `shared/agent/budget.ts` for
+      // why stop-before-the-next-turn is the honest half of this and `maxBudgetUsd` is the other.
+      if (!canStartTurn(budget)) {
+        dispatch({ type: 'agent-event', event: budgetRefusalEvent(budget.capUsd) })
+        return false
+      }
+      const turnId = `t${String(nextTurn.current)}`
+      nextTurn.current += 1
+      try {
+        // The transcript shows the user's own words; the agent-bound message additionally carries
+        // the serialized element context (as inert, fenced data — never executed; see
+        // `composeAgentMessage`). Composed first so a throw here opens nothing to roll back.
+        const outbound = composeAgentMessage(trimmed, attachment ?? null)
+        // Opened optimistically so the assistant bubble appears the instant Send is pressed; if main
+        // does not open a matching turn, `turn-refused` takes all of it back. Until main's own
+        // `beginTurn` runs, this side is one open turn ahead of main — a drift window that can only
+        // make the local guard stricter, never looser (50-agent-integration.md §10).
+        dispatch({ type: 'user-send', text: trimmed, turnId })
+        const result = await bridge.sendMessage(outbound)
+        if (result.accepted) return true
+        // Main is authoritative and it said no, so roll the optimistic turn back before reporting.
+        // Without this the renderer keeps an open turn main never opened, and the two counts the
+        // budget guard compares drift apart permanently.
+        dispatch({ type: 'turn-refused', turnId })
+        if (result.reason === 'budget') {
+          // Main's ledger blocked the turn even though ours did not — a stale local cap, or spend
+          // main counted that we have not folded yet.
+          dispatch({ type: 'agent-event', event: budgetRefusalEvent(budget.capUsd) })
+          return false
+        }
+        if (result.reason === 'slash-command') {
+          // The text would have reached the runtime as one of its own commands, which resets the
+          // cost tracker the budget guard reads (`isLocalCommandText`). Nothing was sent, and the
+          // composer still holds the words to edit.
           dispatch({
             type: 'agent-event',
-            event: { type: 'error', kind: 'unknown', message, recoverable: true },
+            event: { type: 'error', kind: 'slash-command', message: '', recoverable: true },
           })
+          return false
+        }
+        // The credential was removed between the status probe and this send: surface it as a
+        // chat-visible error rather than a silently swallowed turn, and re-gate the composer. Its
+        // own kind, not `auth` — nothing failed to authenticate, so "add one" is the right remedy.
+        dispatch({
+          type: 'agent-event',
+          event: { type: 'error', kind: 'no-credential', message: '', recoverable: false },
         })
+        setAuthStatus(NOT_CONFIGURED)
+        return false
+      } catch (error: unknown) {
+        // `agent:send` can reject *before* the stream starts — the keychain read in
+        // `loadCredential`, or a synchronous `query()` spawn fault. `session.consume()` only catches
+        // *streaming* errors, so without this the promise rejects unhandled and the turn is wedged
+        // in `streaming` forever with no bubble — the exact opposite of the "errors as chat bubbles"
+        // contract.
+        //
+        // The turn IS rolled back: main opens its turn in `session.send`, the last statement of
+        // `AgentService.send` after every await, so an invoke that rejected never reached it. The
+        // raw IPC text (channel names, main-process stack) goes to the console, not the chat.
+        // oxlint-disable-next-line no-console -- the only place the pre-stream failure is recorded.
+        console.error('agent:send rejected before the turn started', error)
+        dispatch({ type: 'turn-refused', turnId })
+        dispatch({
+          type: 'agent-event',
+          event: { type: 'error', kind: 'unknown', message: '', recoverable: true },
+        })
+        return false
+      }
     },
-    [bridge, transcript.turnState, setAuthStatus],
+    [bridge, transcript.turnState, setAuthStatus, budget],
   )
 
   const interrupt = useCallback(() => {
@@ -132,6 +243,7 @@ export function useChatSession(): ChatSession {
     // Only a *known* unconfigured state gates the composer; an unresolved probe must not.
     needsAuth: authLoaded && !isAuthenticated(authStatus),
     hasBridge: bridge !== undefined,
+    budget,
     send,
     interrupt,
   }

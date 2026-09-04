@@ -56,6 +56,26 @@ export type AgentQueryOptions = {
    * building `Options`, and the orchestration only ever passes the value straight through.
    */
   readonly mcpServers?: Readonly<Record<string, unknown>>
+  /**
+   * §8's fallback (M2.5). When present, this session runs with `skills: []` and this text appended to
+   * `systemPrompt.append` instead of discovering the bundled skills from the filesystem. Set only by
+   * `AgentSession`'s one-shot restart, after an init reported the skills missing — it is the *shape*
+   * of the degraded session, so it lives in the options rather than as a flag someone could set
+   * independently of the prompt it implies.
+   */
+  readonly skillFallbackPrompt?: string
+  /**
+   * The SDK's per-query spend ceiling (§10): the user's absolute cap, set once when the query opens.
+   * The CLI compares its own running total against it (`vS() >= maxBudgetUsd` in 2.1.220 — the same
+   * total every `result` reports as `total_cost_usd`) and ends the query with
+   * `result.subtype === 'error_max_budget_usd'` when it is reached.
+   *
+   * A backstop against one runaway query, not the enforcement mechanism: the cap is enforced by
+   * `AgentService.send` (admission) and `AgentSession.setBudgetCap` (stopping an open turn once the
+   * folded total meets a lowered cap). It is never a decaying remainder — see `setBudgetCap` for why.
+   * `undefined` means the user has configured no cap.
+   */
+  readonly maxBudgetUsd?: number
 }
 
 /**

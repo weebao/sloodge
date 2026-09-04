@@ -32,6 +32,13 @@
  */
 
 import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../../../shared/agent/types'
+import {
+  abandonTurn,
+  beginTurn,
+  foldTurnCost,
+  INITIAL_COST_STATE,
+  type CostState,
+} from '../../../../shared/agent/cost'
 
 /** The four lifecycle states the composer and Stop control branch on. */
 export type TurnState = 'idle' | 'streaming' | 'error' | 'interrupted'
@@ -44,10 +51,12 @@ export type ToolChip = {
 }
 
 export type ChatMessage =
-  | { readonly kind: 'user'; readonly id: string; readonly text: string }
+  | { readonly kind: 'user'; readonly id: string; readonly turnId: string; readonly text: string }
   | {
       readonly kind: 'assistant'
       readonly id: string
+      /** The send that opened this bubble (`user-send.turnId`), so a refusal can take back exactly it. */
+      readonly turnId: string
       readonly text: string
       readonly tools: readonly ToolChip[]
       /** True while this bubble is the live target of deltas/chips; false once the turn settles. */
@@ -72,19 +81,18 @@ export type ChatMessage =
 export type Transcript = {
   readonly turnState: TurnState
   readonly messages: readonly ChatMessage[]
-  /** Running session cost estimate (§10 — "≈", never billing truth). */
-  readonly costUsd: number
   /**
-   * Whether the current turn's `result` cost has already been folded into `costUsd`. Reset on every
-   * `user-send` and set by the first `turn-end` of the turn. It makes the invariant "cost folds
-   * exactly once per turn" explicit and *order-independent*: the SDK's post-interrupt `result`
-   * arrives after the turn has already settled to `interrupted`, and a failed turn's `result`
-   * arrives paired with an `error` — a `turnState`-based guard would swallow the former and a naive
-   * fold would double-count a duplicate `result`. Gating on this flag instead of `turnState` folds
-   * an interrupted turn's cost (matching main's accumulator, session.ts) while still refusing a
-   * second `turn-end`.
+   * Running session cost estimate (§10 — "≈", never billing truth), held as the **shared**
+   * accumulator state from `shared/agent/cost.ts`.
+   *
+   * Shared, rather than a private field that folds the same way, because M2.5 puts this number in
+   * the status bar and enforces the budget cap against it: it now has to *equal* what main recorded,
+   * not merely resemble it. Both sides call `beginTurn`/`foldTurnCost` on the same events in the same
+   * order, so agreement is structural — see that module for the fold rule, and for why it counts
+   * open turns rather than flipping a boolean (overlapping turns used to lose a whole turn's cost on
+   * both sides at once, which no cross-check between them could detect).
    */
-  readonly costFolded: boolean
+  readonly cost: CostState
   /** In-state monotonic id source, so the reducer stays pure (no `Date.now`/`Math.random`). */
   readonly seq: number
 }
@@ -92,16 +100,25 @@ export type Transcript = {
 export const initialTranscript: Transcript = {
   turnState: 'idle',
   messages: [],
-  costUsd: 0,
-  costFolded: true,
+  cost: INITIAL_COST_STATE,
   seq: 0,
 }
 
 export type TranscriptAction =
-  /** The user pressed Send: append their message and open a fresh streaming assistant bubble. */
-  | { readonly type: 'user-send'; readonly text: string }
+  /**
+   * The user pressed Send: append their message and open a fresh streaming assistant bubble.
+   * `turnId` is minted by the hook and stamped on both messages so `turn-refused` can name them.
+   */
+  | { readonly type: 'user-send'; readonly text: string; readonly turnId: string }
   /** The user pressed Stop: reflect the interrupt locally (the hook calls `bridge.interrupt`). */
   | { readonly type: 'interrupt-requested' }
+  /**
+   * Main did not open the turn we optimistically opened — it refused (its own budget check, or a
+   * credential that vanished) or the invoke rejected before reaching the session. Rolls the optimism
+   * back: the bubbles come out, the open-turn count is released, and the composer takes the text
+   * back — see the reducer for why each of those matters.
+   */
+  | { readonly type: 'turn-refused'; readonly turnId: string }
   /** One event off the `agent:event` feed. */
   | { readonly type: 'agent-event'; readonly event: AgentEvent }
 
@@ -138,11 +155,20 @@ export function toolChipStyle(label: string): ChipStyle {
  * -------------------------------------------------------------------------------------------- */
 
 const ERROR_COPY: Record<AgentErrorKind, string> = {
-  auth: 'Authentication failed — check your Claude API key in Settings.',
+  // Two credential failures, two remedies. Neither names "API key": M2.7 stores either an API key or
+  // a subscription token, and telling a subscription user to check a key they never had is worse
+  // than saying nothing.
+  auth: 'Claude rejected your credential. Check it in Settings ▸ Auth.',
+  'no-credential': 'No Claude credential is configured — add one in Settings ▸ Auth.',
   'rate-limit': 'Claude is busy right now. Try again in a moment.',
   overloaded: 'Claude is overloaded. Try again shortly.',
   network: "Can't reach Claude. Slides and Design Mode still work offline.",
-  budget: 'Budget reached for this deck. Raise the limit in Settings to continue.',
+  // Shared by both budget paths: our turn-admission refusal and the SDK's mid-turn
+  // `error_max_budget_usd` ceiling.
+  budget: 'Budget reached for this session. Raise the limit in Settings ▸ Budget to continue.',
+  // Not sent, so the composer still has the user's words: say what to change, not what went wrong.
+  'slash-command':
+    'A message can’t start with “/” — the Claude runtime reads that as one of its own commands. Put a word before it, or rephrase.',
   'max-turns': 'This got complicated — Claude stopped after the step limit.',
   interrupted: 'Stopped.',
   'runtime-missing': 'The Claude runtime is missing. Reinstall Sloodge.',
@@ -153,9 +179,15 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
  * User-facing text for an error event. Known kinds get calibrated copy; `unknown` falls back to the
  * event's own message when it carries one, so a novel SDK failure is still legible rather than a
  * generic dead end.
+ *
+ * `budget` gets the same treatment so our own refusal can name the cap the user is arguing with
+ * ("Budget reached for this session ($2.00)…" — `budgetRefusalMessage`). That is safe only because
+ * `event-mapping` now leaves `message` empty for every kind with calibrated copy: an SDK-raised
+ * `error_max_budget_usd` no longer carries "Turn ended: error_max_budget_usd", so it falls through
+ * to the sentence below rather than putting a raw subtype on screen.
  */
 export function errorCopy(kind: AgentErrorKind, message: string): string {
-  if (kind === 'unknown' && message.trim().length > 0) return message
+  if ((kind === 'unknown' || kind === 'budget') && message.trim().length > 0) return message
   return ERROR_COPY[kind]
 }
 
@@ -205,6 +237,11 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
   switch (event.type) {
     case 'ready':
       // Session handshake — no transcript change (the user bubble already opened the turn).
+      return state
+
+    case 'skills-status':
+      // Status-bar telemetry, not conversation (M2.5). The chat panel deliberately says nothing
+      // about a session that repaired itself; `sessionMeterStore` carries this to the status bar.
       return state
 
     case 'skills-degraded': {
@@ -260,22 +297,25 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
       }
     }
 
-    case 'turn-end':
-      // Fold this turn's `result` cost exactly once, gated on `costFolded` rather than `turnState`
-      // so it works no matter which terminal state the turn has reached or when `turn-end` arrives:
+    case 'turn-end': {
+      // Fold this turn's `result` cost against the open-turn count rather than `turnState`, so it
+      // works no matter which terminal state the turn has reached or when `turn-end` arrives:
       //  - streaming -> turn-end: folds, settles, goes idle;
       //  - streaming -> error -> turn-end (or the paired [turn-end, error]): folds once, keeps error;
       //  - streaming -> interrupt -> turn-end: folds the interrupted turn's cost, keeps interrupted;
-      //  - a duplicate turn-end (costFolded already true) is a reference-preserving no-op.
+      //  - a duplicate turn-end (no turn left open) is a reference-preserving no-op;
+      //  - Stop -> resend -> both results: two open turns, two folds, neither lost.
+      // The money itself is a running total per query generation, folded as a maximum (cost.ts).
       // Only a still-`streaming` turn transitions to `idle`; a settled turn keeps its end-state.
-      if (state.costFolded) return state
+      const cost = foldTurnCost(state.cost, event)
+      if (cost === state.cost) return state
       return {
         ...state,
         turnState: state.turnState === 'streaming' ? 'idle' : state.turnState,
         messages: settleLive(state.messages),
-        costUsd: state.costUsd + event.costUsd,
-        costFolded: true,
+        cost,
       }
+    }
 
     case 'error': {
       const settled = settleLive(state.messages)
@@ -306,10 +346,12 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
     case 'user-send': {
       const userId = `u${String(state.seq)}`
       const assistantId = `a${String(state.seq + 1)}`
-      const user: ChatMessage = { kind: 'user', id: userId, text: action.text }
+      const { turnId } = action
+      const user: ChatMessage = { kind: 'user', id: userId, turnId, text: action.text }
       const assistant: ChatMessage = {
         kind: 'assistant',
         id: assistantId,
+        turnId,
         text: '',
         tools: [],
         streaming: true,
@@ -319,8 +361,9 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
         ...state,
         turnState: 'streaming',
         messages: [...state.messages, user, assistant],
-        // A fresh turn: its `result` cost has not been folded yet.
-        costFolded: false,
+        // A fresh turn: its `result` cost has not been folded yet. `AgentSession.send` opens the
+        // turn on the same event, which is what keeps the two accumulators in step.
+        cost: beginTurn(state.cost),
         seq: state.seq + 2,
       }
     }
@@ -329,6 +372,34 @@ export function reduceTranscript(state: Transcript, action: TranscriptAction): T
       // Only meaningful mid-stream; a Stop pressed when idle is a no-op the button also guards.
       if (state.turnState !== 'streaming') return state
       return { ...state, turnState: 'interrupted', messages: settleLive(state.messages) }
+
+    case 'turn-refused': {
+      // The renderer opens a turn the instant the user hits Send — that is what makes the assistant
+      // bubble appear immediately — but main is the one that decides whether it runs. When main did
+      // not open it, all three parts of that optimism have to come back, together:
+      //
+      //  - the **open turn**, or the renderer stays one ahead of main's ledger forever and a later
+      //    stray `result` folds into a turn that never existed (the two counts feed the same guard);
+      //  - the **bubbles**, because a user message shown in the transcript reads as sent, and this
+      //    one never was;
+      //  - the **text**, which `ChatPanel` restores to the composer so the turn can be retried.
+      //
+      // Found by the id the send minted, never by tail position: a Stop pressed during the round
+      // trip settles the bubble, and a notice or a late delta from a prior turn can land behind it,
+      // and neither changes the fact that main never ran this turn.
+      const ownedByRefused = (message: ChatMessage): boolean =>
+        (message.kind === 'user' || message.kind === 'assistant') &&
+        message.turnId === action.turnId
+      const refused = state.messages.filter(ownedByRefused)
+      if (refused.length === 0) return state
+      const wasLive = refused.some((message) => message.kind === 'assistant' && message.streaming)
+      return {
+        ...state,
+        turnState: wasLive && state.turnState === 'streaming' ? 'idle' : state.turnState,
+        messages: state.messages.filter((message) => !ownedByRefused(message)),
+        cost: abandonTurn(state.cost),
+      }
+    }
 
     case 'agent-event':
       return applyAgentEvent(state, action.event)

@@ -52,11 +52,13 @@ function fakeService(): {
   send: ReturnType<typeof vi.fn>
   interrupt: ReturnType<typeof vi.fn>
   dispose: ReturnType<typeof vi.fn>
+  setBudgetCap: ReturnType<typeof vi.fn>
 } {
   return {
     send: vi.fn(async () => ({ accepted: true })),
     interrupt: vi.fn(async () => ({ interrupted: true })),
     dispose: vi.fn(async () => {}),
+    setBudgetCap: vi.fn(),
   }
 }
 
@@ -71,8 +73,13 @@ beforeEach(() => {
   vaultStub.saveApiKey.mockClear()
 })
 
+const budgetStub = {
+  getBudgetCap: vi.fn(async () => 2),
+  setBudgetCap: vi.fn(async (cap: number | null) => cap),
+}
+
 function install(service = fakeService()) {
-  installAgentIpc({ service: service as unknown as AgentService, ...vaultStub })
+  installAgentIpc({ service: service as unknown as AgentService, ...vaultStub, ...budgetStub })
   return service
 }
 
@@ -112,10 +119,11 @@ describe('installAgentIpc', () => {
 
     // The emit callback pushes on the agent event channel.
     const emit = service.send.mock.calls[0]?.[2] as (e: unknown) => void
-    emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
+    emit({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' })
     expect(sender.send).toHaveBeenCalledWith(contract.AGENT_EVENT_CHANNEL, {
       type: 'turn-end',
-      costUsd: 0,
+      snapshotUsd: 0,
+      generation: 0,
       subtype: 'success',
     })
 
@@ -132,6 +140,20 @@ describe('installAgentIpc', () => {
     expect(sender.on).toHaveBeenCalledWith('render-process-gone', expect.any(Function))
     sender.listeners.get('destroyed')?.()
     expect(service.dispose).toHaveBeenCalledWith(11)
+  })
+
+  it('setBudget validates, persists, and pushes the stored cap into live sessions (M2.5)', async () => {
+    // The push is what lets a cap lowered below current spend stop a streaming turn now, rather
+    // than on the next send.
+    const service = install()
+    const handler = handlerFor(contract.AGENT_SET_BUDGET_CHANNEL)
+    expect(await handler({}, { capUsd: 0.5 })).toEqual({ capUsd: 0.5 })
+    expect(budgetStub.setBudgetCap).toHaveBeenCalledWith(0.5)
+    expect(service.setBudgetCap).toHaveBeenCalledWith(0.5)
+    expect(await handler({}, { capUsd: null })).toEqual({ capUsd: null })
+    expect(service.setBudgetCap).toHaveBeenLastCalledWith(null)
+    await expect(async () => handler({}, { capUsd: -1 })).rejects.toThrow()
+    await expect(async () => handler({}, { capUsd: '2' })).rejects.toThrow()
   })
 
   it('interrupt reports the service result', async () => {

@@ -9,10 +9,11 @@
  */
 
 import { DEFAULT_AGENT_MODEL, type AgentEvent, type AgentModelId } from '../../shared/agent/types'
+import { canStartTurn, evaluateBudget, type BudgetCap } from '../../shared/agent/budget'
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
 import type { AgentCredential } from './auth-env'
 import { defaultAgentLog, type AgentLog } from './log'
-import { AgentSession } from './session'
+import { AgentSession, isLocalCommandText } from './session'
 import type { AgentQueryFn } from './query-contract'
 
 export type AgentServiceDeps = {
@@ -45,6 +46,18 @@ export type AgentServiceDeps = {
    * healthy session otherwise.
    */
   readonly prepareWorkspace?: (cwd: string) => Promise<WorkspacePreparation | void>
+  /**
+   * §8's fallback material (M2.5), handed to each session so it can self-repair a skill-less start.
+   * Resolved lazily *inside* the session — a healthy session never reads the bundle.
+   */
+  readonly loadFallbackPrompt?: () => Promise<string | null>
+  /**
+   * The user's configured spend cap (§10, M2.5), read fresh on every send so a change in Settings
+   * takes effect on the next turn rather than the next app launch. `undefined` (dep absent) and
+   * `null` (no limit) both mean "do not cap". A change that must bind *during* a turn arrives via
+   * `setBudgetCap` instead.
+   */
+  readonly loadBudgetCap?: () => Promise<BudgetCap>
   /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
   readonly log?: AgentLog
 }
@@ -75,18 +88,69 @@ export class AgentService {
 
   /**
    * Send a user turn for one renderer. Creates the session lazily on first use, but only if a credential
-   * is configured — none means `{ accepted: false }`, which the renderer renders as the composer's
-   * "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
+   * is configured — none means `{ accepted: false, reason: 'no-credential' }`, which the renderer renders
+   * as the composer's "Set up authentication" link into Settings (M2.7, 50-agent-integration.md §4).
+   *
+   * The budget check (§10, M2.5) runs against the session that **already exists**, which is read
+   * synchronously before anything is awaited. Creation is kicked off first but only *awaited* after
+   * the check, so a blocked send never spawns a subprocess — and a first turn is never refused on
+   * budget, because a session with no spend cannot have exhausted a positive cap.
+   *
+   * This is the *authoritative* turn-admission check. The renderer performs the same one so the
+   * composer can explain itself without a round trip, but a guard that only exists in the renderer is
+   * a guard a renderer bug can walk past — and the number both sides compare against is the same one,
+   * because the cost accumulators are the same function (`shared/agent/cost.ts`).
+   *
+   * The slash-command refusal above it has no renderer twin on purpose: unlike the budget, nothing
+   * about it is stale by a round trip, and one authoritative copy of a rule is easier to keep true
+   * than two.
    */
   async send(
     senderId: number,
     text: string,
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSendResponse> {
-    const session = await this.ensureSession(senderId, emit)
-    if (session === null) return { accepted: false }
+    // Before anything is created or awaited: text the CLI would run as a local command never reaches
+    // a subprocess, because `/clear` resets the very counter both spend controls read
+    // (`isLocalCommandText`). Checked here rather than in the bridge so the refusal has a reason the
+    // renderer can explain, and so no session or subprocess is created for a message we will not send.
+    if (isLocalCommandText(text)) {
+      return { accepted: false, reason: 'slash-command' }
+    }
+    const existing = this.sessions.get(senderId)
+    // When there is no session yet, creation must be kicked off **synchronously**: two racing sends
+    // dedupe on the `creating` map, and awaiting anything before this would let both observe "no
+    // session" and spawn a subprocess each (§9's worst case). The cap resolves alongside it.
+    const creating = existing === undefined ? this.ensureSession(senderId, emit) : null
+    // Read once per send, so a cap changed in Settings takes effect on the very next turn — both for
+    // the admission check and for the ceiling handed to the SDK.
+    const capUsd = (await this.deps.loadBudgetCap?.()) ?? null
+    if (
+      existing !== undefined &&
+      !canStartTurn(evaluateBudget(existing.estimatedSpendUsd, capUsd))
+    ) {
+      return { accepted: false, reason: 'budget' }
+    }
+    const session = existing ?? (await creating)
+    if (session === null) {
+      return { accepted: false, reason: 'no-credential' }
+    }
+    // The cap the session enforces, and the backstop any query this send opens is handed. After a
+    // budget stop the SDK has terminated the query and the session re-arms on this send — which must
+    // carry the cap the user just raised, not the one that stopped it.
+    session.setBudgetCap(capUsd)
     session.send(text)
     return { accepted: true }
+  }
+
+  /**
+   * A cap saved in Settings, pushed to every live session immediately rather than waiting for the
+   * next send — the one direction that cannot wait is a cap lowered below what a streaming turn's
+   * session has already spent, which the session answers by stopping that turn (`AgentSession.
+   * setBudgetCap`). Sessions still being created pick the cap up on their first send.
+   */
+  setBudgetCap(capUsd: BudgetCap): void {
+    for (const session of this.sessions.values()) session.setBudgetCap(capUsd)
   }
 
   /**
@@ -136,9 +200,14 @@ export class AgentService {
         log(`[agent] workspace preparation failed: ${String(error)}`)
       }
       const mcpServers = this.deps.resolveMcpServers?.(senderId)
+      // No cap is seeded here: `send` sets it on the session before the first turn, and a query is
+      // only ever opened by a send.
       const session = new AgentSession({
         queryFn: this.deps.queryFn,
         log,
+        ...(this.deps.loadFallbackPrompt !== undefined
+          ? { loadFallbackPrompt: this.deps.loadFallbackPrompt }
+          : {}),
         options: {
           credential,
           model: this.model,

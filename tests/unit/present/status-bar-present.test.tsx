@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { StatusBar } from '../../../src/renderer/src/features/statusbar/StatusBar'
+import { evaluateBudget } from '../../../src/shared/agent/budget'
 
 afterEach(cleanup)
 
@@ -12,7 +13,9 @@ const base = {
   slideCount: 3,
   themeName: 'Ocean',
   issueCount: 0,
-  sessionCost: '$0.00',
+  sessionCostUsd: 0,
+  budget: evaluateBudget(0, null),
+  skills: null,
 }
 
 describe('StatusBar Present button', () => {

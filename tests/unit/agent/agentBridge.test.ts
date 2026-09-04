@@ -58,10 +58,36 @@ describe('createAgentBridge — key channels', () => {
 })
 
 describe('createAgentBridge — turns', () => {
-  it('sendMessage returns the accepted flag', async () => {
-    const { bridge, invoke } = makeBridge(async () => ({ accepted: false }))
-    expect(await bridge.sendMessage('hi')).toBe(false)
+  it('sendMessage reports an accepted turn with no refusal reason', async () => {
+    const { bridge, invoke } = makeBridge(async () => ({ accepted: true }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: true, reason: null })
     expect(invoke).toHaveBeenCalledWith(AGENT_SEND_CHANNEL, { text: 'hi' })
+  })
+
+  it('sendMessage carries the budget refusal reason through (M2.5)', async () => {
+    const { bridge } = makeBridge(async () => ({ accepted: false, reason: 'budget' }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: false, reason: 'budget' })
+  })
+
+  it('getBudgetCap passes a valid cap or null through, and REJECTS a malformed reply (M2.5)', async () => {
+    // A malformed reply used to be silently replaced by the $2.00 default and then rendered — and
+    // affirmed as "Saved" — as the user's own setting. Rejecting lands in the callers' existing
+    // failure paths instead: the store stays unloaded and the Budget tab says it could not be read.
+    expect(await makeBridge(async () => ({ capUsd: 3 })).bridge.getBudgetCap()).toBe(3)
+    expect(await makeBridge(async () => ({ capUsd: null })).bridge.getBudgetCap()).toBeNull()
+    await expect(
+      makeBridge(async () => ({ capUsd: 'lots' })).bridge.getBudgetCap(),
+    ).rejects.toThrow()
+    await expect(makeBridge(async () => ({})).bridge.getBudgetCap()).rejects.toThrow()
+    await expect(makeBridge(async () => ({ capUsd: 2 })).bridge.setBudgetCap(-1)).rejects.toThrow()
+    await expect(makeBridge(async () => ({ capUsd: -5 })).bridge.setBudgetCap(2)).rejects.toThrow()
+  })
+
+  it('re-narrows an unrecognised refusal reason to the conservative no-credential', async () => {
+    // A reason the renderer cannot switch on must not reach it; `no-credential` is the answer that
+    // still offers the user a way forward.
+    const { bridge } = makeBridge(async () => ({ accepted: false, reason: 'wat' }))
+    expect(await bridge.sendMessage('hi')).toEqual({ accepted: false, reason: 'no-credential' })
   })
 
   it('sendMessage rejects an empty text', async () => {

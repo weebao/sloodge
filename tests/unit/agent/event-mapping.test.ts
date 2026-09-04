@@ -31,6 +31,15 @@ describe('classifyResultSubtype', () => {
     expect(classifyResultSubtype('error_during_execution')).toBe('unknown')
     expect(classifyResultSubtype('success')).toBeNull()
   })
+
+  it('treats an UNRECOGNISED error_* subtype as an error, not as success', () => {
+    // The old `default: null` rendered an unfamiliar failure as a clean successful turn. M2.5 makes
+    // that costlier: a future `error_max_budget_*` variant would bill the user and show success.
+    expect(classifyResultSubtype('error_max_budget_tokens')).toBe('unknown')
+    expect(classifyResultSubtype('error_something_new')).toBe('unknown')
+    // Non-error subtypes still produce no error event.
+    expect(classifyResultSubtype('partial')).toBeNull()
+  })
 })
 
 describe('classifyException', () => {
@@ -73,6 +82,7 @@ describe('mapSdkMessage', () => {
     const events = mapSdkMessage(
       { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-opus-5', tools: [] },
       seen(),
+      0,
     )
     expect(events).toEqual([
       { type: 'ready', sessionId: 'sess-1', model: 'claude-opus-5', skills: [] },
@@ -89,6 +99,7 @@ describe('mapSdkMessage', () => {
         skills: ['slide-deck', 'svg-animation', 'interactive-graph'],
       },
       seen(),
+      0,
     )
     expect(events).toEqual([
       {
@@ -105,13 +116,14 @@ describe('mapSdkMessage', () => {
       mapSdkMessage(
         { type: 'system', subtype: 'init', session_id: 's', model: 'm', skills },
         seen(),
+        0,
       )[0]
     expect(from('slide-deck')).toMatchObject({ type: 'ready', skills: [] })
     expect(from([1, 'slide-deck', null])).toMatchObject({ skills: ['slide-deck'] })
   })
 
   it('ignores a system message that is not init', () => {
-    expect(mapSdkMessage({ type: 'system', subtype: 'other' }, seen())).toEqual([])
+    expect(mapSdkMessage({ type: 'system', subtype: 'other' }, seen(), 0)).toEqual([])
   })
 
   it('extracts a text delta from a stream_event', () => {
@@ -121,6 +133,7 @@ describe('mapSdkMessage', () => {
         event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hel' } },
       },
       seen(),
+      0,
     )
     expect(events).toEqual([{ type: 'assistant-delta', text: 'Hel' }])
   })
@@ -132,6 +145,7 @@ describe('mapSdkMessage', () => {
         event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '...' } },
       },
       seen(),
+      0,
     )
     expect(events).toEqual([])
   })
@@ -150,6 +164,7 @@ describe('mapSdkMessage', () => {
         },
       },
       seen(),
+      0,
     )
     expect(events).toEqual([
       {
@@ -171,6 +186,7 @@ describe('mapSdkMessage', () => {
         },
       },
       seen(),
+      0,
     )
     expect(events).toEqual([{ type: 'tool-use', toolUseId: 'tu1', label: 'create slide' }])
   })
@@ -185,14 +201,15 @@ describe('mapSdkMessage', () => {
         usage: { input_tokens: 5, output_tokens: 5, cache_read_input_tokens: 0 },
       },
     }
-    expect(mapSdkMessage(msg, set)).toHaveLength(1)
-    expect(mapSdkMessage(msg, set)).toEqual([])
+    expect(mapSdkMessage(msg, set, 0)).toHaveLength(1)
+    expect(mapSdkMessage(msg, set, 0)).toEqual([])
   })
 
   it('surfaces an assistant error enum as an error event, not deduplicated', () => {
     const events = mapSdkMessage(
       { type: 'assistant', error: 'rate_limit', message: { id: 'e1' } },
       seen(),
+      0,
     )
     expect(events).toEqual([
       { type: 'error', kind: 'rate-limit', message: 'rate_limit', recoverable: true },
@@ -203,29 +220,92 @@ describe('mapSdkMessage', () => {
     const events = mapSdkMessage(
       { type: 'result', subtype: 'success', total_cost_usd: 0.041, session_id: 's' },
       seen(),
+      0,
     )
-    expect(events).toEqual([{ type: 'turn-end', costUsd: 0.041, subtype: 'success' }])
+    expect(events).toEqual([
+      { type: 'turn-end', snapshotUsd: 0.041, generation: 0, subtype: 'success' },
+    ])
   })
 
   it('emits turn-end AND an error for a budget-exhausted result (error carries cost too)', () => {
     const events = mapSdkMessage(
       { type: 'result', subtype: 'error_max_budget_usd', total_cost_usd: 2 },
       seen(),
+      0,
     )
     const kinds = events.map((e: AgentEvent) => e.type)
     expect(kinds).toEqual(['turn-end', 'error'])
-    expect(events[0]).toEqual({ type: 'turn-end', costUsd: 2, subtype: 'error_max_budget_usd' })
+    expect(events[0]).toEqual({
+      type: 'turn-end',
+      snapshotUsd: 2,
+      generation: 0,
+      subtype: 'error_max_budget_usd',
+    })
     expect(events[1]).toMatchObject({ type: 'error', kind: 'budget', recoverable: true })
+    // Empty message on purpose: the renderer's copy table owns the wording for every kind it has a
+    // calibrated sentence for, and `errorCopy` prefers a non-empty message — so a diagnostic string
+    // here would put "Turn ended: error_max_budget_usd" on screen instead (M2.5).
+    expect(events[1]).toMatchObject({ message: '' })
+  })
+
+  it('deduplicates a repeated result by its uuid — a cost invariant, not a display one', () => {
+    // The accumulator downstream counts open turns, so it cannot tell a repeated `result` from a
+    // second turn's. Only this layer has the identity that can, so dedup belongs here.
+    const shared = seen()
+    const first = mapSdkMessage(
+      { type: 'result', uuid: 'r-1', subtype: 'success', total_cost_usd: 0.1 },
+      shared,
+      0,
+    )
+    const repeat = mapSdkMessage(
+      { type: 'result', uuid: 'r-1', subtype: 'success', total_cost_usd: 0.1 },
+      shared,
+      0,
+    )
+    const other = mapSdkMessage(
+      { type: 'result', uuid: 'r-2', subtype: 'success', total_cost_usd: 0.9 },
+      shared,
+      0,
+    )
+    expect(first).toEqual([
+      { type: 'turn-end', snapshotUsd: 0.1, generation: 0, subtype: 'success' },
+    ])
+    expect(repeat).toEqual([])
+    expect(other).toEqual([
+      { type: 'turn-end', snapshotUsd: 0.9, generation: 0, subtype: 'success' },
+    ])
+  })
+
+  it('still maps a result that carries no uuid, rather than dropping the turn', () => {
+    // An older or partial runtime must not lose its turn-end just because it omits the field.
+    const shared = seen()
+    expect(
+      mapSdkMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.2 }, shared, 0),
+    ).toEqual([{ type: 'turn-end', snapshotUsd: 0.2, generation: 0, subtype: 'success' }])
+  })
+
+  it('keeps the raw subtype only for `unknown`, where it is the best detail available', () => {
+    const events = mapSdkMessage(
+      { type: 'result', subtype: 'error_during_execution', total_cost_usd: 0 },
+      seen(),
+      0,
+    )
+    expect(events[1]).toMatchObject({
+      kind: 'unknown',
+      message: 'Turn ended: error_during_execution',
+    })
   })
 
   it('defaults a missing cost to 0 rather than NaN', () => {
-    const events = mapSdkMessage({ type: 'result', subtype: 'success' }, seen())
-    expect(events).toEqual([{ type: 'turn-end', costUsd: 0, subtype: 'success' }])
+    const events = mapSdkMessage({ type: 'result', subtype: 'success' }, seen(), 0)
+    expect(events).toEqual([
+      { type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' },
+    ])
   })
 
   it('ignores unknown and malformed messages', () => {
-    expect(mapSdkMessage({ type: 'status' }, seen())).toEqual([])
-    expect(mapSdkMessage(null, seen())).toEqual([])
-    expect(mapSdkMessage('nope', seen())).toEqual([])
+    expect(mapSdkMessage({ type: 'status' }, seen(), 0)).toEqual([])
+    expect(mapSdkMessage(null, seen(), 0)).toEqual([])
+    expect(mapSdkMessage('nope', seen(), 0)).toEqual([])
   })
 })

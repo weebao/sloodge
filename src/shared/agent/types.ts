@@ -28,7 +28,10 @@ export function isAgentModelId(value: unknown): value is AgentModelId {
  * How a turn failed, surfaced as a typed event rather than a thrown string (50-agent-integration.md
  * §13). The renderer branches on `kind` to choose recovery UX; `message` is human-readable copy.
  *
- * - `auth` — 401/403; key is flagged invalid, not deleted.
+ * - `auth` — 401/403; the credential is flagged invalid, not deleted.
+ * - `no-credential` — no credential is configured at all. Distinct from `auth` because nothing was
+ *   authenticated and nothing failed, and the two need opposite remedies: "check the one you have"
+ *   versus "add one". Folding them told a subscription user to check an API key they never had.
  * - `rate-limit` / `overloaded` — 429 / 529; the SDK retries internally, so this only surfaces once
  *   it has given up.
  * - `network` — DNS/offline; the deck stays editable offline.
@@ -40,10 +43,12 @@ export function isAgentModelId(value: unknown): value is AgentModelId {
  */
 export const AGENT_ERROR_KINDS = [
   'auth',
+  'no-credential',
   'rate-limit',
   'overloaded',
   'network',
   'budget',
+  'slash-command',
   'max-turns',
   'interrupted',
   'runtime-missing',
@@ -51,6 +56,24 @@ export const AGENT_ERROR_KINDS = [
 ] as const
 
 export type AgentErrorKind = (typeof AGENT_ERROR_KINDS)[number]
+
+/**
+ * How the session is carrying Sloodge's slide-craft knowledge (M2.5, 50-agent-integration.md §8).
+ *
+ * - `ok` — the three bundled skills loaded from the workspace. Progressive disclosure: ~100 tokens
+ *   per skill until one is relevant. Nothing is shown in the status bar; this is the design working.
+ * - `fallback` — the skills did not load, so the session restarted **once** with `skills: []` and the
+ *   three SKILL.md bodies inlined into the system prompt. Same output quality, higher token cost per
+ *   turn. The status bar reads `skills: fallback` so a support case can spot it.
+ * - `unavailable` — the skills did not load and the fallback could not be built either (the bundled
+ *   SKILL.md files are unreadable). The agent answers without the craft knowledge; the chat panel
+ *   says so.
+ *
+ * `unknown` is not a member: the status is only reported once a session has resolved an init, and
+ * "not yet known" is the *absence* of this event rather than a value of it. The renderer's store
+ * carries its own idle state.
+ */
+export type SkillsStatus = 'ok' | 'fallback' | 'unavailable'
 
 /**
  * Token usage for one assistant message or turn. Deliberately a subset of the SDK's `usage` object —
@@ -85,16 +108,40 @@ export type AgentEvent =
       readonly skills: readonly string[]
     }
   /**
-   * The bundled skills did not load for this session (50-agent-integration.md §8). Emitted once per
-   * session, right after `ready`, and only when something is actually missing — the agent still
-   * works, but without the craft knowledge the skills carry, so this is a visible degradation
-   * notice rather than an error. A silent skill-less session is the failure M2.4 exists to prevent.
+   * The bundled skills did not load for this session **and could not be recovered**
+   * (50-agent-integration.md §8). Emitted at most once per session, right after `ready`, and only
+   * once M2.5's fallback restart has been ruled out — the agent still works, but without the craft
+   * knowledge the skills carry, so this is a visible degradation notice rather than an error. A
+   * silent skill-less session is the failure M2.4 exists to prevent.
+   *
+   * A session that *was* repaired by the fallback restart does not emit this: nagging about a
+   * condition that has been fixed teaches users to ignore the notice. It reports `skills-status:
+   * fallback` instead, which the status bar shows quietly.
    */
   | { readonly type: 'skills-degraded'; readonly missing: readonly string[] }
+  /**
+   * How the session's slide-craft knowledge is being loaded (M2.5, §8) — the status bar's
+   * `skills: fallback` indicator. Emitted whenever the session resolves an init, so a restart is
+   * never invisible: §8 pairs the automatic fallback restart with this indicator precisely because
+   * "a session that silently restarts itself with a different prompt shape, and says so nowhere, is
+   * worse than the loud non-healing state".
+   */
+  | { readonly type: 'skills-status'; readonly status: SkillsStatus }
   | { readonly type: 'assistant-delta'; readonly text: string }
   | { readonly type: 'assistant-message'; readonly text: string; readonly usage: AgentUsage }
   | { readonly type: 'tool-use'; readonly toolUseId: string; readonly label: string }
-  | { readonly type: 'turn-end'; readonly costUsd: number; readonly subtype: string }
+  /**
+   * A `result` arrived (or main closed a turn its query never answered). `snapshotUsd` is the SDK's
+   * `total_cost_usd` — the reporting subprocess's **running total**, not this turn's price — and
+   * `generation` names that subprocess, so the shared fold (`shared/agent/cost.ts`) can take the
+   * maximum within a generation and bank the total when a new one starts.
+   */
+  | {
+      readonly type: 'turn-end'
+      readonly snapshotUsd: number
+      readonly generation: number
+      readonly subtype: string
+    }
   | {
       readonly type: 'error'
       readonly kind: AgentErrorKind
@@ -127,6 +174,7 @@ export const MAX_API_KEY_LENGTH = 512
 const AGENT_EVENT_TYPES = [
   'ready',
   'skills-degraded',
+  'skills-status',
   'assistant-delta',
   'assistant-message',
   'tool-use',

@@ -95,6 +95,17 @@ describe('buildSdkOptions — isolation invariants (§5)', () => {
     expect('resume' in buildSdkOptions(OPTIONS)).toBe(false)
     expect(buildSdkOptions({ ...OPTIONS, resumeSessionId: 'sess-9' }).resume).toBe('sess-9')
   })
+
+  it('forks every resume, so the cost baseline cannot depend on a stale session id (§10)', () => {
+    // The fold banks a finished generation and starts the replacement from its own snapshots, which
+    // is exact only while the resumed subprocess's cost tracker starts at $0. The CLI can restore it
+    // instead — `xws(id)` returns the per-cwd `lastCost` when `lastSessionId` matches the id the
+    // process is running under. Under `--fork-session` the process keeps the fresh uuid it minted at
+    // startup rather than adopting the resumed one, so no stale entry can match. Never set without a
+    // resume: forking nothing is meaningless, and it would show up as a stray CLI flag.
+    expect('forkSession' in buildSdkOptions(OPTIONS)).toBe(false)
+    expect(buildSdkOptions({ ...OPTIONS, resumeSessionId: 'sess-9' }).forkSession).toBe(true)
+  })
 })
 
 describe('realQuery', () => {
@@ -123,5 +134,53 @@ describe('defaultAgentPaths', () => {
       cwd: path.join('/userData', 'agent', 'workspace'),
       configDir: path.join('/userData', 'agent', 'claude'),
     })
+  })
+})
+
+/** `systemPrompt` is a union in the SDK; Sloodge always builds the preset object form. */
+const appendOf = (options: ReturnType<typeof buildSdkOptions>): string => {
+  const prompt = options.systemPrompt
+  if (typeof prompt !== 'object' || prompt === null || Array.isArray(prompt)) {
+    throw new TypeError('expected the preset systemPrompt object')
+  }
+  return prompt.append ?? ''
+}
+
+describe('buildSdkOptions — §8 skill fallback shape (M2.5)', () => {
+  const FALLBACK = '## Skill: slide-deck\n\nUse a 1280x720 canvas.'
+
+  it('names the three bundled skills and inlines nothing by default', () => {
+    const options = buildSdkOptions(OPTIONS)
+    expect(options.skills).toEqual(['slide-deck', 'svg-animation', 'interactive-graph'])
+    expect(appendOf(options)).not.toContain('## Skill:')
+  })
+
+  it('empties the skills filter and inlines the bodies when running as the fallback', () => {
+    // Emptied rather than left populated: naming skills that demonstrably did not load is a claim
+    // the init message already contradicted, and a later successful discovery would otherwise
+    // double the guidance — once from disk, once from the prompt.
+    const options = buildSdkOptions({ ...OPTIONS, skillFallbackPrompt: FALLBACK })
+    expect(options.skills).toEqual([])
+    const append = appendOf(options)
+    expect(append).toContain(FALLBACK)
+    // The base Sloodge preamble survives — the fallback adds craft knowledge, it does not replace
+    // the description of what the app is.
+    expect(append).toContain('presentation-design assistant')
+  })
+})
+
+describe('buildSdkOptions — §10 budget ceiling (M2.5)', () => {
+  it('omits maxBudgetUsd entirely when the user has set no cap', () => {
+    // A sentinel would read to the SDK as a real ceiling.
+    expect('maxBudgetUsd' in buildSdkOptions(OPTIONS)).toBe(false)
+  })
+
+  it('passes the cap through as maxBudgetUsd', () => {
+    expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 1.5 }).maxBudgetUsd).toBe(1.5)
+  })
+
+  it('passes a ceiling of zero through rather than treating it as absent', () => {
+    // Pins the `!== undefined` check: a falsy-but-present number must reach the SDK, not be dropped.
+    expect(buildSdkOptions({ ...OPTIONS, maxBudgetUsd: 0 }).maxBudgetUsd).toBe(0)
   })
 })

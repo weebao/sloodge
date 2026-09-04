@@ -200,14 +200,113 @@ function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/* -------------------------------------------------------------------------------------------- *
+ * §8's fallback: the SKILL.md bodies as a system-prompt append
+ *
+ * When `system:init` reports that the filesystem skills did not load, `AgentSession` reopens the
+ * query with `skills: []` and these bodies appended to `systemPrompt.append` (M2.5). §8 rejected
+ * this shape as the *primary* design — ~3–4k tokens resident on every turn, including "make the
+ * title bigger", where progressive disclosure would have loaded nothing — and kept it exactly here,
+ * as the repair: "degraded on token cost, identical on output quality".
+ * -------------------------------------------------------------------------------------------- */
+
+/** One bundled skill's prose, with the YAML frontmatter already stripped. */
+export type SkillBody = {
+  readonly name: BundledSkillName
+  readonly body: string
+}
+
+/**
+ * Strip a SKILL.md's YAML frontmatter.
+ *
+ * The frontmatter is discovery metadata — `name` and the ~100-token `description` the runtime reads
+ * at startup to decide whether to load the body. In fallback mode there is no discovery: the body is
+ * already resident, so the frontmatter is not merely redundant, it is a block of YAML in the middle
+ * of a system prompt describing a mechanism that is not in play. `name` survives as the section
+ * heading `composeFallbackSystemPrompt` writes.
+ *
+ * A file with no frontmatter is returned unchanged rather than treated as an error: the delimiter is
+ * a convention of the skill format, and losing the whole body over a missing `---` would turn a
+ * cosmetic problem into a silent quality regression.
+ */
+export function stripFrontmatter(source: string): string {
+  const normalized = source.replace(/^﻿/, '')
+  if (!normalized.startsWith('---')) return normalized.trim()
+  // The closing delimiter is a `---` on its own line; anything before the first newline is the
+  // opening one. An unterminated block means the file is not really frontmatter-delimited.
+  const end = normalized.indexOf('\n---', 3)
+  if (end === -1) return normalized.trim()
+  const afterDelimiter = normalized.indexOf('\n', end + 1)
+  return afterDelimiter === -1 ? '' : normalized.slice(afterDelimiter + 1).trim()
+}
+
+/**
+ * Build the `systemPrompt.append` addition for a fallback session.
+ *
+ * Each body gets a heading naming its skill, so the model can still tell the three apart and the
+ * cross-references between them (slide-deck's hard rule 3 points at `icons.md`) still read as
+ * instructions about a named thing. `icons.md` itself is deliberately *not* inlined: it stays on
+ * disk in the workspace and `Read` is an allowed tool (client.ts), so the reference resolves the
+ * same way it would with skills loaded — inlining it would add tokens to every turn to save one
+ * tool call on the few turns that need icons.
+ *
+ * Returns `null` when no body could be read, so the caller can tell "repaired" from "still broken"
+ * and keep the loud M2.4 notice for the second case rather than restarting into an identical
+ * session.
+ */
+export function composeFallbackSystemPrompt(bodies: readonly SkillBody[]): string | null {
+  const sections = bodies
+    .filter((entry) => entry.body.trim().length > 0)
+    .map((entry) => `## Skill: ${entry.name}\n\n${entry.body.trim()}`)
+  if (sections.length === 0) return null
+  return [
+    'The following slide-craft instructions are always in effect. They are the same guidance the',
+    'bundled Sloodge skills carry; they are inlined here because skill loading was unavailable for',
+    'this session.',
+    '',
+    sections.join('\n\n'),
+  ].join('\n')
+}
+
+/**
+ * Read the three bundled `SKILL.md` bodies from the app bundle for the fallback prompt.
+ *
+ * **Never throws**, for the same reason `materializeSkills` does not: this runs on the path to
+ * repairing an already-degraded session, and a read failure must leave the user with the loud
+ * degradation notice, not a dead chat box. A skill whose file cannot be read is simply omitted; if
+ * none can be read, `composeFallbackSystemPrompt` returns `null` and no restart happens.
+ *
+ * Read from `sourceDir` (the read-only bundle) rather than the materialized workspace copy on
+ * purpose: if the workspace copy were readable and correct, the skills would very likely have
+ * loaded. The bundle is the source the copy failed to reproduce.
+ */
+export async function readSkillBodies(params: {
+  readonly sourceDir: string
+  readonly fs: Pick<SkillFs, 'readFile'>
+}): Promise<readonly SkillBody[]> {
+  const { sourceDir, fs } = params
+  const read = await Promise.all(
+    BUNDLED_SKILL_NAMES.map(async (name) => {
+      try {
+        const raw = await fs.readFile(path.join(sourceDir, name, 'SKILL.md'))
+        return { name, body: stripFrontmatter(raw) }
+      } catch {
+        return null
+      }
+    }),
+  )
+  return read.filter((entry): entry is SkillBody => entry !== null)
+}
+
 /**
  * Which of the bundled skills the running session did **not** load, given the `skills` array the SDK
  * reports on its `system:init` message (§8).
  *
- * A non-empty result is surfaced two ways today: the main-process log, and the `skills-degraded`
- * event `AgentSession` emits for the chat panel's notice. It does **not** yet trigger §8's
- * system-prompt fallback or a `skills: fallback` status line — those are M2.5's (it owns the status
- * bar; see 80-roadmap.md). So this reports a degradation; it does not repair one.
+ * A non-empty result drives three things (M2.5): the main-process log, `AgentSession`'s one-shot
+ * restart into the system-prompt fallback above, and — if that restart is not possible — the
+ * `skills-degraded` event the chat panel renders as a notice. Callers must interpret it in light of
+ * the session's skill mode: a *fallback* session runs with `skills: []` on purpose, so "all three
+ * missing" is the expected, healthy reading of its init and not a degradation to report again.
  */
 export function missingSkills(loaded: readonly string[]): readonly BundledSkillName[] {
   const present = new Set(loaded.map(canonicalSkillName))

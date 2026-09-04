@@ -10,6 +10,8 @@
 import { ipcMain, webContents, type WebContents } from 'electron'
 import {
   AGENT_AUTH_STATUS_CHANNEL,
+  AGENT_BUDGET_CHANNEL,
+  AGENT_SET_BUDGET_CHANNEL,
   AGENT_CLEAR_KEY_CHANNEL,
   AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_SET_SUBSCRIPTION_TOKEN_CHANNEL,
@@ -21,16 +23,24 @@ import {
   DECK_AGENT_EDIT_CHANNEL,
   DECK_AGENT_EDIT_RESULT_CHANNEL,
   type AgentAuthStatusResponse,
+  type AgentBudgetResponse,
   type AgentInterruptResponse,
   type AgentKeyStatusResponse,
   type AgentSendResponse,
   type AgentSetKeyResponse,
 } from '../../shared/ipc-contract'
 import { isAgentSendRequest, isApiKeySetRequest, type ApiKeyStatus } from '../../shared/agent/types'
+import { isBudgetSetRequest, type BudgetCap } from '../../shared/agent/budget'
 import type { AuthStatus } from '../../shared/agent/auth'
 import { isAgentEditResponse } from '../../shared/document/agent-edit'
+import { budgetStore } from '../agent/budget-store'
 import { bundledSkillsDir, defaultAgentPaths, realQuery } from '../agent/client'
-import { materializeSkills, nodeSkillFs } from '../agent/skills'
+import {
+  composeFallbackSystemPrompt,
+  materializeSkills,
+  nodeSkillFs,
+  readSkillBodies,
+} from '../agent/skills'
 import { createRendererDeckEditor, type RendererDeckEditor } from '../agent/deck-editor'
 import { createDeckToolHost } from '../agent/deck-host'
 import { AgentService } from '../agent/service'
@@ -47,6 +57,9 @@ export type AgentIpcDeps = {
   readonly clearSubscriptionToken: () => Promise<ApiKeyStatus>
   /** Both slots, masked and combined into the active mode. */
   readonly getAuthStatus: () => Promise<AuthStatus>
+  /** M2.5 — the persisted session spend cap (§10). */
+  readonly getBudgetCap: () => Promise<BudgetCap>
+  readonly setBudgetCap: (cap: BudgetCap) => Promise<BudgetCap>
 }
 
 /** Renderers whose teardown hooks are installed — a WeakSet so a destroyed WebContents isn't held. */
@@ -122,6 +135,8 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
   // The reconciliation surface is installed regardless (its response listener is idle until a tool
   // call is made); only the default service is wired to route agent edits through it.
   const { editors, resolveMcpServers } = installDeckReconciliation()
+  const getBudgetCap = deps.getBudgetCap ?? (() => budgetStore().load())
+  const setBudgetCap = deps.setBudgetCap ?? ((cap: BudgetCap) => budgetStore().save(cap))
   const service =
     deps.service ??
     new AgentService({
@@ -129,10 +144,17 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
       loadCredential: vault.loadAgentCredential,
       resolvePaths: defaultAgentPaths,
       resolveMcpServers,
+      loadBudgetCap: getBudgetCap,
       // M2.4: put the three validated slide skills under `<cwd>/.claude/skills` before the
       // subprocess starts, since that is the only settings layer the agent loads (§5, §8).
       prepareWorkspace: (cwd) =>
         materializeSkills({ sourceDir: bundledSkillsDir(), cwd, fs: nodeSkillFs }),
+      // M2.5: §8's repair. Only called if an init reports the skills missing, so a healthy session
+      // never touches the bundle a second time.
+      loadFallbackPrompt: async () =>
+        composeFallbackSystemPrompt(
+          await readSkillBodies({ sourceDir: bundledSkillsDir(), fs: nodeSkillFs }),
+        ),
     })
   const saveApiKey = deps.saveApiKey ?? vault.saveApiKey
   const clearApiKey = deps.clearApiKey ?? vault.clearApiKey
@@ -202,6 +224,27 @@ export function installAgentIpc(deps: Partial<AgentIpcDeps> = {}): AgentService 
   ipcMain.handle(AGENT_INTERRUPT_CHANNEL, async (event): Promise<AgentInterruptResponse> => {
     return service.interrupt(event.sender.id)
   })
+
+  // --- M2.5 budget surface -----------------------------------------------------------------------
+  // Not a secret, so unlike the credential channels this one reads back exactly what it stores.
+
+  ipcMain.handle(AGENT_BUDGET_CHANNEL, async (): Promise<AgentBudgetResponse> => {
+    return { capUsd: await getBudgetCap() }
+  })
+
+  ipcMain.handle(
+    AGENT_SET_BUDGET_CHANNEL,
+    async (_event, payload: unknown): Promise<AgentBudgetResponse> => {
+      if (!isBudgetSetRequest(payload)) {
+        throw new Error('agent:setBudget requires { capUsd: number | null }')
+      }
+      const capUsd = await setBudgetCap(payload.capUsd)
+      // Bind the saved cap to live sessions now, not on their next send (M2.5 §10: a cap lowered
+      // below current spend stops the running turn).
+      service.setBudgetCap(capUsd)
+      return { capUsd }
+    },
+  )
 
   return service
 }

@@ -8,6 +8,7 @@
  */
 
 import type { AgentEvent, ApiKeySetRequest, ApiKeyStatus, AgentSendRequest } from './agent/types'
+import type { BudgetCap, BudgetSetRequest } from './agent/budget'
 import type { AuthStatus } from './agent/auth'
 import type { DeckUpdate } from './document/deck-update'
 import type { AgentEditRequest } from './document/agent-edit'
@@ -93,8 +94,18 @@ export type AgentKeyStatusResponse = { status: ApiKeyStatus }
  * a masked `ApiKeyStatus`; no plaintext credential can appear in this shape by construction.
  */
 export type AgentAuthStatusResponse = { status: AuthStatus }
-export type AgentSendResponse = { accepted: boolean }
+/**
+ * Why a refused send carries a reason (M2.5): there are three ways to be turned away, and the
+ * renderer's response to them differs. `no-credential` gates the composer and points at Settings
+ * ▸ Auth; `budget` leaves the composer usable and points at Settings ▸ Budget; `slash-command` says
+ * the text itself has to change. A bare `accepted: false` would have made a budget refusal render as
+ * "authentication failed", which is the kind of wrong error message that costs a user an hour.
+ */
+export type AgentSendRefusal = 'no-credential' | 'budget' | 'slash-command'
+export type AgentSendResponse = { accepted: boolean; reason?: AgentSendRefusal }
 export type AgentInterruptResponse = { interrupted: boolean }
+/** The session spend cap (M2.5, 50-agent-integration.md §10). `null` is "no limit". */
+export type AgentBudgetResponse = { capUsd: BudgetCap }
 
 /**
  * Present mode (M4.1). The renderer owns the presentation surface — it reuses the same `slide://`
@@ -121,6 +132,8 @@ export type IpcRequests = {
   'agent:clearSubscriptionToken': { req: Record<string, never>; res: AgentAuthStatusResponse }
   'agent:send': { req: AgentSendRequest; res: AgentSendResponse }
   'agent:interrupt': { req: Record<string, never>; res: AgentInterruptResponse }
+  'agent:budget': { req: Record<string, never>; res: AgentBudgetResponse }
+  'agent:setBudget': { req: BudgetSetRequest; res: AgentBudgetResponse }
   'present:setFullscreen': { req: PresentFullscreenRequest; res: PresentFullscreenResponse }
   'file:exportPdf': { req: ExportPdfRequest; res: ExportPdfResponse }
   'file:exportPptx': { req: ExportPptxRequest; res: ExportPptxResponse }
@@ -193,6 +206,13 @@ export const AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL =
   'agent:clearSubscriptionToken' satisfies IpcRequestChannel
 export const AGENT_SEND_CHANNEL = 'agent:send' satisfies IpcRequestChannel
 export const AGENT_INTERRUPT_CHANNEL = 'agent:interrupt' satisfies IpcRequestChannel
+/**
+ * The M2.5 budget channels. Read on session start (main needs the cap for the SDK's `maxBudgetUsd`)
+ * and on renderer start (the status bar and Settings ▸ Budget mirror it); written only from the
+ * Settings tab.
+ */
+export const AGENT_BUDGET_CHANNEL = 'agent:budget' satisfies IpcRequestChannel
+export const AGENT_SET_BUDGET_CHANNEL = 'agent:setBudget' satisfies IpcRequestChannel
 export const AGENT_EVENT_CHANNEL = 'agent:event' satisfies IpcEventChannel
 
 /**
@@ -271,6 +291,8 @@ export const IPC_REQUEST_CHANNELS = [
   AGENT_CLEAR_SUBSCRIPTION_TOKEN_CHANNEL,
   AGENT_SEND_CHANNEL,
   AGENT_INTERRUPT_CHANNEL,
+  AGENT_BUDGET_CHANNEL,
+  AGENT_SET_BUDGET_CHANNEL,
   PRESENT_SET_FULLSCREEN_CHANNEL,
   FILE_EXPORT_PDF_CHANNEL,
   FILE_EXPORT_PPTX_CHANNEL,

@@ -44,7 +44,7 @@ function makeFakeBridge(status: AuthStatus): {
   getAuthStatus: ReturnType<typeof vi.fn>
 } {
   const listeners = new Set<(e: AgentEvent) => void>()
-  const sendMessage = vi.fn(async () => true)
+  const sendMessage = vi.fn(async () => ({ accepted: true, reason: null }))
   const interrupt = vi.fn(async () => true)
   const getAuthStatus = vi.fn(async () => status)
   const bridge: AgentBridge = {
@@ -63,6 +63,8 @@ function makeFakeBridge(status: AuthStatus): {
     onDeckUpdated: () => () => undefined,
     onAgentEditRequest: () => () => undefined,
     sendAgentEditResult: () => undefined,
+    getBudgetCap: vi.fn(async () => 2),
+    setBudgetCap: vi.fn(async (cap: number | null) => cap),
   }
   const emit: Emit = (event) => {
     act(() => {
@@ -94,6 +96,11 @@ describe('ChatPanel — no bridge (browser host)', () => {
     expect(composer().disabled).toBe(false)
     expect(screen.getByRole('button', { name: /send/i }).getAttribute('aria-disabled')).toBe('true')
     expect(screen.queryByText(/set up authentication/i)).toBeNull()
+    // The reason is on screen, not only in the button's tooltip — Enter is inert here too.
+    expect(screen.getByText(/chat is unavailable in this window/i)).toBeTruthy()
+    fireEvent.change(composer(), { target: { value: 'hello' } })
+    fireEvent.keyDown(composer(), { key: 'Enter' })
+    expect(composer().value).toBe('hello')
   })
 })
 
@@ -206,7 +213,8 @@ describe('ChatPanel — streaming transcript', () => {
 
   it('surfaces a typed error as a chat bubble', () => {
     fake.emit({ type: 'error', kind: 'auth', message: '401', recoverable: false })
-    expect(screen.getByRole('alert').textContent).toMatch(/authentication failed/i)
+    // The calibrated sentence, not the raw `401` the event carries.
+    expect(screen.getByRole('alert').textContent).toMatch(/rejected your credential/i)
   })
 
   it('shows a visible, non-alarming notice when the bundled skills did not load', () => {
@@ -221,7 +229,7 @@ describe('ChatPanel — streaming transcript', () => {
   })
 
   it('renders "(no response)" for a turn that produced no text or tools', () => {
-    fake.emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' })
     const log = screen.getByRole('log', { name: 'Conversation' })
     expect(within(log).getByText('(no response)')).toBeTruthy()
   })
@@ -233,9 +241,10 @@ describe('ChatPanel — a pre-stream send rejection', () => {
     // agent:send rejects before any stream begins (e.g. a keychain read fault) — session.consume()
     // never sees it, so the hook's own catch is the only thing that can settle the turn.
     const rejecting = vi.fn(async () => {
-      throw new Error('keychain is locked')
+      throw new Error("Error invoking remote method 'agent:send': keychain is locked")
     })
     fake.bridge.sendMessage = rejecting
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
     render(<ChatPanel />)
     await waitFor(() => expect(composer().disabled).toBe(false))
@@ -243,9 +252,12 @@ describe('ChatPanel — a pre-stream send rejection', () => {
     fireEvent.change(composer(), { target: { value: 'build it' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
 
-    // The reject is mapped to a visible bubble carrying its message…
+    // The reject is mapped to a visible bubble with calibrated copy — the raw IPC text (channel
+    // names, main-process stack) goes to the console, not the chat…
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toMatch(/keychain is locked/i)
+    expect(alert.textContent).toMatch(/the agent turn failed/i)
+    expect(alert.textContent).not.toMatch(/agent:send|keychain/i)
+    expect(quiet).toHaveBeenCalled()
     // …and the composer is usable again (not wedged behind a Stop button).
     await waitFor(() => expect(composer().disabled).toBe(false))
     expect(screen.getByRole('button', { name: /send/i })).toBeTruthy()
