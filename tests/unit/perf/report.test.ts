@@ -225,6 +225,17 @@ describe('budgetTable', () => {
     expect(table.split('\n')).toHaveLength(BUDGETS.length + 2)
   })
 
+  it('renders the comparison each budget was actually evaluated with', () => {
+    // `droppedFrames` is the one `strict: false` budget (limit 0), so it passes at exactly 0 —
+    // and printing `< 0 frames` beside a passing 0.0 made the instrument contradict itself in the
+    // table six perf PRs are read against. Every other row stays exclusive.
+    const table = budgetTable(checkBudgets(metrics()))
+    expect(table).toContain('| Dropped frames on the active slide | 0.0 frames | \u2264 0 frames |')
+    expect(table).toContain('\u2264 0 frames | PASS |')
+    expect(table).not.toContain('< 0 frames')
+    expect(table).toContain('| Median RAM during stress suite | 150.0 MB | < 200 MB | PASS |')
+  })
+
   it('prints "no samples" rather than 0.0 for an empty series', () => {
     const table = budgetTable(checkBudgets(metrics({ slideSwitchMs: EMPTY })))
     expect(table).toContain('| Slide switch (median) | no samples | < 100 ms | FAIL |')

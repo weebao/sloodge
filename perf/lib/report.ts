@@ -305,6 +305,12 @@ export type BudgetCheck = {
   readonly samples: number | null
   /** Switches the series could not include (slide switch only); null for every other budget. */
   readonly unmeasured: number | null
+  /**
+   * Whether the limit is exclusive. Carried onto the check so `budgetTable` can render the
+   * comparison it was actually evaluated with: `droppedFrames` is the one non-strict budget, and
+   * printing `< 0 frames` beside a passing 0.0 made the instrument contradict itself.
+   */
+  readonly strict: boolean
   readonly pass: boolean
 }
 
@@ -364,6 +370,7 @@ export function checkBudgets(
       unit: budget.unit,
       samples,
       unmeasured: unmeasured[budget.key] ?? null,
+      strict: budget.strict,
       pass: samples !== 0 && within,
     }
   })
@@ -444,7 +451,8 @@ export function budgetTable(checks: readonly BudgetCheck[]): string {
         ? `no samples${unmeasured}`
         : `${check.actual.toFixed(1)} ${check.unit}${unmeasured}`
     const verdict = !check.pass ? 'FAIL' : unmeasured === '' ? 'PASS' : 'WARN'
-    return `| ${check.label} | ${measured} | < ${String(check.limit)} ${check.unit} | ${verdict} |`
+    const comparison = check.strict ? '<' : '\u2264'
+    return `| ${check.label} | ${measured} | ${comparison} ${String(check.limit)} ${check.unit} | ${verdict} |`
   })
   return ['| Budget | Measured | Limit | Verdict |', '|---|---|---|---|', ...rows].join('\n')
 }
