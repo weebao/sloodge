@@ -94,7 +94,7 @@ export type PerfReport = {
   readonly schema: 1
   readonly commit: string
   /** See `METRIC_DEFINITIONS`. Absent in reports written before M8.2 round 1: version 1 throughout. */
-  readonly metricDefinitions?: Readonly<Record<string, number>>
+  readonly metricDefinitions?: Readonly<Record<string, number>> | undefined
   readonly generatedAt: string
   readonly deck: {
     readonly slideCount: number
@@ -180,6 +180,7 @@ const ProcessTypeBreakdownSchema = z.object({
 export const PerfReportSchema = z.object({
   schema: z.literal(1),
   commit: z.string(),
+  metricDefinitions: z.record(z.string(), z.number()).optional(),
   generatedAt: z.string(),
   deck: z.object({
     slideCount: z.number(),

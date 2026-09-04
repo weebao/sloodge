@@ -409,17 +409,21 @@ created only once its URL exists, so a switch's first `load` is the slide's (a b
 | Metric                             | M8.1 baseline | M8.2 (shipped) | Note                                     |
 | ---------------------------------- | ------------: | -------------: | ---------------------------------------- |
 | Electron processes (median / peak) |     105 / 106 |     **7 / 10** | see "the process budget" below           |
-| Median PSS during the session      |       1685 MB |     **574 MB** | p95 1846 → 669                           |
-| Idle PSS (starter deck)            |        438 MB |         461 MB | unchanged — see "the floor"              |
-| Deck open (`deckOpenMs`)           |       1794 ms |         200 ms | definition v1 vs v2 — **not comparable** |
-| Slide switch (median / p95)        |   54 / 151 ms | **40 / 97 ms** | timing; baseline contended               |
-| Cold start                         |       1528 ms |        1078 ms | timing; baseline contended               |
+| Median PSS during the session      |       1685 MB |     **557 MB** | p95 1846 → 682                           |
+| Idle PSS (starter deck)            |        438 MB |         460 MB | unchanged — see "the floor"              |
+| Deck open (`deckOpenMs`)           |       1794 ms |         199 ms | definition v1 vs v2 — **not comparable** |
+| Slide switch (median / p95)        |   54 / 110 ms | **41 / 57 ms** | timing; baseline contended               |
+| Cold start                         |       1528 ms |        1108 ms | timing; baseline contended               |
 
 The baseline is the committed `baseline-main.json` (harness `ef07cf4`, median 1-minute load 6.3,
-`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `16a5151` — the
-round-1 fix commit, in this branch's history — on a quiet host (load 1.9, `contended: false`), so its
-timing columns can be believed; the baseline's cannot, and the process and PSS rows are the claim.
-The deslop commit on top of `16a5151` changes no behaviour.
+`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `60d7ef3` — this
+branch's tip, with the M8.1 round-2 harness (each switch paired with its own load) — on a quiet host
+(load 3.5, `contended: false`), so its timing columns can be believed; the baseline's cannot, and the
+process and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as
+regressed (53 → 215); that compares against a contended baseline whose frame numbers the
+"Contention" section above declares unusable. The comparable figure is the shell frame rate: 17.0 fps
+median during the dwell here (per run 13.8 / 50.2 / 17.0) against M8.1's quiet-window 7.1 fps at
+the same tier.
 
 ### The four URL shapes that were measured
 
@@ -435,7 +439,7 @@ fourth is what shipped.
 | `<id>` / `<id>` (per document everywhere)          |                   14 / 26 |     640 MB |         54 / 268 ms |                53 | isolated                      |
 | `slides` / `slides` (one host for everything)      |                     5 / 5 |     583 MB |   **360 / 1691 ms** |               125 | **freezes it**                |
 | `slides` / `thumbnails` (round 0)                  |                     6 / 6 |     527 MB |         38 / 210 ms |                83 | **freezes it** (measured)     |
-| **`stage-<id>` / `thumbnails` (round 1, shipped)** |                    7 / 10 |     574 MB |          40 / 97 ms |                72 | **isolated** (measured)       |
+| **`stage-<id>` / `thumbnails` (round 1, shipped)** |                    7 / 10 |     557 MB |          41 / 57 ms |                98 | **isolated** (measured)       |
 
 One host for everything is the smallest and the slowest: the canvas frame, its two pre-warmed
 neighbours and every visible thumbnail — a dozen animating documents — share one renderer main
@@ -451,19 +455,21 @@ accepted residual (see `pnpm perf:isolation` below). Against round 0 this costs 
 median and four at the peak (a stepped-away stage document's process lingers for a moment before
 Chromium discards it, and the rail scroll phase briefly holds more), and a median PSS that sits
 _inside_ round 0's own two measurements (527 MB contended on the WIP commit, 605 MB uncontended on
-its final SHA).
+its final SHA). The switch p95 is not comparable across the rows: the first three were taken before
+the M8.1 round-2 fix, when every run's first switch was a phantom sample.
 
 ### Scaling after M8.2
 
-Every row is 3 runs at `16a5151`, `proc-pss-sum`.
+Every row is 3 runs at `60d7ef3`, `proc-pss-sum`, 60 paired switches.
 
 | Slides | Processes (median / peak) | Median PSS | Idle PSS | Deck open | Slide switch (median / p95) | Host load (median) |
 | -----: | ------------------------: | ---------: | -------: | --------: | --------------------------: | -----------------: |
-|    100 |                    7 / 10 |     574 MB |   461 MB |    200 ms |                  40 / 97 ms |                1.9 |
-|    500 |                    7 / 10 |     628 MB |   458 MB |    335 ms |                 43 / 179 ms |                2.2 |
-|   1000 |                    7 / 10 |     626 MB |   459 MB |    521 ms |                 44 / 259 ms |                2.8 |
+|    100 |                    7 / 10 |     557 MB |   460 MB |    199 ms |                  41 / 57 ms |                3.5 |
+|    500 |                    7 / 10 |     594 MB |   453 MB |    335 ms |                  39 / 58 ms |                3.6 |
+|   1000 |                    7 / 10 |     640 MB |   453 MB |    557 ms |                  41 / 70 ms |    8.0 (contended) |
 
-The 500- and 1000-slide tiers, which could not be opened at all before (M8.1 watched `MemAvailable`
+The 1000-slide row was taken while other work ran on the box (`contended: true`); its memory and
+process columns are the trustworthy ones. The 500- and 1000-slide tiers, which could not be opened at all before (M8.1 watched `MemAvailable`
 hit 0 and 2 GB of swap fill), now open in well under a second and produce reports. Process count is
 flat at 7 from 3 slides to 1000; PSS grows with the deck only through the store's serialized source
 and main's registry entries for the mounted documents.
@@ -475,15 +481,15 @@ the stress deck is pushed, medians over the idle window:
 
 | Process type                                                           | Count |     PSS |
 | ---------------------------------------------------------------------- | ----: | ------: |
-| Browser (main)                                                         |     1 |  123 MB |
+| Browser (main)                                                         |     1 |  120 MB |
 | GPU (SwiftShader under WSLg; alive in some windows and not others)     |   0–1 |  199 MB |
-| Utility (network service)                                              |     1 |   26 MB |
-| Tab — the app's renderer, two `stage-<id>` processes, one `thumbnails` |     4 |  114 MB |
+| Utility (network service)                                              |     1 |   25 MB |
+| Tab — the app's renderer, two `stage-<id>` processes, one `thumbnails` |     4 |  113 MB |
 | **Total**                                                              |     7 | ~460 MB |
 
 About 350 MB of that exists before a single slide document does. The three sandboxed slide
 processes hold all of the starter deck's live documents for well under 100 MB together (the app's
-own renderer is ~50 MB of the Tab figure). Under a 100-slide deck the session median sits ~110 MB
+own renderer is ~50 MB of the Tab figure). Under a 100-slide deck the session median sits ~100 MB
 above idle, which is the ~13 mounted documents (3 on the stage, ~10 thumbnails) plus the deck's
 source in the renderer store and main's registry — roughly 1 MB per slide of serialized HTML for the
 stress decks, and nothing per slide beyond that. The 200 MB median is therefore no longer a question

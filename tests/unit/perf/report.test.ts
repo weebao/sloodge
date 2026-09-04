@@ -265,6 +265,15 @@ describe('diffReports', () => {
   it('pins deckOpenMs at definition version 2 since M8.2', () => {
     expect(METRIC_DEFINITIONS['deckOpenMs']).toBe(2)
   })
+
+  // zod strips keys the schema does not name; a `metricDefinitions` the loader dropped would make
+  // every report read as version 1 and re-open the silent-redefinition hole this field closes.
+  it('survives the report schema, so perf:diff sees it', () => {
+    const parsed = PerfReportSchema.pick({ metricDefinitions: true }).parse({
+      metricDefinitions: METRIC_DEFINITIONS,
+    })
+    expect(parsed.metricDefinitions).toEqual(METRIC_DEFINITIONS)
+  })
 })
 
 describe('budgetTable', () => {
