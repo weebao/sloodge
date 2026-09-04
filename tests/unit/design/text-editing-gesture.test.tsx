@@ -27,6 +27,7 @@ import {
 import { MAX_TEXT_LENGTH } from '../../../src/shared/design/text-edit'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
+import { DesignNotice } from '../../../src/renderer/src/features/design/DesignNotice'
 import { SelectionOverlay } from '../../../src/renderer/src/features/design/SelectionOverlay'
 import { SettingsDialog } from '../../../src/renderer/src/features/settings/SettingsDialog'
 import {
@@ -78,13 +79,21 @@ beforeEach(() => {
     selections: [],
     selection: null,
     editing: null,
+    notice: null,
   })
 })
 
 afterEach(cleanup)
 
+// The canvas mounts the notice beside the overlay rather than inside it (round-8), so mounting both
+// here is what makes these gesture tests read what the app actually shows.
 function overlay(frameRef: RefObject<HTMLIFrameElement | null>): HTMLElement {
-  const { container } = render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+  const { container } = render(
+    <>
+      <SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />
+      <DesignNotice slideId={slideId} />
+    </>,
+  )
   return container.firstElementChild as HTMLElement
 }
 

@@ -965,7 +965,19 @@ Content field is simply disabled, with a hint explaining why.
   unmount the overlay, taking the bridge listener with it in the same commit, so the frame's
   `SL_EDIT` reaches nobody and the typed text was silently discarded (round-7). The session is now
   finished on a channel that outlives the overlay — `PinnedEdit.finish` in `useDesignBridge.ts` —
-  and the text lands as one ordinary undo entry. Every exit from a session therefore keeps the text.
+  and the text lands as one ordinary undo entry. That guarantee is a bound, not an absolute, and the
+  bound is worth writing down: turning Design Mode off also re-navigates the stage iframe to a fresh
+  `slide://` document — measured at **+28 ms after the click**, and it happens even when nothing was
+  edited — so `finish` is only ever answered by a document that is about to be torn down, and its
+  generous `FINISH_TIMEOUT_MS` buys nothing once it has been. Stalling the slide frame's main thread
+  across the toggle in the built app, the text commits at 0/50/100/200/400 ms of stall and is **lost
+  at 800 ms**: no commit, the frame reverted, nothing said. Ordinary interaction does not reach it —
+  the slide's own JS has to stall for about a second at the instant of the toggle, and ~130 real
+  sessions across the toggle, Present, `Enter`, `Esc`, `Tab` and blur never lost text — and it fails
+  safe, leaving the document untouched. Every exit therefore keeps the text provided the frame can
+  answer within a frame of the click; closing the residual window means capturing the frame's
+  `contentWindow` at pin time, or deferring the stage's re-navigation until a pending `finish`
+  settles (M3.13 in 80-roadmap.md).
 - **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
   quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
   characters live only in the frame's DOM until the session ends. This is consistent with the app

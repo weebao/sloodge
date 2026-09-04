@@ -91,6 +91,15 @@ function undoDepth(): number {
 }
 
 /**
+ * The refused-edit notice the hook raised, or `null`. It lives in `designStore` rather than in the
+ * hook's return, because two of the exits that raise one unmount the hook first (round-8); this
+ * reads it back the way `DesignNotice` does.
+ */
+function noticeText(): string | null {
+  return useDesignStore.getState().notice?.text ?? null
+}
+
+/**
  * What one frame is showing, for the assertions that matter: not "was a message posted at it" but
  * "what does the element actually say now".
  */
@@ -159,11 +168,13 @@ function frameModel(
 
   const apply = (slId: string, action: SlEditAction): SlEditResponse => {
     if (action === 'begin') {
+      // `beginEdit`'s two refusals, which have different shapes: no such node at all, and a node the
+      // live DOM says cannot host a caret. The first is decided *before* the open session is touched,
+      // as `frameScript`'s `querySelector` null-check is, so a `begin` naming an element the frame no
+      // longer has leaves whatever caret is open exactly where it was.
+      if (gone.has(slId)) return null
       endEdit(false)
       lastEnded = null
-      // `beginEdit`'s two refusals, which have different shapes: no such node at all, and a node the
-      // live DOM says cannot host a caret.
-      if (gone.has(slId)) return null
       if (!frameEditable(slId)) return { slId, text: shows(slId), editing: false }
       session = { slId, original: shows(slId) }
       return { slId, text: session.original, editing: true }
@@ -349,6 +360,7 @@ beforeEach(() => {
     selections: [],
     selection: null,
     editing: null,
+    notice: null,
   })
 })
 
@@ -953,7 +965,7 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
     expect(undoDepth()).toBe(1)
   })
 
-  it('a refusal that arrives after the overlay has gone still puts the frame back', () => {
+  it('a refusal that arrives after the overlay has gone puts the frame back, and says why', () => {
     const harness = mount(false)
     const id = idOfClass('title')
     open(harness, id)
@@ -971,6 +983,12 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
       { slId: id, slide: slideId, action: 'commit' },
       { slId: id, slide: slideId, action: 'revert' },
     ])
+    // Round-8: this is the whole reason the notice moved to the store. The answer lands after the
+    // hook is gone, so a `useState` setter here reached a dead component and the two exits that take
+    // this path — Design Mode off, and Present — put the text back without ever saying why, while
+    // `Enter` and `Esc` explained themselves (verified in the built app).
+    expect(noticeText()).toMatch(/too long/i)
+    expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
   })
 })
 
@@ -1075,7 +1093,7 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     // What round 4 adds: the frame is put back, and the user is told.
     expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
     expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
-    expect(harness.result.current.notice).toMatch(/too long/i)
+    expect(noticeText()).toMatch(/too long/i)
   })
 
   it.each([
@@ -1095,7 +1113,7 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     expect(undoDepth()).toBe(0)
     expect(harness.sent).toEqual([])
     expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(noticeText()).not.toBeNull()
   })
 
   it('stays silent when the text is simply unchanged', () => {
@@ -1108,7 +1126,7 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     expect(undoDepth()).toBe(0)
     // No revert: there is nothing to put back, and no notice, because nothing went wrong.
     expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
   })
 
   it('an accepted commit neither reverts nor notifies', () => {
@@ -1120,7 +1138,7 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
 
     expect(currentHtml()).toContain('New title')
     expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
   })
 
   it('a notice is dismissible, and a new caret clears it', () => {
@@ -1128,18 +1146,18 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     const id = idOfClass('title')
     open(harness, id)
     frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(noticeText()).not.toBeNull()
 
     act(() => {
-      harness.result.current.dismissNotice()
+      useDesignStore.getState().setNotice(null)
     })
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
 
     // A fresh caret is about a fresh edit; a notice from the last one must not follow it.
     open(harness, id)
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
     frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(noticeText()).not.toBeNull()
   })
 })
 
@@ -1189,7 +1207,7 @@ function mountSwitchable(): {
 }
 
 describe('useTextEditing — a notice belongs to the slide it was raised on (round-4)', () => {
-  it('clears when the slide changes', () => {
+  it('stamps the slide the refusal happened on, and a switch does not restamp it', () => {
     const id = idOfClass('title')
     const harness = mountSwitchable()
 
@@ -1204,11 +1222,14 @@ describe('useTextEditing — a notice belongs to the slide it was raised on (rou
         reason: 'enter',
       })
     })
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
 
+    // The switch leaves the stamp alone. Dropping it is the *reader's* job — `DesignNotice`, which
+    // is mounted for the switch that happens while Design Mode is off and this hook is not (see
+    // design-notice.test.tsx) — so a notice can never outlive the slide it names either way.
     harness.switchTo('some-other-slide')
 
-    expect(harness.result.current.notice).toBeNull()
+    expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
   })
 })
 
@@ -1254,7 +1275,7 @@ describe('useTextEditing — a caret is cancelled on its own frame, not the curr
       harness.result.current.beginEdit(id)
     })
     expect(harness.result.current.editing).toBe(id)
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
 
     // And this session's own end goes to the frame pinned on the way back in, not the one the first
     // caret was cancelled on — the pin is per session, not per element.
@@ -1293,7 +1314,7 @@ describe('useTextEditing — a caret is cancelled on its own frame, not the curr
     frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
 
     expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(noticeText()).not.toBeNull()
   })
 
   it('a session opened in the store pins the frame it is in, not the one the bridge moves to', () => {
@@ -1362,7 +1383,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
 
     expect(opened).toBe(false)
     // The exact failure the milestone exists to answer: a double-click that does nothing at all.
-    expect(harness.result.current.notice).toContain('formatting')
+    expect(noticeText()).toContain('formatting')
     // Refusing still means refusing: no request reached the frame, no session was opened.
     expect(harness.sent).toEqual([])
     expect(harness.result.current.editing).toBeNull()
@@ -1375,7 +1396,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
       select(id)
       harness.result.current.beginEdit(id)
     })
-    expect(harness.result.current.notice).toContain('locked')
+    expect(noticeText()).toContain('locked')
   })
 
   it('an id the map no longer has says the element is gone', () => {
@@ -1383,7 +1404,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
     act(() => {
       harness.result.current.beginEdit('sl-not-here')
     })
-    expect(harness.result.current.notice).toContain('no longer on this slide')
+    expect(noticeText()).toContain('no longer on this slide')
   })
 
   it('the frame declining a begin from its own model says so, and opens nothing', () => {
@@ -1399,7 +1420,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
     })
 
     expect(harness.result.current.editing).toBeNull()
-    expect(harness.result.current.notice).toContain('formatting')
+    expect(noticeText()).toContain('formatting')
     expect(harness.frame().isEditing(title)).toBe(false)
   })
 
@@ -1417,7 +1438,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
     })
 
     expect(harness.result.current.editing).toBeNull()
-    expect(harness.result.current.notice).toContain('no longer on this slide')
+    expect(noticeText()).toContain('no longer on this slide')
     expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'cancel' }])
   })
 
@@ -1434,7 +1455,7 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
     })
 
     expect(harness.result.current.editing).toBeNull()
-    expect(harness.result.current.notice).toContain('formatting')
+    expect(noticeText()).toContain('formatting')
   })
 
   it('a caret that does open says nothing, and clears a previous refusal', () => {
@@ -1443,10 +1464,10 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
       select(idOfClass('mixed'))
       harness.result.current.beginEdit(idOfClass('mixed'))
     })
-    expect(harness.result.current.notice).not.toBeNull()
+    expect(noticeText()).not.toBeNull()
 
     open(harness, idOfClass('title'))
-    expect(harness.result.current.notice).toBeNull()
+    expect(noticeText()).toBeNull()
     expect(harness.result.current.editing).toBe(idOfClass('title'))
   })
 })

@@ -22,6 +22,26 @@
 import type { SlHit } from '../../../../shared/design/bridge-protocol'
 import { createStore } from '../../stores/createStore'
 
+/**
+ * A refused text edit waiting to be explained, and the slide it was raised on (M3.11).
+ *
+ * Ephemeral view state like the rest of this store, but it lives here rather than in
+ * `useTextEditing`'s own `useState` for one reason: the two exits that can refuse an edit *while
+ * unmounting the overlay* — turning Design Mode off, and Present, which forces it off — start the
+ * refusal in the same React commit that destroys the component. A local setter called from the
+ * frame's answer, which lands afterwards, updates a component that is gone, so those two exits
+ * refused in silence while `Enter` and `Esc` explained themselves (round-8 minor). This store
+ * outlives the overlay, and `SlideCanvas` renders the notice in either mode.
+ *
+ * The `slideId` is what keeps the explanation attached to the edit that caused it: the rail can move
+ * to another slide while Design Mode is off, and a notice that followed the user there would name an
+ * element the new slide has never had.
+ */
+export type TextEditNotice = {
+  readonly slideId: string
+  readonly text: string
+}
+
 export type DesignSnapshot = {
   /**
    * Whether Design Mode is active. **On is the default** (M3.11); `Present` (later) forces it off.
@@ -65,6 +85,8 @@ export type DesignSnapshot = {
    * typing never touches `deckStore` at all.
    */
   readonly editing: string | null
+  /** The refused edit to explain, or `null`. See `TextEditNotice`. */
+  readonly notice: TextEditNotice | null
 }
 
 export type DesignState = DesignSnapshot & {
@@ -99,11 +121,18 @@ export type DesignState = DesignSnapshot & {
   beginEditing: (slId: string) => void
   /** Close any open session. Idempotent; safe to call when nothing is being edited. */
   endEditing: () => void
+  /** Raise or dismiss the refused-edit notice. */
+  setNotice: (notice: TextEditNotice | null) => void
 }
 
 const CLEARED = { hover: null, selections: [], selection: null, editing: null } as const
 
-const OFF: DesignSnapshot = { enabled: false, ...CLEARED }
+/**
+ * What turning Design Mode off resets. `notice` is deliberately **not** in it: the refusal a toggle
+ * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
+ * user is owed for it.
+ */
+const OFF: Omit<DesignSnapshot, 'notice'> = { enabled: false, ...CLEARED }
 
 /** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
 function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
@@ -114,6 +143,7 @@ function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
 
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
+  notice: null,
   // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
   enabled: true,
 
@@ -177,5 +207,9 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
 
   endEditing: () => {
     set({ editing: null })
+  },
+
+  setNotice: (notice) => {
+    set({ notice })
   },
 }))

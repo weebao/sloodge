@@ -5,6 +5,7 @@ import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
 import { ArrangeBar } from '../design/ArrangeBar'
+import { DesignNotice } from '../design/DesignNotice'
 import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
@@ -138,6 +139,9 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
                 Live slide — Design Mode is off. Press Ctrl/⌘+D to select and edit.
               </div>
             )}
+            {/* Outside the Design Mode branch on purpose — a refusal decided on the way *out* of
+                Design Mode has to land somewhere the overlay no longer is (see `DesignNotice`). */}
+            <DesignNotice slideId={slide.id} />
           </div>
         ) : (
           <div className="select-none text-center">

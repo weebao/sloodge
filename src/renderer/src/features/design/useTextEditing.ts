@@ -135,6 +135,12 @@
  * value is still refused and put back. Only a frame that never answers falls back to cancelling:
  * text the parent could not read is text it cannot vouch for.
  *
+ * That is a wide window, not an unconditional one, and §40-design-mode.md §9.4 now records the bound:
+ * the same toggle re-navigates the stage frame ~28 ms later, so `finish` is answered by a document
+ * already on its way out. A slide whose own JS stalls its main thread for about a second across the
+ * toggle answers too late and loses the text — measured at 800 ms of stall, against 400 ms surviving.
+ * Closing that window is M3.13.
+ *
  * ## The untrusted-text rule
  *
  * The committed string arrives over postMessage from a realm the slide's own JS shares, so it is
@@ -143,7 +149,7 @@
  * escapes it into a text-node position and refuses any edit that would break the slide contract.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { SlEditEventPayload } from '../../../../shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import {
@@ -178,10 +184,6 @@ export interface TextEditingApi {
   readonly onFrameReady: () => void
   /** The sl-id with an open session, or `null`. */
   readonly editing: string | null
-  /** A refused edit to tell the user about, or `null`. Cleared by `dismissNotice`. */
-  readonly notice: string | null
-  /** Drop the current notice — the user acknowledged it, or started editing again. */
-  readonly dismissNotice: () => void
 }
 
 /** What to tell the user about an edit that was refused. One sentence, no jargon, no id. */
@@ -242,10 +244,15 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   const editing = useDesignStore((state) => state.editing)
   const beginEditing = useDesignStore((state) => state.beginEditing)
   const endEditing = useDesignStore((state) => state.endEditing)
-  const [notice, setNotice] = useState<string | null>(null)
-  const dismissNotice = useCallback((): void => {
-    setNotice(null)
-  }, [])
+  // Raised into the store rather than into this hook's own state, because two of the exits that can
+  // refuse an edit unmount the hook first — see `designStore`'s `TextEditNotice`, and `DesignNotice`
+  // for where it is shown. `getState` rather than a subscription: nothing here reads it back.
+  const setNotice = useCallback(
+    (text: string | null): void => {
+      useDesignStore.getState().setNotice(text === null ? null : { slideId, text })
+    },
+    [slideId],
+  )
 
   // Read through a ref inside callbacks that outlive a render (the frame's event can arrive at any
   // time), so a stale closure can never commit against the wrong session.
@@ -367,7 +374,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       })
       return true
     },
-    [editBlock, beginEditing, requestEdit, pinEdit],
+    [editBlock, beginEditing, requestEdit, pinEdit, setNotice],
   )
 
   /**
@@ -390,7 +397,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       }
       useDeckStore.getState().setSlideHtml(slideId, outcome.source, slId, commitLabel(text))
     },
-    [slideId],
+    [slideId, setNotice],
   )
 
   const onFrameEditEnd = useCallback(
@@ -453,9 +460,6 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   useEffect(() => {
     if (slideRef.current === slideId) return
     slideRef.current = slideId
-    // A notice names an element on the slide the user just left; carrying it over would attach it to
-    // whatever the new slide has (observed in the built app, where it survived a there-and-back).
-    setNotice(null)
     if (editingRef.current !== null) cancelSession()
   }, [slideId, cancelSession])
 
@@ -490,5 +494,5 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     }
   }, [editing, requestEdit])
 
-  return { beginEdit, onFrameEditEnd, onFrameReady, editing, notice, dismissNotice }
+  return { beginEdit, onFrameEditEnd, onFrameReady, editing }
 }

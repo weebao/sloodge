@@ -261,12 +261,11 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     onReady,
   })
 
-  const { beginEdit, onFrameEditEnd, onFrameReady, editing, notice, dismissNotice } =
-    useTextEditing({
-      slideId,
-      requestEdit,
-      pinEdit,
-    })
+  const { beginEdit, onFrameEditEnd, onFrameReady, editing } = useTextEditing({
+    slideId,
+    requestEdit,
+    pinEdit,
+  })
   useEffect(() => {
     editEndRef.current = onFrameEditEnd
   }, [onFrameEditEnd])
@@ -659,16 +658,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     [clearTransient],
   )
 
-  // Same reason the Clear button stops propagation: dismissing must not also re-select what is under
-  // the notice.
-  const onDismissNotice = useCallback(
-    (event: React.MouseEvent): void => {
-      event.stopPropagation()
-      dismissNotice()
-    },
-    [dismissNotice],
-  )
-
   const hoverStyle = useMemo<CSSProperties | null>(() => {
     if (!hover) return null
     const box = frameRectToOverlay(hover.rect, scale)
@@ -892,33 +881,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           className="absolute border border-accent bg-accent/10"
           style={marqueeStyle}
         />
-      ) : null}
-
-      {/* A refused text edit, said where the edit happened. `status` rather than `alert`, matching
-          the chat transcript's notice: the element is intact and back to its stored text, so this is
-          a caveat on what the user just did, not a failure of the app.
-
-          It does not auto-dismiss, deliberately (round-5 minor, upheld on review): the notice is the
-          only account of why an edit did not stick, and a timer that removed it would leave a user
-          who looked away with vanished work and no explanation. It has an explicit ✕, a new caret
-          clears it, and a slide switch clears it. */}
-      {notice !== null ? (
-        <div
-          role="status"
-          data-testid="design-notice"
-          className="absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded bg-amber-600 px-2 py-1 text-[11px] leading-4 text-white"
-          style={CAPTURE_POINTER}
-        >
-          <span>{notice}</span>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            className="shrink-0 rounded px-1 hover:bg-black/20"
-            onClick={onDismissNotice}
-          >
-            ✕
-          </button>
-        </div>
       ) : null}
 
       {crumbs.length > 0 ? (
