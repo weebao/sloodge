@@ -107,16 +107,15 @@ export function groundTruthScript(): string {
     const det = Math.abs(p[0] * p[3] - p[1] * p[2]);
     return det > 0 ? Math.sqrt(det) : 1;
   };
-  const chain = (el, f, combine, unit) => {
-    let acc = unit;
-    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
-      acc = combine(acc, f(getComputedStyle(p)));
-    }
+  // Both opacity and scale accumulate as a product up the ancestor chain.
+  const chainProduct = (el, f) => {
+    let acc = 1;
+    for (let p = el; p && p !== document.documentElement; p = p.parentElement) acc *= f(getComputedStyle(p));
     return acc;
   };
   const opacityOf = (el) =>
-    chain(el, (cs) => (Number.isFinite(parseFloat(cs.opacity)) ? parseFloat(cs.opacity) : 1), (a, b) => a * b, 1);
-  const scaleChain = (el) => chain(el, (cs) => scaleOf(cs.transform), (a, b) => a * b, 1);
+    chainProduct(el, (cs) => (Number.isFinite(parseFloat(cs.opacity)) ? parseFloat(cs.opacity) : 1));
+  const scaleChain = (el) => chainProduct(el, (cs) => scaleOf(cs.transform));
   const pseudos = [];
   const pseudoPaints = (el, which) => {
     const ps = getComputedStyle(el, which);

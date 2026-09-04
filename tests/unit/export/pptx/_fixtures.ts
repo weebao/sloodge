@@ -7,18 +7,13 @@ import type {
 
 const NO_BORDER: BorderSide = { width: '0px', style: 'none', color: 'rgb(0, 0, 0)' }
 
-/** A visible border side, for the tests that exercise outlines and edge rects. */
-export function border(width: string, color: string, style = 'solid'): BorderSide {
-  return { width, style, color }
-}
-
 /** All four sides the same — what `border: Npx solid C` computes to. */
 export function uniformBorder(
   width: string,
   color: string,
   style = 'solid',
 ): Pick<NodeStyle, 'borderTop' | 'borderRight' | 'borderBottom' | 'borderLeft'> {
-  const side = border(width, color, style)
+  const side: BorderSide = { width, style, color }
   return { borderTop: side, borderRight: side, borderBottom: side, borderLeft: side }
 }
 
