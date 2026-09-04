@@ -51,12 +51,14 @@ import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckS
 import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
 import { ColorControls, type ColorTarget } from './ColorControls'
+import { FontFamilyControl, type SystemFontLoader } from './FontFamilyControl'
 import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
 import { BLOCK_NOTICE } from './textBlockNotice'
 import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   text: 'Text',
+  fontFamily: 'Font',
   fontSize: 'Size',
   fontWeight: 'Weight',
   color: 'Color',
@@ -91,6 +93,12 @@ export interface PropertyPanelProps {
    * recorded demo, or `null` to force the eyedropper button hidden.
    */
   readonly picker?: ColorPicker | null
+  /**
+   * The font-enumeration seam (M3.10), mirroring `picker`. Omitted in production, where the control
+   * asks the preload bridge; passed explicitly by tests and the recorded demo so neither depends on
+   * the machine's actual font collection.
+   */
+  readonly loadFonts?: SystemFontLoader
 }
 
 /**
@@ -98,7 +106,12 @@ export interface PropertyPanelProps {
  * from the editable fields so the fields remount (via `key`) whenever the source or selection
  * changes, resetting every input to the freshly-patched source value after a commit.
  */
-export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): JSX.Element | null {
+export function PropertyPanel({
+  slide,
+  inspect,
+  picker,
+  loadFonts,
+}: PropertyPanelProps): JSX.Element | null {
   const selection = useDesignStore((state) => state.selection)
   const attachContext = useChatContextStore((state) => state.attach)
 
@@ -191,6 +204,7 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
             values={values}
             swatches={swatches}
             picker={resolvedPicker}
+            {...(loadFonts !== undefined ? { loadFonts } : {})}
           />
           <div className="mt-2">
             <button
@@ -214,6 +228,7 @@ interface PropertyFieldsProps {
   readonly values: ReturnType<typeof readPropertyValues>
   readonly swatches: readonly ThemeSwatch[]
   readonly picker: ColorPicker | null
+  readonly loadFonts?: SystemFontLoader
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -237,6 +252,7 @@ function PropertyFields({
   values,
   swatches,
   picker,
+  loadFonts,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -246,6 +262,9 @@ function PropertyFields({
   // every source change, so this initial-from-props read is correct, not stale.
   const [draft, setDraft] = useState<Record<PropertyField, string>>(() => ({
     text: values.text ?? '',
+    // Never rendered as an input — the family is picked from `FontFamilyControl`, not typed — but
+    // the draft record is exhaustive over `PropertyField`, so the key has to exist.
+    fontFamily: values.fontFamily ?? '',
     fontSize: values.fontSize ?? '',
     fontWeight: values.fontWeight ?? '',
     color: values.color ?? '',
@@ -305,6 +324,16 @@ function PropertyFields({
       event.preventDefault()
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
       event.currentTarget.blur()
+    },
+    [commit],
+  )
+
+  // One pick is one `commit`, so one `slide.setHtml`, so exactly one undo entry — the same
+  // structural rule the drag gesture follows: nothing reaches the store until the choice is final,
+  // and hovering or filtering the list touches no document state at all.
+  const pickFont = useCallback(
+    (name: string): void => {
+      commit('fontFamily', name)
     },
     [commit],
   )
@@ -377,6 +406,13 @@ function PropertyFields({
         {field('text', true)}
         {field('fontSize', false)}
         {field('fontWeight', false)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <FontFamilyControl
+          current={values.fontFamily}
+          onPick={pickFont}
+          {...(loadFonts !== undefined ? { loadFonts } : {})}
+        />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {field('color', false)}

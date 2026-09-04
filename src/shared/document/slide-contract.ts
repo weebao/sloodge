@@ -63,6 +63,7 @@
  * keeps a slipped-through slide from reaching the network.
  */
 
+import { FORBIDDEN_API_TOKENS } from './forbidden-apis'
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
 import {
@@ -91,38 +92,26 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
 
 /**
  * APIs forbidden by SL-S04 / SL-S05: the ones that open a socket, touch storage, or run string
- * code — none of which a self-contained, stateless, sandboxed slide may use.
+ * code — none of which a self-contained, stateless, sandboxed slide may use. The list lives in its
+ * own dependency-free module so a writer can consult it without pulling in parse5; see the note
+ * there.
  *
- * **Exported because it is the single definition of the rule.** SL-S04 is a substring scan over the
- * whole slide source, so any *writer* of slide bytes — not just this validator — has to know the
+ * **Re-exported because it is the single definition of the rule.** SL-S04 is a substring scan over
+ * the whole slide source, so any *writer* of slide bytes — not just this validator — has to know the
  * token set to avoid emitting source the validator will then reject. `text-edit.ts` builds its
  * neutralization corpus from this array rather than restating it, so a token added here is
  * automatically covered there (and its tests fail if it is not).
  *
- * **Exported, together with `packForApiScan` below, because a second module has to satisfy this
- * rule and must not restate it.** PPTX import (M4.5) rewrites imported *prose* so it cannot trip
- * this scan — a deck about JavaScript legitimately contains the words `fetch(` and `localStorage` —
- * and its first implementation re-derived both the list and the normalisation by hand. It got the
+ * **Re-exported, together with the scan below, because a second module has to satisfy this rule and
+ * must not restate it.** PPTX import (M4.5) rewrites imported *prose* so it cannot trip this scan —
+ * a deck about JavaScript legitimately contains the words `fetch(` and `localStorage` — and its
+ * first implementation re-derived both the list and the normalisation by hand. It got the
  * normalisation subtly wrong for the one multi-word token (`new Function(`), so `newFunction(`
  * matched here and was missed there, and the whole import died. Same failure mode `sanitize.ts`
  * documents for `hasXmlIllegalChars`: a duplicated predicate drifts narrower than the rule it
  * mirrors, and the drift is invisible until someone types the spelling nobody tested.
  */
-export const FORBIDDEN_API_TOKENS: readonly string[] = [
-  'fetch(',
-  'XMLHttpRequest',
-  'WebSocket',
-  'EventSource',
-  'sendBeacon',
-  'localStorage',
-  'indexedDB',
-  'document.cookie',
-  'alert(',
-  'confirm(',
-  'prompt(',
-  'eval(',
-  'new Function(',
-]
+export { FORBIDDEN_API_TOKENS } from './forbidden-apis'
 
 /**
  * The normalization SL-S04 scans under: whitespace removed, lowercased.
