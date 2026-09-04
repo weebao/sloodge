@@ -24,44 +24,81 @@
  * preload-reachable module consumes it. Add to this file; do not move it back.
  * `tests/unit/preload/preload-bundle-deps.test.ts` is what notices if someone does.
  *
- * ## Rebasing M3.10 onto M3.11 — resolve the conflict THIS way
+ * ## Rebasing M3.10 onto M3.11 — aim at the end state; do not trust the conflict list
  *
- * M3.11 lands first and does exactly the thing above: it declares `export const
- * FORBIDDEN_API_TOKENS`, `packForApiScan` and `findForbiddenApiTokens` in `slide-contract.ts`, and
- * `shared/design/text-edit.ts` imports all three from there. The two branches rewrite the same three
- * regions of that file, so the rebase produces a real conflict — and the tempting resolution, take
- * M3.11's side because it is the newer file, puts preload-reachable `family.ts` back on a `parse5` +
- * `zod` import and silently kills `window.sloodge` in the packaged app. The only thing that goes red
- * is `preload-bundle-deps.test.ts`'s source-graph half — nothing else in the suite notices, which is
- * why that guard exists.
+ * M3.11 lands first and does exactly the thing above: it declares `FORBIDDEN_API_TOKENS`,
+ * `packForApiScan` and `findForbiddenApiTokens` in `slide-contract.ts`, and
+ * `shared/design/text-edit.ts` imports all three from there. Both branches rewrite the same regions
+ * of that file, so the rebase conflicts — and the tempting resolution, take M3.11's side because it
+ * is the newer file, puts preload-reachable `family.ts` back on a `parse5` + `zod` import and
+ * silently kills `window.sloodge` in the packaged app.
  *
- * Resolve by keeping this leaf and moving M3.11's additions into it:
+ * **The end state, which is the durable part of this note:**
  *
- *   1. `findForbiddenApiTokens` already lives here, so keep this side and drop M3.11's copy rather
- *      than merging the two.
- *   2. `slide-contract.ts` keeps `import { … } from './forbidden-apis'` — widened to every name it
- *      still calls locally, since `export … from` binds nothing — and re-exports all three, so
- *      M3.11's existing importers keep compiling unchanged.
- *   3. `shared/design/text-edit.ts` imports from `../document/forbidden-apis` directly rather than
+ *   1. `slide-contract.ts` declares neither `packForApiScan` nor `findForbiddenApiTokens`. It
+ *      imports from `'./forbidden-apis'` every name it still calls locally — `export … from` binds
+ *      nothing — and re-exports all three, so M3.11's importers keep compiling unchanged.
+ *   2. `shared/design/text-edit.ts` takes the three from `'../document/forbidden-apis'` rather than
  *      through `slide-contract.ts`, so it stops carrying a parse5 dependency it never uses.
  *
- * Two ways the shape of the rebase misleads, both found by executing it rather than reading it:
+ * **Neither step is reachable from a conflict resolution.** Both are applied by hand once the
+ * rebase has finished. Step 2 never even conflicts — M3.10 does not touch `text-edit.ts`, so git
+ * never asks — and nothing catches skipping it: reverting that import leaves `tsc` at 0 and this
+ * file's bundle guard at 20/20, because `text-edit.ts` is renderer-only and off the preload graph.
+ * It is architectural hygiene, not a greenness requirement. Step 1 is the load-bearing one, and
+ * until this round nothing checked it either — see below.
  *
- *   - The `slide-contract.ts` conflict fires on **three** of M3.10's five commits, not one, because
- *     M3.10 moved the tokens between that file and this one across its own review rounds. Resolve
- *     the first straight to the end state above and the later two resolve as "keep ours".
- *   - Step 3 **never conflicts at all**: M3.10 does not touch `text-edit.ts`, so git never asks
- *     about it. Apply it by hand or it is silently skipped, and the leaf's whole point with it.
+ * What the conflicts themselves offer:
  *
- * Last executed against M3.11 d672ed7 (round-4 review, 2026-09-04): typecheck 0, 4,384 tests green,
- * a preload requiring only `electron`. **That result has expired** — M3.11's history was rewritten
- * afterwards (head 9c6db42, of which d672ed7 is not an ancestor). The mechanics above are the
- * durable part; the greenness is not. Re-run the recipe against M3.11's head at merge time rather
- * than trusting this line.
+ *   - The **first** `slide-contract.ts` conflict cannot be resolved to the end state, because the
+ *     end state does not exist yet: at M3.10's first commit this leaf exports only
+ *     `FORBIDDEN_API_TOKENS`. `packForApiScan` arrives two commits later, `findForbiddenApiTokens`
+ *     two after that. Take M3.10's side of the hunk and leave M3.11's local copies alone — they go
+ *     at the end, not here.
+ *   - The **second** is the SL-S04 call site, and there "keep ours" is right: M3.11's factored
+ *     `findForbiddenApiTokens(source)` is what the end state wants anyway.
+ *   - "Keep ours" is **not** a general rule, and specifically not on an import line. The r5 run met
+ *     a third conflict there, and resolving that one this way is precisely what leaves M3.11's local
+ *     copies standing — green, silent, and wrong. Whatever the import lines end up as, step 1
+ *     overwrites them.
+ *   - The **`.claude/plans/init/80-roadmap.md`** conflicts — one per M3.10 commit that adds a row —
+ *     are number collisions rather than text merges: both branches number their next milestone
+ *     `M3.13`. Keep every row, renumber M3.10's past M3.11's, and retarget the two cross-references
+ *     that name one by number: `PropertyPanel.tsx`'s refusal comment, and the read-bug row's own
+ *     pointer at the prose row.
  *
- * Then re-run `pnpm typecheck` (CI runs unit tests only) and
- * `pnpm vitest run tests/unit/preload/preload-bundle-deps.test.ts`, which is what actually catches a
- * bad resolution.
+ * **Why "resolve every conflict" is not the recipe.** Do exactly that and stop, and M3.11's
+ * `packForApiScan`/`findForbiddenApiTokens` are still sitting in `slide-contract.ts` beside this
+ * leaf's — the duplicated predicate the note on `packForApiScan` below exists to forbid, reinstated
+ * by the merge. Measured in that state, before this round added the check below: `pnpm typecheck`
+ * exits 0, 188 test files pass, and `PRELOAD_BUNDLE_REQUIRED=1` gives 20/20. **Nothing goes red.**
+ * A recipe that hands back a green tree with the bug in it manufactures confidence rather than
+ * earning it, so the drift is no longer left to whoever reviews the merge: the `SL-S04 scan` block
+ * in `tests/unit/preload/preload-bundle-deps.test.ts` fails if `slide-contract.ts` declares either
+ * name instead of taking it from here.
+ *
+ * ## Re-execute this against the real head; do not trust the run below
+ *
+ * Last executed 2026-09-04 against M3.11 `0a64c87`. `git rebase --onto 0a64c87 4d06206` over
+ * M3.10's **seven** commits gave **four** conflicts — `slide-contract.ts` on commits 1 and 3, the
+ * roadmap on commits 6 and 7 — and applying the end state afterwards gave typecheck 0, 4,511 passed
+ * / 1 todo, build 0, a preload requiring exactly `electron`, and 22/22 unskipped.
+ *
+ * That same run is where the paragraph above gets its numbers. Stopping at "every conflict
+ * resolved" left both of M3.11's copies standing in `slide-contract.ts`, and the `SL-S04 scan`
+ * block failed there naming both — including in the variant where `tsc` reports nothing at all.
+ *
+ * **The conflict list is the one thing here with no shelf life.** The same rebase one head earlier,
+ * against `9c6db42`, produced a *third* `slide-contract.ts` conflict, on a commit that applied clean
+ * above — which hunks collide depends both on M3.11's head and on how you resolved the previous
+ * conflict, so a resolution that differs from the one described here will not even meet the same
+ * conflicts. Re-run the rebase against the actual merge-time head and read the conflicts it gives
+ * you, rather than expecting these. The end state is what you are aiming at; the route is not
+ * stable, and the test is what tells you whether you arrived.
+ *
+ * Then `pnpm typecheck` (CI runs unit tests only) and
+ * `pnpm vitest run tests/unit/preload/preload-bundle-deps.test.ts`, which is what catches a bad
+ * resolution.
  */
 
 /**

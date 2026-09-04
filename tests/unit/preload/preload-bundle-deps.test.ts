@@ -407,3 +407,109 @@ describe('the preload source-graph scanner', () => {
     ).rejects.toThrow('/preload/a.css could not be parsed')
   })
 })
+
+/** Every identifier named anywhere under `node`. */
+function identifiersIn(node: unknown, into: Set<string>): void {
+  if (Array.isArray(node)) {
+    for (const child of node) identifiersIn(child, into)
+    return
+  }
+  if (typeof node !== 'object' || node === null) return
+  const record = node as Record<string, unknown> & { type?: string; name?: unknown }
+  if (record.type === 'Identifier' && typeof record.name === 'string') {
+    into.add(record.name)
+    return
+  }
+  for (const key of Object.keys(record)) if (key !== 'type') identifiersIn(record[key], into)
+}
+
+interface ModuleBindings {
+  /** Names the module declares itself, at the top level. */
+  readonly declared: ReadonlySet<string>
+  /** Names it takes from another module, by `import … from` or `export … from`, keyed by that
+   * module's specifier. */
+  readonly fromModule: ReadonlyMap<string, ReadonlySet<string>>
+  /** Every identifier it names anywhere, so a name it never mentions reads as absent. */
+  readonly mentioned: ReadonlySet<string>
+}
+
+/** Where each name in `source` comes from, read off the AST for the reason argued above. */
+async function moduleBindings(file: string, source: string): Promise<ModuleBindings> {
+  const ast = parseAst((await transformWithEsbuild(source, file, STRIP_TYPES)).code)
+  const declared = new Set<string>()
+  const mentioned = new Set<string>()
+  const fromModule = new Map<string, Set<string>>()
+
+  // `id` only, never `params` or `body`: a parameter shadowing a name does not redeclare it.
+  const declarationsIn = (node: unknown): void => {
+    if (typeof node !== 'object' || node === null) return
+    const record = node as Record<string, unknown> & { type?: string }
+    switch (record['type']) {
+      case 'FunctionDeclaration':
+      case 'ClassDeclaration':
+        identifiersIn(record['id'], declared)
+        break
+      case 'VariableDeclaration':
+        for (const one of (record['declarations'] as unknown[] | undefined) ?? []) {
+          identifiersIn((one as Record<string, unknown>)['id'], declared)
+        }
+        break
+      // The `export` wrapper is not itself a binding; what it wraps is.
+      case 'ExportNamedDeclaration':
+      case 'ExportDefaultDeclaration':
+        declarationsIn(record['declaration'])
+        break
+    }
+  }
+
+  for (const node of (ast as { body?: unknown[] }).body ?? []) {
+    declarationsIn(node)
+    const record = node as Record<string, unknown>
+    const spec = specifierOf(record['source'])
+    if (spec === null) continue
+    const names = fromModule.get(spec) ?? new Set<string>()
+    fromModule.set(spec, names)
+    identifiersIn(record['specifiers'], names)
+  }
+  identifiersIn(ast, mentioned)
+
+  return { declared, mentioned, fromModule }
+}
+
+const SCAN_NAMES = ['FORBIDDEN_API_TOKENS', 'packForApiScan', 'findForbiddenApiTokens']
+
+/**
+ * The other half of "the leaf is the single definition of SL-S04's scan" — the half the two checks
+ * above are structurally unable to see.
+ *
+ * They catch the leaf being *bypassed*: a preload-reachable module reaching parse5 through
+ * `slide-contract.ts`. Neither can catch it being *duplicated*, because a second `packForApiScan`
+ * living in `slide-contract.ts` costs the preload nothing — `family.ts` still imports the leaf and
+ * the bundle still requires only `electron`. That is not a hypothesis: in the real M3.11
+ * reconciliation, with both copies in the tree and before this block existed, `tsc` exits 0, 188
+ * test files pass, and this file's bundle half is 20/20 unskipped. Nothing anywhere goes red.
+ *
+ * It is also the state a rebase lands in by default, since M3.11 declares all three names in
+ * `slide-contract.ts` and resolving the conflicts does not delete them — so this cannot be a rule
+ * kept by review, which is the argument `forbidden-apis.ts` already makes about itself. Two
+ * implementations of the scan drift, the narrower one belongs to a writer, and the drift ships as a
+ * slide the app writes and then rejects.
+ */
+describe('the SL-S04 scan', () => {
+  it('is imported into slide-contract.ts from the leaf, never redeclared there', async () => {
+    const file = join(ROOT, 'src/shared/document/slide-contract.ts')
+    const { declared, fromModule, mentioned } = await moduleBindings(file, DISK.read(file))
+    const fromLeaf = fromModule.get('./forbidden-apis') ?? new Set<string>()
+
+    expect(SCAN_NAMES.filter((name) => declared.has(name))).toEqual([])
+    expect(SCAN_NAMES.filter((name) => mentioned.has(name) && !fromLeaf.has(name))).toEqual([])
+  })
+
+  // Without this, renaming a function in the leaf would empty the guard above rather than fail it.
+  it('is what the leaf exports, so the names above are not stale', async () => {
+    const leaf = join(ROOT, 'src/shared/document/forbidden-apis.ts')
+    const { declared } = await moduleBindings(leaf, DISK.read(leaf))
+
+    expect(SCAN_NAMES.filter((name) => !declared.has(name))).toEqual([])
+  })
+})
