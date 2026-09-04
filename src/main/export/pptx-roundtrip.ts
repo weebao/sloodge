@@ -59,6 +59,7 @@ import {
   type RoundTripPlan,
 } from '../../shared/import/pptx/ledger'
 import { rewriteSlideText } from '../../shared/import/pptx/rewrite'
+import { parseXml } from '../../shared/import/xml'
 
 export type RoundTripExport = {
   readonly mode: RoundTripMode
@@ -240,6 +241,16 @@ export async function exportPptxRoundTrip(
     if (html === undefined) return declined(`slide ${slideId} has no HTML`)
     const result = rewriteSlideText(strFromU8(original), html)
     if (!result.ok) return declined(`slide ${slideId} is not patchable: ${result.reason}`)
+    // The splice's own success is not proof the part is well-formed — it trusts a scanner that can
+    // misread a text span's extent (rewrite.ts) — so the part is parsed before the exporter puts its
+    // name on it. A `patched` export with a corrupt slide part is the silent failure M4.6 exists to
+    // rule out.
+    try {
+      parseXml(result.xml)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return declined(`slide ${slideId} patched into a part that does not parse: ${message}`)
+    }
     zippable[name] = strToU8(result.xml)
     rewritten.push(name)
     if (result.changedRuns.length === 0) {

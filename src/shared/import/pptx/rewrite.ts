@@ -23,12 +23,16 @@
  * on — and here a disagreement is worse than a crash, because it would write an edit into the wrong
  * text span and produce a plausible-looking wrong file.
  *
- * So the scanner mirrors the parser's rules exactly: it skips comments, CDATA sections and
- * processing instructions (a `<a:t>` inside a comment is not an element and must not be counted),
- * it matches on *local* name so any namespace prefix works, and it honours the fact that `a:t` has
- * character-data content only, so the next `</` after the open tag is its close. `tests/unit/import`
- * asserts the two orderings against each other over every fixture and over hand-built adversarial
- * parts.
+ * So the scanner mirrors the parser's rules between elements: it skips comments, CDATA sections and
+ * processing instructions (a `<a:t>` inside a comment is not an element and must not be counted)
+ * and it matches on *local* name so any namespace prefix works. *Inside* a `<a:t>` it assumes
+ * character data only and takes the next `</` as the close — which the parser does not: a comment,
+ * CDATA section or (illegal but parseable) child element inside the text moves the real close tag
+ * past that `</`, and a splice at the scanner's offsets would emit a part that no longer parses
+ * (M4.6 review round 5). Character data cannot contain a raw `<`, so a span whose `raw` does is
+ * exactly that case; `rewriteSlideText` refuses it and the exporter falls back to a rebuild.
+ * `tests/unit/import` asserts the two orderings against each other over every fixture and over
+ * hand-built adversarial parts.
  */
 
 import { parse } from 'parse5'
@@ -274,6 +278,13 @@ export type RewriteResult =
  */
 export function rewriteSlideText(originalXml: string, html: string): RewriteResult {
   const spans = scanTextSpans(originalXml)
+  const markup = spans.findIndex((span) => span.raw.includes('<'))
+  if (markup >= 0) {
+    return {
+      ok: false,
+      reason: `text span ${String(markup)} contains markup, so its extent cannot be trusted`,
+    }
+  }
   const runs = extractRunTexts(html)
   if (runs === null) return { ok: false, reason: 'slide HTML has ambiguous data-sl-run markers' }
   if (runs.size !== spans.length) {
@@ -304,9 +315,11 @@ export function rewriteSlideText(originalXml: string, html: string): RewriteResu
     changedRuns.push(index)
     pieces.push(originalXml.slice(cursor, span.tagStart))
     if (span.selfClosing) {
-      // `<a:t/>` cannot carry content. Re-open it as a pair, preserving its attributes.
+      // `<a:t/>` cannot carry content. Re-open it as a pair, preserving its attributes. The scanner
+      // guarantees the tag ends in `/>`; trimming after a slice is linear in the tag's whitespace,
+      // where `/\s*\/>$/` was quadratic (an attacker's 1 MB of attribute whitespace hung main).
       const openTag = originalXml.slice(span.tagStart, span.tagEnd)
-      const inner = openTag.replace(/\s*\/>$/, '>')
+      const inner = `${openTag.slice(0, -2).trimEnd()}>`
       const nameMatch = /^<([^\s/>]+)/.exec(openTag)
       const name = nameMatch?.[1]
       if (name === undefined) {

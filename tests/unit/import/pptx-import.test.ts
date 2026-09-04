@@ -81,6 +81,32 @@ describe('importPptx over the committed fixtures', () => {
     })
   }
 
+  /**
+   * Review round 5: `Try WebSoc\u212Aet today` in a run failed the structural gate *and* the
+   * text-only fallback — both defuse through `slideText`, whose `i`-flag case fold missed the
+   * Kelvin sign that the validator's `toLowerCase()` folds to `k` — and the whole import returned
+   * `unconvertible`. Mutation: rebuild the matcher with `'gi'` and no fold, and this reds.
+   */
+  it('imports a run whose forbidden API is spelled with a Unicode case fold', async () => {
+    const parts = await fixtureParts()
+    const slide = new TextDecoder().decode(parts['ppt/slides/slide1.xml']!)
+    const text = 'Try WebSoc\u212Aet today'
+    const crafted = slide.replace('<a:t>Quarterly Business Review</a:t>', `<a:t>${text}</a:t>`)
+    expect(crafted).not.toBe(slide)
+    parts['ppt/slides/slide1.xml'] = strToU8(crafted)
+    const path = await writeArchive('kelvin.pptx', parts)
+
+    const result = await importPptx(path, { now: NOW })
+    if (!result.ok) throw new Error(result.error.message)
+    expect(result.report.fallbackCount).toBe(0)
+    const html = result.bundle.slides[result.bundle.manifest.slideOrder[0]!]!
+    expect(validateSlideContract(html, ['static']).ok).toBe(true)
+    expect(html).not.toContain(text)
+    expect(
+      html.replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code))),
+    ).toContain(`>${text}<`)
+  })
+
   it('derives the deck title from docProps and the theme from the package theme part', async () => {
     const result = await importPptx(fixturePath('python-pptx-deck.pptx'), { now: NOW })
     if (!result.ok) throw new Error(result.error.message)
@@ -97,7 +123,7 @@ describe('importPptx over the committed fixtures', () => {
     if (!result.ok) throw new Error(result.error.message)
     const notes = result.report.conversionNotes.join(' ')
     expect(notes).toContain('layout inheritance is not resolved')
-    expect(notes).toContain('graphic frame (table)')
+    expect(notes).toContain('graphic frame ("table")')
   })
 
   it('inlines the fixture picture as a data: URI', async () => {
@@ -195,6 +221,9 @@ describe('templates', () => {
       'Eval(uation) rubric',
       'WebSocket demo deck',
       'Our document.cookie policy',
+      // Round 5: the validator folds U+212A KELVIN SIGN to `k`; the defuser's `i` flag did not.
+      'Try WebSoc\u212Aet today',
+      'Our document.coo\u212Aie policy',
     ]
     const results = await Promise.all(
       titles.map(async (title, index) => {

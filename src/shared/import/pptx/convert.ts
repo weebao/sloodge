@@ -108,9 +108,24 @@ function intAttr(element: XmlElement | undefined, name: string): number | null {
   return Number.isFinite(value) ? value : null
 }
 
+/**
+ * The furthest the converter will place or size anything, in px: far enough off-canvas for any
+ * shape a designer parked beside the slide, and a bound rather than the value's own magnitude
+ * because the value is arithmetic over archive integers. A 308-digit `chOff` against a zero-extent
+ * group multiplies out to `NaN`, and `left:NaNpx` is a declaration the browser silently drops.
+ */
+const PX_LIMIT = 100_000
+
 /** Round to two decimals: enough for sub-pixel placement, short enough to keep the HTML small. */
 function px(value: number): string {
-  return `${String(Math.round(value * 100) / 100)}px`
+  if (!Number.isFinite(value)) return '0px'
+  const bounded = Math.max(-PX_LIMIT, Math.min(PX_LIMIT, value))
+  return `${String(Math.round(bounded * 100) / 100)}px`
+}
+
+/** An archive string quoted for a conversion note: bounded, and control characters made visible. */
+function quoted(value: string): string {
+  return JSON.stringify(value.slice(0, 80))
 }
 
 const HEX6 = /^[0-9a-fA-F]{6}$/
@@ -244,7 +259,8 @@ function emitParagraph(
   const align = pPr ? attribute(pPr, 'algn') : undefined
   const alignCss =
     align !== undefined && Object.hasOwn(ALIGN, align) ? `text-align:${String(ALIGN[align])};` : ''
-  const level = Number.parseInt((pPr ? attribute(pPr, 'lvl') : undefined) ?? '0', 10)
+  // `lvl` is ST_TextIndentLevelType, 0–8; anything above is malformed and indents like 8.
+  const level = Math.min(8, Number.parseInt((pPr ? attribute(pPr, 'lvl') : undefined) ?? '0', 10))
   const indent = Number.isFinite(level) && level > 0 ? `padding-left:${px(level * 28)};` : ''
 
   // A bullet glyph is emitted as literal text rather than a list marker: `list-style` would need a
@@ -344,7 +360,7 @@ function emitShape(emitter: Emitter, sp: XmlElement, transform: Transform, index
   const box = emu ? toBox(emu, transform) : placeholderBox(phType, index)
   if (!emu && phType !== null) {
     emitter.note(
-      `placeholder "${phType}" has no explicit geometry; positioned with a default box (layout inheritance is not resolved)`,
+      `placeholder ${quoted(phType)} has no explicit geometry; positioned with a default box (layout inheritance is not resolved)`,
     )
   }
 
@@ -394,9 +410,11 @@ function emitPicture(emitter: Emitter, pic: XmlElement, transform: Transform, in
     const rel = Object.hasOwn(emitter.relationships.byId, embed)
       ? emitter.relationships.byId[embed]
       : undefined
-    if (rel === undefined) emitter.note(`picture references unknown relationship ${embed}`)
-    else if (rel.external) emitter.note(`picture ${embed} is an external link and was dropped`)
-    else if (rel.resolved !== null) dataUrl = emitter.media(rel.resolved)
+    if (rel === undefined) {
+      emitter.note(`picture references unknown relationship ${quoted(embed)}`)
+    } else if (rel.external) {
+      emitter.note(`picture ${quoted(embed)} is an external link and was dropped`)
+    } else if (rel.resolved !== null) dataUrl = emitter.media(rel.resolved)
   }
 
   const styles = `position:absolute;left:${px(box.left)};top:${px(box.top)};width:${px(box.width)};height:${px(box.height)};overflow:hidden;`
@@ -424,7 +442,7 @@ function emitGraphicFrame(
   const uri = pathNamed(frame, 'graphic', 'graphicData')
   const kind = uri ? (attribute(uri, 'uri') ?? '').split('/').pop() : undefined
   emitter.note(
-    `graphic frame (${kind ?? 'unknown'}) converted to a text placeholder; tables, charts and SmartArt keep their text but not their structure`,
+    `graphic frame (${kind === undefined ? 'unknown' : quoted(kind)}) converted to a text placeholder; tables, charts and SmartArt keep their text but not their structure`,
   )
 
   const fontPxFor = makeFontSizer(emitter.pxPerInch, null)

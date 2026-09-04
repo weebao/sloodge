@@ -75,17 +75,21 @@ describe('semantic colour tokens', () => {
 
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
     const unpaired: string[] = []
+    let seen = 0
     for (const file of sourceFiles(RENDERER_ROOT)) {
       readFileSync(file, 'utf8')
         .split('\n')
         .forEach((line, i) => {
           for (const m of line.matchAll(/(?<![\w:-])text-(danger|warning)(?![\w-])/g)) {
+            seen += 1
             if (!line.includes(`dark:text-${m[1]!}-dark`)) {
               unpaired.push(`${relative(process.cwd(), file)}:${i + 1} → ${m[0]}`)
             }
           }
         })
     }
+    // A pin that passes on the empty set is silent when the affordance it exists for is deleted.
+    expect(seen).toBeGreaterThan(0)
     expect(unpaired).toEqual([])
   })
 })

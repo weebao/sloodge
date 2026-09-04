@@ -188,6 +188,53 @@ describe('contract compliance', () => {
     }
   })
 
+  /**
+   * Review round 5: the defuser matched with the RegExp `i` flag, the validator folds with
+   * `toLowerCase()`, and they disagree on U+212A KELVIN SIGN — `WebSoc\u212Aet` passed the defuser
+   * and failed the gate, in the run, the fallback and the `.potx` title alike. The matcher now comes
+   * from `slide-contract.ts`; this drives every token through every letter whose case fold is
+   * special, at every emission site, and checks both halves of the agreement: prose imports clean,
+   * and the same spelling inside a `<script>` is still caught by the rule.
+   */
+  it('agrees with the validator on Unicode case folds, at every emission site', () => {
+    const folds: readonly [letter: string, special: string][] = [
+      ['k', '\u212A'],
+      ['s', '\u017F'],
+      ['i', '\u0130'],
+    ]
+    const sites = [
+      (spelling: string) => shape(textBody(`<a:r><a:t>Try ${spelling} today</a:t></a:r>`)),
+      (spelling: string) =>
+        shape(
+          textBody(`<a:r><a:rPr><a:latin typeface="${spelling}"/></a:rPr><a:t>styled</a:t></a:r>`),
+        ),
+      (spelling: string) => shape(textBody(`<a:r><a:t>${spelling}</a:t></a:r>`)),
+    ]
+    const variants: readonly [letter: string, special: string][] = [['', ''], ...folds]
+    let caught = 0
+    for (const token of FORBIDDEN_API_TOKENS) {
+      const packed = packForApiScan(token)
+      for (const [letter, special] of variants) {
+        const spelling = letter === '' ? token : token.replaceAll(letter, special)
+        for (const site of sites) {
+          const errors = validateSlideContract(convert(site(spelling)).html, ['static']).issues
+          expect(
+            errors.filter((issue) => issue.severity === 'error'),
+            spelling,
+          ).toEqual([])
+        }
+        // The rule itself is untouched: raw inside a script, the spelling is caught exactly when
+        // the validator's own normalisation says it is a token.
+        const flagged = packForApiScan(spelling).includes(packed)
+        const script = `<!doctype html><html><body><script>${spelling}</script></body></html>`
+        const rules = validateSlideContract(script, ['static']).issues.map((issue) => issue.rule)
+        expect(rules.includes('SL-S04'), spelling).toBe(flagged)
+        if (flagged) caught += 1
+      }
+    }
+    expect(caught).toBeGreaterThan(FORBIDDEN_API_TOKENS.length)
+  })
+
   it('still records the defused typeface, so provenance survives the escaping', () => {
     const result = convert(
       shape(textBody('<a:r><a:rPr><a:latin typeface="localStorage"/></a:rPr><a:t>x</a:t></a:r>')),
@@ -535,7 +582,68 @@ describe('pictures', () => {
 
   it('notes an unknown relationship id', () => {
     const result = convert(pic('rIdNope'), { relationships })
-    expect(result.notes.join(' ')).toContain('unknown relationship rIdNope')
+    expect(result.notes.join(' ')).toContain('unknown relationship "rIdNope"')
+  })
+
+  it('bounds and quotes the archive string a note repeats', () => {
+    const result = convert(pic(`${'x'.repeat(5000)}&#10;tail`), { relationships })
+    const note = result.notes.find((n) => n.includes('unknown relationship'))!
+    expect(note.length).toBeLessThan(200)
+    expect(note).toContain(`"${'x'.repeat(80)}"`)
+    expect(convert(pic('a&#10;b'), { relationships }).notes.join(' ')).not.toContain('\n')
+  })
+})
+
+/**
+ * Review round 5: `px()` wrote whatever arithmetic over archive integers produced. A zero-extent
+ * group scaled its children by 0 and a 300-digit child offset pushed the shift to infinity, so a
+ * position became `NaN` — `left:NaNpx`, a declaration the browser drops, and the shape rendered at
+ * auto position with no note. Every emitted length is now finite and bounded.
+ */
+function group(xfrm: string, inner: string): string {
+  return `<p:grpSp><p:grpSpPr><a:xfrm>${xfrm}</a:xfrm></p:grpSpPr>${inner}</p:grpSp>`
+}
+
+/** Every px length in the document, having first refused the two spellings CSS drops. */
+function lengths(html: string): number[] {
+  expect(html).not.toMatch(/NaN|Infinity/)
+  return [...html.matchAll(/:(-?[\d.]+(?:e[+-]?\d+)?)px/g)].map((m) => Number(m[1]))
+}
+
+describe('geometry stays finite on absurd input', () => {
+  const huge = '1'.repeat(300)
+  const leaf = shape(textBody('<a:r><a:t>x</a:t></a:r>'), 5, 5)
+
+  it('a tiny group scale that overflows the child shift', () => {
+    const html = convert(
+      group(
+        `<a:off x="${huge}" y="0"/><a:ext cx="1" cy="1"/><a:chOff x="0" y="0"/><a:chExt cx="${huge}" cy="1"/>`,
+        leaf,
+      ),
+    ).html
+    for (const value of lengths(html)) expect(Math.abs(value)).toBeLessThanOrEqual(100_000)
+    expect(validateSlideContract(html, ['static']).ok).toBe(true)
+  })
+
+  it('a zero-extent group around an overflowing one (NaN)', () => {
+    const html = convert(
+      group(
+        '<a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="1" cy="1"/>',
+        group(
+          `<a:off x="${huge}" y="0"/><a:ext cx="1" cy="1"/><a:chOff x="0" y="0"/><a:chExt cx="${huge}" cy="1"/>`,
+          leaf,
+        ),
+      ),
+    ).html
+    for (const value of lengths(html)) expect(Math.abs(value)).toBeLessThanOrEqual(100_000)
+  })
+
+  it('clamps a paragraph level to the schema range instead of overflowing the indent', () => {
+    const html = convert(shape(textBody(`<a:pPr lvl="${huge}"/><a:r><a:t>deep</a:t></a:r>`))).html
+    expect(html).toContain('padding-left:224px')
+    expect(convert(shape(textBody('<a:pPr lvl="3"/><a:r><a:t>t</a:t></a:r>'))).html).toContain(
+      'padding-left:84px',
+    )
   })
 })
 
@@ -544,7 +652,7 @@ describe('fallbacks are reported, not silent', () => {
     const result = convert(
       '<p:graphicFrame><a:xfrm><a:off x="0" y="0"/><a:ext cx="1219200" cy="685800"/></a:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:p><a:r><a:t>cell</a:t></a:r></a:p></a:graphicData></a:graphic></p:graphicFrame>',
     )
-    expect(result.notes.join(' ')).toContain('graphic frame (table)')
+    expect(result.notes.join(' ')).toContain('graphic frame ("table")')
     expect(result.html).toContain('cell')
     // Table text still gets run markers, so an edit inside a cell stays patchable.
     expect(result.html).toContain('data-sl-run="0"')

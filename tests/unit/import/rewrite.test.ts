@@ -8,6 +8,7 @@
  * desync them.
  */
 
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import { unzipSync, strFromU8 } from 'fflate'
 import {
@@ -18,7 +19,7 @@ import {
   scanTextSpans,
 } from '../../../src/shared/import/pptx/rewrite'
 import { descendantsNamed, parseXml } from '../../../src/shared/import/xml'
-import { HOSTILE_XML_STRINGS, PPTX_FIXTURES, readFixture } from './fixtures'
+import { fixturePath, HOSTILE_XML_STRINGS, PPTX_FIXTURES } from './fixtures'
 import { hasXmlIllegalChars } from '../../../src/shared/export/pptx/sanitize'
 
 /** The tree-walk ordering `convert.ts` uses to assign `data-sl-run` indices. */
@@ -55,7 +56,9 @@ describe('scanTextSpans agrees with the tree walk', () => {
   }
 
   it('agrees on every slide part of both committed fixtures', async () => {
-    const archives = await Promise.all(PPTX_FIXTURES.map((fixture) => readFixture(fixture.name)))
+    const archives = await Promise.all(
+      PPTX_FIXTURES.map((fixture) => readFile(fixturePath(fixture.name))),
+    )
     for (const archive of archives) {
       const parts = unzipSync(archive)
       const slideParts = Object.keys(parts).filter((name) =>
@@ -180,6 +183,66 @@ describe('rewriteSlideText', () => {
   it('isPatchable mirrors the refusals', () => {
     expect(isPatchable(xml, html)).toBe(true)
     expect(isPatchable(xml, '<div>no markers</div>')).toBe(false)
+  })
+})
+
+/**
+ * Review round 5. The scanner takes the first `</` after `<a:t>` as its close; the parser skips a
+ * comment, CDATA section or child element inside the text and takes the real one. For
+ * `<a:t>hi<!--</z>--></a:t>` the counts agree — so every refusal in `rewriteSlideText` passed — but
+ * the span's `raw` was `hi<!--` and its `tagEnd` sat after `</z>`, and splicing at those offsets
+ * produced `<a:t>hi</z>--></a:t>`: an `ok: true` result that no XML parser accepts. Character data
+ * cannot contain a raw `<`, so a span whose `raw` does is exactly this case, and it is refused.
+ */
+describe('a text span that contains markup is refused, not spliced', () => {
+  const cases: Readonly<Record<string, string>> = {
+    comment: '<p:sld><a:r><a:t>hi<!--</z>--></a:t></a:r><a:r><a:t>second</a:t></a:r></p:sld>',
+    CDATA: '<p:sld><a:r><a:t><![CDATA[</a:t>]]></a:t></a:r><a:r><a:t>second</a:t></a:r></p:sld>',
+    'processing instruction':
+      '<p:sld><a:r><a:t>hi<?pi </a:t> ?></a:t></a:r><a:r><a:t>second</a:t></a:r></p:sld>',
+    'nested element': '<p:sld><a:r><a:t>hi<b>x</b></a:t></a:r><a:r><a:t>second</a:t></a:r></p:sld>',
+  }
+  const editRunOne = '<div><span data-sl-run="0">hi</span><span data-sl-run="1">edited</span></div>'
+
+  for (const [name, xml] of Object.entries(cases)) {
+    it(name, () => {
+      expect(() => parseXml(xml)).not.toThrow() // the part imports
+      expect(scanTextSpans(xml)[0]!.raw).toContain('<') // and this is the shape the scanner misreads
+      const result = rewriteSlideText(xml, editRunOne)
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.reason).toContain('markup')
+      expect(isPatchable(xml, editRunOne)).toBe(false)
+    })
+  }
+
+  it('an escaped `<` is character data and still patches', () => {
+    const xml = '<p:sld><a:r><a:t>a &lt; b</a:t></a:r><a:r><a:t>second</a:t></a:r></p:sld>'
+    const html =
+      '<div><span data-sl-run="0">a &lt; b</span><span data-sl-run="1">third</span></div>'
+    const result = rewriteSlideText(xml, html)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.changedRuns).toEqual([1])
+    expect(result.xml).toBe(
+      '<p:sld><a:r><a:t>a &lt; b</a:t></a:r><a:r><a:t>third</a:t></a:r></p:sld>',
+    )
+    expect(() => parseXml(result.xml)).not.toThrow()
+  })
+
+  /**
+   * Round 5's other finding in this function: the re-open used `/\s*\/>$/`, quadratic in the tag's
+   * whitespace. This pins the behaviour over a 1 MiB run; the linear *shape* is pinned by
+   * `regex-linearity.test.ts`, not by a clock (the quadratic form would take minutes here).
+   */
+  it('re-opens a self-closing element padded with a megabyte of whitespace', () => {
+    const pad = ' \t\n'.repeat((1 << 20) / 3)
+    const source = `<p:sld><a:t${pad}xml:space="preserve"${pad}/></p:sld>`
+    const result = rewriteSlideText(source, '<div><span data-sl-run="0">x</span></div>')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.xml).toBe(`<p:sld><a:t${pad}xml:space="preserve">x</a:t></p:sld>`)
+    expect(() => parseXml(result.xml)).not.toThrow()
   })
 })
 

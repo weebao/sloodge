@@ -316,6 +316,48 @@ describe('M4.6 — a patched export is always a well-formed package', () => {
       }
     }
   })
+
+  /**
+   * Review round 5: a part whose text span holds a comment imports cleanly — the parser skips the
+   * comment — but the splice scanner closes the span at the comment's `</`, and an edit to *another*
+   * run on that slide shipped `<a:t>Quarterly</z>--> Business Review</a:t>` as `mode: 'patched'`.
+   * Through the production exporter, end to end: the deck falls back to a rebuild and names why.
+   */
+  it('falls back to a rebuild when a slide part has markup inside a text span', async () => {
+    const parts = unzipSync(await readFixture(PPTX_FIXTURES[0]!.name))
+    const slide = strFromU8(parts['ppt/slides/slide1.xml']!)
+    const crafted = slide.replace(
+      '<a:t>Quarterly Business Review</a:t>',
+      '<a:t>Quarterly<!--</z>--> Business Review</a:t>',
+    )
+    expect(crafted).not.toBe(slide)
+    const path = join(dir, 'markup-in-run.pptx')
+    await writeFile(
+      path,
+      zipSync({ ...parts, 'ppt/slides/slide1.xml': strToU8(crafted) }, { level: 6 }),
+    )
+    const imported = await importPptx(path, { now: NOW })
+    if (!imported.ok) throw new Error(imported.error.message)
+    expect(imported.report.fallbackCount).toBe(0)
+
+    // Edit the *other* run on the slide; the commented one is left exactly as imported.
+    const slideId = imported.bundle.manifest.slideOrder[0]!
+    const before = imported.bundle.slides[slideId]!
+    const after = before.replace(
+      /(<span[^>]*data-sl-run="1"[^>]*>)([^<]*)(<\/span>)/,
+      '$1EDITED NEXT TO A COMMENTED RUN$3',
+    )
+    expect(after).not.toBe(before)
+    const edited: DeckBundle = {
+      ...imported.bundle,
+      slides: { ...imported.bundle.slides, [slideId]: after },
+    }
+
+    const result = await exportPptxRoundTrip(edited)
+    expect(result.mode).toBe('rebuild')
+    expect(result.bytes).toBeNull()
+    expect(result.plan.reasons.join(' ')).toContain('cannot be expressed as text substitution')
+  })
 })
 
 describe('M4.6 — retention survives the deck container', () => {

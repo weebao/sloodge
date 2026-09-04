@@ -15,9 +15,18 @@
  * because the defuser lived in the import package and the starter slide could not reach it without
  * an import cycle. A convention maintained by review re-discovers the same hole each round; a
  * module the emitters all import from, sitting beside the contract it satisfies, does not.
+ *
+ * ## Why the matcher is not defined here either
+ *
+ * Round 5 found the defect one layer down: this module *did* import the rule's list and
+ * normalisation, but built its own matcher on top of them with the RegExp `i` flag — whose case
+ * fold disagrees with the validator's `toLowerCase()` on U+212A KELVIN SIGN — so `WebSocKet`
+ * was flagged by the validator and missed by the defuser, and one word made a deck unopenable. The
+ * matcher now lives in `slide-contract.ts` as `forbiddenBreakPoints`, beside the list and the
+ * normalisation, and is the same function Design Mode's text editor uses.
  */
 
-import { FORBIDDEN_API_TOKENS, packForApiScan } from './slide-contract'
+import { forbiddenBreakPoints } from './slide-contract'
 
 export function escapeHtml(value: string): string {
   return value
@@ -29,35 +38,8 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * One matcher per forbidden token, derived from `slide-contract.ts`'s **own** list and **own**
- * normalisation rather than a copy of either.
- *
- * The first version of this restated both, and got the normalisation wrong in exactly one place:
- * it split each token on characters and joined with `\s*`, so the literal space inside
- * `new Function(` became a *required* space. SL-S04 strips all whitespace before comparing, so it
- * matched `newFunction(` while the defuser did not — and a slide whose prose read
- * `Avoid newFunction( in modern JavaScript` failed conversion, failed the text-only fallback for
- * the same reason, and took the entire deck import down as `unconvertible`. One innocuous word,
- * one unopenable presentation.
- *
- * So the token is packed with `packForApiScan` first (which is what removes that space), and *then*
- * `\s*` is inserted between every remaining character — because the validator's normalisation means
- * arbitrary whitespace may sit anywhere inside a match. `i` covers the case fold. The list itself is
- * imported, so a token added to the rule later is defused without anyone remembering to mirror it.
- */
-const FORBIDDEN_TOKEN_MATCHERS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(
-  (token) =>
-    new RegExp(
-      packForApiScan(token)
-        .split('')
-        .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('\\s*'),
-      'gi',
-    ),
-)
-
-/**
- * Defuse SL-S04 token matches in *text content*, without changing what the text says.
+ * HTML-escape a text node or attribute value, then make it unmatchable by SL-S04's scan — without
+ * changing what the text says.
  *
  * SL-S04 forbids `fetch(`, `localStorage`, `eval(` and friends by scanning the whole slide source
  * with whitespace stripped and case folded. For an authored slide that is exactly right. For text
@@ -74,27 +56,17 @@ const FORBIDDEN_TOKEN_MATCHERS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(
  * is removed, nothing is altered on screen, and no rule is weakened — a document that genuinely
  * contained script would still carry `<script>`, which SL-H01 rejects independently.
  *
- * Matching mirrors the validator's own normalisation: whitespace between characters is optional
- * (the scan strips it, so "local storage" packs to "localstorage" and would match) and the compare
- * is case-insensitive. Applied only to text nodes and only after HTML escaping, so it can never
- * introduce markup.
+ * The break points are found on the *raw* text and the escaping is applied in the same pass, so a
+ * match can never begin inside an entity the escaping produced and rewrite one of its characters.
  */
-export function defuseForbiddenTokens(escaped: string): string {
-  let out = escaped
-  for (const matcher of FORBIDDEN_TOKEN_MATCHERS) {
-    // `lastIndex` is per-RegExp state and these are module-level `g` objects, so it must be reset
-    // before each use or a second call would resume mid-string and miss an early match.
-    matcher.lastIndex = 0
-    out = out.replace(matcher, (match) => {
-      const first = match.codePointAt(0)
-      if (first === undefined) return match
-      return `&#${String(first)};${match.slice(String.fromCodePoint(first).length)}`
-    })
+export function slideText(value: string): string {
+  const breaks = forbiddenBreakPoints(value)
+  if (breaks.size === 0) return escapeHtml(value)
+  let out = ''
+  for (let index = 0; index < value.length; index += 1) {
+    out += breaks.has(index)
+      ? `&#${String(value.charCodeAt(index))};`
+      : escapeHtml(value.charAt(index))
   }
   return out
-}
-
-/** HTML-escape a text node or attribute value, then make it unmatchable by SL-S04's scan. */
-export function slideText(value: string): string {
-  return defuseForbiddenTokens(escapeHtml(value))
 }
