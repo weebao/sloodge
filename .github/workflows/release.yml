@@ -107,6 +107,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Built here and not only inside `pack:win:release` below, so that
+      # tests/unit/preload/preload-bundle-deps.test.ts has a real `out/preload/index.cjs` to read.
+      # Its bundle half is the one that catches a sandboxed preload growing a `require` it cannot
+      # service — a failure whose only symptom is `window.sloodge` coming up undefined in the
+      # packaged app — and without a build it skips. `pack:win:release` re-runs this build; the ~20
+      # seconds buys the one check that reads the artifact being shipped rather than its source.
+      - name: Build
+        run: pnpm build
+
       # ~8 seconds against a ~15 minute packaging run. Cheap insurance that the tag being shipped
       # is actually green, rather than discovering it after the artifact is in someone's hands.
       #
@@ -120,6 +129,10 @@ jobs:
       # so flakes stay visible on the development path where they get fixed.
       - name: Unit tests
         run: pnpm test --retry=1
+        # Turns that skip into a failure: on the path that produces an installer, a missing
+        # preload bundle means the check did not run, and a green run must not say otherwise.
+        env:
+          PRELOAD_BUNDLE_REQUIRED: '1'
 
       # The real script from package.json, not a copy of its command line. Targets (nsis + zip) and
       # artifact names come from the `build.win` block, which tests/unit/packaging/build-config.test.ts

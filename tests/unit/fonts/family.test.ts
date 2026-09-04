@@ -76,6 +76,10 @@ const INJECTION_NAMES = [
   '/*comment*/',
   'Foo\u0000Bar',
   'Foo\u2028Bar',
+  // Angle brackets as the *only* illegal characters. Every other payload here carries a second
+  // reason to be refused, so widening the allow-list to admit `<` and `>` — one `\p{S}` away —
+  // left the whole suite green.
+  'Angle<Bracket>',
 ]
 
 describe('font family name validation (M3.10)', () => {
@@ -267,6 +271,14 @@ describe('cssIdentFontFamily', () => {
   it('hex-escapes NUL and the Unicode line separator', () => {
     expect(cssIdentFontFamily('a\u0000b')).toBe('a\\0 b')
     expect(cssIdentFontFamily('a\u2028b')).toBe('a\\2028 b')
+  })
+
+  it('hex-escapes a lone surrogate, which the identifier range would otherwise admit', () => {
+    // Unreachable through `buildFontFamilyValue`, which validates first — but this composer
+    // advertises itself as safe on its own, and CSS calls every code point from U+0080 up an
+    // identifier code point, unpaired surrogates included.
+    expect(cssIdentFontFamily('A\uD800B')).toBe('A\\d800 B')
+    expect(cssIdentFontFamily('A\uDFFFB')).toBe('A\\dfff B')
   })
 
   it('neutralises every injection payload: no bare delimiter survives', () => {

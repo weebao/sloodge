@@ -396,6 +396,34 @@ describe('font family pick — focus', () => {
     expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
   })
 
+  it('consumes the restore flag even when the pick writes nothing', async () => {
+    // The case that keeps the focus-restore effect's *missing dependency array* load-bearing:
+    // picking the face that is already applied makes `commit` bail at `patched === map.source`, so
+    // there is no store write, no `sourceHash` change and no remount — only a re-render. An effect
+    // with a `[]` dependency array never runs again, the flag stays armed, and the next unrelated
+    // remount hands focus to the font trigger from wherever the user actually was.
+    select()
+    render(<Panel />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    const before = html()
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    expect(html()).toBe(before)
+
+    screen.getByTestId('ask-claude-element').focus()
+    useDeckStore.getState().setSlideHtml(slideId, `${html()}<p>after</p>`, slideId, 'append')
+
+    await waitFor(() => {
+      expect(html()).toContain('after')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('ask-claude-element'))
+  })
+
   it('leaves focus alone when a later remount follows no pick', async () => {
     // The restore flag must not survive the commit that consumes it: re-selecting an element
     // remounts the same subtree, and the font trigger must not take focus from wherever it is.

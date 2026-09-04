@@ -247,8 +247,14 @@ export function cssIdentFontFamily(name: string): string {
 /** Letters, marks, digits, `_`, `-`, and everything from U+0080 up (CSS Syntax §4.2). */
 const IDENT_CODE_POINT = /[\p{L}\p{M}\p{Nd}_\u{0080}-\u{10FFFF}-]/u
 const HEX_DIGIT = /[0-9a-fA-F]/
-/** Controls, format characters, and every flavour of separator — but not the plain space above. */
-const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}\s]/u
+/**
+ * Controls, format characters, every flavour of separator — but not the plain space above — and a
+ * lone surrogate. `\p{Cs}` is there because the identifier range above admits U+D800-U+DFFF along
+ * with the rest of `\u{0080}-\u{10FFFF}`, and this composer promises to stay inert on any string
+ * handed to it directly, not only on one the allow-list has already vetted. The loop walks code
+ * points, so only an *unpaired* surrogate — the half that cannot be encoded as UTF-8 — gets here.
+ */
+const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
 
 /**
  * Family names that CSS would read as something other than a family if written bare. `serif` the
