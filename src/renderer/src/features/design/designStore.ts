@@ -22,8 +22,44 @@
 import type { SlHit } from '../../../../shared/design/bridge-protocol'
 import { createStore } from '../../stores/createStore'
 
+/**
+ * A refused text edit waiting to be explained, and the slide it was raised on (M3.11).
+ *
+ * Ephemeral view state like the rest of this store, but it lives here rather than in
+ * `useTextEditing`'s own `useState` for one reason: the two exits that can refuse an edit *while
+ * unmounting the overlay* — turning Design Mode off, and Present, which forces it off — start the
+ * refusal in the same React commit that destroys the component. A local setter called from the
+ * frame's answer, which lands afterwards, updates a component that is gone, so those two exits
+ * refused in silence while `Enter` and `Esc` explained themselves (round-8 minor). This store
+ * outlives the overlay, and `SlideCanvas` renders the notice in either mode.
+ *
+ * The `slideId` is what keeps the explanation attached to the edit that caused it: the rail can move
+ * to another slide while Design Mode is off, and a notice that followed the user there would name an
+ * element the new slide has never had.
+ */
+export type TextEditNotice = {
+  readonly slideId: string
+  readonly text: string
+}
+
 export type DesignSnapshot = {
-  /** Whether Design Mode is active. Off is the default; `Present` (later) forces it off. */
+  /**
+   * Whether Design Mode is active. **On is the default** (M3.11); `Present` (later) forces it off.
+   *
+   * ## Why edit-first, and why this is not persisted
+   *
+   * It shipped as `false` through M3.2–M3.10 and that was wrong: with it off, `SlideCanvas` hands
+   * pointer events to the slide, so clicking text on a fresh deck does *nothing at all* until the
+   * user discovers `Ctrl/⌘+D`. A slide editor whose default state is "clicking does nothing" reads
+   * as broken — which is exactly how it was reported — and PowerPoint is edit-first.
+   *
+   * The flag stays session-scoped and is deliberately **not** persisted across launches. Turning
+   * Design Mode off is a transient, exploratory act ("let me play with this slide's live chart"),
+   * not a durable preference; persisting it would mean a user who poked at an interactive slide once
+   * and quit comes back to an inert deck, reintroducing the original bug in a stickier form with no
+   * obvious way out. It also keeps the promise this file's header makes — ephemeral view state,
+   * never persisted — and Present mode already covers "I want to look, not edit".
+   */
   readonly enabled: boolean
   /** The element under the pointer, or `null` when hovering nothing addressable. */
   readonly hover: SlHit | null
@@ -40,6 +76,17 @@ export type DesignSnapshot = {
    * slice they always did; multi-element features read `selections`.
    */
   readonly selection: SlHit | null
+  /**
+   * The `slId` with an open in-place text edit (M3.11), or `null`.
+   *
+   * Ephemeral like the rest of this store: the caret and the in-progress characters live in the
+   * frame's DOM, and nothing reaches the document — or the undo stack — until the session commits.
+   * That is the whole of the undo-coalescing strategy: a typing burst cannot push entries because
+   * typing never touches `deckStore` at all.
+   */
+  readonly editing: string | null
+  /** The refused edit to explain, or `null`. See `TextEditNotice`. */
+  readonly notice: TextEditNotice | null
 }
 
 export type DesignState = DesignSnapshot & {
@@ -65,11 +112,31 @@ export type DesignState = DesignSnapshot & {
    * keeping the last occurrence's geometry. Clears hover. Ignored while off; an empty list clears.
    */
   setSelections: (hits: readonly SlHit[]) => void
-  /** Drop hover and selection without leaving Design Mode — e.g. pointer left the stage. */
+  /**
+   * Drop hover and selection without leaving Design Mode — e.g. pointer left the stage. `notice` is
+   * not in it, for the same reason it is not in `OFF`: none of its callers invalidate a refusal the
+   * user may still be reading. The one that does — a remote deck replacement — clears it explicitly.
+   */
   clearTransient: () => void
+  /**
+   * Open a text-edit session on `slId`. Ignored while Design Mode is off. Does not change the
+   * selection — editing is a mode *on* the selected element, and the overlay keeps drawing its box.
+   */
+  beginEditing: (slId: string) => void
+  /** Close any open session. Idempotent; safe to call when nothing is being edited. */
+  endEditing: () => void
+  /** Raise or dismiss the refused-edit notice. */
+  setNotice: (notice: TextEditNotice | null) => void
 }
 
-const OFF: DesignSnapshot = { enabled: false, hover: null, selections: [], selection: null }
+const CLEARED = { hover: null, selections: [], selection: null, editing: null } as const
+
+/**
+ * What turning Design Mode off resets. `notice` is deliberately **not** in it: the refusal a toggle
+ * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
+ * user is owed for it.
+ */
+const OFF: Omit<DesignSnapshot, 'notice'> = { enabled: false, ...CLEARED }
 
 /** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
 function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
@@ -80,6 +147,9 @@ function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
 
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
+  notice: null,
+  // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
+  enabled: true,
 
   toggle: () => {
     get().setEnabled(!get().enabled)
@@ -100,7 +170,19 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
     if (!get().enabled) return
     // Selecting supersedes the hover outline — the selection box is the stronger affordance and two
     // outlines on one element reads as a bug. A single click always collapses to one element.
-    set({ selections: hit === null ? [] : [hit], selection: hit, hover: null })
+    //
+    // Selecting a *different* element ends any open edit — the caret belongs to the element that
+    // had it. Re-selecting the element already being edited deliberately does not, which is what
+    // makes double-click race-free: the dblclick's `beginEditing` and the preceding click's
+    // in-flight hit-test response can arrive in either order without one cancelling the other.
+    const editing = get().editing
+    const keepEditing = editing !== null && hit !== null && hit.slId === editing
+    set({
+      selections: hit === null ? [] : [hit],
+      selection: hit,
+      hover: null,
+      editing: keepEditing ? editing : null,
+    })
   },
 
   toggleSelection: (hit) => {
@@ -109,16 +191,29 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
     const without = current.filter((entry) => entry.slId !== hit.slId)
     // Re-clicking a selected element removes it; a new one is appended and becomes the anchor.
     const next = without.length === current.length ? [...without, hit] : without
-    set({ selections: next, selection: next.at(-1) ?? null, hover: null })
+    set({ selections: next, selection: next.at(-1) ?? null, hover: null, editing: null })
   },
 
   setSelections: (hits) => {
     if (!get().enabled) return
     const next = dedupeBySlId(hits)
-    set({ selections: next, selection: next.at(-1) ?? null, hover: null })
+    set({ selections: next, selection: next.at(-1) ?? null, hover: null, editing: null })
   },
 
   clearTransient: () => {
-    set({ hover: null, selections: [], selection: null })
+    set({ ...CLEARED })
+  },
+
+  beginEditing: (slId) => {
+    if (!get().enabled) return
+    set({ editing: slId, hover: null })
+  },
+
+  endEditing: () => {
+    set({ editing: null })
+  },
+
+  setNotice: (notice) => {
+    set({ notice })
   },
 }))

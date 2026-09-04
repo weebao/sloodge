@@ -21,6 +21,7 @@ type Element = DefaultTreeAdapterTypes.Element
 type Template = DefaultTreeAdapterTypes.Template
 type ChildNode = DefaultTreeAdapterTypes.ChildNode
 type ParentNode = DefaultTreeAdapterTypes.ParentNode
+type TextNode = DefaultTreeAdapterTypes.TextNode
 
 /** parse5 reports `namespaceURI` as one of these URIs; the HTML parser can only produce three. */
 const NAMESPACE_BY_URI: Readonly<Record<string, SlideNamespace>> = {
@@ -97,6 +98,10 @@ export function sourceFingerprint(source: string): string {
 
 function isElement(node: ChildNode): node is Element {
   return 'tagName' in node
+}
+
+function isTextNode(node: ChildNode): node is TextNode {
+  return node.nodeName === '#text'
 }
 
 function isTemplate(node: Element): node is Template {
@@ -199,6 +204,113 @@ function isContentless(
     if (solidus >= attr.whole.start && solidus < attr.whole.end) return false
   }
   return true
+}
+
+/**
+ * Elements whose leading newline the tree builder discards ("pre", "listing" and "textarea" start
+ * tags: "if the next token is a U+000A LINE FEED character token, then ignore that token"). It is
+ * the one place character bytes inside `inner` are not represented by any text node. The input
+ * stream preprocessor has already turned a lone CR into LF, so `\n`, `\r\n` and `\r` are all dropped.
+ *
+ * Exported because the drop is only half of a round trip: a writer that puts text back into `inner`
+ * has to *compensate* it (`text-edit.ts`), and two independent lists of which tags drop the newline
+ * would be a way for the read and the write to disagree about a `<pre>`'s first line.
+ *
+ * Only a literal newline is recognised here, deliberately. A character reference that decodes to LF
+ * (`<pre>&#10;x</pre>`) is dropped by the tree builder just the same, but the cursor does not advance
+ * over it, so the text nodes no longer tile `inner` and the element comes out `textOnly: false` —
+ * uneditable rather than mis-edited. That is the fail-closed side of the ambiguity, and it is also
+ * why the compensation in `text-edit.ts` must write a literal `\n` and never a reference: a written
+ * `&#10;` would make the element it just edited uneditable.
+ */
+export const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea'])
+
+/**
+ * Elements whose content the tokenizer reads as character data (RCDATA and raw text): a `<` in
+ * their bytes is text, never a tag the tree builder saw and ignored.
+ */
+const CHARACTER_DATA_CONTENT: ReadonlySet<string> = new Set([
+  'title',
+  'textarea',
+  'script',
+  'style',
+  'xmp',
+  'iframe',
+  'noembed',
+  'noframes',
+  'noscript',
+  'plaintext',
+])
+
+/** The bytes of a start tag — `<` then an ASCII letter — whatever the tree builder did with it. */
+const START_TAG_BYTES = /<[A-Za-z]/
+
+/** A character reference up to but not including its last byte: `&`, an optional `#`, alphanumerics. */
+const CHAR_REF_HEAD = /^&#?[0-9A-Za-z]*$/
+
+/**
+ * The decoded character data of an element whose `inner` bytes are exactly its text-node children,
+ * or `null` when they are not — the definition of `ElementSpan.textOnly` (see its docstring).
+ *
+ * Coverage is checked on **source spans**, not on the tree: the text nodes must tile `inner` from
+ * its first byte to its last with no gap. A gap means bytes the tree does not attribute to this
+ * element's character data — a start tag the adoption agency moved elsewhere, foster-parented text
+ * that landed *outside* the element, a `<head>` whose location the parser reports inverted — and
+ * splicing over those bytes is exactly the corruption this refuses.
+ *
+ * A text node's span may contain bytes that are not text: the parser *ignores* a stray `</b>` inside
+ * `<p>a</b>b</p>`, merges the character tokens around it into one node and extends that node's span
+ * across the ignored tag. An ignored **end** tag is inert — it produced no element and changed none —
+ * so writing over it loses nothing. An ignored **start** tag is not reliably inert: a stray
+ * `<body class="x">` or `<html lang="x">` inside a paragraph merges its attributes onto the real
+ * body/html element, and writing over the tag would silently drop them (round-2 review). Rather than
+ * enumerate which ignored start tags have side effects, any start-tag bytes inside the text refuse
+ * the element — except in RCDATA/raw-text elements, where `<b>` is literally the text.
+ *
+ * ## parse5's location of the first text node after a dropped newline
+ *
+ * Two quirks make that node's `startOffset` disagree with the byte it begins at, and both are
+ * accepted because the node's *value* and *end* are right and the patcher writes `inner`, never the
+ * node's own span. (1) When the dropped newline was part of a longer whitespace run (`<pre>\n  x`),
+ * the node keeps the run's start — `inner.start`, before the dropped byte. (2) When the text begins
+ * with a character reference (`<pre>\n&amp;x`), the node is located at the reference's *last* byte
+ * (the `;`, or the last name character of an unterminated one), so the bytes between the cursor and
+ * `startOffset` must read as the head of one reference.
+ */
+function textOnlyContent(
+  source: string,
+  tagName: string,
+  inner: Span,
+  children: readonly ChildNode[],
+): string | null {
+  const dropsNewline = LEADING_NEWLINE_DROPPED.has(tagName)
+  const inertMarkup = CHARACTER_DATA_CONTENT.has(tagName)
+  let cursor = inner.start
+  if (dropsNewline) {
+    if (source.startsWith('\r\n', cursor)) cursor += 2
+    else if (source[cursor] === '\n' || source[cursor] === '\r') cursor += 1
+  }
+
+  let content = ''
+  for (const [index, child] of children.entries()) {
+    if (!isTextNode(child)) return null
+    const location = child.sourceCodeLocation
+    if (!location) return null
+    const { startOffset } = location
+    if (startOffset !== cursor) {
+      const afterDroppedNewline = dropsNewline && index === 0 && cursor > inner.start
+      const keptRunStart = startOffset >= inner.start && startOffset < cursor
+      const atCharRefEnd =
+        source[cursor] === '&' &&
+        startOffset > cursor &&
+        CHAR_REF_HEAD.test(source.slice(cursor, startOffset))
+      if (!afterDroppedNewline || !(keptRunStart || atCharRefEnd)) return null
+    }
+    if (!inertMarkup && START_TAG_BYTES.test(source.slice(cursor, location.endOffset))) return null
+    cursor = location.endOffset
+    content += child.value
+  }
+  return cursor === inner.end ? content : null
 }
 
 interface WalkState {
@@ -304,6 +416,7 @@ function mapElement(
 
   const children = childrenOf(node)
   const slIdAttr = attrs[SL_ID_ATTR]
+  const textContent = inner === null ? null : textOnlyContent(source, node.tagName, inner, children)
 
   const span: ElementSpan = {
     slId: `${state.slideId}:${String(state.spans.length)}`,
@@ -315,7 +428,8 @@ function mapElement(
     parentSlId,
     childSlIds: [],
     path,
-    textOnly: !contentless && children.every((child) => child.nodeName === '#text'),
+    textOnly: textContent !== null,
+    textContent,
     ns,
     authoredSlId: slIdAttr?.value ? source.slice(slIdAttr.value.start, slIdAttr.value.end) : null,
     minDomNodeCount: 1,

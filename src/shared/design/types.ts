@@ -164,13 +164,34 @@ export interface ElementSpan {
    */
   path: number[]
   /**
-   * True when the element can hold text and every child it has is a text node.
+   * True when `inner` is **exactly** the source of this element's text-node children and nothing
+   * else — so replacing `inner` with escaped text replaces character data and only character data.
    *
-   * Vacuously true for an empty non-void element. False for a void element, and false for
-   * `<p>a<b>c</b></p>` — replacing that element's content as plain text would destroy the `<b>`,
-   * which is why §9.3 routes mixed content through in-frame rich-text editing instead.
+   * Two conditions, both necessary. Every child is a text node — false for a void element and for
+   * `<p>a<b>c</b></p>`, where a plain-text replacement would destroy the `<b>` (§9.3 routes mixed
+   * content through in-frame rich-text editing instead). *And* those text nodes' source spans tile
+   * `inner` contiguously from its first byte to its last (an element with no children must have an
+   * empty `inner`). The second condition is what the tree alone cannot tell you: for a mis-nested
+   * `<b><p>x</b>y</p>` the adoption agency leaves the source `<b>` with **zero** tree children while
+   * its `inner` bytes are `<p>x` — vacuously "all text" and a text edit would delete the `<p>`. Same
+   * for `<b>x<p>y</b>z</p>`, whose one text child covers `x` but not the `<p>y` that follows it.
+   * Requiring byte coverage refuses every such shape without a list of them.
+   *
+   * The one place the parser drops character bytes is the newline immediately after a `<pre>`,
+   * `<listing>` or `<textarea>` start tag; that byte is allowed to precede the first text span, so
+   * a `<pre>` holding only text stays text-only.
+   *
+   * True for an empty non-void element (`<h1></h1>`), so an emptied heading can be retyped.
    */
   textOnly: boolean
+  /**
+   * The element's character data as the DOM reads it — entities decoded, CR/CRLF normalized, the
+   * `<pre>` leading newline dropped — when `textOnly`; `null` otherwise. This is what
+   * `element.textContent` returns in the frame for the same element, so it is the value a
+   * "did the user change anything?" comparison must be made against: comparing typed text to the
+   * raw `inner` bytes would call `a&nbsp;b` changed when the user typed exactly what they saw.
+   */
+  textContent: string | null
   ns: SlideNamespace
   /**
    * A `data-sl-id` **already present in the author's source**, if any.

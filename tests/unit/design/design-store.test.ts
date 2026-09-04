@@ -3,7 +3,7 @@
  * selection state so no stale outline survives a re-enable.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 
@@ -18,7 +18,13 @@ const HIT: SlHit = {
 
 beforeEach(() => {
   // The store is a module singleton; reset it to OFF between cases.
-  useDesignStore.setState({ enabled: false, hover: null, selection: null, selections: [] })
+  useDesignStore.setState({
+    enabled: false,
+    hover: null,
+    selection: null,
+    selections: [],
+    notice: null,
+  })
 })
 
 /** A second hit distinct from `HIT`, for multi-select cases. */
@@ -161,5 +167,151 @@ describe('useDesignStore multi-select (M3.7)', () => {
     useDesignStore.getState().setEnabled(false)
     expect(useDesignStore.getState().selections).toEqual([])
     expect(useDesignStore.getState().selection).toBeNull()
+  })
+})
+
+/**
+ * M3.11. `enabled` initialized to `false` from M3.2 through M3.10, which meant a fresh deck handed
+ * pointer events to the slide and clicking text did nothing at all until the user found `Ctrl/⌘+D`.
+ * That is the bug this milestone exists to fix, so the default is pinned here rather than left to
+ * whatever the store literal happens to say.
+ */
+describe('Design Mode is edit-first by default', () => {
+  it('initializes enabled with nothing selected or being edited', async () => {
+    // A genuinely fresh module instance, so this reads the store's own initializer rather than
+    // whatever the surrounding `beforeEach` reset it to.
+    vi.resetModules()
+    const fresh = await import('../../../src/renderer/src/features/design/designStore')
+    const state = fresh.useDesignStore.getState()
+
+    expect(state.enabled).toBe(true)
+    expect(state.selection).toBeNull()
+    expect(state.selections).toEqual([])
+    expect(state.editing).toBeNull()
+  })
+})
+
+describe('text-edit sessions (M3.11)', () => {
+  beforeEach(() => {
+    useDesignStore.setState({
+      enabled: true,
+      hover: null,
+      selection: null,
+      selections: [],
+      editing: null,
+    })
+  })
+
+  it('opens a session and clears hover', () => {
+    useDesignStore.getState().setHover(HIT)
+    useDesignStore.getState().beginEditing(HIT.slId)
+
+    expect(useDesignStore.getState().editing).toBe(HIT.slId)
+    expect(useDesignStore.getState().hover).toBeNull()
+  })
+
+  it('refuses to open a session while Design Mode is off', () => {
+    useDesignStore.getState().setEnabled(false)
+    useDesignStore.getState().beginEditing(HIT.slId)
+
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  it('ends the session when Design Mode is turned off', () => {
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().setEnabled(false)
+
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  it('endEditing is idempotent', () => {
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().endEditing()
+    useDesignStore.getState().endEditing()
+
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  it('clearTransient drops the session with the rest of the transient state', () => {
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().clearTransient()
+
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(useDesignStore.getState().selection).toBeNull()
+  })
+
+  it('selecting a DIFFERENT element ends the session', () => {
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().setSelection(HIT2)
+
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  /**
+   * Double-click fires `click` first, so the single click's hit-test response can land *after*
+   * `beginEditing`. Re-selecting the element already being edited therefore must not cancel the
+   * session, or double-click would race itself and open a caret that immediately closed.
+   */
+  it('re-selecting the element being edited keeps the session — the double-click race', () => {
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().setSelection(HIT)
+
+    expect(useDesignStore.getState().editing).toBe(HIT.slId)
+  })
+
+  it('shift-click and marquee selection both end the session', () => {
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().toggleSelection(HIT2)
+    expect(useDesignStore.getState().editing).toBeNull()
+
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().setSelections([HIT, HIT2])
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+})
+
+/**
+ * The refused-edit notice outlives what clears the rest of the store, which is the whole point of it
+ * living here: the toggle — and Present, which forces it off — decide a refusal a moment *after*
+ * flipping the flag, so `OFF` clearing the notice would erase the explanation they exist to give
+ * (round-8). That invariant was carried only by the `Omit<DesignSnapshot, 'notice'>` on `OFF`.
+ */
+describe('the refused-edit notice (M3.11)', () => {
+  const NOTICE = { slideId: 's_a', text: 'That text is too long to store on a slide.' } as const
+
+  it('survives turning Design Mode off — the exit that raised it', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().setEnabled(false)
+
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
+    // ...while everything else the toggle owns is gone, so this is not a store that failed to reset.
+    expect(useDesignStore.getState().selection).toBeNull()
+  })
+
+  it('survives the toggle for the same reason', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().toggle()
+
+    expect(useDesignStore.getState().enabled).toBe(false)
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
+  })
+
+  it('survives clearTransient — Escape must not erase what it is still explaining', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().clearTransient()
+
+    expect(useDesignStore.getState().selection).toBeNull()
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
   })
 })

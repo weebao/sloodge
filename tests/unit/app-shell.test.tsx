@@ -24,6 +24,15 @@ let createObjectUrl = vi.fn<(obj: Blob | MediaSource) => string>()
 beforeEach(() => {
   // The deck store is a module singleton; reset it so selection does not leak between tests.
   useDeckStore.setState(createStarterDeck(NOW))
+  // So is the design store, and as of M3.11 its `enabled` default is `true` — a test that toggles
+  // the switch off would otherwise leak that into every test after it.
+  useDesignStore.setState({
+    enabled: true,
+    hover: null,
+    selections: [],
+    selection: null,
+    editing: null,
+  })
   // happy-dom cannot fetch a `blob:` URL, so the frames are pointed at about:blank. The spy is
   // still the real production path — AppShell has no seam of its own — so what it records is
   // genuine evidence about what the shell delivers to its frames.
@@ -133,15 +142,11 @@ describe('AppShell', () => {
     expect(current[0]?.textContent).toContain('Second slide')
   })
 
-  it('keeps every formatting control inert except the live Design Mode toggle', () => {
+  it('keeps every formatting control inert', () => {
     render(<AppShell />)
 
     const toolbar = screen.getByRole('toolbar', { name: 'Formatting' })
-    const design = within(toolbar).getByRole('button', { name: /design mode/i })
-    const buttons = within(toolbar)
-      .getAllByRole('button')
-      .filter((button) => button !== design)
-    // Ten cosmetic buttons plus the one live toggle.
+    const buttons = within(toolbar).getAllByRole('button')
     expect(buttons).toHaveLength(10)
     for (const button of buttons) {
       expect(button.getAttribute('aria-disabled')).toBe('true')
@@ -153,10 +158,58 @@ describe('AppShell', () => {
       expect((select as HTMLSelectElement).disabled).toBe(true)
       expect(select.getAttribute('aria-disabled')).toBeNull()
     }
+  })
 
-    // The Design Mode button is live as of M3.2: a pressed-state toggle, not an inert stub.
+  /**
+   * M3.11. The toggle used to live inside the Formatting toolbar, and that is precisely what this
+   * now forbids: the toolbar is a *tab panel* whose contents M6.1 swaps per ribbon tab (including
+   * contextually, on selection), so a control there is reachable only on some tabs. Design Mode
+   * decides whether clicking the canvas selects or interacts, and its keyboard fallback does not
+   * work when focus is inside the slide iframe — so if the button can be hidden, the mode can become
+   * impossible to leave. Asserting it is *outside* the toolbar pins that structurally, without this
+   * branch needing any of M6.1's code.
+   */
+  it('renders the Design Mode switch in persistent chrome, never inside the toolbar tab panel', () => {
+    render(<AppShell />)
+
+    const design = screen.getByRole('switch', { name: /design mode/i })
+    const toolbar = screen.getByRole('toolbar', { name: 'Formatting' })
+    expect(toolbar.contains(design)).toBe(false)
+
+    // Live, and its state is readable as text rather than only as a colour.
     expect(design.getAttribute('aria-disabled')).toBeNull()
-    expect(design.getAttribute('aria-pressed')).toBe('false')
+    expect(design.getAttribute('aria-checked')).toBe('true')
+    expect(design.textContent).toContain('On')
+
+    fireEvent.click(design)
+    expect(design.getAttribute('aria-checked')).toBe('false')
+    expect(design.textContent).toContain('Off')
+  })
+
+  /**
+   * The M3.11 headline: a fresh deck is directly manipulable. Before this, `enabled` initialized to
+   * `false`, so clicking text on the canvas did nothing at all until the user found `Ctrl/⌘+D` —
+   * which is exactly how the bug was reported.
+   */
+  it('opens with Design Mode on so a fresh deck is editable without hunting for a toggle', () => {
+    render(<AppShell />)
+
+    expect(useDesignStore.getState().enabled).toBe(true)
+    expect(screen.getByRole('switch', { name: /design mode/i }).getAttribute('aria-checked')).toBe(
+      'true',
+    )
+    // The canvas hint is the *off*-state affordance, so it must not be showing.
+    expect(screen.queryByTestId('canvas-live-hint')).toBeNull()
+  })
+
+  it('names the live-slide state on the canvas when Design Mode is off', () => {
+    render(<AppShell />)
+
+    fireEvent.click(screen.getByRole('switch', { name: /design mode/i }))
+
+    const hint = screen.getByTestId('canvas-live-hint')
+    expect(hint.textContent).toMatch(/live slide/i)
+    expect(hint.textContent).toMatch(/Ctrl\/⌘\+D/)
   })
 })
 

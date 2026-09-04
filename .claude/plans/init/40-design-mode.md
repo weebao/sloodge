@@ -449,6 +449,14 @@ zoom.
 | `Alt`-click | select the *deepest* node under cursor, bypassing the "grabbable" filter |
 | `Cmd/Ctrl+D` | toggle Design Mode |
 
+**Shipped as of M3.11** (the rest of this table is planned, not contracted): `Esc`, `Enter`/`F2`,
+`Alt`-click and `Cmd/Ctrl+D`. Arrow traversal (parent/child/sibling) and `Tab` traversal are not
+implemented. `Esc` ships as **two** stages, not three — deselect, then close a text-edit session —
+and stage three (exit Design Mode) is deliberately deferred: with Design Mode on by default (M3.11)
+an `Esc` that turned it off would leave the user in the inert, click-does-nothing state the M3.11
+default exists to eliminate, one keystroke from a gesture they meant as "cancel". `Cmd/Ctrl+D` and
+the toolbar toggle remain the deliberate ways out. See `useDeselectKey.ts`.
+
 ### 4.3 The grabbable filter
 
 Plain `elementFromPoint` returns the deepest node, which is often a layout-only `<span>` or a
@@ -926,6 +934,16 @@ the renderer and the frame can never disagree about what is selectable.
 - **Structural IDs are invalidated** by any rich-text commit (inline tags may be added/removed),
   so a reparse always follows; selection is restored by path (§1.5).
 
+**Shipped as of M3.11** (this section is still planned, not contracted): none of it. M3.11's caret
+writes a `textOnly` element's text-node span and can therefore never introduce markup, so mixed
+inline content is **refused** rather than edited as plain text — replacing the content above as text
+would silently delete the `<b>`. What M3.11 does add is that the refusal is *visible*: a double-click
+on such an element raises the overlay's `role="status"` notice saying the element has formatting
+inside it, instead of doing nothing at all (round-5). The rich-text path here, which returns
+`innerHTML` — the payload §2.2 forbids acting on authoritatively — needs its own milestone to
+reconcile the two. The read-only preview and "Edit text" button are not implemented; the panel's
+Content field is simply disabled, with a hint explaining why.
+
 ### 9.4 Other edges
 
 | Case | Handling |
@@ -940,6 +958,32 @@ the renderer and the frame can never disagree about what is selectable.
 | Frame crash / script error | `SL_ERROR` → banner + "reload slide"; Design Mode degrades to read-only until a `SL_READY`. |
 | Bridge timeout | 3 consecutive timeouts → frame reload; 3 reload failures → Design Mode disabled for that slide with a diagnostic. |
 | Very large slides (>500 elements) | `SL_MEASURE` batches capped at 200 ids; sibling-snap rects fetched lazily per drag. |
+
+**Shipped as of M3.11**, two edges this table did not anticipate, both about an open caret:
+
+- **Leaving Design Mode with a caret open commits it.** The toggle, `Ctrl/⌘+D` and Present all
+  unmount the overlay, taking the bridge listener with it in the same commit, so the frame's
+  `SL_EDIT` reaches nobody and the typed text was silently discarded (round-7). The session is now
+  finished on a channel that outlives the overlay — `PinnedEdit.finish` in `useDesignBridge.ts` —
+  and the text lands as one ordinary undo entry. That guarantee is a bound, not an absolute, and the
+  bound is worth writing down: turning Design Mode off also re-navigates the stage iframe to a fresh
+  `slide://` document — measured at **+28 ms after the click**, and it happens even when nothing was
+  edited — so `finish` is only ever answered by a document that is about to be torn down, and its
+  generous `FINISH_TIMEOUT_MS` buys nothing once it has been. Stalling the slide frame's main thread
+  across the toggle in the built app, the text commits at 0/50/100/200/400 ms of stall and is **lost
+  at 800 ms**: no commit, the frame reverted, nothing said. Ordinary interaction does not reach it —
+  the slide's own JS has to stall for about a second at the instant of the toggle, and ~130 real
+  sessions across the toggle, Present, `Enter`, `Esc`, `Tab` and blur never lost text — and it fails
+  safe, leaving the document untouched. Every exit therefore keeps the text provided the frame can
+  answer within a frame of the click; closing the residual window means capturing the frame's
+  `contentWindow` at pin time, or deferring the stage's re-navigation until a pending `finish`
+  settles (M3.13 in 80-roadmap.md).
+- **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
+  quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
+  characters live only in the frame's DOM until the session ends. This is consistent with the app
+  having no unsaved-changes prompt at all today, and is not specific to M3.11 — but when a
+  dirty-state or save-prompt milestone lands it must treat `designStore.editing` as a second source
+  of unsaved state alongside the deck history, not just prompt on the document.
 
 ---
 

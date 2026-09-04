@@ -5,6 +5,7 @@ import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
 import { ArrangeBar } from '../design/ArrangeBar'
+import { DesignNotice } from '../design/DesignNotice'
 import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
@@ -65,6 +66,7 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
   const [matRef, mat] = useElementSize<HTMLDivElement>()
   const fit = useMemo(() => fitSlide(mat, { maxScale: 1 }), [mat])
   const designEnabled = useDesignStore((state) => state.enabled)
+  const editing = useDesignStore((state) => state.editing)
   const frameRef = useRef<HTMLIFrameElement>(null)
 
   const slide = slides[currentIndex] ?? null
@@ -108,7 +110,13 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
               scale={fit.scale}
               // The slide must not receive pointer events while Design Mode's overlay is capturing
               // them — otherwise a click would reach both the overlay and the slide's own handlers.
-              interactive={!designModeActive}
+              //
+              // An open text edit is the one exception: the caret lives in the frame, so the frame
+              // has to take pointer events for the user to place it. The overlay gives up its
+              // capture for exactly the same interval (see SelectionOverlay's root `style`), so the
+              // two are never both live, and the frame script suppresses the slide's own handlers
+              // outside the element being edited so the "frozen frame" property survives.
+              interactive={!designModeActive || editing !== null}
               // `outline` rather than `border`: an outline is painted outside the box without
               // joining the layout, so the framed slide stays exactly the scaled 16:9 rectangle
               // `fitSlide` computed instead of being two pixels wider than it.
@@ -119,7 +127,30 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
                 <SelectionOverlay frameRef={frameRef} slideId={slide.id} scale={fit.scale} />
                 <ArrangeBar slideId={slide.id} />
               </>
-            ) : null}
+            ) : (
+              // Design Mode off is a real, useful state — it is how you interact with a slide's live
+              // JS — but with the overlay gone there is nothing on screen that says so, and a user
+              // who lands here by accident just sees an editor where clicking does nothing. Naming
+              // the state on the canvas is what makes it a mode rather than a malfunction.
+              <div
+                data-testid="canvas-live-hint"
+                className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-3 py-1 text-[11px] leading-4 text-white"
+              >
+                Live slide — Design Mode is off. Press Ctrl/⌘+D to select and edit.
+              </div>
+            )}
+            {/* A permanently mounted polite live region, the same shape the chat transcript uses:
+                a region inserted in the same commit as its first text is commonly not announced at
+                all, so the host has to be on the page before the notice is. Outside the Design Mode
+                branch on purpose — a refusal decided on the way *out* of Design Mode has to land
+                somewhere the overlay no longer is (see `DesignNotice`). */}
+            <div
+              aria-live="polite"
+              data-testid="design-notice-region"
+              className="pointer-events-none absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 justify-center"
+            >
+              <DesignNotice slideId={slide.id} />
+            </div>
           </div>
         ) : (
           <div className="select-none text-center">
@@ -130,8 +161,11 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
           </div>
         )}
       </div>
-      {/* Docked bottom-of-canvas (wireframe §20): the local property panel, only in Design Mode
-          and only when an element is selected (the panel returns null otherwise). */}
+      {/* Docked bottom-of-canvas (wireframe §20): the local property panel, mounted for as long as
+          Design Mode is on — with nothing selected it shows an empty state. It must be there *before*
+          the first selection: mounting it on select shrank the mat, `useElementSize` re-fit the
+          slide ~116px higher, and the second click of a double-click landed on a different element
+          (round-2 review). The panel's height is fixed for the same reason. */}
       {designModeActive && slide ? <PropertyPanel slide={slide} inspect={inspect} /> : null}
     </main>
   )

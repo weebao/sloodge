@@ -58,7 +58,39 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
   const TYPE_HITTEST = 'SL_HITTEST'
   const TYPE_INSPECT = 'SL_INSPECT'
   const TYPE_ELEMENTS = 'SL_ELEMENTS'
+  const TYPE_EDIT = 'SL_EDIT'
   const ID_ATTR = 'data-sl-id'
+  const EDIT_ATTR = 'contenteditable'
+  const LOCK_ATTR = 'data-sl-lock'
+  // Mirror of `NON_EDITABLE_TAGS` in `src/shared/design/text-edit.ts`; frame-script.test.tsx asserts
+  // the two agree, so a tag added there and not here fails a unit test. The parent gate is the one
+  // that matters (it decides what gets *written*); this one stops a caret ever appearing.
+  const NOT_EDITABLE: Record<string, boolean> = {
+    script: true,
+    style: true,
+    xmp: true,
+    plaintext: true,
+    noscript: true,
+    noembed: true,
+    noframes: true,
+    iframe: true,
+    title: true,
+    textarea: true,
+    template: true,
+    table: true,
+    thead: true,
+    tbody: true,
+    tfoot: true,
+    tr: true,
+    colgroup: true,
+    ul: true,
+    ol: true,
+    dl: true,
+    select: true,
+    optgroup: true,
+    html: true,
+    head: true,
+  }
   // The computed-style whitelist (§6.2) — must stay inside this self-contained function, so it is a
   // literal copy of `COMPUTED_STYLE_WHITELIST` in `element-context.ts`. `frame-script.test.tsx`
   // asserts the two are byte-identical, so a drift fails a unit test.
@@ -354,6 +386,222 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     parentWin.postMessage(env, '*')
   }
 
+  /* ---------------------------------------------------------------------------------------- *
+   * Direct text editing (M3.11, §4.1)
+   *
+   * The caret lives here because the element does: the parent cannot reach into an opaque-origin
+   * frame's document. What crosses back is only ever `textContent` — a read that *cannot* carry
+   * markup, so a paste that smuggled HTML in is flattened by the read itself rather than filtered
+   * afterwards. The parent still treats it as untrusted (see `SL_EDIT` in bridge-protocol.ts).
+   * ---------------------------------------------------------------------------------------- */
+
+  let session: { el: HTMLElement; original: string; stop: () => void } | null = null
+  // The element and pre-edit text of the session that ended most recently, kept so the parent can
+  // `revert` an edit it refused. The frame ends a session on its own keystrokes and reports the text
+  // afterwards, so by the time the parent decides the value is unwritable there is no open session
+  // left to cancel — and the rejected text would otherwise stay on screen until something unrelated
+  // reloaded the slide (round-4 major). Cleared once used, and by the next `begin`.
+  let lastEnded: { el: HTMLElement; original: string } | null = null
+
+  /** Whether this element can host a caret: character-data children only, unlocked, editable tag. */
+  const isFrameEditable = (el: Element): boolean => {
+    if (NOT_EDITABLE[tag(el)]) return false
+    if (el.getAttribute(LOCK_ATTR) !== null) return false
+    const kids = el.childNodes
+    for (let i = 0; i < kids.length; i++) {
+      // 3 === Node.TEXT_NODE. Anything else means mixed content, which M3.11 does not edit.
+      if (kids[i]!.nodeType !== 3) return false
+    }
+    return true
+  }
+
+  /** End the open session. `restore` puts the pre-edit text back. Returns the resulting text. */
+  const endEdit = (restore: boolean): string => {
+    const open = session
+    if (!open) return ''
+    session = null
+    lastEnded = { el: open.el, original: open.original }
+    open.stop()
+    if (restore) open.el.textContent = open.original
+    open.el.removeAttribute(EDIT_ATTR)
+    open.el.removeAttribute('spellcheck')
+    return open.el.textContent ?? ''
+  }
+
+  const selectAllOf = (el: Element): void => {
+    const selection = win.getSelection()
+    if (!selection) return
+    const range = doc.createRange()
+    range.selectNodeContents(el)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  const beginEdit = (slId: string) => {
+    const node = doc.querySelector('[' + ID_ATTR + '="' + slId + '"]')
+    if (!node) return null
+    if (session) endEdit(false)
+    lastEnded = null
+    if (!isFrameEditable(node)) return { slId, text: node.textContent ?? '', editing: false }
+
+    const el = node as HTMLElement
+    const original = el.textContent ?? ''
+
+    // `plaintext-only` is the load-bearing choice: Chromium's editing engine then refuses to insert
+    // elements at all, so rich paste, drag-and-drop and execCommand styling cannot introduce markup.
+    // The `true` fallback is for engines that ignore it; the paste/drop guards and the `textContent`
+    // read below keep even that path plain.
+    el.setAttribute(EDIT_ATTR, 'plaintext-only')
+    if (!el.isContentEditable) el.setAttribute(EDIT_ATTR, 'true')
+    el.setAttribute('spellcheck', 'false')
+
+    const finish = (reason: string): void => {
+      // Escape *commits* and returns to selection, matching §9.3 ("on blur/Esc the frame returns
+      // the element's content") and PowerPoint, where Esc leaves the text and selects the shape.
+      // Undo is the cancel path, and a whole typing burst is exactly one undo entry.
+      const text = endEdit(false)
+      send({
+        __sl: MAGIC,
+        v: VERSION,
+        id: 0,
+        dir: 'evt',
+        type: TYPE_EDIT,
+        slide: mySlide,
+        payload: { slId, text, reason },
+      })
+    }
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Enter') {
+        // Always commit, never a newline: a raw newline in a text node renders as a space, and a
+        // `<br>` would be markup this element's byte-span text model cannot represent. See the
+        // Enter semantics note in useTextEditing.ts.
+        event.preventDefault()
+        finish('enter')
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        finish('escape')
+        return
+      }
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        finish('tab')
+        return
+      }
+      // Keep the slide's own key handlers out of a text edit.
+      event.stopPropagation()
+    }
+
+    // Insert `text` at the caret as a **text node**, so a paste can never contribute markup even if
+    // `plaintext-only` is not honoured.
+    const insertPlain = (text: string): void => {
+      const selection = win.getSelection()
+      if (!selection || selection.rangeCount === 0) {
+        el.textContent = (el.textContent ?? '') + text
+        return
+      }
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      const inserted = doc.createTextNode(text)
+      range.insertNode(inserted)
+      range.setStartAfter(inserted)
+      range.setEndAfter(inserted)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+
+    const onPaste = (event: ClipboardEvent): void => {
+      // Plain text only, explicitly — never rely on `plaintext-only` alone. `getData('text/plain')`
+      // is the only channel read, so a clipboard carrying `text/html` contributes nothing.
+      event.preventDefault()
+      const clip = event.clipboardData
+      const text = clip ? clip.getData('text/plain') : ''
+      if (text) insertPlain(text)
+    }
+
+    const onDrop = (event: Event): void => {
+      // A drop can carry `text/html`. Refusing outright is simpler than sanitizing it.
+      event.preventDefault()
+    }
+
+    const onBlur = (): void => {
+      finish('blur')
+    }
+
+    // Keep the "frozen frame" property (§2.1) for the rest of the slide while a caret is open: the
+    // element being edited gets real pointer events, everything else has its handlers suppressed.
+    const onDocPointer = (event: Event): void => {
+      const target = event.target as Node | null
+      if (target && el.contains(target)) return
+      event.stopPropagation()
+    }
+
+    el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('paste', onPaste)
+    el.addEventListener('drop', onDrop)
+    el.addEventListener('dragover', onDrop)
+    el.addEventListener('blur', onBlur)
+    doc.addEventListener('mousedown', onDocPointer, true)
+    doc.addEventListener('click', onDocPointer, true)
+
+    session = {
+      el,
+      original,
+      stop: () => {
+        el.removeEventListener('keydown', onKeyDown)
+        el.removeEventListener('paste', onPaste)
+        el.removeEventListener('drop', onDrop)
+        el.removeEventListener('dragover', onDrop)
+        el.removeEventListener('blur', onBlur)
+        doc.removeEventListener('mousedown', onDocPointer, true)
+        doc.removeEventListener('click', onDocPointer, true)
+      },
+    }
+
+    el.focus()
+    // Select the whole value so typing replaces it — the common case for a title or label. The
+    // frame is interactive during a session, so a second click places the caret precisely.
+    selectAllOf(el)
+    return { slId, text: original, editing: true }
+  }
+
+  /**
+   * Put the element the last session edited back to the text it began with. Only for that element,
+   * only once, and only while it is still in the document — anything else and the frame answers with
+   * what is actually there rather than writing over an element the parent may no longer mean.
+   */
+  const revertEdit = (slId: string) => {
+    const last = lastEnded
+    lastEnded = null
+    if (!last || last.el.getAttribute(ID_ATTR) !== slId || !doc.contains(last.el)) return null
+    last.el.textContent = last.original
+    return { slId, text: last.original, editing: false }
+  }
+
+  /** Apply an `SL_EDIT` request and describe the resulting state. */
+  const applyEdit = (slId: string, action: string) => {
+    if (action === 'begin') return beginEdit(slId)
+    if (action === 'revert') return revertEdit(slId)
+    const open = session
+    // A commit/cancel/undo/redo for an element that is not the open session must not touch the
+    // document.
+    if (!open || open.el.getAttribute(ID_ATTR) !== slId) {
+      const node = doc.querySelector('[' + ID_ATTR + '="' + slId + '"]')
+      if (!node) return null
+      return { slId, text: node.textContent ?? '', editing: false }
+    }
+    if (action === 'undo' || action === 'redo') {
+      // The field's own undo. In Electron the Edit menu owns Ctrl/⌘+Z, so the chord never reaches
+      // this document as a keystroke; the parent forwards it here instead, and Blink's editing
+      // command steps the editing host's undo stack exactly as the keystroke would have.
+      doc.execCommand(action)
+      return { slId, text: open.el.textContent ?? '', editing: true }
+    }
+    return { slId, text: endEdit(action === 'cancel'), editing: false }
+  }
+
   win.addEventListener('message', (event: MessageEvent) => {
     // Source identity is the whole authentication: reject anything not from the trusted parent.
     if (event.source !== parentWin) return
@@ -404,6 +652,31 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
         type: TYPE_ELEMENTS,
         slide: mySlide,
         payload: allElements(),
+      })
+      return
+    }
+
+    if (data['type'] === TYPE_EDIT) {
+      if (typeof p['slId'] !== 'string') return
+      const action = p['action']
+      if (
+        action !== 'begin' &&
+        action !== 'commit' &&
+        action !== 'cancel' &&
+        action !== 'revert' &&
+        action !== 'undo' &&
+        action !== 'redo'
+      ) {
+        return
+      }
+      send({
+        __sl: MAGIC,
+        v: VERSION,
+        id: data['id'],
+        dir: 'res',
+        type: TYPE_EDIT,
+        slide: mySlide,
+        payload: applyEdit(p['slId'], action),
       })
     }
   })
