@@ -96,6 +96,7 @@ beforeEach(() => {
     selections: [],
     selection: null,
     editing: null,
+    notice: null,
   })
   // `useAuthStore` is a module-level singleton (M2.7), so a status left behind by a previous case
   // would leak into the next one and make these order-dependent.
@@ -166,6 +167,34 @@ describe('AppShell — agent deck hot-update', () => {
     expect(useDesignStore.getState().selection).toBeNull()
     expect(useDesignStore.getState().selections).toEqual([])
     expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  /**
+   * Round-9 major 1. The refused-edit notice names an element by the same positional id the
+   * selection does, so a snapshot that rewrites the slide can leave a sentence on screen asserting
+   * something false about what is on it — observed in the built app as a notice still claiming the
+   * heading had formatting inside it after the agent replaced it with plain text.
+   */
+  it('drops a refused-edit notice when a remote snapshot replaces the deck', () => {
+    render(<AppShell />)
+    const slideId = useDeckStore.getState().deck.slideOrder[0]!
+    act(() => {
+      useDesignStore.getState().setNotice({
+        slideId,
+        text: "This text has formatting inside it, so it can't be edited on the canvas yet.",
+      })
+    })
+    expect(screen.getByTestId('design-notice')).toBeTruthy()
+
+    const snapshot = rewrittenCurrentSlide()
+    act(() => {
+      deckListener?.(snapshot)
+    })
+
+    // Still on the same slide, so nothing but the replacement itself can have cleared it.
+    expect(useDeckStore.getState().currentSlideId).toBe(slideId)
+    expect(useDesignStore.getState().notice).toBeNull()
+    expect(screen.queryByTestId('design-notice')).toBeNull()
   })
 
   it('keeps the selection when a malformed push is rejected', () => {

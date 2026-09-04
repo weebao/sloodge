@@ -18,7 +18,13 @@ const HIT: SlHit = {
 
 beforeEach(() => {
   // The store is a module singleton; reset it to OFF between cases.
-  useDesignStore.setState({ enabled: false, hover: null, selection: null, selections: [] })
+  useDesignStore.setState({
+    enabled: false,
+    hover: null,
+    selection: null,
+    selections: [],
+    notice: null,
+  })
 })
 
 /** A second hit distinct from `HIT`, for multi-select cases. */
@@ -264,5 +270,48 @@ describe('text-edit sessions (M3.11)', () => {
     useDesignStore.getState().beginEditing(HIT.slId)
     useDesignStore.getState().setSelections([HIT, HIT2])
     expect(useDesignStore.getState().editing).toBeNull()
+  })
+})
+
+/**
+ * The refused-edit notice outlives what clears the rest of the store, which is the whole point of it
+ * living here: the toggle — and Present, which forces it off — decide a refusal a moment *after*
+ * flipping the flag, so `OFF` clearing the notice would erase the explanation they exist to give
+ * (round-8). That invariant was carried only by the `Omit<DesignSnapshot, 'notice'>` on `OFF`.
+ */
+describe('the refused-edit notice (M3.11)', () => {
+  const NOTICE = { slideId: 's_a', text: 'That text is too long to store on a slide.' } as const
+
+  it('survives turning Design Mode off — the exit that raised it', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().setEnabled(false)
+
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
+    // ...while everything else the toggle owns is gone, so this is not a store that failed to reset.
+    expect(useDesignStore.getState().selection).toBeNull()
+  })
+
+  it('survives the toggle for the same reason', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().toggle()
+
+    expect(useDesignStore.getState().enabled).toBe(false)
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
+  })
+
+  it('survives clearTransient — Escape must not erase what it is still explaining', () => {
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setSelection(HIT)
+    useDesignStore.getState().setNotice(NOTICE)
+
+    useDesignStore.getState().clearTransient()
+
+    expect(useDesignStore.getState().selection).toBeNull()
+    expect(useDesignStore.getState().notice).toEqual(NOTICE)
   })
 })

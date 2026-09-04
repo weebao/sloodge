@@ -15,7 +15,8 @@
  * painting the box at the geometry the old element had. `useTextEditing` already abandons an open
  * caret on this path for the same reason; the selection has to go with it, and this is the one place
  * that knows a remote replacement happened as opposed to an edit the user just made (round-3 major).
- * Local edits deliberately keep their selection — a drag re-selects the element it moved.
+ * Local edits deliberately keep their selection — a drag re-selects the element it moved. The
+ * refused-edit notice goes with it (round-9 major): it names an element by that same positional id.
  */
 
 import { useEffect } from 'react'
@@ -31,7 +32,11 @@ export function useAgentDeckSync(): void {
       // Only on a snapshot that was actually adopted: a malformed push is a no-op, and a no-op must
       // not cost the user their selection.
       if (useDeckStore.getState().applyRemoteDeck(update)) {
-        useDesignStore.getState().clearTransient()
+        const design = useDesignStore.getState()
+        design.clearTransient()
+        // Separate from `clearTransient`, which deliberately keeps the notice: Escape-deselecting
+        // must not erase an explanation the user is still reading. A replacement must.
+        design.setNotice(null)
       }
     })
   }, [])

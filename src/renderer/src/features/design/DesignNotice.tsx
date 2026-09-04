@@ -12,6 +12,15 @@
  * It does not auto-dismiss, deliberately (round-5 minor, upheld on review): the notice is the only
  * account of why an edit did not stick, and a timer that removed it would leave a user who looked
  * away with vanished work and no explanation. It has an explicit ✕, and a new caret clears it.
+ *
+ * `SlideCanvas` owns the `aria-live="polite"` host this renders into, and its position with it: a
+ * region inserted already carrying its text is commonly not announced, so it has to outlive the
+ * notice. This element only paints.
+ *
+ * A second identical refusal deliberately changes nothing here — same text, same node, no
+ * re-announcement (round-9 minor). The element has already snapped back to its stored text, which is
+ * the feedback that the retry was refused too; this sentence is the standing explanation of why, and
+ * a polite region re-reading a sentence that never left the screen is noise.
  */
 
 import { useCallback, useEffect, type JSX } from 'react'
@@ -45,7 +54,7 @@ export function DesignNotice({ slideId }: DesignNoticeProps): JSX.Element | null
     <div
       role="status"
       data-testid="design-notice"
-      className="absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded bg-amber-600 px-2 py-1 text-[11px] leading-4 text-white"
+      className="pointer-events-auto flex items-center gap-2 rounded bg-amber-600 px-2 py-1 text-[11px] leading-4 text-white"
     >
       <span>{notice.text}</span>
       <button

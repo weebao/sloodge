@@ -112,7 +112,11 @@ export type DesignState = DesignSnapshot & {
    * keeping the last occurrence's geometry. Clears hover. Ignored while off; an empty list clears.
    */
   setSelections: (hits: readonly SlHit[]) => void
-  /** Drop hover and selection without leaving Design Mode — e.g. pointer left the stage. */
+  /**
+   * Drop hover and selection without leaving Design Mode — e.g. pointer left the stage. `notice` is
+   * not in it, for the same reason it is not in `OFF`: none of its callers invalidate a refusal the
+   * user may still be reading. The one that does — a remote deck replacement — clears it explicitly.
+   */
   clearTransient: () => void
   /**
    * Open a text-edit session on `slId`. Ignored while Design Mode is off. Does not change the

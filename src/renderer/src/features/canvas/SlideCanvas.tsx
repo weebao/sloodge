@@ -139,9 +139,18 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
                 Live slide — Design Mode is off. Press Ctrl/⌘+D to select and edit.
               </div>
             )}
-            {/* Outside the Design Mode branch on purpose — a refusal decided on the way *out* of
-                Design Mode has to land somewhere the overlay no longer is (see `DesignNotice`). */}
-            <DesignNotice slideId={slide.id} />
+            {/* A permanently mounted polite live region, the same shape the chat transcript uses:
+                a region inserted in the same commit as its first text is commonly not announced at
+                all, so the host has to be on the page before the notice is. Outside the Design Mode
+                branch on purpose — a refusal decided on the way *out* of Design Mode has to land
+                somewhere the overlay no longer is (see `DesignNotice`). */}
+            <div
+              aria-live="polite"
+              data-testid="design-notice-region"
+              className="pointer-events-none absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 justify-center"
+            >
+              <DesignNotice slideId={slide.id} />
+            </div>
           </div>
         ) : (
           <div className="select-none text-center">
