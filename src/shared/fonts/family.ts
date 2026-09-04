@@ -53,12 +53,19 @@
  * Neither is a plausible accident, which is exactly why it is worth blocking: it is the payload a
  * malicious font would carry. `isContractSafeFontFamilyName` rejects those names at the same
  * boundary, so a slide can never be written into a state its own validator rejects.
+ *
+ * It asks that question of the **composed declaration**, not of the name it started from. The escape
+ * layer below *inserts* characters — a hex escape and the space that terminates it — and SL-S04's
+ * packing strips that space again, so a name can be clean going in and forbidden coming out:
+ * `८ventsource` (U+096E DEVANAGARI DIGIT EIGHT) carries no forbidden token, composes to
+ * `\\96e ventsource, …` and packs to `\\96eventsource…` — `eventsource`. Validating the input to a
+ * transform can never account for what the transform adds.
  */
 
 // The leaf module, never `slide-contract` itself: this file is reachable from the **preload**
 // bundle, which is sandboxed and cannot `require` an external module. Importing the validator would
 // drag in parse5 and zod, and the whole preload would fail to load — see `forbidden-apis.ts`.
-import { FORBIDDEN_API_TOKENS, packForApiScan } from '../document/forbidden-apis'
+import { findForbiddenApiTokens } from '../document/forbidden-apis'
 
 /**
  * Longest family name accepted. The longest real name on a stock Windows 11 install is 31
@@ -84,15 +91,31 @@ const FONT_FAMILY_NAME_PATTERN = /^[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd} ._-]*$/u
 const VIEWPORT_UNIT_PATTERN = /\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|svw|lvh|lvw)\b/i
 
 /**
- * Would writing this name into a slide's CSS make the slide fail its own Tier-1 contract? See the
- * file header — the packing SL-S04 performs means spaces do not separate tokens.
+ * Would writing this name into a slide's CSS make the slide fail its own Tier-1 contract?
+ *
+ * Asked of the **composed declaration** — the bytes about to be written — for the reason in the file
+ * header: the escape layer inserts characters after any check on the input, so only a check on its
+ * output is sound. `findForbiddenApiTokens` is the validator's own scan rather than a
+ * re-implementation, because this guard is correct only while its normalisation is identical to
+ * SL-S04's.
+ *
+ * Scanning the value alone is exact rather than approximate. It is spliced between `font-family:`
+ * and either a `;` or the attribute's closing quote, and no forbidden token contains `:`, `;` or
+ * `"`, so none can straddle either boundary into a neighbouring declaration.
+ *
+ * The raw name is scanned as well, and that is not the old guard left in place. Escaping moves in
+ * both directions: it can *hide* a token from SL-S04's pack as easily as synthesise one —
+ * `Document.Cookie` composes to `Document\.Cookie`, which no longer packs to `document.cookie`.
+ * Admitting a face whose name spells a forbidden API on the grounds that our own escaping defuses it
+ * would rest the answer on the escaper staying exactly as it is, for a name no real font has.
  */
 export function isContractSafeFontFamilyName(name: string): boolean {
-  // `packForApiScan` comes from the validator's own module rather than being re-implemented here:
-  // this guard is only correct while its normalisation is identical to SL-S04's.
-  const flat = packForApiScan(name)
-  if (FORBIDDEN_API_TOKENS.some((token) => flat.includes(packForApiScan(token)))) return false
-  return !VIEWPORT_UNIT_PATTERN.test(name)
+  const trimmed = name.trim()
+  for (const scanned of [trimmed, composeFontFamilyValue(trimmed)]) {
+    if (findForbiddenApiTokens(scanned).length > 0) return false
+    if (VIEWPORT_UNIT_PATTERN.test(scanned)) return false
+  }
+  return true
 }
 
 /**
@@ -103,6 +126,7 @@ export function isValidFontFamilyName(value: unknown): value is string {
   if (typeof value !== 'string') return false
   if (value.length === 0 || value.length > MAX_FONT_FAMILY_NAME_LENGTH) return false
   if (!FONT_FAMILY_NAME_PATTERN.test(value)) return false
+  if (RESERVED_FAMILY_WORDS.has(value.toLowerCase())) return false
   return isContractSafeFontFamilyName(value)
 }
 
@@ -257,10 +281,18 @@ const HEX_DIGIT = /[0-9a-fA-F]/
 const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
 
 /**
- * Family names that CSS would read as something other than a family if written bare. `serif` the
- * installed face and `serif` the generic keyword are indistinguishable unquoted, so the first
- * character is hex-escaped to force identifier interpretation. `system-ui` is absent on purpose —
- * there we *want* the keyword.
+ * Names CSS reads as something other than a family. A face carrying one is **refused** — kept out of
+ * the dropdown and never written — rather than escaped.
+ *
+ * Escaping was the obvious repair and it does nothing: CSS resolves escapes *into* the identifier's
+ * value (Syntax §4.3.7/§4.3.11), so `\53 erif` **is** the ident `serif`. Measured in the app's own
+ * Chromium via CSSOM: `\53 erif, …` computes to the generic `serif` (the installed face never
+ * renders), while `\49 nherit, …` and `default, …` are rejected outright and the whole declaration
+ * is dropped. `<family-name>` is `<string> | <custom-ident>+`, and `<custom-ident>` excludes the
+ * CSS-wide keywords and `default`, so the only emission that works is a quoted `<string>` — which is
+ * a source-corrupting write in an inline style attribute (see `cssIdentFontFamily`). Refusing is
+ * what is left: the user sees one name fewer, instead of a pick the UI shows as applied while the
+ * text renders in a different font. `system-ui` is absent on purpose — there we *want* the keyword.
  */
 const RESERVED_FAMILY_WORDS: ReadonlySet<string> = new Set([
   'serif',
@@ -280,6 +312,7 @@ const RESERVED_FAMILY_WORDS: ReadonlySet<string> = new Set([
   'unset',
   'revert',
   'revert-layer',
+  'default',
 ])
 
 /**
@@ -296,17 +329,20 @@ const RESERVED_FAMILY_WORDS: ReadonlySet<string> = new Set([
 export function buildFontFamilyValue(name: string): string | null {
   const trimmed = name.trim()
   if (!isValidFontFamilyName(trimmed)) return null
+  return composeFontFamilyValue(trimmed)
+}
 
+/**
+ * The stack, composed but not validated. Split out so `isContractSafeFontFamilyName` can scan the
+ * exact string `buildFontFamilyValue` would emit — a guard reading anything else is guarding a
+ * different string — and so composition and validation cannot drift apart.
+ */
+function composeFontFamilyValue(trimmed: string): string {
   const key = trimmed.toLowerCase()
   const generic: FontGeneric = SYSTEM_BY_KEY.get(key)?.generic ?? 'sans-serif'
   if (key === 'system-ui') return `system-ui, ${generic}`
-
-  const ident = cssIdentFontFamily(trimmed)
-  const head = RESERVED_FAMILY_WORDS.has(key)
-    ? `\\${trimmed.codePointAt(0)!.toString(16)} ${ident.slice(1)}`
-    : ident
   const tail = generic === 'sans-serif' ? ['Segoe UI', 'system-ui', generic] : [generic]
-  return [head, ...tail].join(', ')
+  return [cssIdentFontFamily(trimmed), ...tail].join(', ')
 }
 
 /**
@@ -335,11 +371,28 @@ export function readPickedFontFamily(value: string | null): string | null {
   return unescapeCssIdent(body).trim() || null
 }
 
-/** Reverse of `cssIdentFontFamily`: `\.` and `\2e ` both come back as `.`. */
+/**
+ * Reverse of `cssIdentFontFamily`: `\.` and `\2e ` both come back as `.`.
+ *
+ * **Total on every string**, because it runs on untrusted input during a React render. Slide HTML is
+ * model-authored and nothing in the Tier-1 contract rejects `font-family: A\ffffff B, serif`, so a
+ * throw here takes the property panel — which has no error boundary above it — down with it.
+ *
+ * It follows the tokenizer rather than guessing (CSS Syntax §4.3.7): a code point that is zero, a
+ * surrogate half or above U+10FFFF becomes U+FFFD, and so does a backslash that ends the input or
+ * precedes a newline, neither of which starts a valid escape. That is one rule for the crash and for
+ * the lone-surrogate and NUL leaks that would otherwise reach the panel's state.
+ */
 function unescapeCssIdent(value: string): string {
   return value.replace(
-    /\\(?:([0-9a-fA-F]{1,6})[ ]?|(.))/g,
-    (_match, hex: string, literal: string) =>
-      hex === undefined ? literal : String.fromCodePoint(Number.parseInt(hex, 16)),
+    /\\(?:([0-9a-fA-F]{1,6})[ ]?|([^\n\r\f])|(?![^\n\r\f]))/g,
+    (_match: string, hex: string | undefined, literal: string | undefined) => {
+      if (literal !== undefined) return literal
+      if (hex === undefined) return '\uFFFD'
+      const codePoint = Number.parseInt(hex, 16)
+      return codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ? '\uFFFD'
+        : String.fromCodePoint(codePoint)
+    },
   )
 }

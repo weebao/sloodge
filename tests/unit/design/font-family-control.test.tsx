@@ -177,6 +177,29 @@ describe('FontFamilyControl — keyboard', () => {
     })
   })
 
+  it('opens from the trigger with Alt+ArrowDown, the APG spelling of the same intent', async () => {
+    render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
+    fireEvent.keyDown(screen.getByTestId('prop-fontFamily'), { key: 'ArrowDown', altKey: true })
+    await waitFor(() => {
+      expect(screen.getByTestId('font-listbox')).toBeTruthy()
+    })
+  })
+
+  it('opens from the trigger with ArrowUp, landing on the last option', async () => {
+    // The intent has to outlive the open: the list is not there yet when the key is pressed, so a
+    // flag consumed on open would land the cursor on the first row and lose the keystroke.
+    render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
+    fireEvent.keyDown(screen.getByTestId('prop-fontFamily'), { key: 'ArrowUp' })
+    const input = await screen.findByTestId('font-filter')
+    await waitFor(() => {
+      expect(
+        document
+          .getElementById(input.getAttribute('aria-activedescendant')!)
+          ?.getAttribute('data-testid'),
+      ).toBe('font-option-Verdana')
+    })
+  })
+
   it('moves the cursor with the arrow keys and skips group headers', async () => {
     await open(null, vi.fn())
     const input = screen.getByTestId('font-filter')

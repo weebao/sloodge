@@ -37,6 +37,7 @@ import { useCallback, useMemo, useRef, useState, type JSX, type RefObject } from
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
 import { buildElementContextBundle } from '../../../../shared/design/element-context'
+import { findForbiddenApiTokens } from '../../../../shared/document/forbidden-apis'
 import {
   buildFieldOps,
   readPropertyValues,
@@ -99,6 +100,28 @@ export interface PropertyPanelProps {
    * the machine's actual font collection.
    */
   readonly loadFonts?: SystemFontLoader
+}
+
+/**
+ * Would this write take the slide from clean to SL-S04-violating?
+ *
+ * The last gate before the bytes land, and deliberately duplicated: `family.ts` refuses a font name
+ * whose declaration would trip the contract, but a check inside one field's composer protects one
+ * field, and only while that composer stays correct. This one reads the patched source, which every
+ * field's write passes through.
+ *
+ * Only *newly introduced* tokens block. A deck can already contain a slide the validator rejects
+ * (the agent writes slides too), and refusing to let the user edit it would be a worse failure than
+ * the one being prevented.
+ *
+ * It applies to prose as much as to CSS, which is the rule as written rather than an over-reach:
+ * SL-S04 packs whitespace out, so a heading reading `local storage` *is* `localStorage` to the
+ * validator, and letting it land trades a reverted keystroke for a deck that fails on export naming
+ * an API the user never wrote.
+ */
+function introducesForbiddenApi(before: string, after: string): boolean {
+  const known = new Set(findForbiddenApiTokens(before))
+  return findForbiddenApiTokens(after).some((token) => !known.has(token))
 }
 
 /**
@@ -306,6 +329,7 @@ function PropertyFields({
       if (ops.length === 0) return
       const patched = applyOps(map.source, ops)
       if (patched === map.source) return
+      if (introducesForbiddenApi(map.source, patched)) return
       setSlideHtml(slide.id, patched, slId, editLabel(fieldName, value))
     },
     [slide.id, slId, setSlideHtml],

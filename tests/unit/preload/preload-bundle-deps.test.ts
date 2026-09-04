@@ -71,7 +71,14 @@ function specifierOf(node: unknown): Edge {
 
 /** Every specifier `source` names, found by parsing it the way the bundler will. */
 async function importEdges(file: string, source: string): Promise<Edge[]> {
-  const js = await transformWithEsbuild(source, file, STRIP_TYPES)
+  // A non-JS asset in the graph (a `.css` import) fails with a bare `Expression expected`, which
+  // names the parser rather than the file that reached it. Say which module could not be read.
+  let ast: unknown
+  try {
+    ast = parseAst((await transformWithEsbuild(source, file, STRIP_TYPES)).code)
+  } catch (cause) {
+    throw new Error(`${file} could not be parsed as TS/JS — is it imported as an asset?`, { cause })
+  }
   const edges: Edge[] = []
 
   const walk = (node: unknown): void => {
@@ -110,7 +117,7 @@ async function importEdges(file: string, source: string): Promise<Edge[]> {
     }
   }
 
-  walk(parseAst(js.code))
+  walk(ast)
   return edges
 }
 
@@ -121,10 +128,16 @@ function resolveLocal(tree: SourceTree, fromFile: string, spec: string): string 
   // a guard that silently stopped walking at the first `.js` specifier would be worse than one that
   // never met one.
   const stem = base.endsWith('.js') ? base.slice(0, -3) : base
-  for (const candidate of [`${stem}.ts`, `${stem}.tsx`, join(stem, 'index.ts'), base]) {
-    if (tree.exists(candidate)) return candidate
-  }
-  return null
+  const candidates = [
+    `${stem}.ts`,
+    `${stem}.tsx`,
+    `${stem}.mts`,
+    `${stem}.cts`,
+    join(stem, 'index.ts'),
+    join(stem, 'index.tsx'),
+    base,
+  ]
+  return candidates.find((candidate) => tree.exists(candidate)) ?? null
 }
 
 interface Offender {
@@ -152,8 +165,12 @@ async function scanPreloadGraph(
       if (spec === null) {
         offenders.push({ file, spec: '<computed specifier>' })
       } else if (spec.startsWith('.')) {
+        // A relative specifier that resolves to nothing is reported, never dropped: the subtree
+        // behind it would otherwise go unscanned and the run would still be green — the silence this
+        // file exists to remove.
         const target = resolveLocal(tree, file, spec)
-        if (target !== null) children.push(target)
+        if (target === null) offenders.push({ file, spec: `${spec} <unresolved>` })
+        else children.push(target)
       } else if (spec !== 'electron') {
         offenders.push({ file, spec })
       }
@@ -358,5 +375,35 @@ describe('the preload source-graph scanner', () => {
         '/preload/a.ts': "import { z } from 'zod'\n",
       }),
     ).toEqual(['zod'])
+  })
+
+  it('follows the extensions and index files a .ts/.tsx pair does not cover', async () => {
+    // `.mts`, `.cts` and `dir/index.tsx` are not in the repo today. That is exactly why they are
+    // pinned: the failure mode of a missing candidate is not a wrong answer but silence — the
+    // subtree behind it is never walked and the run stays green.
+    expect(
+      await specsFor({
+        [ENTRY]: "import './a.js'\nimport './b'\nimport './widgets'\n",
+        '/preload/a.mts': "import 'zod'\n",
+        '/preload/b.cts': "import 'parse5'\n",
+        '/preload/widgets/index.tsx': "import 'react-dom'\n",
+      }),
+      // Sorted by file: `a.mts`, then `b.cts`, then `widgets/index.tsx`.
+    ).toEqual(['zod', 'parse5', 'react-dom'])
+  })
+
+  it('reports a relative specifier it cannot resolve rather than dropping it', async () => {
+    expect(
+      await specsFor({
+        [ENTRY]: "import './gone'\nimport { a } from './a'\n",
+        '/preload/a.ts': 'export const a = 1\n',
+      }),
+    ).toEqual(['./gone <unresolved>'])
+  })
+
+  it('names the module and not the parser when a file cannot be parsed as JS', async () => {
+    await expect(
+      specsFor({ [ENTRY]: "import './a.css'\n", '/preload/a.css': '.x { color: red }\n' }),
+    ).rejects.toThrow('/preload/a.css could not be parsed')
   })
 })

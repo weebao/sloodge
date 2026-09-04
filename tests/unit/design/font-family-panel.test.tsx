@@ -446,3 +446,75 @@ describe('font family pick — focus', () => {
     expect(document.activeElement).toBe(screen.getByTestId('ask-claude-element'))
   })
 })
+
+/** Type into a property field and commit it, the way a blur does in the app. */
+function type(field: string, value: string): void {
+  const input = screen.getByTestId(field)
+  fireEvent.change(input, { target: { value } })
+  fireEvent.blur(input)
+}
+
+/**
+ * The panel's own gate, below the font composer. `family.ts` refuses a name whose declaration would
+ * trip SL-S04, but that is one field's composer; this is the line every field's write passes
+ * through, so it holds whatever the composer above it does.
+ */
+describe('the write gate', () => {
+  /** Seed a source other than the shared one, and select its heading. */
+  function seed(source: string): void {
+    useDeckStore.getState().setSlideHtml(slideId, source, slideId, 'seed')
+    const hit: SlHit = {
+      slId: buildSlideMap(slideId, source).order[0]!,
+      tag: 'h1',
+      id: null,
+      classes: [],
+      rect: { x: 0, y: 0, width: 100, height: 40 },
+      ancestors: [],
+    }
+    useDesignStore.setState({ enabled: true, hover: null, selection: hit })
+  }
+
+  it('refuses a commit that would take the slide from clean to SL-S04-violating', () => {
+    select()
+    render(<Panel />)
+    const before = undoDepth()
+
+    type('prop-text', 'localStorage')
+
+    expect(html()).toBe(SOURCE)
+    expect(undoDepth()).toBe(before)
+  })
+
+  it('still commits an edit that carries no forbidden token', () => {
+    // The control: the gate must block a token, not an edit. Note what it does block — SL-S04 packs
+    // whitespace out, so the prose `local storage` is `localStorage` to the contract and this write
+    // would produce a slide the validator rejects. Refusing it is the rule, not an over-reach.
+    select()
+    render(<Panel />)
+
+    type('prop-text', 'storing things locally is fine')
+
+    expect(html()).toContain('storing things locally is fine')
+  })
+
+  it('leaves an already-violating slide editable', () => {
+    // Only *newly introduced* tokens block. The agent writes slides too, and a deck can already
+    // hold one the validator rejects; refusing to let the user edit it is the worse failure.
+    const dirty = '<h1 style="font-size: 44px">localStorage</h1>'
+    seed(dirty)
+    render(<Panel />)
+
+    type('prop-fontSize', '60')
+
+    expect(html()).toContain('font-size: 60px')
+    expect(html()).toContain('localStorage')
+  })
+
+  it('renders against a font-family escape no font install could produce', () => {
+    // Model-authored slide HTML, and nothing in the contract rejects it: `\ffffff` is out of range,
+    // and decoding it threw a RangeError inside the render — taking the whole panel down.
+    seed('<h1 style="font-family: A\\ffffff B, serif">Hello</h1>')
+    expect(() => render(<Panel />)).not.toThrow()
+    expect(screen.getByTestId('prop-fontFamily')).toBeTruthy()
+  })
+})
