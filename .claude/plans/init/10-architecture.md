@@ -427,9 +427,9 @@ Content is delivered over a **URL** rather than `srcdoc` (a real navigation keep
 opaque origin cleanly, gives DevTools a real document URL for Design Mode debugging, and avoids
 HTML-escaping the whole document into an attribute). As of M2.0 that URL is a `slide://` one under
 Electron and a blob URL in a plain-browser host; either way it is released when the slide unmounts or
-its html changes. As of M8.2 the `slide://` URL is `slide://<surface>/<id>/` — the host names the
-*surface* (`slides` for the canvas stage, Present and export; `thumbnails` for the rail), not the
-document; see the M8.2 note below for why.
+its html changes. As of M8.2 the `slide://` URL is `slide://<host>/<id>/` — the host names a
+*process group* chosen per surface (`stage-<id>`, one per document, for the canvas stage, Present
+and export; one shared `thumbnails` for the rail), not an identity; see the M8.2 note below for why.
 
 > **Correction (M1.3, 2026-07-31) — blob does not escape CSP inheritance.**
 > This section was written on the assumption that a blob-loaded frame, unlike `srcdoc`, is governed
@@ -545,15 +545,21 @@ placeholder otherwise. M8.3 replaces the placeholder with a cached bitmap and vi
 > which groups sandboxed frames per site) gave each one a renderer process at ~11–14 MB PSS.
 >
 > M8.2 changes both. The canvas and Present render through `SlideStage`, which mounts the active
-> slide and its ±1 neighbours (hidden, `inert`, pre-warmed *after* the active frame has loaded) and
-> nothing else; the rail mounts a frame only for cards in its scroll window. And the URL became
-> `slide://<surface>/<id>/`. Three shapes were measured with the M8.1 harness on the 100-slide deck
-> (all with lazy mounting): the original per-document host — 14 processes (26 peak while the rail
-> scrolls), 640 MB, 54 ms median switch; **one host for everything** — 5 processes, 583 MB, but a
-> **360 ms median / 1.7 s p95 switch**, because a dozen animating documents (stage + thumbnails)
-> then share one main thread and a cold slide's parse queues behind them; and **one host per
-> surface** (`slides` / `thumbnails`), which keeps the thumbnails' work off the stage's thread. The
-> last is what shipped; its numbers are in `perf/README.md`.
+> slide and its ±1 neighbours (hidden, `inert`, pre-warmed *after* the active frame has loaded its
+> current document) and nothing else; the rail mounts a frame only for cards in its scroll window.
+> And the URL became `slide://<host>/<id>/`, where the host names a **process group per surface**:
+> `stage-<id>` for the stage — still one process per document, but the stage holds at most three —
+> and one shared `thumbnails` host for the rail. Four shapes were measured with the M8.1 harness on
+> the 100-slide deck (all with lazy mounting): the original per-document host *everywhere* — 14
+> processes (26 peak while the rail scrolls), 640 MB, 54 ms median switch; **one host for
+> everything** — 5 processes, 583 MB, but a **360 ms median / 1.7 s p95 switch**, because a dozen
+> animating documents (stage + thumbnails) then share one main thread and a cold slide's parse queues
+> behind them; **one host per surface** (`slides` / `thumbnails`, round 0) — 6 processes, 527 MB,
+> 38 ms switch, but a hidden neighbour running `while (true) {}` was **measured to freeze the active
+> slide** for the whole observation window, in the editor and in Present; and **per-document stage
+> host, shared thumbnails host** (round 1, shipped), whose numbers are in `perf/README.md`. The last
+> keeps the thumbnails' work off the stage's thread *and* keeps a hung neighbour out of the active
+> slide's process, for a few more processes than round 0.
 >
 > None of the properties in this section depended on the per-document host, and
 > `pnpm perf:isolation` (`perf/cli/isolation-probe.ts`) now demonstrates that in the real app for
@@ -561,12 +567,15 @@ placeholder otherwise. M8.3 replaces the placeholder with a cached bitmap and vi
 > `parent.sloodge`, every sibling frame's `document`/`localStorage`/navigation, the slide's own
 > `localStorage`/`sessionStorage`/`indexedDB`/`document.cookie`, and `fetch` of its own URL are all
 > denied (110 of 110 reaches), the host sees `event.origin === "null"` for every message, and
-> `event.source` still resolves each message to exactly one iframe. Two lesser things the unique
-> host did provide are given up knowingly: a second line of defence against the `sandbox` attribute
-> ever being lost (it is pinned by two tests, and `frame-src 'none'` means no slide can frame a
-> sibling to exploit it), and process-level isolation between *slides* — slide-to-app isolation is
-> unchanged. If M4.7's separate-window Present ever wants per-slide fault isolation back, a host
-> per slide *for that surface only* is a one-line change in `slideDocumentUrl`.
+> `event.source` still resolves each message to exactly one iframe. The same probe then hangs the
+> +1 neighbour and asserts the active slide's heartbeat continues. What is given up knowingly, on the
+> **thumbnails surface only**: a second line of defence against the `sandbox` attribute ever being
+> lost (it is pinned by two tests, and `frame-src 'none'` means no slide can frame a sibling to
+> exploit it), and process-level isolation between *miniatures* — a runaway thumbnail freezes the
+> other miniatures while its card is in view, until it scrolls out. Slide-to-app isolation is
+> unchanged, and a slide can navigate itself between the two surfaces' hosts (perf-only; see the
+> residual note in `slide-protocol.ts`). Present's N+1 pre-warm is therefore isolated today; M4.7's
+> separate `WebContentsView` remains the answer for isolating Present from the *editor* renderer.
 
 **Present mode** promotes the active slide to a `WebContentsView` (§8) for process-level fault
 isolation — a slide that hangs its JS must not freeze the app during a talk.

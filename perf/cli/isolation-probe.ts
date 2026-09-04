@@ -45,6 +45,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { launchApp } from '../harness/app'
 import { waitFor } from '../harness/cdp'
+import { SELECTORS } from '../harness/page-recorder'
 import { kbToMb, takeSample } from '../harness/sampler'
 import { buildStressDeck } from '../lib/deck'
 
@@ -54,7 +55,6 @@ const REPORTS_GLOBAL = '__sloodgeIsolationReports'
 const MESSAGE_KEY = '__sloodgeIsolationProbe'
 const BEATS_GLOBAL = '__sloodgeHeartbeats'
 const HEARTBEAT_KEY = '__sloodgeHeartbeat'
-const HANG_KEY = '__sloodgeHang'
 const HEARTBEAT_INTERVAL_MS = 50
 /** How long the neighbour behaves before it hangs itself; the stage must have warmed it by then. */
 const HANG_AFTER_MS = 2500
@@ -183,11 +183,9 @@ const INSTALL_HOST_LISTENER = `(() => {
 type Beat = {
   t: number
   probe: number
-  /** Host of the iframe `event.source` belongs to: `stage-<id>` or `thumbnails`. */
-  host: string
+  /** Whether the iframe `event.source` belongs to sits in the canvas stage (else the rail). */
+  stage: boolean
 }
-
-type HangMark = { t: number; probe: number; host: string }
 
 type HeartbeatSeries = {
   beats: number
@@ -196,18 +194,15 @@ type HeartbeatSeries = {
 }
 
 /**
- * A slide that posts a heartbeat every `HEARTBEAT_INTERVAL_MS`; the one with `hangAfterMs` announces
- * itself and then spins forever. The announcement is what pins the observation window to the moment
- * the process actually stopped, rather than to the deck push.
+ * A slide that posts a heartbeat every `HEARTBEAT_INTERVAL_MS`; the one with `hangAfterMs` spins
+ * forever after that long. The moment it hung is taken as its *last heartbeat* — the spin starts
+ * within one interval of it. It cannot announce the hang itself: a `postMessage` issued right before
+ * a synchronous spin is never delivered from a cross-process frame (measured; the message is
+ * flushed by the event loop the spin has just blocked).
  */
 function heartbeatSlideHtml(probe: number, hangAfterMs: number | null): string {
   const hang =
-    hangAfterMs === null
-      ? ''
-      : `setTimeout(() => {
-  parent.postMessage({ ${HANG_KEY}: { probe: ${String(probe)} } }, '*');
-  for (;;) {}
-}, ${String(hangAfterMs)});`
+    hangAfterMs === null ? '' : `setTimeout(() => { for (;;) {} }, ${String(hangAfterMs)});`
   return `<!doctype html>
 <html lang="en" data-sl-slide="heartbeat-${String(probe)}">
 <head><meta charset="utf-8"><title>Heartbeat ${String(probe)}</title>
@@ -228,21 +223,19 @@ ${hang}
 const INSTALL_HEARTBEAT_LISTENER = `(() => {
   const w = globalThis;
   if (w.${BEATS_GLOBAL}) return 'already-installed';
-  const state = { beats: [], hangs: [] };
+  const state = { beats: [] };
   w.${BEATS_GLOBAL} = state;
-  const hostOf = (source) => {
+  // Which surface a frame belongs to is read from the DOM, never from its URL: the scenario has
+  // to keep telling stage from rail when the URL shape is the thing under test.
+  const onStage = (source) => {
     const frame = Array.from(document.querySelectorAll('iframe')).find((f) => f.contentWindow === source);
-    const src = frame ? frame.getAttribute('src') : null;
-    try { return src ? new URL(src).hostname : ''; } catch (e) { return ''; }
+    return !!(frame && frame.closest('${SELECTORS.canvas}'));
   };
   window.addEventListener('message', (event) => {
     const data = event.data;
     if (!data || typeof data !== 'object') return;
-    if (data.${HEARTBEAT_KEY}) {
-      state.beats.push({ t: performance.now(), probe: data.${HEARTBEAT_KEY}.probe, host: hostOf(event.source) });
-    } else if (data.${HANG_KEY}) {
-      state.hangs.push({ t: performance.now(), probe: data.${HANG_KEY}.probe, host: hostOf(event.source) });
-    }
+    if (!data.${HEARTBEAT_KEY}) return;
+    state.beats.push({ t: performance.now(), probe: data.${HEARTBEAT_KEY}.probe, stage: onStage(event.source) });
   });
   return 'installed';
 })()`
@@ -256,11 +249,7 @@ function heartbeatSeries(
 ): HeartbeatSeries {
   const times = beats
     .filter(
-      (b) =>
-        b.probe === probe &&
-        b.host.startsWith('stage-') === onStage &&
-        b.t >= windowStart &&
-        b.t <= windowEnd,
+      (b) => b.probe === probe && b.stage === onStage && b.t >= windowStart && b.t <= windowEnd,
     )
     .map((b) => b.t)
     .toSorted((a, b) => a - b)
@@ -415,22 +404,31 @@ export async function main(argv: readonly string[]): Promise<void> {
     })()`)
     if (hangSent !== 'sent') throw new Error(`could not push the hang deck: ${hangSent}`)
 
-    // The neighbour announces its hang from both of its frames (stage and rail); wait for the
-    // stage one, which is the process under test.
+    // The neighbour has hung once its stage frame has been silent for a full second after beating
+    // (a mounted frame that never beat is a different failure and is caught by the timeout).
+    const lastStageBeat = (probe: number): string =>
+      `globalThis.${BEATS_GLOBAL}.beats.filter((b) => b.probe === ${String(probe)} && b.stage).at(-1)`
     await waitFor(
       app.page,
-      `globalThis.${BEATS_GLOBAL}.hangs.some((h) => h.host.startsWith('stage-'))`,
+      `(() => { const last = ${lastStageBeat(1)}; return !!last && performance.now() - last.t > 1000; })()`,
       60_000,
       100,
       app.assertAlive,
-    )
-    await sleep(HANG_OBSERVE_MS + 1000)
+    ).catch(async (error: unknown) => {
+      const state = await app.page.evaluate<unknown>(`({
+        frames: Array.from(document.querySelectorAll('iframe')).map((f) => f.getAttribute('src')),
+        beatsByProbeAndSurface: globalThis.${BEATS_GLOBAL}.beats.reduce((acc, b) => {
+          const key = b.probe + (b.stage ? '@stage' : '@rail'); acc[key] = (acc[key] || 0) + 1; return acc;
+        }, {}),
+      })`)
+      console.error('hang scenario did not settle:', JSON.stringify(state, null, 2))
+      throw error
+    })
+    await sleep(HANG_OBSERVE_MS + 500)
 
-    const { beats, hangs } = await app.page.evaluate<{ beats: Beat[]; hangs: HangMark[] }>(
-      `({ beats: globalThis.${BEATS_GLOBAL}.beats.slice(), hangs: globalThis.${BEATS_GLOBAL}.hangs.slice() })`,
-    )
-    const hungAt = hangs.find((h) => h.host.startsWith('stage-'))?.t ?? Number.NaN
-    // Start the window half a second after the announcement so the spin has certainly begun.
+    const beats = await app.page.evaluate<Beat[]>(`globalThis.${BEATS_GLOBAL}.beats.slice()`)
+    const hungAt = Math.max(...beats.filter((b) => b.probe === 1 && b.stage).map((b) => b.t))
+    // Start the window half a second after the last beat so the spin has certainly begun.
     const windowStart = hungAt + 500
     const windowEnd = windowStart + HANG_OBSERVE_MS
     const activeStage = heartbeatSeries(beats, 0, true, windowStart, windowEnd)
@@ -468,7 +466,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     }
 
     const result = {
-      urlShape: frameSrcs[0]?.replace(/[0-9a-f]{32}/g, '<id>') ?? '',
+      urlShapes: [...new Set(frameSrcs.map((src) => src.replace(/[0-9a-f]{32}/g, '<id>')))],
       mountedFrames: frameSrcs.length,
       distinctHosts: new Set(frameSrcs.map((src) => new URL(src).host)).size,
       processes: { total: sample.processes.length, byType },

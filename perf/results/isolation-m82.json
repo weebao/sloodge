@@ -1,23 +1,49 @@
 {
-  "urlShape": "slide://thumbnails/<id>/",
+  "urlShapes": [
+    "slide://thumbnails/<id>/",
+    "slide://stage-<id>/<id>/"
+  ],
   "mountedFrames": 5,
-  "distinctHosts": 2,
+  "distinctHosts": 3,
   "processes": {
-    "total": 6,
+    "total": 7,
     "byType": {
       "Browser": 1,
       "GPU": 1,
       "Utility": 1,
-      "Tab": 3
+      "Tab": 4
     }
   },
-  "pssMb": 418,
+  "pssMb": 463,
   "checks": 110,
   "failures": [],
   "originsSeenBySlides": [
-    "{\"ok\":true,\"value\":\"slide://slides\"}",
+    "{\"ok\":true,\"value\":\"slide://stage-a86e4291b6e5bf0a1437452a1acd017a\"}",
+    "{\"ok\":true,\"value\":\"slide://stage-049e723d693344b398f9ea7c3693a87c\"}",
     "{\"ok\":true,\"value\":\"slide://thumbnails\"}"
   ],
+  "hungNeighbour": {
+    "hangAfterMs": 2500,
+    "observeMs": 6000,
+    "stallLimitMs": 2000,
+    "activeSlideOnStage": {
+      "beats": 120,
+      "maxGapMs": 51
+    },
+    "activeSlideInRail": {
+      "beats": 0,
+      "maxGapMs": 6000
+    },
+    "hungSlideOnStage": {
+      "beats": 0,
+      "maxGapMs": 6000
+    },
+    "railStalled": true,
+    "mountedFrames": 5,
+    "distinctHosts": 3,
+    "processes": 7,
+    "failures": []
+  },
   "reports": [
     {
       "origin": "null",
@@ -26,7 +52,7 @@
         "probe": 0,
         "origin": {
           "ok": true,
-          "value": "slide://slides"
+          "value": "slide://stage-a86e4291b6e5bf0a1437452a1acd017a"
         },
         "parentDocument": {
           "ok": false,
@@ -132,7 +158,7 @@
         "probe": 1,
         "origin": {
           "ok": true,
-          "value": "slide://slides"
+          "value": "slide://stage-049e723d693344b398f9ea7c3693a87c"
         },
         "parentDocument": {
           "ok": false,

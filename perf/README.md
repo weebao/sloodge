@@ -18,17 +18,20 @@ pnpm build                 # the harness drives out/main/index.js; it does not b
 pnpm perf:generate         # writes perf/decks/stress-{25,50,100,200,300,500,1000} (+ deck-update payloads)
 pnpm perf:run --slides=100 --runs=3 --ram-basis=proc-pss-sum
 pnpm perf:diff perf/results/baseline-main.json perf/results/run-100.json
-pnpm perf:isolation        # M8.2: containment probe for the shipped slide:// hosts (see below)
+pnpm perf:isolation        # M8.2: containment + hung-neighbour probe for the shipped slide:// hosts (see below)
 ```
 
-The 100-slide tier is the headline. **Do not run 500 or 1000 before M8.2 lands**: on this machine
-they exhaust RAM and swap (see "The result"). The harness now fails fast when the app dies instead
-of hanging, but the machine still has to survive the attempt.
+The 100-slide tier is the headline. Before M8.2 the 500- and 1000-slide tiers exhausted RAM and swap
+on this machine (see "The result"); since M8.2 every tier runs (see "Scaling after M8.2"). The
+harness fails fast when the app dies instead of hanging.
 
 `perf:diff` is the whole of what M8.7's CI job has to do: it loads two committed reports and applies
 the pure rules in `perf/lib/report.ts` — no build, no Electron, no deck. It exits `1` on a budget
 failure or a regression beyond `--tolerance` (default 10 %), `2` on mismatched inputs (it refuses to
-compare runs of different deck sizes or different RAM bases).
+compare runs of different deck sizes or different RAM bases). A metric whose _definition_ differs
+between the two reports (`metricDefinitions`, see `METRIC_DEFINITIONS` in `perf/lib/report.ts`) is
+printed as `NOT COMPARED` with both versions and excluded from the regression check, so a
+redefinition — `deckOpenMs` changed meaning in M8.2 — can never be read as an improvement.
 
 Useful flags for `perf:run`:
 
@@ -224,9 +227,10 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
    caveat nobody can check, every sample records the host's 1-minute load average and
    `MemAvailable`, and the report carries a `hostContention` block with a `contended` flag. A
    baseline whose `contended` is true should be re-taken before it is diffed against.
-8. **The 500- and 1000-slide tiers have no harness JSON**, because the app does not survive them on
-   this machine — see "The result" below. The decks are generated and valid; only the measurement is
-   missing, and it is missing for a reason that is itself the headline finding.
+8. **The 500- and 1000-slide tiers have no M8.1 harness JSON**, because the pre-M8.2 app does not
+   survive them on this machine — see "The result" below. The decks are generated and valid; the
+   measurement is missing for a reason that is itself the headline finding. M8.2 opened both tiers;
+   their reports are `m82-lazy-mounting-{500,1000}.json`.
 9. **`droppedFrames` changed definition during M8.1.** It is now frames missed against a 60 Hz ideal
    over the dwell window, not a count of over-long intervals. The interval count is retained as
    `longFrameIntervals`. Any number quoted from before that change is not comparable.
@@ -395,94 +399,131 @@ window — the renderer was not producing frames at all for the remaining ~4.5 s
 
 M8.2 changed what the harness measures in two places, both disclosed in the metric table above:
 `deckOpenMs`/`deckPublishMs` now wait for every **mounted** rail frame rather than one frame per
-slide, because the rail only mounts frames inside its scroll window; and a canvas frame is created
-only once its URL exists, so a switch's first `load` is the slide's (a bare `<iframe>` fires `load`
-for `about:blank` first, which made a switch look like 6 ms in an early run).
+slide, because the rail only mounts frames inside its scroll window (definition v2, recorded in every
+report as `metricDefinitions` so `perf:diff` never scores the redefinition); and a canvas frame is
+created only once its URL exists, so a switch's first `load` is the slide's (a bare `<iframe>` fires
+`load` for `about:blank` first, which made a switch look like 6 ms in an early run).
 
 ### Before / after, 100-slide deck, `proc-pss-sum`, 3 runs each
 
-| Metric                        | M8.1 baseline |  M8.2 (shipped) | Note                          |
-| ----------------------------- | ------------: | --------------: | ----------------------------- |
-| Electron processes (median)   |           105 |           **6** | peak 106 → 6                  |
-| Median PSS during the session |       1680 MB |      **527 MB** | p95 1903 → 624                |
-| Idle PSS (starter deck)       |        460 MB |          442 MB | unchanged — see "the floor"   |
-| Deck open (`deckOpenMs`)      |       1943 ms |          500 ms | definition changed, see above |
-| Slide switch (median / p95)   |   61 / 288 ms | **38 / 210 ms** | timing; contended host        |
-| Cold start                    |       1158 ms |         1083 ms | timing; contended host        |
+| Metric                             | M8.1 baseline | M8.2 (shipped) | Note                                     |
+| ---------------------------------- | ------------: | -------------: | ---------------------------------------- |
+| Electron processes (median / peak) |     105 / 106 |     **7 / 10** | see "the process budget" below           |
+| Median PSS during the session      |       1685 MB |     **574 MB** | p95 1846 → 669                           |
+| Idle PSS (starter deck)            |        438 MB |         461 MB | unchanged — see "the floor"              |
+| Deck open (`deckOpenMs`)           |       1794 ms |         200 ms | definition v1 vs v2 — **not comparable** |
+| Slide switch (median / p95)        |   54 / 151 ms | **40 / 97 ms** | timing; baseline contended               |
+| Cold start                         |       1528 ms |        1078 ms | timing; baseline contended               |
 
-Both runs were taken on a contended host (median 1-minute load 5.7 for the M8.2 run, 9.8
-for the baseline, on 16 cores), so the timing rows are indicative only; the process and PSS rows
-reproduce within a few percent under load (see "Contention" above) and are the claim.
+The baseline is the committed `baseline-main.json` (harness `ef07cf4`, median 1-minute load 6.3,
+`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `16a5151` — the
+round-1 fix commit, in this branch's history — on a quiet host (load 1.9, `contended: false`), so its
+timing columns can be believed; the baseline's cannot, and the process and PSS rows are the claim.
+The deslop commit on top of `16a5151` changes no behaviour.
 
-### The three URL shapes that were measured
+### The four URL shapes that were measured
 
-All three runs use the same lazy mounting; only `slideDocumentUrl` differs. Taken with the harness at
-`0c3bc6d`, before the M8.1 round-1 fix — that fix changed how the harness fails and what it reports
-per process type, not how it counts processes or sums PSS.
+All four use the same lazy mounting; only `slideDocumentHost` differs. The first two were taken with
+the harness at `0c3bc6d` (before the M8.1 round-1 fix, which changed how the harness fails and what it
+reports per process type, not how it counts processes or sums PSS) and their reports are not
+committed; the third was taken on a since-squashed WIP commit under load 5.7 and independently
+re-run by the round-1 review on the final round-0 SHA, uncontended, at 605 MB / 6 processes; the
+fourth is what shipped.
 
-| URL shape                       | Processes (median / peak) | PSS median | Switch median / p95 | Long shell frames |
-| ------------------------------- | ------------------------: | ---------: | ------------------: | ----------------: |
-| `slide://<id>/` (per document)  |                   14 / 26 |     640 MB |         54 / 268 ms |                53 |
-| `slide://slides/<id>/` (one)    |                     5 / 5 |     583 MB |   **360 / 1691 ms** |               125 |
-| `slide://<surface>/<id>/` (two) |                     6 / 6 |     551 MB |         40 / 135 ms |                83 |
+| URL shape (stage / thumbnails)                     | Processes (median / peak) | PSS median | Switch median / p95 | Long shell frames | Hung neighbour → active slide |
+| -------------------------------------------------- | ------------------------: | ---------: | ------------------: | ----------------: | ----------------------------- |
+| `<id>` / `<id>` (per document everywhere)          |                   14 / 26 |     640 MB |         54 / 268 ms |                53 | isolated                      |
+| `slides` / `slides` (one host for everything)      |                     5 / 5 |     583 MB |   **360 / 1691 ms** |               125 | **freezes it**                |
+| `slides` / `thumbnails` (round 0)                  |                     6 / 6 |     527 MB |         38 / 210 ms |                83 | **freezes it** (measured)     |
+| **`stage-<id>` / `thumbnails` (round 1, shipped)** |                    7 / 10 |     574 MB |          40 / 97 ms |                72 | **isolated** (measured)       |
 
 One host for everything is the smallest and the slowest: the canvas frame, its two pre-warmed
 neighbours and every visible thumbnail — a dozen animating documents — share one renderer main
-thread, so a cold switch's parse queues behind them. Per-surface hosts (`slides` for the stage,
-Present and export; `thumbnails` for the rail) cost one more process and keep the thumbnails' work
-off the stage's thread. That is what shipped. Containment for the shipped hosts is demonstrated by
-`pnpm perf:isolation` — see below.
+thread, so a cold switch's parse queues behind them. Round 0's per-surface hosts fixed the switch but
+kept the stage's three documents in one process, and the round-1 review measured what that costs: a
+hidden neighbour running `while (true) {}` silenced the **active** slide's heartbeat for the whole
+observation window, in the editor and in Present (where slide N+1 is pre-warmed behind slide N), and
+the only recovery was Chromium discarding the process when a far slide was selected. That is the
+"runaway slide must not stall the talk" case the roadmap's M4.7 exists for, so round 1 gives the
+stage a host **per document**: the stage never holds more than three, so that is three processes,
+and a hung neighbour stalls only itself. The rail keeps one shared host, where a frozen rail is the
+accepted residual (see `pnpm perf:isolation` below). Against round 0 this costs one process at the
+median and four at the peak (a stepped-away stage document's process lingers for a moment before
+Chromium discards it, and the rail scroll phase briefly holds more), and a median PSS that sits
+_inside_ round 0's own two measurements (527 MB contended on the WIP commit, 605 MB uncontended on
+its final SHA).
 
 ### Scaling after M8.2
 
-| Slides | Processes (median / peak) | Median PSS | Idle PSS | Deck open | Slide switch (median) | Host load |
-| -----: | ------------------------: | ---------: | -------: | --------: | --------------------: | --------: |
-|    100 |                     6 / 6 |     527 MB |   442 MB |    500 ms |                    38 |       5.7 |
-|    500 |                     6 / 6 |     594 MB |   447 MB |    480 ms |                    83 |      16.7 |
-|   1000 |                     6 / 6 |     662 MB |   446 MB |    525 ms |                    46 |       8.8 |
+Every row is 3 runs at `16a5151`, `proc-pss-sum`.
+
+| Slides | Processes (median / peak) | Median PSS | Idle PSS | Deck open | Slide switch (median / p95) | Host load (median) |
+| -----: | ------------------------: | ---------: | -------: | --------: | --------------------------: | -----------------: |
+|    100 |                    7 / 10 |     574 MB |   461 MB |    200 ms |                  40 / 97 ms |                1.9 |
+|    500 |                    7 / 10 |     628 MB |   458 MB |    335 ms |                 43 / 179 ms |                2.2 |
+|   1000 |                    7 / 10 |     626 MB |   459 MB |    521 ms |                 44 / 259 ms |                2.8 |
 
 The 500- and 1000-slide tiers, which could not be opened at all before (M8.1 watched `MemAvailable`
-hit 0 and 2 GB of swap fill), now open in about half a second and produce reports. Process count is
-flat at 6 from 3 slides to 1000; PSS grows with the deck only through the store's serialized source
+hit 0 and 2 GB of swap fill), now open in well under a second and produce reports. Process count is
+flat at 7 from 3 slides to 1000; PSS grows with the deck only through the store's serialized source
 and main's registry entries for the mounted documents.
 
 ### The floor, and what the 200 MB budget is made of
 
-Idle on the 3-slide starter deck, measured per process from `/proc/<pid>/smaps_rollup` six seconds
-after launch on a quiet machine (the harness's own idle window starts at 0.6 s and reads ~445 MB
-while the app is still settling):
+From `processTypes.idle` of the 100-slide report — the app idle on its 3-slide starter deck, before
+the stress deck is pushed, medians over the idle window:
 
-| Process                      |        PSS |
-| ---------------------------- | ---------: |
-| Browser (main)               |     117 MB |
-| GPU                          |     162 MB |
-| Utility (network service)    |      24 MB |
-| Tab — the app's renderer     |      50 MB |
-| Tab — sandboxed `slides`     |      24 MB |
-| Tab — sandboxed `thumbnails` |      26 MB |
-| **Total**                    | **403 MB** |
+| Process type                                                           | Count |     PSS |
+| ---------------------------------------------------------------------- | ----: | ------: |
+| Browser (main)                                                         |     1 |  123 MB |
+| GPU (SwiftShader under WSLg; alive in some windows and not others)     |   0–1 |  199 MB |
+| Utility (network service)                                              |     1 |   26 MB |
+| Tab — the app's renderer, two `stage-<id>` processes, one `thumbnails` |     4 |  114 MB |
+| **Total**                                                              |     7 | ~460 MB |
 
-353 MB of that exists before a single slide document does. The two slide processes hold all five
-of the starter deck's documents for ~50 MB together. Under a 100-slide deck the session median
-sits ~100–150 MB above idle, which is the ~13 mounted documents (3 on the stage, ~10 thumbnails)
-plus the deck's source in the renderer store and main's registry — roughly 1 MB per slide of
-serialized HTML for the stress decks, and nothing per slide beyond that. The 200 MB median is
-therefore no longer a question of deck size or of anything M8.2 could reach; it is Electron's fixed
-multi-process baseline (the GPU process alone is 80 % of the budget). Whether that is M8.6's
-startup/process audit or a budget revision is the next decision, and this report is the input to
-it.
+About 350 MB of that exists before a single slide document does. The three sandboxed slide
+processes hold all of the starter deck's live documents for well under 100 MB together (the app's
+own renderer is ~50 MB of the Tab figure). Under a 100-slide deck the session median sits ~110 MB
+above idle, which is the ~13 mounted documents (3 on the stage, ~10 thumbnails) plus the deck's
+source in the renderer store and main's registry — roughly 1 MB per slide of serialized HTML for the
+stress decks, and nothing per slide beyond that. The 200 MB median is therefore no longer a question
+of deck size or of anything M8.2 could reach; it is Electron's fixed multi-process baseline (the GPU
+process alone is a full budget). Whether that is M8.6's startup/process audit or a budget revision
+is the next decision, and this report is the input to it.
+
+### The process budget
+
+Expected steady state on a deck with a selection away from the ends: Browser + GPU + Utility + the
+app's renderer + three `stage-<id>` processes (active, −1, +1) + one `thumbnails` process = **8**.
+The measured median is 7 because the harness spends its idle and animation phases on slide 0, whose
+window has one neighbour; the peak of 10 is the moment after a step, when the stage document that
+just left the window still has its process and the rail-scroll phase has the most miniatures live.
 
 ### `pnpm perf:isolation`
 
-The URL change is safe only if nothing that keeps slides apart lived in the per-document host. This
-probe launches the built app, pushes a three-slide deck whose slides are probes, and from inside each
-running slide reaches for the host (`parent.document`, `top.document`, `parent.sloodge`), every
-sibling frame (its `document`, `localStorage`, and navigating it), its own storage (`localStorage`,
+The URL change is safe only if nothing that keeps slides apart lived in the per-document host, and
+the per-document _stage_ host is worth its processes only if it actually isolates a hung neighbour.
+The probe tests both in the built app and exits non-zero if either fails.
+
+**Containment.** It pushes a three-slide deck whose slides are probes, and from inside each running
+slide reaches for the host (`parent.document`, `top.document`, `parent.sloodge`), every sibling frame
+(its `document`, `localStorage`, and navigating it), its own storage (`localStorage`,
 `sessionStorage`, `indexedDB`, `document.cookie`) and the network (`fetch` of its own URL). Each
 slide reports over `parent.postMessage`, and the page records `event.origin` and which iframe
-`event.source` is. It exits non-zero if any reach succeeds. Results for the shipped hosts are in
-`perf/results/isolation-m82.json` (110 of 110 denied, `event.origin === "null"` throughout, 6
-processes for 5 mounted frames on 2 hosts); the per-document and single-host variants are in
-`isolation-variant-per-document-host.json` and `isolation-variant-single-host.json` for comparison —
-same 110 of 110, at 9 and 5 processes. (The two variants' `perf:run` reports were taken on the
-pre-round-1 harness and are not committed; their numbers are the table above.)
+`event.source` is. Shipped hosts: **110 of 110 denied**, `event.origin === "null"` throughout,
+7 processes for 5 mounted frames on 3 hosts (`perf/results/isolation-m82.json`).
+
+**Availability.** It then pushes a deck whose slides post a heartbeat every 50 ms and whose +1
+neighbour spins forever after 2.5 s, and measures the longest silence in the active slide's
+heartbeat over the following six seconds. Shipped hosts: the active slide's longest gap was
+**51 ms** (120 beats in 6000 ms) while its neighbour hung; the probe fails above 2000 ms. The rail's
+miniature of the same slide recorded **0 beats** in the window — every miniature shares the hung
+slide's `thumbnails` process. That is the whole of the availability residual, stated precisely: a
+runaway slide freezes the rail's live miniatures while its card is in the rail's scroll window, and
+the rail recovers when the card scrolls out (the frame unmounts and Chromium discards the process);
+the active slide, the editor and Present's pre-warmed next slide are unaffected. Under round 0's
+shared stage host the same scenario silenced the active slide for the whole window.
+
+The per-document-everywhere and single-host variants' containment results are kept for comparison in
+`isolation-variant-per-document-host.json` and `isolation-variant-single-host.json` (same 110 of 110,
+at 9 and 5 processes); they predate the hung-neighbour scenario.
