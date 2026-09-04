@@ -1,8 +1,11 @@
 /**
- * The pptxgenjs emission edge (M4.3 / 60-export.md §3.7). This is the *only* module that imports
- * pptxgenjs; it turns a fully-decided `DeckPptxPlan` (produced by the pure planner) into a `.pptx`
- * byte buffer. Because pptxgenjs is pure JS with no `electron` dependency, this module is unit-tested
- * directly: a test builds a plan, calls `writeDeckPptx`, unzips the result with fflate, and asserts on
+ * The pptxgenjs emission edge (M4.3 / 60-export.md §3.7). It turns a fully-decided `DeckPptxPlan`
+ * (produced by the pure planner) into a `.pptx` byte buffer — through `SafePptxDeck`, which is the
+ * module that actually imports pptxgenjs (see the sanitization note below; this docstring used to
+ * claim that role for itself, left stale when M4.3 extracted the boundary).
+ *
+ * Because pptxgenjs is pure JS with no `electron` dependency, this module is unit-tested directly: a
+ * test builds a plan, calls `writeDeckPptx`, unzips the result with fflate, and asserts on
  * the OPC parts — the `[Content_Types].xml`, one `ppt/slides/slideN.xml` per slide, `<a:t>` text on
  * structured slides, and a `ppt/media/*` image on raster slides. The orchestrator sees it only through
  * the injected `PptxWriter` seam, so its own logic can be tested with a fake writer.
