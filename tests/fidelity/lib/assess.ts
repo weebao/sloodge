@@ -40,7 +40,12 @@
  * - **bullets** — glyphs the file invents for a list the reader sees unbulleted;
  * - **the property census** — `measure.nodes[].unmodelledProperties`, the exporter's own report of
  *   CSS nobody claims to model. Reading it here is not circular: it is the pipeline declaring a
- *   blindness, which is exactly what the metric should surface by name.
+ *   blindness, which is exactly what the metric should surface by name;
+ * - **root paint** (review r3) — a `filter`/`backdrop-filter`/`mix-blend-mode`/`clip-path` on
+ *   `<html>` or `<body>`, from the oracle's own `truth.rootPaint`. This is the one case where
+ *   reading computed colours made the oracle exactly as blind as the exporter: under
+ *   `body { filter: invert(1) }` both read `#E2E8F0` for a panel the reader sees at
+ *   `rgb(29,23,15)`, and every colour check passed on a deck rendered in complement.
  *
  * Colour and size mismatches are folded in as well, since §5.2 lists both as targets in their own
  * right and the headline "N slides scoring ≥ 90 that drop a construct" should not exclude them.
@@ -53,7 +58,7 @@ import type { MeasureResult, SlideNode } from '../../../src/shared/export/pptx/n
 import type { SlideTier } from '../../../src/shared/export/pptx/types'
 import type { CorpusSlide } from './corpus'
 import { normalizeWhitespace, type ReadbackShape, type ReadbackSlide } from './readback'
-import type { GroundTruth, TruthBox, TruthText } from './truth'
+import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from './truth'
 
 /** A slide at or above this confidence is trusted to be structured; losing a construct here is the lie. */
 export const HIGH_CONFIDENCE = 90
@@ -106,6 +111,12 @@ export type SlideAssessment = {
   rotationLost: string[]
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
   unmodelledProperties: string[]
+  /**
+   * Paint on `<html>`/`<body>` that recomposites the whole slide, as the ORACLE recorded it. Every
+   * emitted colour is then the pre-composite value, which is not what the reader sees — the case
+   * where the oracle's own computed-colour reading is exactly as blind as the exporter's (r3).
+   */
+  rootPaintOps: string[]
   rotationsExpected: number
   rotationsOk: number
   rotationDetails: string[]
@@ -249,6 +260,23 @@ function carrierOf(
         (s.fill === box.borderColor && insideBox(s, box)),
     ) ?? null
   )
+}
+
+/** A computed value that is actually set, as opposed to the property's inert initial. */
+const isSet = (v: string): boolean => v !== '' && v !== 'none'
+
+/**
+ * The recompositing operations one root element applies, named. `confidence.ts` has its own copy of
+ * this over its own recording, and the duplication is the point: the two must be able to disagree.
+ */
+function rootPaintOpsOf(paint: TruthRootPaint, where: string): string[] {
+  const ops: string[] = []
+  if (isSet(paint.filter)) ops.push(`${where} filter: ${paint.filter}`)
+  if (isSet(paint.backdropFilter)) ops.push(`${where} backdrop-filter: ${paint.backdropFilter}`)
+  if (isSet(paint.mixBlendMode) && paint.mixBlendMode !== 'normal')
+    ops.push(`${where} mix-blend-mode: ${paint.mixBlendMode}`)
+  if (isSet(paint.clipPath)) ops.push(`${where} clip-path: ${paint.clipPath}`)
+  return ops
 }
 
 function leafText(node: SlideNode): string {
@@ -427,8 +455,19 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
 
   // --- The closed-world signal, as the measurement pass reported it (see `properties.ts`) ---
   const unmodelledProperties = [
-    ...new Set(measure.nodes.flatMap((n) => n.unmodelledProperties)),
+    ...new Set([
+      ...measure.nodes.flatMap((n) => n.unmodelledProperties),
+      ...measure.body.unmodelledProperties,
+      ...measure.root.unmodelledProperties,
+    ]),
   ].toSorted()
+
+  // --- Root paint: whatever the computed colours say, a filter/blend/clip on <html> or <body>
+  // means the file's colours are not the rendered ones (see `TruthRootPaint`) ---
+  const rootPaintOps = [
+    ...rootPaintOpsOf(truth.rootPaint.html, 'html'),
+    ...rootPaintOpsOf(truth.rootPaint.body, 'body'),
+  ]
 
   const constructsLost: string[] = []
   if (structured) {
@@ -444,6 +483,8 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     if (bulletsInvented > 0)
       constructsLost.push(`${String(bulletsInvented)} invented bullet glyph(s)`)
     for (const p of unmodelledProperties) constructsLost.push(`un-modelled CSS: ${p}`)
+    for (const op of rootPaintOps)
+      constructsLost.push(`root paint recomposites every colour: ${op}`)
     // §5.2 lists exact hex colour and exact font size as targets in their own right, so a run
     // shipped in the wrong colour is a lost construct too, not merely a separate assertion.
     constructsLost.push(...colorWrong.map((c) => `colour wrong: ${c}`))
@@ -478,6 +519,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     bulletsInvented,
     rotationLost,
     unmodelledProperties,
+    rootPaintOps,
     rotationsExpected: corpus.rotations.length,
     rotationsOk,
     rotationDetails,

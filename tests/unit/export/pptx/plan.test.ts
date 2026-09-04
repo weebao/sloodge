@@ -6,15 +6,14 @@ import {
   CAPTURE_FAILED_REASON,
   planSlide,
 } from '../../../../src/shared/export/pptx/plan'
-import { makeMeasure, makeNode } from './_fixtures'
+import { makeMeasure, makeNode, makeRootPaint } from './_fixtures'
 
 const PNG = 'data:image/png;base64,AAAA'
 const BG = 'data:image/png;base64,BBBB'
 
-const gradientBody = {
-  backgroundColor: 'rgba(0, 0, 0, 0)',
+const gradientBody = makeRootPaint({
   backgroundImage: 'linear-gradient(135deg, rgb(76, 29, 149) 0%, rgb(30, 58, 138) 100%)',
-}
+})
 
 describe('planSlide body gradient/image background (M4.8a)', () => {
   const measure = (): ReturnType<typeof makeMeasure> =>

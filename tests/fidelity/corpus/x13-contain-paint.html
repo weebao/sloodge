@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r3, blocker B3: `contain: paint` clips descendants to the padding box exactly as
+     `overflow: hidden` does, while leaving the computed `overflow` at `visible` — so neither the
+     census nor the escaping-descendant probe saw it and the bleed shipped unclipped. */
+  body {
+    background: #f8fafc;
+    padding: 64px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 42px;
+    font-weight: 800;
+  }
+  .card {
+    position: absolute;
+    left: 96px;
+    top: 240px;
+    width: 380px;
+    height: 200px;
+    background: #dbeafe;
+    contain: paint;
+  }
+  .bleed {
+    position: absolute;
+    left: 220px;
+    top: 120px;
+    width: 460px;
+    height: 340px;
+    background: #dc2626;
+  }
+</style>
+<h1>Clipped by containment, not by overflow</h1>
+<div class="card">
+  <div class="bleed"></div>
+</div>

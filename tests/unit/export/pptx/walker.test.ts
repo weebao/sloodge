@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { slideTextForNotes, walkSlide } from '../../../../src/shared/export/pptx/walker'
 import type { ShapeSpec } from '../../../../src/shared/export/pptx/types'
-import { ancestorMatrix, makeMeasure, makeNode, uniformBorder } from './_fixtures'
+import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint, uniformBorder } from './_fixtures'
 
 const textShapes = (shapes: ShapeSpec[]): Extract<ShapeSpec, { kind: 'text' }>[] =>
   shapes.filter((s): s is Extract<ShapeSpec, { kind: 'text' }> => s.kind === 'text')
@@ -132,7 +132,7 @@ describe('walkSlide shape mapping', () => {
 describe('walkSlide background and coverage', () => {
   it('maps a solid body background to a slide fill', () => {
     const measure = makeMeasure([makeNode({ isLeaf: true, text: 'x' })], {
-      body: { backgroundColor: 'rgb(17, 34, 51)', backgroundImage: 'none' },
+      body: makeRootPaint({ backgroundColor: 'rgb(17, 34, 51)' }),
     })
     expect(walkSlide(measure).background).toEqual({ color: '112233' })
   })
@@ -231,10 +231,9 @@ describe('walkSlide text-box decoration (M4.8a)', () => {
 
   it('flags a gradient body for the planner and no longer fakes coverage for it', () => {
     const measure = makeMeasure([makeNode({ isLeaf: true, text: 'x', w: 100, h: 100 })], {
-      body: {
-        backgroundColor: 'rgba(0, 0, 0, 0)',
+      body: makeRootPaint({
         backgroundImage: 'linear-gradient(135deg, rgb(76, 29, 149) 0%, rgb(30, 58, 138) 100%)',
-      },
+      }),
     })
     const walk = walkSlide(measure)
     expect(walk.bodyImage).toBe(true)

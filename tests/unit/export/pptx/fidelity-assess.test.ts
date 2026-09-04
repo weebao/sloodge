@@ -7,7 +7,7 @@ import {
 } from '../../../fidelity/lib/assess'
 import type { CorpusSlide } from '../../../fidelity/lib/corpus'
 import type { ReadbackShape, ReadbackSlide } from '../../../fidelity/lib/readback'
-import type { GroundTruth, TruthBox } from '../../../fidelity/lib/truth'
+import type { GroundTruth, TruthBox, TruthRootPaint } from '../../../fidelity/lib/truth'
 import { SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
 import { makeMeasure } from './_fixtures'
 
@@ -27,6 +27,13 @@ import { makeMeasure } from './_fixtures'
  */
 
 const CORPUS: CorpusSlide = { file: 'synthetic.html', rotations: [], bodyImage: false }
+
+const NO_ROOT_PAINT: TruthRootPaint = {
+  filter: 'none',
+  backdropFilter: 'none',
+  mixBlendMode: 'normal',
+  clipPath: 'none',
+}
 
 function truthBox(overrides: Partial<TruthBox> = {}): TruthBox {
   return {
@@ -72,7 +79,14 @@ function shape(overrides: Partial<ReadbackShape> = {}): ReadbackShape {
 }
 
 function assess(boxes: TruthBox[], shapes: ReadbackShape[]): SlideAssessment {
-  const truth: GroundTruth = { texts: [], boxes, pseudos: [], bodyBg: null, bodyBgImage: 'none' }
+  const truth: GroundTruth = {
+    texts: [],
+    boxes,
+    pseudos: [],
+    bodyBg: null,
+    bodyBgImage: 'none',
+    rootPaint: { html: NO_ROOT_PAINT, body: NO_ROOT_PAINT },
+  }
   const readback: ReadbackSlide = {
     index: 1,
     background: 'none',

@@ -38,7 +38,12 @@ import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback
  * `assess.ts` reds the x1 painted-box case and the old-scorer case's box entries. From review r2:
  * deleting the property census in `node.ts` reds the x7 and x8 cases; dropping the standalone
  * `rotate`/`scale` from `NodeStyle` reds x10; restoring the unconditional `run.bullet` reds the x8
- * bullet case; deleting the `clippedTextPx` measurement reds x9.
+ * bullet case; deleting the `clippedTextPx` measurement reds x9. From review r3: reverting the
+ * measurement script's visibility filter to `!== 'hidden'` reds the x14 case below (the collapsed
+ * banner reappears as a node and as an emitted shape); dropping the `content`-replacement guard
+ * reds the x15 case; removing the root census or the `rootPaint` deduction reds x11; removing
+ * `contain` from `clipsBox` or putting it back in `LAYOUT_RESOLVED_PROPERTIES` reds x13; and
+ * flattening the census probe back to one shadow root reds x12.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -154,7 +159,7 @@ describe('fidelity corpus recordings', () => {
   })
 
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(18)
+    expect(recorded).toHaveLength(24)
     expect(summary.textTotal).toBeGreaterThan(40)
     expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
@@ -387,14 +392,27 @@ describe('§5.2 targets over the corpus', () => {
    * dropping a load-bearing construct; that number was itself an undercount, because the metric of
    * the day could only see three classes of construct.
    *
-   * What this measures precisely: the **scorer** removed (every slide forced structured at a bare
-   * `score: 100, reasons: []`) while the current walker still emits. So it is the retroactive cost
-   * of having no deductions, not of the old walker as well — `x10-rotate-property` is absent from
-   * the list for exactly that reason, since the walker now reads the standalone `rotate:` and gets
-   * it right whatever the score says. The old walker's losses are pinned by mutation instead, one
-   * fix at a time (see the module docstring).
+   * **Read the counterfactual precisely, because there are three of them and they give three
+   * different numbers** (review r3 disputed the figure; all three were re-derived to settle it).
+   * What this test measures is the **scorer deleted outright** — every slide forced structured at a
+   * bare `score: 100, reasons: []` — while the current walker still emits. Rolling the scorer
+   * *back* to a real historical commit instead gives smaller numbers over the original 18 slides:
+   * 5 at `d7c37c7`, the last commit before M4.8a, and 3 at the post-r1 scorer. The gap is not an
+   * inconsistency: a rolled-back scorer still deducts for the constructs it did know about, and
+   * `chooseTier` then routes those slides to raster, where `constructsLost` is empty by definition.
+   *
+   * `x10-rotate-property` is absent from every one of the three lists, and that was checked rather
+   * than assumed: its shape is emitted carrying `rot = 20`, so the walker places it correctly and
+   * nothing is lost whatever the score says. A count derived from the oracle's bounds-vs-layout
+   * signature alone wrongly adds it — and `07-rotated` and `x3-rotations` with it — because that
+   * signature is only half the test; the other half is that the shape shipped at `rot = 0`.
+   *
+   * `x14-visibility-collapse` is absent for a different reason worth stating: its fix is in the
+   * *emission*, not the score. The collapsed banner never becomes a node at all now, so even a
+   * scorer-free exporter invents nothing. The old walker's losses are pinned by mutation instead,
+   * one fix at a time (see the module docstring).
    */
-  it('the retroactive figure: with no deductions, 8 of 18 slides are silent lies', () => {
+  it('the retroactive figure: with the scorer deleted, 13 of 24 slides are silent lies', () => {
     const lying = asOldExporter.filter((a) => a.silentLie).map((a) => a.file)
     expect(lying).toEqual([
       '01-title-body.html',
@@ -405,9 +423,80 @@ describe('§5.2 targets over the corpus', () => {
       'x7-masked-panel.html',
       'x8-hollow-type.html',
       'x9-clipped-text.html',
+      'x11-body-filter.html',
+      'x12-important-mask.html',
+      'x13-contain-paint.html',
+      'x15-content-url.html',
+      'x16-gradient-hero.html',
     ])
     // …and the shipped pipeline, over the same corpus, lies about none.
     expect(summary.silentLies).toEqual([])
+  })
+
+  /**
+   * The two review-r3 blockers that were **export** defects rather than metric defects: the file
+   * carried things the slide never showed. A deduction alone would not have been a fix — in
+   * `editable` the shapes still ship — so both are asserted against the emitted `.pptx`.
+   */
+  it('never emits a visibility: collapse banner, which Chromium paints nowhere', async () => {
+    const x14 = recorded.find((r) => r.file === 'x14-visibility-collapse.html')!
+    const banner = 'COLLAPSED BANNER'
+    expect(x14.measure.nodes.some((n) => n.text.includes(banner))).toBe(false)
+    expect(x14.truth.texts.some((t) => t.text.includes(banner))).toBe(false)
+    // `editable` forces shapes, so this is the case a score could not have saved.
+    const emitted = await readbackOf('x14-visibility-collapse.html', 'editable')
+    expect(emitted.shapes.some((sh) => sh.text.includes(banner))).toBe(false)
+    // The slide is not vacuous: what the reader DOES see still arrives.
+    expect(emitted.shapes.some((sh) => sh.text.includes('What the reader actually sees'))).toBe(
+      true,
+    )
+  })
+
+  it('never emits the text a content: url() replaced, and rasterizes instead', async () => {
+    const x15 = recorded.find((r) => r.file === 'x15-content-url.html')!
+    const phantom = 'PHANTOM TEXT'
+    expect(x15.measure.nodes.some((n) => n.text.includes(phantom))).toBe(false)
+    expect(x15.truth.texts.some((t) => t.text.includes(phantom))).toBe(false)
+    const emitted = await readbackOf('x15-content-url.html', 'editable')
+    expect(emitted.shapes.some((sh) => sh.text.includes(phantom))).toBe(false)
+    // The replacement image cannot be emitted either, so the census names `content` and auto rasters.
+    const replaced = auto.find((a) => a.file === 'x15-content-url.html')!
+    expect(replaced.tier).toBe('raster')
+    expect(replaced.unmodelledProperties).toContain('content')
+  })
+
+  /**
+   * The three r3 blockers the census mechanism itself could not see: two constructs outside its
+   * quantifier (paint on a root element; a baseline the author's own `!important` could rewrite)
+   * and one exempted by a written claim about CSS that was false.
+   */
+  it('scores paint on <body>/<html>, which querySelectorAll cannot reach', () => {
+    const filtered = auto.find((a) => a.file === 'x11-body-filter.html')!
+    expect(filtered.tier).toBe('raster')
+    expect(filtered.reasons.some((r) => r.includes('recolours the whole slide'))).toBe(true)
+    // The oracle names it independently, from its own recording rather than from the census.
+    const forced = editable.find((a) => a.file === 'x11-body-filter.html')!
+    expect(forced.rootPaintOps).toEqual(['body filter: invert(1)'])
+    expect(forced.constructsLost.some((c) => c.startsWith('root paint'))).toBe(true)
+  })
+
+  it('sees through an author !important that used to rewrite the census baseline', () => {
+    const masked = auto.find((a) => a.file === 'x12-important-mask.html')!
+    expect(masked.tier).toBe('raster')
+    expect(masked.unmodelledProperties).toEqual(
+      expect.arrayContaining(['font-variant-caps', 'word-spacing']),
+    )
+  })
+
+  it('sees contain: paint clipping, which leaves computed overflow at visible', () => {
+    const contained = auto.find((a) => a.file === 'x13-contain-paint.html')!
+    expect(contained.tier).toBe('raster')
+    expect(contained.unmodelledProperties).toContain('contain')
+    // Not only censused: the clip signal itself fires, so the loss is named rather than guessed at.
+    const escaping = contained.reasons.some((r) =>
+      r.includes('clipped by overflow would spill out'),
+    )
+    expect(escaping).toBe(true)
   })
 
   it('01-title-body routes to raster in auto: its bare text beside <strong>/<em> would be dropped', () => {

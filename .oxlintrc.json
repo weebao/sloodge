@@ -54,6 +54,22 @@
       }
     },
     {
+      "files": ["tests/fidelity/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/renderer/**", "react", "react-dom", "react-dom/*"],
+                "message": "The fidelity harness is an Electron MAIN script and is bound by main's dependency direction. The one deliberate crossing (wrapSlideHtml, so the corpus is wrapped exactly as production wraps it) carries an explicit disable comment."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["perf/**"],
       "rules": {
         "no-console": "off",

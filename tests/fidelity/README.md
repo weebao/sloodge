@@ -34,15 +34,41 @@ reports every _other_ non-initial computed property by name. Those cost a WRONG-
 an unfamiliar property routes the slide to an honest picture. Adding support for a CSS feature is one
 explicit edit to `MODELLED_PROPERTIES`, made together with the emitter or deduction that earns it.
 
+Review r3 attacked the **quantifier** rather than the list, and won three times, so two things about
+it are worth stating plainly:
+
+- The world is `document.body.querySelectorAll('*')` **plus `<body>` and `<html>`**. The root
+  elements are outside that enumeration, and until r3 a paint property on either was censused by
+  nothing and scored by nothing: `body { filter: invert(1) }` scored 100 with an empty loss list
+  while every colour in the deck was the exact complement of the rendered one.
+- The baseline the census compares against is a probe **two shadow roots deep**. One root was not
+  enough: author CSS cannot reach inside a shadow tree, but it can style the host, and an
+  `!important` declaration there beat the host's inline `all: initial` — so the baseline became the
+  value under test and the same slide scored 65 or 100 on the presence of one keyword.
+
+`LAYOUT_RESOLVED_PROPERTIES` is the inverted deny-list, and each of its ~200 entries is a written,
+falsifiable claim about CSS. r3 falsified three of them by hand (`contain`, `visibility`, `content`),
+two of which made the exporter **invent** content the slide never showed. They are not tested
+mechanically, and the check that would test them all — render a slide setting each property to a
+non-initial value and assert the Chromium capture is pixel-identical to the same slide without it —
+needs the renderer this harness still does not have.
+
 ## Layout
 
-- `corpus/*.html` — 18 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
-  r1 against the finished exporter, and `x7`–`x10` by review r2. Every `x` slide reproduces a
-  construct that once scored 85–100 while vanishing from, or arriving wrong in, the `.pptx`.
+- `corpus/*.html` — 24 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
+  r1 against the finished exporter, `x7`–`x10` by r2, and `x11`–`x16` by r3. Every `x` slide
+  reproduces a construct that once scored 85–100 while vanishing from, or arriving wrong in, the
+  `.pptx` — and `x14`/`x15` two that the `.pptx` **invented**, a banner and a sentence that appear
+  nowhere on screen.
 - `corpus/recorded/*.json` — per slide, the measurement pass production saw plus the ground truth,
   recorded by `--record`. `tests/unit/export/pptx/fidelity-corpus.test.ts` runs the pure pipeline
   over these with no app launch, and fails closed if `slideMeasurementScript` changed since they were
-  recorded.
+  recorded. The recordings are **not** append-only across milestones: r2 widened `truth.scale` from
+  a number to the computed `scale` string (the old number moved to `renderedScale`) and
+  `measure.nodes[].ancestorTransforms[]` from a string to a `TransformSpec` (the old string is
+  `.transform`); r3 widened `measure.body` from two fields to a `RootPaint` and added `measure.root`
+  and `truth.rootPaint`. No measured value was lost in any of those, but "every change is additive"
+  was the wrong description and re-recording is mandatory, not optional.
 - `lib/truth.ts` — the independent oracle (text nodes via `Range`, painted boxes); deliberately not
   the exporter's leaf rule. It also records what a reader _sees_ rather than what the CSS says:
   clipped text, list markers, and bounds-vs-layout geometry, so a rotation shipped upright is caught

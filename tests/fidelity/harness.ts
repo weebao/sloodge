@@ -21,7 +21,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { app, BrowserWindow, nativeImage } from 'electron'
 import { installSlideProtocol, registerSlideSchemePrivileges } from '../../src/main/slide/protocol'
@@ -36,6 +36,10 @@ import { slideMeasurementScript, type MeasureResult } from '../../src/shared/exp
 import type { PptxFidelity } from '../../src/shared/export/pptx/types'
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../src/shared/export/types'
 import { slideDocumentUrl } from '../../src/shared/slide-protocol'
+// The corpus must be wrapped by the SAME function production wraps with, or the harness measures a
+// document the app never renders. This is the one main→renderer crossing here, and `.oxlintrc.json`
+// now covers `tests/fidelity/**` so that a second one cannot be added silently (review r3).
+// oxlint-disable-next-line no-restricted-imports
 import { wrapSlideHtml } from '../../src/renderer/src/features/canvas/wrapSlideHtml'
 import {
   assessSlide,
@@ -211,6 +215,9 @@ async function main(): Promise<number> {
   // fails to load. Production never has zero windows (the editor is open); the harness keeps one.
   const anchor = new BrowserWindow({ show: false, width: 100, height: 100 })
   anchor.removeMenu()
+  // Clear the whole output tree first: a renamed corpus slide otherwise leaves its old triple
+  // behind, and `out/recorded/` is the file the "no orphans" check is read from.
+  rmSync(outDir, { recursive: true, force: true })
   mkdirSync(join(outDir, 'recorded'), { recursive: true })
   if (record) mkdirSync(recordedDir, { recursive: true })
   const registry = installSlideProtocol()

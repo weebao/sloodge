@@ -1,0 +1,66 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r3, blocker B4: the visibility filter tested `!== 'hidden'`, and `collapse` on a
+     non-table element paints nothing but is not that string — so the banner kept its rect and the
+     exporter INVENTED a full-width red bar that exists nowhere on screen. */
+  body {
+    background: #ffffff;
+    padding: 64px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+  }
+  .banner {
+    visibility: collapse;
+    margin-top: 40px;
+    padding: 24px;
+    background: #dc2626;
+    color: #ffffff;
+    font-size: 28px;
+    font-weight: 700;
+  }
+  .visible-panel {
+    margin-top: 40px;
+    padding: 40px;
+    background: #1e3a8a;
+    border-radius: 16px;
+    color: #ffffff;
+    width: 1000px;
+    height: 300px;
+  }
+  .visible-panel p {
+    margin-top: 20px;
+    font-size: 24px;
+    line-height: 1.6;
+  }
+  .visible-panel h2 {
+    font-size: 32px;
+    font-weight: 700;
+  }
+</style>
+<h1>Nothing in the red banner is painted</h1>
+<div class="banner">COLLAPSED BANNER — Chromium paints no pixel of this</div>
+<div class="visible-panel">
+  <h2>What the reader actually sees</h2>
+  <p>
+    The heading above, this panel, and nothing else. A file carrying the red banner would be showing
+    the reader something the slide never displayed.
+  </p>
+</div>

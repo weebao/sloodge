@@ -35,9 +35,14 @@
  * modelled set, and a property in neither set costs a WRONG-class deduction *and is named in the
  * reasons*. A slide reaches the structured tier only when the pipeline can account for everything
  * the oracle can see; an unfamiliar property fails toward an honest picture.
+ *
+ * The census covers `<html>` and `<body>` alongside the nodes (review r3), and `rootPaint` scores
+ * the four properties on those two elements that recomposite everything beneath them. They are a
+ * WRONG-class weight rather than the per-element `filter`/`mixBlend` ones for a specific reason:
+ * on an element the effect is missing, on a root element every colour in the file is the wrong one.
  */
 
-import type { MeasureResult, SlideNode, TransformSpec } from './node'
+import type { MeasureResult, RootPaint, SlideNode, TransformSpec } from './node'
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../types'
 import type { SlideTier } from './types'
 
@@ -92,6 +97,14 @@ export const SCORE_WEIGHTS = {
   nodeExplosionThreshold: 120,
   /** The body paints a gradient/image: representable only as a full-bleed picture (M4.8a). */
   bodyImageBackground: 5,
+  /**
+   * A filter, backdrop-filter, blend mode or clip on `<html>`/`<body>` (M4.8a, review r3). On one
+   * element such a paint costs `filter`/`mixBlend`, which are dropped-class: the effect is missing
+   * and the rest is intact. On a root element it recomposites the whole slide, so *every* colour
+   * the file carries is wrong — `body { filter: invert(1) }` emitted `#E2E8F0` for a panel the
+   * reader sees at `rgb(29,23,15)`. Wrong output, not plainer output.
+   */
+  rootPaint: 35,
   /**
    * Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) is dropped by the leaf-text
    * rule. Missing words are unreadable output, and a high score would suppress the raster fallback
@@ -164,6 +177,7 @@ export const WRONG_CONSTRUCT_WEIGHTS = [
   'clippedOverflow',
   'clippedText',
   'unmodelledProperty',
+  'rootPaint',
 ] as const satisfies readonly (keyof typeof SCORE_WEIGHTS)[]
 
 /** The result of scoring one slide. `hardBlocker` non-null forces raster whatever the score. */
@@ -335,6 +349,25 @@ export function paintsImage(backgroundImage: string): boolean {
   return /gradient\(|url\(/i.test(backgroundImage)
 }
 
+/**
+ * The paint operations on a root element that recomposite everything painted beneath them, named.
+ * Empty for a root that only carries a colour or a background image — those *are* modelled, as the
+ * slide fill and as `bodyImageBackground`'s full-bleed picture.
+ *
+ * Deliberately **not** exported: `assess.ts` computes the same list from the oracle's own recording
+ * with its own four lines. Sharing this function would mean one narrowing edit blinds the exporter
+ * and the independent check together, which is the exact failure r3 found here.
+ */
+function rootPaintOperations(paint: RootPaint): string[] {
+  const ops: string[] = []
+  if (isPresent(paint.filter)) ops.push(`filter: ${paint.filter}`)
+  if (isPresent(paint.backdropFilter)) ops.push(`backdrop-filter: ${paint.backdropFilter}`)
+  if (isPresent(paint.mixBlendMode) && paint.mixBlendMode !== 'normal')
+    ops.push(`mix-blend-mode: ${paint.mixBlendMode}`)
+  if (isPresent(paint.clipPath)) ops.push(`clip-path: ${paint.clipPath}`)
+  return ops
+}
+
 /** Intersection-over-union of two px boxes; 0 when they do not overlap. */
 function iou(a: SlideNode, b: SlideNode): number {
   const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
@@ -343,6 +376,13 @@ function iou(a: SlideNode, b: SlideNode): number {
   if (inter <= 0) return 0
   const union = a.w * a.h + b.w * b.h - inter
   return union > 0 ? inter / union : 0
+}
+
+/** True when `n`'s centre lies within `box` — "the reader sees this run on that paint". */
+function centreInside(n: SlideNode, box: SlideNode): boolean {
+  const cx = n.x + n.w / 2
+  const cy = n.y + n.h / 2
+  return cx >= box.x && cx <= box.x + box.w && cy >= box.y && cy <= box.y + box.h
 }
 
 const isInsetShadow = (shadow: string): boolean => shadow !== 'none' && /inset/i.test(shadow)
@@ -357,7 +397,11 @@ const sum = (nodes: readonly SlideNode[], f: (n: SlideNode) => number): number =
  * to a nodes-only scorer by construction and a gradient slide scored 100 while rendering white.
  */
 export function scoreSlide(measure: MeasureResult): SlideScore {
-  const { nodes, body } = measure
+  const { nodes, body, root } = measure
+  const roots = [
+    { where: 'html', paint: root },
+    { where: 'body', paint: body },
+  ]
   const reasons: string[] = []
   let score = 100
   const deduct = (amount: number, reason: string): void => {
@@ -375,17 +419,24 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   }
 
   // --- Element gradient/image backgrounds: no shape is emitted for them, scaled by how much of
-  // the slide they cover, so a hero panel rasterizes and a decorative pill costs a few points ---
+  // the slide they cover, so a hero panel rasterizes and a decorative pill costs a few points.
+  // Unless a text run sits on one: then the run lands on the bare slide colour instead, which is
+  // the condition that makes the missing paint WRONG rather than plainer, and the area scaling is
+  // floored at the wrong-class floor however small the panel is (review r3) ---
   const gradients = nodes.filter((n) => paintsImage(n.style.backgroundImage))
   const gradientArea = sum(gradients, (n) => Math.max(0, n.w) * Math.max(0, n.h))
-  if (gradients.length > 0)
-    deduct(
-      elementImageDeduction(gradientArea),
-      `${String(gradients.length)} element gradient/image background(s) over ${(
-        (100 * gradientArea) /
-        SLIDE_AREA_PX
-      ).toFixed(1)}% of the slide — no shape emitted`,
+  if (gradients.length > 0) {
+    const textOnGradient = nodes.some(
+      (n) => n.isLeaf && n.text !== '' && gradients.some((g) => centreInside(n, g)),
     )
+    const area = ((100 * gradientArea) / SLIDE_AREA_PX).toFixed(1)
+    deduct(
+      textOnGradient
+        ? Math.max(elementImageDeduction(gradientArea), WRONG_CONSTRUCT_FLOOR)
+        : elementImageDeduction(gradientArea),
+      `${String(gradients.length)} element gradient/image background(s) over ${area}% of the slide — no shape emitted${textOnGradient ? ', with text sitting on it' : ''}`,
+    )
+  }
 
   // --- Inset shadows (outer ones are emitted as PowerPoint shadows) ---
   const shadows = nodes.filter((n) => isInsetShadow(n.style.boxShadow)).length
@@ -463,6 +514,14 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   if (paintsImage(body.backgroundImage))
     deduct(SCORE_WEIGHTS.bodyImageBackground, 'body gradient/image background (full-bleed picture)')
 
+  // --- Root paint: a filter/blend/clip on <html> or <body> recomposites everything under it, so
+  // every colour the file carries is wrong rather than merely plainer (review r3) ---
+  const rootOps = roots.flatMap(({ where, paint }) =>
+    rootPaintOperations(paint).map((op) => `${where} ${op}`),
+  )
+  if (rootOps.length > 0)
+    deduct(SCORE_WEIGHTS.rootPaint, `${rootOps.join(', ')} — recolours the whole slide`)
+
   // --- Text no leaf owns: dropped by the leaf-text rule, so the slide would lose words ---
   const bare = sum(nodes, (n) => n.bareTextCount)
   if (bare > 0)
@@ -492,8 +551,15 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
       `${String(truncated.length)} text box(es) truncated on screen would ship in full`,
     )
 
-  // --- The closed world: any property nobody claims to emit or score (see `properties.ts`) ---
-  const unmodelled = [...new Set(nodes.flatMap((n) => n.unmodelledProperties))].toSorted()
+  // --- The closed world: any property nobody claims to emit or score (see `properties.ts`).
+  // The two root elements are censused alongside the nodes; they are outside `querySelectorAll`,
+  // which is how a whole class of paint sat outside the quantifier for two rounds (r3) ---
+  const unmodelled = [
+    ...new Set([
+      ...nodes.flatMap((n) => n.unmodelledProperties),
+      ...roots.flatMap(({ paint }) => paint.unmodelledProperties),
+    ]),
+  ].toSorted()
   if (unmodelled.length > 0)
     deduct(SCORE_WEIGHTS.unmodelledProperty, `un-modelled CSS: ${unmodelled.join(', ')}`)
 

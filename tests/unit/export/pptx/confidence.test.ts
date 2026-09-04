@@ -18,7 +18,8 @@ import {
   paintsImage,
   scoreSlide,
 } from '../../../../src/shared/export/pptx/confidence'
-import { ancestorMatrix, makeMeasure, makeNode } from './_fixtures'
+import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
+import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint } from './_fixtures'
 
 /**
  * The confidence scorer (§3.4) — table-driven. Each signal asserts its exact deduction and cap, the
@@ -70,6 +71,84 @@ describe('scoreSlide deductions', () => {
     expect(scoreSlide(makeMeasure(panel)).score).toBeLessThan(PPTX_TIER_THRESHOLD)
   })
 
+  /**
+   * Area is the wrong question below that crossover, and review r3 built the counter-example: a
+   * 360×200 metric card — 7.8 % of the slide, so a deduction of 30 and a score of 70 — carrying
+   * `$4.2M` in **white**. It shipped structured, the gradient was not emitted, and both white runs
+   * landed on the white slide background. Invisible text is wrong output, not plainer output, so
+   * the scaling is floored at `WRONG_CONSTRUCT_FLOOR` whenever a run sits inside the gradient's box.
+   */
+  it('floors the gradient deduction at the wrong-class floor when text sits on the gradient', () => {
+    const card = makeNode({
+      x: 64,
+      y: 200,
+      w: 360,
+      h: 200,
+      style: { backgroundImage: 'linear-gradient(135deg, #4f46e5, #0ea5e9)' },
+    })
+    const value = makeNode({
+      x: 96,
+      y: 232,
+      w: 200,
+      h: 60,
+      isLeaf: true,
+      text: '$4.2M',
+      style: { color: 'rgb(255, 255, 255)' },
+    })
+    // Area alone charges less than the floor here — this is the constant the old invariant test
+    // asserted while the code path applied something smaller.
+    expect(elementImageDeduction(360 * 200)).toBeLessThan(WRONG_CONSTRUCT_FLOOR)
+    const withText = scoreSlide(makeMeasure([card, value]))
+    expect(100 - withText.score).toBeGreaterThanOrEqual(WRONG_CONSTRUCT_FLOOR)
+    expect(chooseTier(withText.score, 'auto', withText.hardBlocker)).toBe('raster')
+    expect(withText.reasons.some((r) => r.includes('text sitting on it'))).toBe(true)
+
+    // The same card with the text moved off it keeps the cheap, area-scaled deduction, so the
+    // decorative-pill case r2 fixed is not undone.
+    const beside = makeNode({ ...value, x: 600, y: 600 })
+    const withoutText = scoreSlide(makeMeasure([card, beside]))
+    expect(100 - withoutText.score).toBe(elementImageDeduction(360 * 200))
+    expect(chooseTier(withoutText.score, 'auto', withoutText.hardBlocker)).toBe('structured')
+  })
+
+  /**
+   * `<body>`/`<html>` paint (review r3). `body.querySelectorAll('*')` yields neither element, so a
+   * `filter` on either was censused by nothing and scored by nothing: `body { filter: invert(1) }`
+   * scored 100 with an empty reasons list while every colour in the emitted deck was the exact
+   * complement of the rendered one. It is a WRONG-class weight rather than the dropped-class
+   * `filter` weight because nothing is missing — everything is the wrong colour.
+   */
+  it('scores a filter/blend/clip on a root element as recolouring the whole slide', () => {
+    const text = [makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })]
+    for (const paint of [
+      makeRootPaint({ filter: 'invert(1)' }),
+      makeRootPaint({ backdropFilter: 'blur(4px)' }),
+      makeRootPaint({ mixBlendMode: 'multiply' }),
+      makeRootPaint({ clipPath: 'circle(40%)' }),
+    ]) {
+      for (const measure of [
+        makeMeasure(text, { body: paint }),
+        makeMeasure(text, { root: paint }),
+      ]) {
+        const { score, reasons } = scoreSlide(measure)
+        expect(score).toBe(100 - SCORE_WEIGHTS.rootPaint)
+        expect(chooseTier(score, 'auto', null)).toBe('raster')
+        expect(reasons.some((r) => r.includes('recolours the whole slide'))).toBe(true)
+      }
+    }
+  })
+
+  it("censuses the root elements too, not only body's descendants", () => {
+    const text = [makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })]
+    for (const key of ['body', 'root'] as const) {
+      const { score, reasons } = scoreSlide(
+        makeMeasure(text, { [key]: makeRootPaint({ unmodelledProperties: ['zoom'] }) }),
+      )
+      expect(score).toBe(100 - SCORE_WEIGHTS.unmodelledProperty)
+      expect(reasons.some((r) => r.includes('un-modelled CSS: zoom'))).toBe(true)
+    }
+  })
+
   it('deducts for filter/blend/clip-path', () => {
     expect(scoreSlide(makeMeasure([makeNode({ style: { filter: 'blur(4px)' } })])).score).toBe(
       100 - SCORE_WEIGHTS.filter,
@@ -115,7 +194,7 @@ describe('scoreSlide deductions', () => {
 describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', () => {
   it('deducts for a gradient/image body background — the signal that used to be a 1 px² no-op', () => {
     const measure = makeMeasure([makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })], {
-      body: { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'linear-gradient(red, blue)' },
+      body: makeRootPaint({ backgroundImage: 'linear-gradient(red, blue)' }),
     })
     const { score, reasons } = scoreSlide(measure)
     expect(score).toBe(100 - SCORE_WEIGHTS.bodyImageBackground)
@@ -271,6 +350,24 @@ describe('un-modelled constructs cannot ship quietly', () => {
       expect(SCORE_WEIGHTS[key], key).toBeGreaterThanOrEqual(WRONG_CONSTRUCT_FLOOR)
       expect(chooseTier(100 - SCORE_WEIGHTS[key], 'auto', null), key).toBe('raster')
     }
+  })
+
+  /**
+   * The loop above asserts the **constants**, and for one signal the constant is not what is
+   * charged: `elementImageBackground` is the ceiling of `elementImageDeduction(area)`, which
+   * returns `DROPPED_CONSTRUCT_FLOOR` at small areas and only reaches the ceiling at 10 % coverage.
+   * So the loop passed while the invariant it names was violated on every gradient under ~8.3 % of
+   * the slide (review r3). The floor is real, but it is enforced by the text-on-gradient rule in
+   * `scoreSlide`, not by the constant — which is what this case pins.
+   */
+  it('the one area-scaled weight charges less than its ceiling, and says so', () => {
+    expect(WRONG_CONSTRUCT_WEIGHTS).toContain('elementImageBackground')
+    expect(elementImageDeduction(120 * 40)).toBeLessThan(SCORE_WEIGHTS.elementImageBackground)
+    expect(elementImageDeduction(120 * 40)).toBeLessThan(WRONG_CONSTRUCT_FLOOR)
+    // Saturated, it is the ceiling the loop above asserts.
+    expect(elementImageDeduction(SLIDE_WIDTH_PX * SLIDE_HEIGHT_PX)).toBe(
+      SCORE_WEIGHTS.elementImageBackground,
+    )
   })
 })
 

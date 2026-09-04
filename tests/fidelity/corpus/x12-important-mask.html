@@ -1,0 +1,45 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r3, blocker B2: an author `!important` rule matches the census probe's HOST and beats its
+     inline `all: initial`, so the baseline inherits the authored value and the deviation disappears.
+     The same slide without the two `!important` keywords scored 65/raster. */
+  * {
+    font-variant-caps: small-caps !important;
+    word-spacing: 14px !important;
+  }
+  body {
+    background: #ffffff;
+    padding: 72px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 46px;
+    font-weight: 800;
+  }
+  p {
+    margin-top: 32px;
+    font-size: 24px;
+    line-height: 1.6;
+    width: 900px;
+  }
+</style>
+<h1>Small capitals, forced with !important</h1>
+<p>
+  Every run on this slide renders in small capitals at fourteen pixels of word spacing. PowerPoint
+  receives mixed case at normal spacing.
+</p>

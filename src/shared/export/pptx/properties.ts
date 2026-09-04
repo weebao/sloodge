@@ -39,8 +39,11 @@
  * ## Baselines
  *
  * "Non-initial" is measured against a real probe element carrying `all: initial`, read once per
- * slide, rather than a hard-coded table that would drift with Chromium. Two kinds of property need a
- * baseline other than that:
+ * slide, rather than a hard-coded table that would drift with Chromium. The probe lives two shadow
+ * roots deep so that no author declaration — `!important` included — can reach it and quietly make
+ * the baseline equal to the value under test; see `node.ts`. Every element is censused this way,
+ * and so are `<html>` and `<body>`, which `querySelectorAll` cannot reach. Two kinds of property
+ * need a baseline other than the probe's:
  *
  * - **`CURRENTCOLOR_PROPERTIES`** compute to the element's own `color`, so an initial-value
  *   comparison would fire on every coloured element. They count as unmodelled only when they differ
@@ -179,9 +182,9 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'inset-inline-end',
   /**
    * Margins and paddings position the box and its text, and Chromium already applied both: the
-   * measured rect is the border box and the text rect is where the glyphs actually landed. What is
-   * NOT modelled is PowerPoint's own text inset, which the writer leaves at its default — a known
-   * gap tracked for M4.8b's run-level walk, not something a per-property flag would describe.
+   * measured rect is the border box and the text rect is where the glyphs actually landed.
+   * PowerPoint's own text inset would fight that, so `pptx-writer.ts` passes `margin: 0` on every
+   * text shape and the emitted `<a:bodyPr>` carries `lIns="0" tIns="0" rIns="0" bIns="0"`.
    */
   'margin-top',
   'margin-right',
@@ -336,24 +339,44 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'transition-property',
   'transition-timing-function',
   'will-change',
+  /**
+   * Chromium assigns `view-transition-name: root` to the document element itself, so censusing
+   * `<html>` reported it on every slide in the corpus. It names an element as a view-transition
+   * participant and paints nothing; outside an active transition — and the export path measures a
+   * settled static document — it has no rendering effect at all.
+   */
+  'view-transition-name',
 
-  // --- Compositing and containment hints: no paint of their own ---
-  'contain',
+  /**
+   * Containment *inputs*: sizes and names a container query resolves against, which Chromium has
+   * already applied to the rects we measured.
+   *
+   * `contain` and `content-visibility` used to sit here as "hints with no paint of their own".
+   * That was false and it shipped a defect: `contain: paint` clips descendants to the padding box
+   * exactly as `overflow: hidden` does while leaving the computed `overflow` at `visible`, so a
+   * 460×340 block that the reader sees clipped to a 380×200 card was emitted whole and painted
+   * over the background at score 100 (review r3). `content-visibility: hidden` skips rendering
+   * a subtree outright. Both are out of both sets now, so a non-initial value fails toward raster;
+   * `node.ts`'s `clipsBox` separately teaches the clip signals about the clipping keywords, so the
+   * loss is *named* rather than merely rasterized.
+   */
   'contain-intrinsic-block-size',
   'contain-intrinsic-inline-size',
   'contain-intrinsic-height',
   'contain-intrinsic-width',
   'container-name',
   'container-type',
-  'content-visibility',
 
   /**
-   * `visibility` is already the measurement pass's own visibility filter (`hidden` elements never
-   * become nodes), and `content` is `normal` on every real element — the `::before`/`::after` that
-   * carry a `content` value are counted separately as `paintedPseudoCount`, since they have no rect.
+   * `visibility` is the measurement pass's own visibility filter: only `visible` elements become
+   * nodes, so neither `hidden` nor `collapse` can reach the file. (It read `!== 'hidden'` until
+   * r3, which let a `visibility: collapse` banner Chromium paints nowhere ship in full.)
+   *
+   * `content` is NOT here: it is `normal` on ordinary elements but `content: url(…)` replaces one,
+   * and the exporter has no way to emit the replacement image. The `::before`/`::after` case is
+   * unaffected — those are counted as `paintedPseudoCount`, since they have no rect.
    */
   'visibility',
-  'content',
 
   /**
    * Layout-derived computed values: Chromium resolves these against the element's own box, so they

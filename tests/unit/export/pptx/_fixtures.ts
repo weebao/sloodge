@@ -2,6 +2,7 @@ import type {
   BorderSide,
   MeasureResult,
   NodeStyle,
+  RootPaint,
   SlideNode,
   TransformSpec,
 } from '../../../../src/shared/export/pptx/node'
@@ -97,14 +98,29 @@ export function makeNode(
   }
 }
 
-/** Wrap nodes as a `MeasureResult` with an opaque-nothing body by default. */
+/** A root element painting nothing — no colour, no image, no filter, nothing un-modelled. */
+export function makeRootPaint(overrides: Partial<RootPaint> = {}): RootPaint {
+  return {
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    backgroundImage: 'none',
+    filter: 'none',
+    backdropFilter: 'none',
+    mixBlendMode: 'normal',
+    clipPath: 'none',
+    unmodelledProperties: [],
+    ...overrides,
+  }
+}
+
+/** Wrap nodes as a `MeasureResult` with both root elements painting nothing by default. */
 export function makeMeasure(
   nodes: SlideNode[],
   overrides: Partial<MeasureResult> = {},
 ): MeasureResult {
   return {
     nodes,
-    body: { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none' },
+    body: makeRootPaint(),
+    root: makeRootPaint(),
     hasAnimation: false,
     ...overrides,
   }

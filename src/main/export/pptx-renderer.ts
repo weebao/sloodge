@@ -25,7 +25,7 @@ import { slideMeasurementScript } from '../../shared/export/pptx/node'
 import { paintsImage } from '../../shared/export/pptx/confidence'
 import { EXPORT_READINESS_TIMEOUT_MS } from '../../shared/export/readiness'
 import type { BrowserWindow, WebContents } from 'electron'
-import type { MeasureResult } from '../../shared/export/pptx/node'
+import type { MeasureResult, RootPaint } from '../../shared/export/pptx/node'
 import type { SlideRegistry } from '../slide/registry'
 
 /** What the renderer produces for one slide: the measured nodes and a full-slide PNG (or `null`). */
@@ -85,9 +85,20 @@ async function runInSlide(contents: WebContents, script: string): Promise<unknow
   }
 }
 
+const NO_ROOT_PAINT: RootPaint = {
+  backgroundColor: 'rgba(0, 0, 0, 0)',
+  backgroundImage: 'none',
+  filter: 'none',
+  backdropFilter: 'none',
+  mixBlendMode: 'normal',
+  clipPath: 'none',
+  unmodelledProperties: [],
+}
+
 const EMPTY_MEASURE: MeasureResult = {
   nodes: [],
-  body: { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none' },
+  body: NO_ROOT_PAINT,
+  root: NO_ROOT_PAINT,
   hasAnimation: false,
 }
 

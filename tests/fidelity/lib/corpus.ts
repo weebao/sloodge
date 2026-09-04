@@ -4,11 +4,12 @@
  * discovers them — but rotations and a painted body background are, because "did the exporter keep
  * it" is only checkable against a statement of what was there.
  *
- * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x10` were written *against*
+ * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x16` were written *against*
  * the finished exporter, not alongside it: each one reproduced a construct that scored 85–100 while
  * vanishing from — or arriving wrong in — the `.pptx`. `x1`–`x6` came from review r1, `x7`–`x9` from
- * r2's probe set, and `x10` reproduces the standalone `rotate:`/`scale:` properties. They are in the
- * corpus so the next tuning pass cannot quietly fit the scorer to the eight slides it was born with.
+ * r2's probe set, `x10` reproduces the standalone `rotate:`/`scale:` properties, and `x11`–`x16` are
+ * r3's. They are in the corpus so the next tuning pass cannot quietly fit the scorer to the eight
+ * slides it was born with.
  */
 
 import type { MeasureResult } from '../../../src/shared/export/pptx/node'
@@ -75,6 +76,16 @@ export const CORPUS: readonly CorpusSlide[] = [
     rotations: [{ text: 'ROTATED 20', deg: 20 }],
     bodyImage: false,
   },
+  // Review r3's probes. The first two are the ones the census mechanism could not see at all: the
+  // root elements are outside `body.querySelectorAll('*')`, and the probe baseline was reachable by
+  // author `!important`. The last three name a `LAYOUT_RESOLVED_PROPERTIES` entry whose written
+  // justification was false — including two that made the exporter INVENT content.
+  { file: 'x11-body-filter.html', rotations: [], bodyImage: false },
+  { file: 'x12-important-mask.html', rotations: [], bodyImage: false },
+  { file: 'x13-contain-paint.html', rotations: [], bodyImage: false },
+  { file: 'x14-visibility-collapse.html', rotations: [], bodyImage: false },
+  { file: 'x15-content-url.html', rotations: [], bodyImage: false },
+  { file: 'x16-gradient-hero.html', rotations: [], bodyImage: false },
 ]
 
 /**

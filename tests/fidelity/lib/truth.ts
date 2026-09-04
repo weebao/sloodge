@@ -95,12 +95,30 @@ export type TruthPseudo = {
   which: '::before' | '::after'
 }
 
+/**
+ * What `<html>` and `<body>` do to everything painted beneath them.
+ *
+ * The oracle recorded computed colours and stopped there, so when `body { filter: invert(1) }`
+ * made every rendered colour the complement of its authored value, the oracle read the *authored*
+ * value and agreed with the exporter — the independent check shared the exporter's blind spot
+ * exactly where it mattered most (review r3). Recording the operation itself is the fix that does
+ * not require pixels: a root recomposite means no emitted colour can be trusted, whatever the
+ * computed style says, and `assess.ts` counts that as a lost construct.
+ */
+export type TruthRootPaint = {
+  filter: string
+  backdropFilter: string
+  mixBlendMode: string
+  clipPath: string
+}
+
 export type GroundTruth = {
   texts: TruthText[]
   boxes: TruthBox[]
   pseudos: TruthPseudo[]
   bodyBg: string | null
   bodyBgImage: string
+  rootPaint: { html: TruthRootPaint; body: TruthRootPaint }
 }
 
 /** Source of the injected oracle script; evaluates to a `GroundTruth`. */
@@ -121,8 +139,10 @@ export function groundTruthScript(): string {
   };
   const spec = (cs) => ({ transform: cs.transform, rotate: cs.rotate || 'none', scale: cs.scale || 'none', translate: cs.translate || 'none' });
   const isTransformed = (t) => t.transform !== 'none' || t.rotate !== 'none' || t.scale !== 'none' || t.translate !== 'none';
+  // Up to and including <html>: a transform or an opacity on a root element reaches the reader
+  // exactly as one on a wrapper div does.
   const transformedAncestor = (el) => {
-    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+    for (let p = el; p; p = p.parentElement) {
       if (isTransformed(spec(getComputedStyle(p)))) return true;
     }
     return false;
@@ -169,7 +189,7 @@ export function groundTruthScript(): string {
   // Both opacity and scale accumulate as a product up the ancestor chain.
   const chainProduct = (el, f) => {
     let acc = 1;
-    for (let p = el; p && p !== document.documentElement; p = p.parentElement) acc *= f(getComputedStyle(p));
+    for (let p = el; p; p = p.parentElement) acc *= f(getComputedStyle(p));
     return acc;
   };
   const opacityOf = (el) =>
@@ -194,6 +214,16 @@ export function groundTruthScript(): string {
     return ps.content !== '""' || alphaOf(ps.backgroundColor) > 0.03 ||
       /gradient\\(|url\\(/.test(ps.backgroundImage) || (parseFloat(ps.borderTopWidth) || 0) > 0;
   };
+  // A reader sees text only where visibility computes to \`visible\` (\`collapse\` paints nothing on a
+  // non-table element) and where no ancestor's \`content\` has replaced the subtree with an image.
+  const painted = (cs) => cs.visibility === 'visible' && cs.display !== 'none';
+  const replacedAncestor = (el) => {
+    for (let p = el; p; p = p.parentElement) {
+      const c = getComputedStyle(p).content;
+      if (c !== 'normal' && c !== 'none') return true;
+    }
+    return false;
+  };
   const texts = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let n;
@@ -203,7 +233,7 @@ export function groundTruthScript(): string {
     const el = n.parentElement;
     if (!el) continue;
     const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (!painted(cs) || replacedAncestor(el)) continue;
     const r = document.createRange();
     r.selectNodeContents(n);
     const b = r.getBoundingClientRect();
@@ -228,7 +258,9 @@ export function groundTruthScript(): string {
   for (const el of document.body.querySelectorAll('*')) {
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
-    if (cs.display === 'none' || cs.visibility === 'hidden' || r.width < 0.5 || r.height < 0.5) continue;
+    // A replaced element's OWN background still paints behind the replacement image; its
+    // descendants do not render at all, so only a strict ancestor disqualifies the box.
+    if (!painted(cs) || replacedAncestor(el.parentElement) || r.width < 0.5 || r.height < 0.5) continue;
     if (pseudoPaints(el, '::before')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::before' });
     if (pseudoPaints(el, '::after')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::after' });
     const bgAlpha = alphaOf(cs.backgroundColor);
@@ -244,7 +276,21 @@ export function groundTruthScript(): string {
       });
     }
   }
+  const rootPaintOf = (el) => {
+    const cs = getComputedStyle(el);
+    return {
+      filter: cs.filter,
+      backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
+      mixBlendMode: cs.mixBlendMode,
+      clipPath: cs.clipPath || 'none',
+    };
+  };
   const bodyCs = getComputedStyle(document.body);
-  return { texts, boxes, pseudos, bodyBg: alphaOf(bodyCs.backgroundColor) > 0.03 ? toHex(bodyCs.backgroundColor) : null, bodyBgImage: bodyCs.backgroundImage };
+  return {
+    texts, boxes, pseudos,
+    bodyBg: alphaOf(bodyCs.backgroundColor) > 0.03 ? toHex(bodyCs.backgroundColor) : null,
+    bodyBgImage: bodyCs.backgroundImage,
+    rootPaint: { html: rootPaintOf(document.documentElement), body: rootPaintOf(document.body) },
+  };
 })()`
 }
