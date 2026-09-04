@@ -10,14 +10,21 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import { budgetTable, checkBudgets, diffReports, type PerfReport } from '../lib/report'
+import { z } from 'zod'
+import {
+  budgetTable,
+  checkBudgets,
+  diffReports,
+  PerfReportSchema,
+  type PerfReport,
+} from '../lib/report'
 
 async function loadReport(path: string): Promise<PerfReport> {
-  const parsed = JSON.parse(await readFile(path, 'utf8')) as PerfReport
-  if (parsed.schema !== 1) {
-    throw new Error(`${path}: unsupported report schema ${String(parsed.schema)}`)
+  const parsed = PerfReportSchema.safeParse(JSON.parse(await readFile(path, 'utf8')))
+  if (!parsed.success) {
+    throw new Error(`${path}: not a valid perf report\n${z.prettifyError(parsed.error)}`)
   }
-  return parsed
+  return parsed.data
 }
 
 export async function main(argv: readonly string[]): Promise<void> {

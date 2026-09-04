@@ -28,15 +28,15 @@
     "coldStartMs": 1344,
     "deckOpenMs": 11920,
     "slideSwitchMs": {
-      "count": 20,
+      "count": 19,
       "min": 72.89999999850988,
-      "p25": 78.15000000037253,
-      "median": 84.10000000149012,
-      "p75": 88.82500000111759,
-      "p95": 152.02000000588612,
-      "max": 372.80000000447035,
-      "mean": 101.68000000193715,
-      "stdDev": 64.34641870459754
+      "p25": 77.80000000074506,
+      "median": 83.90000000596046,
+      "p75": 88,
+      "p95": 128.07000000327824,
+      "max": 140.40000000596046,
+      "mean": 87.4105263175933,
+      "stdDev": 16.912215914194846
     },
     "ramMb": {
       "count": 42,
@@ -186,15 +186,15 @@
           "stdDev": 146.29439652124333
         },
         "memoryMb": {
-          "count": 36,
+          "count": 42,
           "min": 80.1640625,
-          "p25": 121.6669921875,
-          "median": 2750.27099609375,
-          "p75": 3121.478759765625,
-          "p95": 3165.2587890625,
-          "max": 3220.4287109375,
-          "mean": 1695.0670301649307,
-          "stdDev": 1469.4787492009095
+          "p25": 121.818603515625,
+          "median": 3041.6328125,
+          "p75": 3134.685546875,
+          "p95": 3220.26142578125,
+          "max": 3232.724609375,
+          "mean": 1907.7220284598213,
+          "stdDev": 1456.9275442591502
         }
       },
       "Utility": {
@@ -351,7 +351,7 @@
       "coldStartMs": 1344,
       "deckOpenMs": 11920,
       "medianRamMb": 3970.72900390625,
-      "medianSlideSwitchMs": 84.10000000149012
+      "medianSlideSwitchMs": 83.90000000596046
     }
   ],
   "notes": [
@@ -369,6 +369,7 @@
     "Shell frame rate during the dwell (fps, per run): 37.2.",
     "Idle RAM (starter deck, before the stress deck): 455 MB on the proc-pss-sum basis.",
     "CONTENDED: other processes were competing for this machine while these numbers were taken. Memory figures survive contention well; timing figures (cold start, slide switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this.",
-    "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence."
+    "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence.",
+    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 1 phantom sample removed from 20; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement."
   ]
 }

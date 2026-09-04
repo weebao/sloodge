@@ -195,6 +195,9 @@ export function buildStressDeck(options: StressDeckOptions): StressDeck {
   return { manifest, slides, notes, theme, extras: {}, archetypes }
 }
 
+/** What the content hash covers — also the shape of the `.deck-update.json` payload the session pushes. */
+export type DeckContent = Pick<StressDeck, 'manifest' | 'slides' | 'notes' | 'theme'>
+
 /** Total uncompressed HTML bytes, the number that predicts registry pressure and IPC payload size. */
 export function totalSlideBytes(deck: StressDeck): number {
   return Object.values(deck.slides).reduce((sum, html) => sum + Buffer.byteLength(html, 'utf8'), 0)
@@ -211,7 +214,7 @@ export function totalSlideBytes(deck: StressDeck): number {
  * byte-stable across runs, machines and days — which is what M8.2–M8.7 need in order to compare
  * their numbers against this baseline.
  */
-export function deckContentHash(deck: StressDeck): string {
+export function deckContentHash(deck: DeckContent): string {
   const order = deck.manifest.slideOrder
   const canonical = JSON.stringify({
     manifest: deck.manifest,

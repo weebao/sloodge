@@ -59,6 +59,15 @@ export type Sample = {
 
 const KB_PER_MB = 1024
 
+/**
+ * Fraction of a process set that must have a `/proc` reading for its memory sum to count as a
+ * sample. Shared by the per-sample totals and the per-type breakdown so the two cannot disagree
+ * about which samples exist: the breakdown used to demand every process, and on the 300-slide tier
+ * that dropped the loaded-phase samples (hundreds of pids, one always mid-exit) and put the `Tab`
+ * median ~10 % low for a reason unrelated to the app.
+ */
+const MIN_PROC_COVERAGE = 0.9
+
 export function kbToMb(kb: number): number {
   return kb / KB_PER_MB
 }
@@ -148,7 +157,7 @@ export async function takeSample(
     covered += 1
   }
   const coverage = processes.length === 0 ? 0 : covered / processes.length
-  const enoughCoverage = coverage >= 0.9
+  const enoughCoverage = coverage >= MIN_PROC_COVERAGE
   const procPssKb = enoughCoverage ? pssKb : null
   const procRssKb = enoughCoverage ? rssKb : null
 
@@ -191,9 +200,11 @@ export type ProcessTypeBreakdown = {
   /** Processes of this type per sample. A `min` of 0 means the type was not always alive. */
   readonly processes: Summary
   /**
-   * Memory of this type per sample on the chosen basis. Samples in which any process of the type
-   * had no reading (it exited between `getAppMetrics()` and the `/proc` read — routine with 100+
-   * renderers) are left out, so `count` can be below `processes.count`; null if none was readable.
+   * Memory of this type per sample on the chosen basis, summed over the processes that had a
+   * reading. A sample counts when at least `MIN_PROC_COVERAGE` of the type's processes were
+   * readable — the same rule as the per-sample totals — so `count` can be below `processes.count`,
+   * and a sample with one unread renderer in a hundred lands slightly low rather than being dropped.
+   * null if no sample qualified.
    */
   readonly memoryMb: Summary | null
 }
@@ -221,8 +232,11 @@ export function processTypeBreakdown(
     for (const sample of samples) {
       const own = sample.processes.filter((p) => p.type === type)
       counts.push(own.length)
-      const readings = own.map((p) => p[field])
-      if (readings.every((kb): kb is number => kb !== null)) {
+      const readings = own.flatMap((p) => {
+        const kb = p[field]
+        return kb === null ? [] : [kb]
+      })
+      if (own.length === 0 || readings.length / own.length >= MIN_PROC_COVERAGE) {
         memory.push(kbToMb(readings.reduce((sum, kb) => sum + kb, 0)))
       }
     }

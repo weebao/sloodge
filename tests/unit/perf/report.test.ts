@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BUDGETS,
   parseRamBasis,
+  PerfReportSchema,
   RAM_BASES,
   budgetActuals,
   budgetTable,
@@ -15,6 +16,7 @@ import {
   type PerfMetrics,
 } from '../../../perf/lib/report'
 import type { Summary } from '../../../perf/lib/stats'
+import baseline from '../../../perf/results/baseline-main.json'
 
 function summary(median: number): Summary {
   return {
@@ -194,6 +196,25 @@ describe('budgetTable', () => {
   it('prints "no samples" rather than 0.0 for an empty series', () => {
     const table = budgetTable(checkBudgets(metrics({ slideSwitchMs: EMPTY })))
     expect(table).toContain('| Slide switch (median) | no samples | < 100 ms | FAIL |')
+  })
+})
+
+describe('PerfReportSchema', () => {
+  it('accepts the committed baseline', () => {
+    expect(PerfReportSchema.safeParse(baseline).success).toBe(true)
+  })
+
+  it('names the missing field of a truncated report instead of crashing inside budgetActuals', () => {
+    const { ramMb: _dropped, ...truncated } = baseline.metrics
+    const result = PerfReportSchema.safeParse({ ...baseline, metrics: truncated })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join('.'))).toContain('metrics.ramMb')
+    }
+  })
+
+  it('rejects a report of another schema version', () => {
+    expect(PerfReportSchema.safeParse({ ...baseline, schema: 2 }).success).toBe(false)
   })
 })
 

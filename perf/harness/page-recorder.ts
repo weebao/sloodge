@@ -85,18 +85,27 @@ export const INSTALL_RECORDER = `(() => {
 
 /**
  * Resolve each recorded switch to its latency by pairing the click with the first canvas-frame
- * `load` that followed it. Runs in page context so both timestamps stay on the page clock.
+ * `load` that followed it **and landed before the next click**. Runs in page context so both
+ * timestamps stay on the page clock.
+ *
+ * The bound is what keeps a click that produced no load of its own from borrowing the next one. A
+ * click on the already-active slide fires no `load` at all, and swapping the canvas `src` before the
+ * previous navigation finished cancels that navigation, so the single `load` that follows belongs to
+ * the later click. Without the bound every run's first switch was a phantom: it paired with the
+ * second click's load and reported that latency plus the whole inter-click sleep.
  */
 export const READ_SWITCHES = `(() => {
   const state = globalThis.${RECORDER_GLOBAL};
   if (!state) return [];
-  return state.switches.map((s) => {
+  return state.switches.map((s, i) => {
+    const next = state.switches[i + 1];
     const load = state.canvasLoads[s.loadsBefore];
+    const own = load !== undefined && (next === undefined || load < next.clickAt);
     return {
       index: s.index,
       clickAt: s.clickAt,
-      loadAt: load === undefined ? null : load,
-      latencyMs: load === undefined ? null : load - s.clickAt,
+      loadAt: own ? load : null,
+      latencyMs: own ? load - s.clickAt : null,
     };
   });
 })()`

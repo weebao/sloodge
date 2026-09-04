@@ -144,10 +144,11 @@ export class CdpClient {
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id)
+        const expression = params['expression']
+        const what =
+          typeof expression === 'string' ? `${method} \`${expression.slice(0, 80)}\`` : method
         reject(
-          new Error(
-            `CDP call ${method} (id ${String(id)}) got no reply in ${String(timeoutMs)} ms`,
-          ),
+          new Error(`CDP call ${what} (id ${String(id)}) got no reply in ${String(timeoutMs)} ms`),
         )
       }, timeoutMs)
       this.#pending.set(id, { resolve, reject, timer })
@@ -165,11 +166,15 @@ export class CdpClient {
    * libuv's and the inspector's serializer can miss its window. Round-tripping through a JSON string
    * is one synchronous call and has been reliable across every run.
    */
-  async evaluate<T>(expression: string): Promise<T> {
-    const result = await this.send('Runtime.evaluate', {
-      expression: `JSON.stringify((() => (${expression}))())`,
-      returnByValue: true,
-    })
+  async evaluate<T>(expression: string, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
+    const result = await this.send(
+      'Runtime.evaluate',
+      {
+        expression: `JSON.stringify((() => (${expression}))())`,
+        returnByValue: true,
+      },
+      timeoutMs,
+    )
     const details = result['exceptionDetails']
     if (details !== undefined) {
       const exception = (details as Record<string, unknown>)['exception']
@@ -231,24 +236,32 @@ export async function waitForTarget(
  * named the wrong problem. A `CdpClosedError` is rethrown for the same reason: once the socket is
  * gone there is nothing left to poll, and the guard alone cannot see a socket that closed because
  * the *browser* process died while the child handle is still being reaped.
+ *
+ * Each tick's evaluate is bounded by what is left of `timeoutMs`, not by the 30 s per-call default:
+ * against a frozen renderer a 2.5 s wait otherwise returned after 30 s, and the message named a slow
+ * render when the peer had stopped answering. The last swallowed error is kept for the same reason.
  */
 export async function waitFor(
-  client: CdpClient,
+  client: Pick<CdpClient, 'evaluate'>,
   expression: string,
   timeoutMs = 60_000,
   intervalMs = 100,
   guard?: () => void,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs
+  let lastError: unknown = null
   while (Date.now() < deadline) {
     guard?.()
-    const ok = await client.evaluate<boolean>(expression).catch((error: unknown) => {
+    const remaining = Math.max(1, deadline - Date.now())
+    try {
+      if (await client.evaluate<boolean>(expression, Math.min(CALL_TIMEOUT_MS, remaining))) return
+    } catch (error) {
       if (error instanceof CdpClosedError) throw error
-      return false
-    })
-    if (ok === true) return
-    await sleep(intervalMs)
+      lastError = error
+    }
+    await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())))
   }
   guard?.()
-  throw new Error(`Timed out after ${String(timeoutMs)} ms waiting for: ${expression}`)
+  const cause = lastError instanceof Error ? `; last error: ${lastError.message}` : ''
+  throw new Error(`Timed out after ${String(timeoutMs)} ms waiting for: ${expression}${cause}`)
 }

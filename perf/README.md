@@ -108,21 +108,21 @@ change it.
 
 ## What each metric means
 
-| Metric               | Definition                                                                                                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `coldStartMs`        | **Upper bound.** Spawn → `#sloodge-shell` in the DOM, polled every 25 ms                                                                                                                                                  |
-| `documentLoadedMs`   | **Lower bound.** Spawn → the renderer's navigation `loadEventEnd`, converted through `performance.timeOrigin`                                                                                                             |
-| `deckOpenMs`         | `deck:updated` dispatched → every rail frame has fired `load`                                                                                                                                                             |
-| `deckPublishMs`      | `deck:updated` dispatched → every rail frame has a `slide://` src (main holds the bytes)                                                                                                                                  |
-| `deckReadMs`         | The shipped `readDeck` unzipping the `.sloodge` from disk                                                                                                                                                                 |
-| `slideSwitchMs`      | Rail click → the canvas iframe's `load`. **Both timestamps are taken in page context**, so CDP round-trip jitter delays only when a number is read, never the number                                                      |
-| `frameIntervalMs`    | Gaps between `requestAnimationFrame` callbacks in the **app shell** while an animating slide is active. `null` if the dwell recorded no frames                                                                            |
-| `droppedFrames`      | Frames **missed against a 60 Hz ideal** over the dwell window (`missedFrames` in `stats.ts`). The budgeted number; lower is better                                                                                        |
-| `longFrameIntervals` | Intervals longer than 1.5 × the 60 Hz budget, i.e. > 25 ms. Kept as a secondary signal; not monotonic once the frame stream collapses (see Known limits #9)                                                               |
-| `frameRateFps`       | Frames served ÷ dwell seconds. Reported, never a budget; meaningless when `hostContention.contended` is true                                                                                                              |
-| `railScrollMs`       | Summed round-trip of 25 `scrollTop` assignments on the rail, the 120 ms settle between steps **excluded** — each assignment forces a layout flush and is serviced only when the renderer's main thread is free            |
-| `rendererHeapMb`     | `JSHeapUsedSize` from CDP `Performance.getMetrics`, host renderer only. `null` if no read succeeded                                                                                                                       |
-| `processTypes`       | Per Chromium process type (Browser / GPU / Tab / Utility): process count and memory on `ramBasis`, per sample, for the whole session and for the idle window. A type's `processes.min` of 0 means it was not always alive |
+| Metric               | Definition                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `coldStartMs`        | **Upper bound.** Spawn → `#sloodge-shell` in the DOM, polled every 25 ms                                                                                                                                                                                                                                                                                                                                                                                               |
+| `documentLoadedMs`   | **Lower bound.** Spawn → the renderer's navigation `loadEventEnd`, converted through `performance.timeOrigin`                                                                                                                                                                                                                                                                                                                                                          |
+| `deckOpenMs`         | `deck:updated` dispatched → every rail frame has fired `load`                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `deckPublishMs`      | `deck:updated` dispatched → every rail frame has a `slide://` src (main holds the bytes)                                                                                                                                                                                                                                                                                                                                                                               |
+| `deckReadMs`         | The shipped `readDeck` unzipping the `.sloodge` from disk                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `slideSwitchMs`      | Rail click → the canvas iframe's `load`. **Both timestamps are taken in page context**, so CDP round-trip jitter delays only when a number is read, never the number. A load is a click's only if it landed before the next click — a click on the already-active slide fires no `load`, and a `src` swap cancels the navigation in flight, so the one `load` that follows belongs to the later click; such switches are recorded as `null` and left out of the series |
+| `frameIntervalMs`    | Gaps between `requestAnimationFrame` callbacks in the **app shell** while an animating slide is active. `null` if the dwell recorded no frames                                                                                                                                                                                                                                                                                                                         |
+| `droppedFrames`      | Frames **missed against a 60 Hz ideal** over the dwell window (`missedFrames` in `stats.ts`). The budgeted number; lower is better                                                                                                                                                                                                                                                                                                                                     |
+| `longFrameIntervals` | Intervals longer than 1.5 × the 60 Hz budget, i.e. > 25 ms. Kept as a secondary signal; not monotonic once the frame stream collapses (see Known limits #9)                                                                                                                                                                                                                                                                                                            |
+| `frameRateFps`       | Frames served ÷ dwell seconds. Reported, never a budget; meaningless when `hostContention.contended` is true                                                                                                                                                                                                                                                                                                                                                           |
+| `railScrollMs`       | Summed round-trip of 25 `scrollTop` assignments on the rail, the 120 ms settle between steps **excluded** — each assignment forces a layout flush and is serviced only when the renderer's main thread is free                                                                                                                                                                                                                                                         |
+| `rendererHeapMb`     | `JSHeapUsedSize` from CDP `Performance.getMetrics`, host renderer only. `null` if no read succeeded                                                                                                                                                                                                                                                                                                                                                                    |
+| `processTypes`       | Per Chromium process type (Browser / GPU / Tab / Utility): process count and memory on `ramBasis`, per sample, for the whole session and for the idle window. A type's `processes.min` of 0 means it was not always alive. A sample's memory counts when ≥ 90 % of the type's processes had a `/proc` reading — the same rule as the per-sample totals — so `memoryMb.count` can be below `processes.count`                                                            |
 
 Cold start is deliberately a bracket. First Contentful Paint would be the ideal signal and is
 **unavailable**: the main window is created with `show: false` and revealed on `ready-to-show`, and
@@ -146,6 +146,13 @@ the slide HTML in presentation order. It is deliberately not a hash of the `.slo
 wall-clock time of the write and two archives of identical content hash differently. That is a
 property of the shipped writer, and M8.1 is not the milestone to change the product's file writer.
 `archiveBytes` _is_ stable, since the timestamp lives in an uncompressed header field.
+
+`perf:run` **checks the record before it measures**: the `.deck-update.json` payload it is about to
+push is hashed and compared to the committed `contentSha256`, and the `.sloodge`'s slides are compared
+against the payload's. A `perf/decks/` left behind by an older generator, or a `--force --seed=1`
+regeneration, fails the run with `run pnpm perf:generate` instead of producing a report labelled with
+the committed seed and hash. (The `.sloodge` itself cannot be hashed the same way — `readDeck` returns
+its manifest through zod, which normalises it — hence the two-step comparison.)
 
 `perf:generate` **merges** into the committed hash file rather than rewriting it: tiers that were not
 regenerated are kept, and a tier whose recorded seed differs from the requested one is refused
@@ -227,7 +234,11 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
     refuses to start if the canvas or rail selector no longer matches. The CDP client rejects every
     pending and future call with `CdpClosedError` the moment a socket closes, and every call carries
     a 30 s reply deadline, so a dead or frozen app surfaces within seconds rather than as an
-    open-ended hang (the earlier 500-slide "20 minutes of silence" was this hang).
+    open-ended hang (the earlier 500-slide "20 minutes of silence" was this hang). A `waitFor` bounds
+    each tick by what is left of its own deadline and names the last swallowed error, so a frozen
+    renderer fails a 2.5 s wait in 2.5 s with "got no reply", not in 30 s with "timed out waiting".
+    `perf:diff` validates both reports against a zod schema and names the missing field of a
+    truncated one rather than crashing inside the budget maths.
 11. **The session median weights phases by sample count.** Every sample reads `/proc` for every
     process, so at 200+ processes under heavy host load one sample can take seconds and the loaded
     phase ends up under-sampled relative to the cheap idle phase. One 200-slide run taken at a load
@@ -242,8 +253,14 @@ Stated plainly, because a measurement whose error bars are unknown is not eviden
 
 Committed baseline: `perf/results/baseline-main.json` (100-slide deck, 3 runs, PSS basis), with
 `perf/results/baseline-scaling-*.json` for the other tiers. All taken by the harness at commit
-`ef07cf4` — the code in this tree — so every field can be re-derived by the committed code. Every one
-of them is labelled `contended` (see below); the memory columns are the trustworthy ones.
+`ef07cf4`; two fields were then re-derived from the traces without re-running the app, and each JSON
+says so in its `notes`: `slideSwitchMs`, after the r2 review found that every run's first switch was
+a phantom (the click on the already-selected slide 0 fired no `load` and borrowed the next click's —
+one sample per run, and the p95/max of the 100-slide baseline fell from 151/280 ms to 110/145 ms
+while the median moved 54.4 → 53.8), and `processTypes`, under the per-type coverage rule described
+above (the 300-slide `Tab` median rose from 2750 to 3042 MB; every other type and the whole idle
+block are unchanged). Every one of them is labelled `contended` (see below); the memory columns are
+the trustworthy ones.
 
 **Median RAM is 1685 MB against a 200 MB budget — 8.4x over.** That is not a tuning problem; no
 amount of trimming allocations reaches 200 MB from here. The cause is architectural, and it shows up
@@ -257,7 +274,7 @@ first in the process count:
 
 Each of those carries its own renderer heap, compositor, and per-process Blink/V8 overhead. The
 `processTypes.session` block of the baseline puts the number on it: the `Tab` processes alone hold a
-median **1184 MB PSS** on the 100-slide deck (max 1320 MB), against ~230 MB for the Browser process
+median **1203 MB PSS** on the 100-slide deck (max 1320 MB), against ~230 MB for the Browser process
 and ~220 MB for the GPU process when it is alive. The measured marginal cost is roughly **11-14 MB PSS
 per mounted slide**, on top of a large fixed floor.
 
@@ -265,10 +282,10 @@ per mounted slide**, on top of a large fixed floor.
 
 | Slides | Processes | Median PSS | Working-set sum | Cold start | Deck open | Slide switch |
 | -----: | --------: | ---------: | --------------: | ---------: | --------: | -----------: |
-|     25 |        30 |     805 MB |         3019 MB |    1754 ms |    513 ms |       106 ms |
-|     50 |        55 |    1164 MB |         5395 MB |    1366 ms |   1433 ms |        49 ms |
+|     25 |        30 |     805 MB |         3019 MB |    1754 ms |    513 ms |       105 ms |
+|     50 |        55 |    1164 MB |         5395 MB |    1366 ms |   1433 ms |        48 ms |
 |    100 |       105 |    1685 MB |         9875 MB |    1528 ms |   1794 ms |        54 ms |
-|    200 |       205 |    3092 MB |        17715 MB |    1340 ms |   3908 ms |        68 ms |
+|    200 |       205 |    3092 MB |        17715 MB |    1340 ms |   3908 ms |        67 ms |
 |    300 |       305 |    3971 MB |        12395 MB |    1344 ms |  11920 ms |        84 ms |
 
 PSS and process count scale cleanly and are the trustworthy columns. The working-set sum is kept only
@@ -301,7 +318,7 @@ collapse in `processCount`, `ramMb` and `processTypes.session.Tab`.
 ### What passes today
 
 Cold start (1.3–2.3 s contended, ~0.8–1.0 s in quieter runs, against 3 s) passes at every tier.
-Slide switch sits at 50–60 ms at 50–100 slides; the 106 ms at 25 slides is contention (41 ms for the
+Slide switch sits at 50–60 ms at 50–100 slides; the 105 ms at 25 slides is contention (41 ms for the
 same tier one sweep earlier). Deck open passes to 100 slides (1.8 s), reaches 3908 ms at 200 and
 fails at 300 (11920 ms) — three tiers below the deck size that budget was written for.
 

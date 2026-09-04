@@ -60,6 +60,16 @@ describe('processTypeBreakdown', () => {
     expect(out['Tab']?.memoryMb).toMatchObject({ count: 1, median: 80 })
   })
 
+  it('includes a sample when at least 90 % of the type had a reading — the same rule as the totals', () => {
+    // Demanding every process put the 300-slide `Tab` median ~10 % low: with hundreds of renderers
+    // one is always mid-exit, so the loaded-phase samples were the ones dropped.
+    const tabs = (unread: number): ProcessMetric[] =>
+      Array.from({ length: 10 }, (_, i) => proc('Tab', i + 1, 40 * MB, i < unread ? null : 40 * MB))
+    const out = processTypeBreakdown([sample(0, tabs(1)), sample(250, tabs(2))], 'proc-pss-sum')
+    expect(out['Tab']?.processes.count).toBe(2)
+    expect(out['Tab']?.memoryMb).toMatchObject({ count: 1, median: 360 })
+  })
+
   it('reports null memory for a basis with no per-process reading, but still counts processes', () => {
     const samples = [sample(0, [proc('Browser', 1, 100 * MB, null), proc('Tab', 2, 40 * MB)])]
     const out = processTypeBreakdown(samples, 'proc-pss-sum')

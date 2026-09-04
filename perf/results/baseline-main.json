@@ -28,15 +28,15 @@
     "coldStartMs": 1528,
     "deckOpenMs": 1794,
     "slideSwitchMs": {
-      "count": 60,
+      "count": 57,
       "min": 38.899999998509884,
-      "p25": 47.27500000409782,
-      "median": 54.350000005215406,
-      "p75": 65.2250000052154,
-      "p95": 151.38500000126623,
-      "max": 280,
-      "mean": 71.16666666666667,
-      "stdDev": 52.1758681979983
+      "p25": 47.20000000298023,
+      "median": 53.79999999701977,
+      "p75": 63.399999998509884,
+      "p95": 110.24000000208603,
+      "max": 145.10000000149012,
+      "mean": 60.38421052642036,
+      "stdDev": 23.2290636886702
     },
     "ramMb": {
       "count": 147,
@@ -186,15 +186,15 @@
           "stdDev": 44.83530569714919
         },
         "memoryMb": {
-          "count": 115,
+          "count": 147,
           "min": 49.228515625,
-          "p25": 127.26220703125,
-          "median": 1184.31640625,
-          "p75": 1247.31494140625,
-          "p95": 1288.13271484375,
+          "p25": 128.0048828125,
+          "median": 1203.322265625,
+          "p75": 1251.77294921875,
+          "p95": 1294.20458984375,
           "max": 1319.8017578125,
-          "mean": 802.7804772418478,
-          "stdDev": 538.3347722944999
+          "mean": 897.2508769132653,
+          "stdDev": 508.9455763228131
         }
       },
       "Utility": {
@@ -351,19 +351,19 @@
       "coldStartMs": 1528,
       "deckOpenMs": 1751,
       "medianRamMb": 1753.794921875,
-      "medianSlideSwitchMs": 56.44999999552965
+      "medianSlideSwitchMs": 53.79999999701977
     },
     {
       "coldStartMs": 2310,
       "deckOpenMs": 1794,
       "medianRamMb": 1658.439453125,
-      "medianSlideSwitchMs": 56.899999998509884
+      "medianSlideSwitchMs": 56.600000001490116
     },
     {
       "coldStartMs": 1258,
       "deckOpenMs": 1795,
       "medianRamMb": 1729.6435546875,
-      "medianSlideSwitchMs": 48.850000001490116
+      "medianSlideSwitchMs": 48.70000000298023
     }
   ],
   "notes": [
@@ -381,6 +381,7 @@
     "Shell frame rate during the dwell (fps, per run): 49.4, 2.4, 55.6.",
     "Idle RAM (starter deck, before the stress deck): 438 MB on the proc-pss-sum basis.",
     "CONTENDED: other processes were competing for this machine while these numbers were taken. Memory figures survive contention well; timing figures (cold start, slide switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this.",
-    "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence."
+    "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence.",
+    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 3 phantom samples removed from 60; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement."
   ]
 }

@@ -286,7 +286,9 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
   })()`)
   const stride = Math.max(1, Math.floor(slideCount / switchCount))
   for (let n = 0; n < switchCount; n += 1) {
-    const index = (n * stride) % slideCount
+    // Starts at `stride`, not 0: `applyRemoteDeck` keeps slide 0 selected after the push, and a
+    // click on the already-active slide fires no canvas `load`, so it measures nothing.
+    const index = ((n + 1) * stride) % slideCount
     // The rail is not virtualized today, so every item is in the DOM regardless of scroll position;
     // if that changes (M8.3), this needs to scroll the item into view first.
     const clicked = await page.evaluate<number | null>(

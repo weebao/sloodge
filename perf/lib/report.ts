@@ -11,6 +11,7 @@
  * harness that reported only the peak could not evaluate the budget it was built to evaluate.
  */
 
+import { z } from 'zod'
 import type { Summary } from './stats'
 import type { ProcessTypeBreakdown } from '../harness/sampler'
 
@@ -124,6 +125,84 @@ export type PerfReport = {
   }[]
   readonly notes: readonly string[]
 }
+
+const SummarySchema = z.object({
+  count: z.number(),
+  min: z.number(),
+  p25: z.number(),
+  median: z.number(),
+  p75: z.number(),
+  p95: z.number(),
+  max: z.number(),
+  mean: z.number(),
+  stdDev: z.number(),
+})
+
+const ProcessTypeBreakdownSchema = z.object({
+  processes: SummarySchema,
+  memoryMb: SummarySchema.nullable(),
+})
+
+/**
+ * Runtime mirror of `PerfReport`, for the committed JSON `perf:diff` reads. `satisfies` keeps the
+ * two from drifting: a field added to the type without a schema line fails to compile. A truncated
+ * or hand-edited report is refused by name here rather than crashing inside `budgetActuals`.
+ */
+export const PerfReportSchema = z.object({
+  schema: z.literal(1),
+  commit: z.string(),
+  generatedAt: z.string(),
+  deck: z.object({
+    slideCount: z.number(),
+    seed: z.number(),
+    totalSlideBytes: z.number(),
+    archetypeCounts: z.record(z.string(), z.number()),
+  }),
+  environment: z.object({
+    platform: z.string(),
+    release: z.string(),
+    cpuModel: z.string(),
+    cpuCount: z.number(),
+    totalMemMb: z.number(),
+    electron: z.string(),
+    node: z.string(),
+    display: z.string(),
+  }),
+  runs: z.number(),
+  metrics: z.object({
+    coldStartMs: z.number(),
+    deckOpenMs: z.number(),
+    slideSwitchMs: SummarySchema,
+    ramMb: SummarySchema,
+    ramBasis: z.enum(RAM_BASES),
+    frameIntervalMs: SummarySchema.nullable(),
+    droppedFrames: z.number(),
+    frameRateFps: z.number(),
+    longFrameIntervals: z.number(),
+    idleRamMb: z.number(),
+    rendererHeapMb: SummarySchema.nullable(),
+  }),
+  ramBases: z.record(z.string(), SummarySchema.nullable()),
+  processCount: SummarySchema.nullable(),
+  processTypes: z.object({
+    session: z.record(z.string(), ProcessTypeBreakdownSchema),
+    idle: z.record(z.string(), ProcessTypeBreakdownSchema),
+  }),
+  hostContention: z.object({
+    loadAvg1: SummarySchema.nullable(),
+    memAvailableMb: SummarySchema.nullable(),
+    contended: z.boolean(),
+  }),
+  perRun: z.array(
+    z.object({
+      coldStartMs: z.number(),
+      deckOpenMs: z.number(),
+      medianRamMb: z.number(),
+      medianSlideSwitchMs: z.number(),
+    }),
+  ),
+  notes: z.array(z.string()),
+}) satisfies z.ZodType<PerfReport>
 
 export type Budget = {
   readonly key: string

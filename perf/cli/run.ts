@@ -31,7 +31,9 @@ import {
   type PerfReport,
   type RamBasis,
 } from '../lib/report'
-import { readDeck, writeDeck } from '../../src/main/document/store'
+import { deckContentHash, type DeckContent } from '../lib/deck'
+import type { DeckHashEntry, DeckHashes } from './generate'
+import { readDeck, writeDeck, type DeckBundle } from '../../src/main/document/store'
 
 const CDP_PORT_BASE = 9500
 const INSPECT_PORT_BASE = 9600
@@ -39,6 +41,8 @@ const INSPECT_PORT_BASE = 9600
 type RunOptions = {
   readonly repoRoot: string
   readonly slideCount: number
+  /** The committed `deck-hashes.json` entry the run is labelled with — and checked against. */
+  readonly deck: DeckHashEntry
   readonly runs: number
   readonly display: string
   readonly ramBasis: RamBasis
@@ -72,25 +76,65 @@ function ramSeriesMb(samples: readonly Sample[], basis: RamBasis): number[] {
   return values
 }
 
+/**
+ * Read the stress deck about to be measured and prove it is the one `deck-hashes.json` describes.
+ * The record is provenance only if the run checks it: a `perf/decks/` left behind by an older
+ * generator, or a `--force --seed=1` regeneration, would otherwise be reported under the committed
+ * seed and hash while measuring a different workload.
+ *
+ * The hash is taken over the `.deck-update.json` payload because that is what the session pushes to
+ * the app, and it round-trips `JSON.stringify` byte for byte. The `.sloodge` cannot be hashed the
+ * same way — `readDeck` returns its manifest through zod, which normalises it — so its slides are
+ * compared against the payload's instead, which proves the same thing transitively.
+ */
+export async function loadStressDeck(
+  deckDir: string,
+  expected: DeckHashEntry,
+): Promise<{ bundle: DeckBundle; payloadPath: string; deckReadMs: number }> {
+  const name = `stress-${String(expected.slideCount)}`
+  const payloadPath = join(deckDir, `${name}.deck-update.json`)
+  const regenerate = `perf/decks/${name} does not match perf/deck-hashes.json — run pnpm perf:generate`
+
+  const payload = JSON.parse(await readFile(payloadPath, 'utf8')) as DeckContent
+  const hash = deckContentHash(payload)
+  if (hash !== expected.contentSha256) {
+    throw new Error(
+      `${regenerate} (payload content ${hash.slice(0, 12)}, recorded ${expected.contentSha256.slice(0, 12)}).`,
+    )
+  }
+
+  // The unzip half of a real File ▸ Open, measured with the shipped reader. `File ▸ Open` is not
+  // wired to anything yet, so this cost is reported separately rather than folded into deckOpenMs.
+  const readStart = Date.now()
+  const read = await readDeck(join(deckDir, `${name}.sloodge`))
+  if (!read.ok)
+    throw new Error(`readDeck failed for the stress deck: ${JSON.stringify(read.error)}`)
+  const deckReadMs = Date.now() - readStart
+
+  const order = read.bundle.manifest.slideOrder
+  const payloadOrder = payload.manifest.slideOrder
+  const sameSlides =
+    order.length === expected.slideCount &&
+    order.length === payloadOrder.length &&
+    order.every((id, i) => id === payloadOrder[i] && read.bundle.slides[id] === payload.slides[id])
+  if (!sameSlides) {
+    throw new Error(`${regenerate} (the .sloodge's slides differ from the payload's).`)
+  }
+  return { bundle: read.bundle, payloadPath, deckReadMs }
+}
+
 async function runOnce(options: RunOptions, index: number): Promise<SingleRun> {
   const { repoRoot, slideCount, display } = options
-  const deckDir = join(repoRoot, 'perf', 'decks')
-  const sloodgePath = join(deckDir, `stress-${String(slideCount)}.sloodge`)
-  const payloadPath = join(deckDir, `stress-${String(slideCount)}.deck-update.json`)
   const exportPath = join(
     repoRoot,
     'perf',
     'results',
     `export-${String(slideCount)}-${String(index)}.zip`,
   )
-
-  // The unzip half of a real File ▸ Open, measured with the shipped reader. `File ▸ Open` is not
-  // wired to anything yet, so this cost is reported separately rather than folded into deckOpenMs.
-  const readStart = Date.now()
-  const read = await readDeck(sloodgePath)
-  if (!read.ok)
-    throw new Error(`readDeck failed for the stress deck: ${JSON.stringify(read.error)}`)
-  const deckReadMs = Date.now() - readStart
+  const { bundle, payloadPath, deckReadMs } = await loadStressDeck(
+    join(repoRoot, 'perf', 'decks'),
+    options.deck,
+  )
 
   // The roadmap budget is "open **and save** of a 500-slide deck < 5s". Save has no UI path either,
   // so it is timed the same way: the shipped `writeDeck` (zip + fsync + atomic rename) over the
@@ -98,7 +142,7 @@ async function runOnce(options: RunOptions, index: number): Promise<SingleRun> {
   // will add — a floor, not the whole cost.
   const savePath = join(tmpdir(), `sloodge-perf-save-${String(index)}.sloodge`)
   const writeStart = Date.now()
-  const written = await writeDeck(savePath, read.bundle)
+  const written = await writeDeck(savePath, bundle)
   if (!written.ok)
     throw new Error(`writeDeck failed for the stress deck: ${JSON.stringify(written.error)}`)
   const deckWriteMs = Date.now() - writeStart
@@ -170,9 +214,19 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   const slideCount = Number(arg('slides', '100'))
   const runs = Number(arg('runs', '3'))
+  const deckMeta = JSON.parse(
+    await readFile(join(repoRoot, 'perf', 'deck-hashes.json'), 'utf8'),
+  ) as DeckHashes
+  const meta = deckMeta[`stress-${String(slideCount)}`]
+  if (meta === undefined) {
+    throw new Error(
+      `No generated deck for ${String(slideCount)} slides — run pnpm perf:generate first.`,
+    )
+  }
   const options: RunOptions = {
     repoRoot,
     slideCount,
+    deck: meta,
     runs,
     display: arg('display', ':0'),
     ramBasis: parseRamBasis(arg('ram-basis', 'app-metrics-working-set-sum')),
@@ -184,24 +238,6 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
 
   await mkdir(join(repoRoot, 'perf', 'results'), { recursive: true })
-
-  const deckMeta = JSON.parse(
-    await readFile(join(repoRoot, 'perf', 'deck-hashes.json'), 'utf8'),
-  ) as Record<
-    string,
-    {
-      seed: number
-      slideCount: number
-      totalSlideBytes: number
-      archetypeCounts: Record<string, number>
-    }
-  >
-  const meta = deckMeta[`stress-${String(slideCount)}`]
-  if (meta === undefined) {
-    throw new Error(
-      `No generated deck for ${String(slideCount)} slides — run pnpm perf:generate first.`,
-    )
-  }
 
   const collected: SingleRun[] = []
   for (let index = 0; index < options.runs; index += 1) {
@@ -243,7 +279,8 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (allSwitches.length === 0) {
     throw new Error(
       'No slide switch produced a canvas `load`; every latency is null. The canvas iframe is not ' +
-        'reloading on switch, or the recorder is watching the wrong element.',
+        'reloading on switch, the recorder is watching the wrong element, or every switch targeted ' +
+        'the already-active slide (a 1-slide deck).',
     )
   }
   const metrics: PerfMetrics = {
