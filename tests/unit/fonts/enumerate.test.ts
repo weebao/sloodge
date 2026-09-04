@@ -5,6 +5,11 @@ import {
   parseFcListOutput,
   parsePowerShellOutput,
 } from '../../../src/main/fonts/enumerate'
+import {
+  MAX_SYSTEM_FONT_FAMILIES,
+  isValidFontFamilyName,
+  normalizeFontFamilies,
+} from '../../../src/shared/fonts/family'
 
 /**
  * Verbatim `fc-list : family` output from the dev host (WSL2, Ubuntu). Kept as a fixture because it
@@ -93,12 +98,19 @@ describe('enumerateSystemFonts', () => {
     await expect(enumerateSystemFonts('freebsd')).resolves.toEqual({ families: [], source: 'none' })
   })
 
-  it('reports source: none when the platform tool is missing or fails', async () => {
-    // On this Linux host `fc-list` exists, so exercise the failure branch by asking for the win32
-    // path, where `powershell.exe` cannot be spawned. Either way the contract is the same: resolve,
-    // never reject.
+  it('always resolves with an already-normalised result, whatever the platform tool does', async () => {
+    // Asserted as invariants rather than as a fixed list, because this one really does run the
+    // Windows enumerator where the host can reach it (under WSL, `powershell.exe` resolves through
+    // interop and answers in ~0.5 s with the Windows host's families) and fails to spawn anywhere
+    // else. Both outcomes must be well-formed: a rejected promise would leave the dropdown stuck on
+    // "loading", and an unnormalised one would put OS-authored strings into slide CSS.
     const result = await enumerateSystemFonts('win32')
-    expect(result.source === 'none' || result.source === 'powershell').toBe(true)
-    expect(Array.isArray(result.families)).toBe(true)
+    expect(['powershell', 'none']).toContain(result.source)
+    expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
+    for (const name of result.families) {
+      expect(isValidFontFamilyName(name), name).toBe(true)
+    }
+    // Idempotent under normalisation: already sorted, deduped and allow-listed.
+    expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
   })
 })

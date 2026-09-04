@@ -29,6 +29,14 @@ function loaderFor(families: readonly string[]): () => Promise<SystemFontsRespon
 const LOAD_NOTHING = async (): Promise<SystemFontsResponse> => ({ families: [], source: 'none' })
 
 /**
+ * A loader whose promise the test resolves by hand, so it can act while enumeration is still in
+ * flight. Module-scoped so the JSX prop is a stable reference (react-perf); the test swaps the
+ * promise, not the function.
+ */
+let deferredFonts: Promise<SystemFontsResponse> = Promise.resolve({ families: [], source: 'none' })
+const LOAD_DEFERRED = (): Promise<SystemFontsResponse> => deferredFonts
+
+/**
  * Open the popover and wait for the *installed* list to have arrived. Waiting on the listbox alone
  * would race: it renders with the System group before the loader resolves, and the arrival of the
  * fonts resets the cursor — so a keystroke sent in that window is silently undone.
@@ -216,12 +224,12 @@ describe('FontFamilyControl — keyboard', () => {
     // Enumeration is a subprocess spawn, so it lands well after the popover opens — and lands later
     // on a slower machine. If its arrival re-homed the cursor, the user's keystroke would silently
     // vanish, and only sometimes.
-    let release: (value: SystemFontsResponse) => void = () => {}
-    const pending = new Promise<SystemFontsResponse>((resolve) => {
+    let release!: (value: SystemFontsResponse) => void
+    deferredFonts = new Promise<SystemFontsResponse>((resolve) => {
       release = resolve
     })
     const onPick = vi.fn()
-    render(<FontFamilyControl current={null} onPick={onPick} loadFonts={() => pending} />)
+    render(<FontFamilyControl current={null} onPick={onPick} loadFonts={LOAD_DEFERRED} />)
     fireEvent.click(screen.getByTestId('prop-fontFamily'))
 
     const input = await screen.findByTestId('font-filter')
