@@ -8,8 +8,12 @@
 
 import { createContext, runInContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
-import type { CdpClient } from '../../../perf/harness/cdp'
-import { INSTALL_RECORDER, SELECTORS } from '../../../perf/harness/page-recorder'
+import { CdpClosedError, type CdpClient } from '../../../perf/harness/cdp'
+import {
+  INSTALL_RECORDER,
+  LAST_SWITCH_LOADED,
+  SELECTORS,
+} from '../../../perf/harness/page-recorder'
 import { switchSlides } from '../../../perf/harness/session'
 
 type Listener = (event: { target: { tagName: string } }) => void
@@ -115,6 +119,29 @@ describe('switchSlides', () => {
     })
     expect(switches.map((s) => s.index)).toStrictEqual([5])
     expect(switches[0]?.censored).toBe(false)
+  })
+
+  it('fails the run when the wait dies of something other than its deadline', async () => {
+    // The censored-switch case above pins the tolerated half: a deadline that expires is a
+    // measurement outcome. This pins the other half — the app being gone must not be reported as
+    // "no canvas load", which would send an operator after a rendering bug that is not there.
+    const page = fakePage(6, () => 20)
+    const dead: Pick<CdpClient, 'evaluate'> = {
+      evaluate: <T>(expression: string) =>
+        expression === LAST_SWITCH_LOADED
+          ? Promise.reject(new CdpClosedError('the renderer target is gone'))
+          : page.evaluate<T>(expression),
+    }
+    await expect(
+      switchSlides({
+        page: dead,
+        slideCount: 6,
+        switchCount: 3,
+        loadWaitMs: 1000,
+        settleMs: 10,
+        assertAlive: alive,
+      }),
+    ).rejects.toThrow(CdpClosedError)
   })
 
   it('skips a rail item that is not in the DOM and says so', async () => {

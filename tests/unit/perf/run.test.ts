@@ -8,9 +8,9 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { generateDeck, type DeckHashEntry } from '../../../perf/cli/generate'
-import { loadStressDeck, writeRunArtifacts } from '../../../perf/cli/run'
+import { abortUnusableRun, loadStressDeck, writeRunArtifacts } from '../../../perf/cli/run'
 import { buildStressDeck, type DeckContent } from '../../../perf/lib/deck'
 import { PerfReportSchema } from '../../../perf/lib/report'
 import baseline from '../../../perf/results/baseline-main.json'
@@ -111,6 +111,20 @@ describe('writeRunArtifacts', () => {
     expect(PerfReportSchema.safeParse(JSON.parse(await readFile(out, 'utf8'))).success).toBe(true)
   })
 
+  // `--out` is a free-form string, and the trace is named after the report. Each of these spellings
+  // used to derive a trace path equal to the report path, so the trace landed on the report and a
+  // multi-minute run was lost to its own raw series.
+  it.each(['mine', 'mine.JSON', 'a.json.bak'])(
+    'writes the trace beside the report rather than over it, for --out=%s',
+    async (name) => {
+      const out = join(dir, name)
+      const { tracePath } = await writeRunArtifacts(report, [{ run: 0 }], out)
+      expect(tracePath).not.toBe(out)
+      expect(JSON.parse(await readFile(tracePath, 'utf8'))).toStrictEqual([{ run: 0 }])
+      expect(PerfReportSchema.safeParse(JSON.parse(await readFile(out, 'utf8'))).success).toBe(true)
+    },
+  )
+
   it('keeps a run with no idle samples on disk as null, and reports it unfit for a baseline', async () => {
     // `--idle-dwell=0`: the file is written (a multi-minute run is not thrown away), the field is
     // an honest null rather than a NaN the schema refuses, and the caller learns at write time.
@@ -125,4 +139,74 @@ describe('writeRunArtifacts', () => {
     expect(problems).toHaveLength(1)
     expect(problems[0]).toMatch(/metrics\.idleRamMb is null/)
   })
+})
+
+describe('abortUnusableRun', () => {
+  let dir = ''
+  let stdout = ''
+  let stderr = ''
+  const exitCodeBefore = process.exitCode
+  const trace = [{ run: 0, samples: [] }]
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sloodge-perf-unusable-'))
+    stdout = ''
+    stderr = ''
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      stdout += `${line}\n`
+    })
+    vi.spyOn(console, 'error').mockImplementation((line: string) => {
+      stderr += `${line}\n`
+    })
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    process.exitCode = exitCodeBefore
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const abort = (allRam: number[], allSwitches: number[], outFile: string) =>
+    abortUnusableRun({
+      allRam,
+      allSwitches,
+      ramBasis: 'proc-pss-sum',
+      trace,
+      outFile,
+    })
+
+  it('lets a run with both series through without writing or failing anything', async () => {
+    const out = join(dir, 'run.json')
+    expect(await abort([120.5], [40], out)).toStrictEqual([])
+    await expect(readFile(out, 'utf8')).rejects.toThrow()
+    await expect(readFile(join(dir, 'run.trace.json'), 'utf8')).rejects.toThrow()
+    expect(process.exitCode).toBe(exitCodeBefore)
+  })
+
+  it.each([
+    { ram: [] as number[], switches: [40], causes: ['no-ram-samples'] },
+    { ram: [120.5], switches: [] as number[], causes: ['no-measured-switches'] },
+    {
+      ram: [] as number[],
+      switches: [] as number[],
+      causes: ['no-ram-samples', 'no-measured-switches'],
+    },
+  ])(
+    'keeps the trace and writes no report when the causes are $causes',
+    async ({ ram, switches, causes }) => {
+      const out = join(dir, 'run.json')
+      expect(await abort(ram, switches, out)).toStrictEqual(causes)
+      // The run is kept: a multi-minute session's raw samples survive a verdict of "unsummarizable",
+      // and the operator is told where they are.
+      const tracePath = join(dir, 'run.trace.json')
+      expect(JSON.parse(await readFile(tracePath, 'utf8'))).toStrictEqual(trace)
+      expect(stdout).toContain(tracePath)
+      // One line per cause, so nothing is diagnosed as a single mystery.
+      expect(stderr.match(/\n {2}\S/g)).toHaveLength(causes.length)
+      // No report at all, rather than one summarizing an empty series: `perf:diff` can never be
+      // handed a zeroed PASS, and the non-zero exit says the run failed.
+      await expect(readFile(out, 'utf8')).rejects.toThrow()
+      expect(process.exitCode).toBe(1)
+    },
+  )
 })

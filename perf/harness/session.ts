@@ -57,6 +57,17 @@ export const SWITCH_SETTLE_MS = 220
 /** Poll interval for shell detection. The resulting error is the cold-start upper bound's precision. */
 const SHELL_POLL_MS = 25
 
+/**
+ * The rejection handler for the two waits whose expiry is an outcome rather than a fault: not every
+ * rail frame fired `load`, and this switch's canvas load never arrived. Both record what they saw
+ * and carry on; anything else — a dead app, a closed socket — is rethrown, because reporting it as
+ * "the frames did not load" sends an operator after a rendering bug that is not there. An allowlist,
+ * so a new error class is loud by default.
+ */
+function rethrowUnlessTimeout(error: unknown): void {
+  if (!(error instanceof WaitTimeoutError)) throw error
+}
+
 export type SessionResult = {
   /** Upper bound: spawn -> `#sloodge-shell` observed, +/- SHELL_POLL_MS. */
   readonly coldStartMs: number
@@ -249,7 +260,7 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
       250,
       assertAlive,
     ).catch((error: unknown) => {
-      if (!(error instanceof WaitTimeoutError)) throw error
+      rethrowUnlessTimeout(error)
       warnings.push(
         'Not every rail frame fired `load` before the timeout; deckRenderMs is a floor.',
       )
@@ -470,9 +481,7 @@ export async function switchSlides(
     }
     // A load that never arrives is what this wait is here to bound: the switch is censored below and
     // counted. Anything else — a dead app, a closed socket — is not ours to swallow.
-    await waitFor(page, LAST_SWITCH_LOADED, loadWaitMs, 20, assertAlive).catch((error: unknown) => {
-      if (!(error instanceof WaitTimeoutError)) throw error
-    })
+    await waitFor(page, LAST_SWITCH_LOADED, loadWaitMs, 20, assertAlive).catch(rethrowUnlessTimeout)
     await sleep(settleMs)
   }
   const switches = await page.evaluate<SwitchRecord[]>(READ_SWITCHES)

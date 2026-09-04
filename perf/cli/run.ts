@@ -287,33 +287,15 @@ export async function main(argv: readonly string[]): Promise<void> {
     frameIntervalsMs: run.session.activeSlideFrameIntervalsMs,
   }))
 
-  // A budgeted series with no samples is a failed run, not a 0 that happens to be under budget, and
-  // `summarize` refuses an empty series — so there is no honest report to write. The trace still
-  // holds every sample the session did collect, so it is kept and the verdict is delivered through
-  // the same channel as a schema failure: a named problem and a non-zero exit, never a lost run.
-  const unusable: string[] = []
-  if (allRam.length === 0) {
-    unusable.push(
-      `No RAM samples on the ${options.ramBasis} basis (proc-* bases need Linux /proc).`,
-    )
-  }
-  if (allSwitches.length === 0) {
-    unusable.push(
-      'No slide switch produced a canvas `load` before the next click; every switch is unmeasured. ' +
-        'The canvas iframe is not reloading on switch, the recorder is watching the wrong element, ' +
-        'every switch targeted the already-active slide (a 1-slide deck), or every switch took ' +
-        `longer than ${String(SWITCH_LOAD_WAIT_MS + SWITCH_SETTLE_MS)} ms.`,
-    )
-  }
-  if (unusable.length > 0) {
-    const tracePath = await writeTrace(trace, options.outFile)
-    console.log(`\nTrace:  ${tracePath}`)
-    console.error(
-      `\nNo report was written; the trace above is the run:\n  ${unusable.join('\n  ')}`,
-    )
-    process.exitCode = 1
-    return
-  }
+  const unusable = await abortUnusableRun({
+    allRam,
+    allSwitches,
+    ramBasis: options.ramBasis,
+    trace,
+    outFile: options.outFile,
+  })
+  if (unusable.length > 0) return
+
   const metrics: PerfMetrics = {
     coldStartMs: median(collected.map((r) => r.session.coldStartMs)),
     deckOpenMs: median(collected.map((r) => r.session.deckRenderMs)),
@@ -477,9 +459,58 @@ export async function writeRunArtifacts(
   return { tracePath, problems: reportProblems(JSON.parse(json)) }
 }
 
-/** The raw series, beside the report and named after it. Written even when no report can be. */
+/** Why a run cannot be summarized at all. */
+export type UnusableCause = 'no-ram-samples' | 'no-measured-switches'
+
+/**
+ * A budgeted series with no samples is a failed run, not a 0 that happens to be under budget, and
+ * `summarize` refuses an empty series — so there is no honest report to write. The trace still holds
+ * every sample the session did collect, so it is kept and the verdict is delivered through the same
+ * channel as a schema failure: a named cause and a non-zero exit, never a lost run and never a
+ * zeroed report `perf:diff` would read as a PASS.
+ *
+ * Returns the causes it acted on. Empty means the run is summarizable and nothing was written.
+ */
+export async function abortUnusableRun(options: {
+  readonly allRam: readonly number[]
+  readonly allSwitches: readonly number[]
+  readonly ramBasis: RamBasis
+  readonly trace: unknown
+  readonly outFile: string
+}): Promise<UnusableCause[]> {
+  const causes: UnusableCause[] = []
+  if (options.allRam.length === 0) causes.push('no-ram-samples')
+  if (options.allSwitches.length === 0) causes.push('no-measured-switches')
+  if (causes.length === 0) return causes
+
+  const tracePath = await writeTrace(options.trace, options.outFile)
+  console.log(`\nTrace:  ${tracePath}`)
+  const named = causes
+    .map((cause) =>
+      cause === 'no-ram-samples'
+        ? `No RAM samples on the ${options.ramBasis} basis (proc-* bases need Linux /proc).`
+        : 'No slide switch produced a canvas `load` before the next click; every switch is unmeasured. ' +
+          'The canvas iframe is not reloading on switch, the recorder is watching the wrong element, ' +
+          'every switch targeted the already-active slide (a 1-slide deck), or every switch took ' +
+          `longer than ${String(SWITCH_LOAD_WAIT_MS + SWITCH_SETTLE_MS)} ms.`,
+    )
+    .join('\n  ')
+  console.error(`\nNo report was written; the trace above is the run:\n  ${named}`)
+  process.exitCode = 1
+  return causes
+}
+
+/**
+ * The raw series, beside the report and named after it. Written even when no report can be.
+ *
+ * The name is built by appending; a `.json` tail is dropped only so the result reads as one
+ * extension rather than two. That keeps it strictly longer than `outFile` for every `--out` a
+ * caller can spell, so it can never *be* `outFile`. Substituting the suffix instead left the two
+ * paths equal whenever the pattern missed (`--out=mine`, `mine.JSON`, `a.json.bak`), and the trace
+ * then overwrote the report it was meant to sit beside.
+ */
 async function writeTrace(trace: unknown, outFile: string): Promise<string> {
-  const tracePath = outFile.replace(/\.json$/, '.trace.json')
+  const tracePath = `${outFile.replace(/\.json$/i, '')}.trace.json`
   await writeFile(tracePath, `${JSON.stringify(trace, null, 2)}\n`, 'utf8')
   return tracePath
 }
