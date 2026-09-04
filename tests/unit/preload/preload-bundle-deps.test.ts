@@ -424,13 +424,17 @@ function identifiersIn(node: unknown, into: Set<string>): void {
 }
 
 interface ModuleBindings {
-  /** Names the module declares itself, at the top level. */
+  /** Names the module declares itself, at the top level, spelled the way esbuild spells them —
+   * which is not always the way the source does. Ask `declaresUnderAnyName`, never `.has`, when the
+   * question is whether a name is *absent*. */
   readonly declared: ReadonlySet<string>
   /** Names it takes from another module, by `import … from` or `export … from`, keyed by that
    * module's specifier. */
   readonly fromModule: ReadonlyMap<string, ReadonlySet<string>>
   /** Every identifier it names anywhere, so a name it never mentions reads as absent. */
   readonly mentioned: ReadonlySet<string>
+  /** The specifiers it re-exports wholesale with `export * from`, which mention no names at all. */
+  readonly reExportsAll: ReadonlySet<string>
 }
 
 /** Where each name in `source` comes from, read off the AST for the reason argued above. */
@@ -439,6 +443,7 @@ async function moduleBindings(file: string, source: string): Promise<ModuleBindi
   const declared = new Set<string>()
   const mentioned = new Set<string>()
   const fromModule = new Map<string, Set<string>>()
+  const reExportsAll = new Set<string>()
 
   // `id` only, never `params` or `body`: a parameter shadowing a name does not redeclare it.
   const declarationsIn = (node: unknown): void => {
@@ -467,13 +472,36 @@ async function moduleBindings(file: string, source: string): Promise<ModuleBindi
     const record = node as Record<string, unknown>
     const spec = specifierOf(record['source'])
     if (spec === null) continue
+    if (record['type'] === 'ExportAllDeclaration') reExportsAll.add(spec)
     const names = fromModule.get(spec) ?? new Set<string>()
     fromModule.set(spec, names)
     identifiersIn(record['specifiers'], names)
   }
   identifiersIn(ast, mentioned)
 
-  return { declared, mentioned, fromModule }
+  return { declared, mentioned, fromModule, reExportsAll }
+}
+
+/**
+ * Whether `declared` holds `name` under any spelling esbuild may have given it.
+ *
+ * ## Read this before adding an assertion over a `ModuleBindings`
+ *
+ * Every set above is read off esbuild's *output*, because that is the only form of a `.ts` file
+ * rollup's parser will take. esbuild renames a top-level local that collides with a name it
+ * introduces, and lowering `export { packForApiScan } from './forbidden-apis'` introduces exactly
+ * that name — so a local `packForApiScan` beside it arrives here as `packForApiScan2`. The scheme is
+ * a counter appended to the original spelling, `2` then `3` and on through the collisions, with the
+ * original never rewritten: `scan99` becomes `scan992`, not `scan100`.
+ *
+ * Which way an assertion has to lean follows from that. Asking whether a name is **absent** cannot
+ * go through `declared.has`, because shadowing the name is the very thing that renames it and the
+ * check would pass on the drift it exists to forbid; ask this instead, and it reads the rename as
+ * the declaration it is. Asking whether a name is **present** — the leaf check below — must stay on
+ * `declared.has`, since a renamed near-miss is not the name that was wanted.
+ */
+function declaresUnderAnyName(declared: ReadonlySet<string>, name: string): boolean {
+  return [...declared].some((id) => id.startsWith(name) && /^\d*$/.test(id.slice(name.length)))
 }
 
 const SCAN_NAMES = ['FORBIDDEN_API_TOKENS', 'packForApiScan', 'findForbiddenApiTokens']
@@ -498,11 +526,18 @@ const SCAN_NAMES = ['FORBIDDEN_API_TOKENS', 'packForApiScan', 'findForbiddenApiT
 describe('the SL-S04 scan', () => {
   it('is imported into slide-contract.ts from the leaf, never redeclared there', async () => {
     const file = join(ROOT, 'src/shared/document/slide-contract.ts')
-    const { declared, fromModule, mentioned } = await moduleBindings(file, DISK.read(file))
+    const { declared, fromModule, mentioned, reExportsAll } = await moduleBindings(
+      file,
+      DISK.read(file),
+    )
     const fromLeaf = fromModule.get('./forbidden-apis') ?? new Set<string>()
 
-    expect(SCAN_NAMES.filter((name) => declared.has(name))).toEqual([])
+    expect(SCAN_NAMES.filter((name) => declaresUnderAnyName(declared, name))).toEqual([])
     expect(SCAN_NAMES.filter((name) => mentioned.has(name) && !fromLeaf.has(name))).toEqual([])
+    // Both lines above read names, and `export * from` states none — so a third module holding the
+    // second copy would satisfy them by saying nothing. No such re-export exists anywhere in `src`;
+    // this keeps the pair total over what the module puts its name to.
+    expect([...reExportsAll].filter((spec) => spec !== './forbidden-apis')).toEqual([])
   })
 
   // Without this, renaming a function in the leaf would empty the guard above rather than fail it.
