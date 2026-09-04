@@ -213,7 +213,8 @@ describe('ChatPanel — streaming transcript', () => {
 
   it('surfaces a typed error as a chat bubble', () => {
     fake.emit({ type: 'error', kind: 'auth', message: '401', recoverable: false })
-    expect(screen.getByRole('alert').textContent).toMatch(/authentication failed/i)
+    // The calibrated sentence, not the raw `401` the event carries.
+    expect(screen.getByRole('alert').textContent).toMatch(/rejected your credential/i)
   })
 
   it('shows a visible, non-alarming notice when the bundled skills did not load', () => {

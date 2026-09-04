@@ -191,8 +191,8 @@ export function useChatSession(): ChatSession {
         }
         if (result.reason === 'slash-command') {
           // The text would have reached the runtime as one of its own commands, which resets the
-          // cost tracker the budget guard reads (`AgentService.isLocalCommandText`). Nothing was
-          // sent, and the composer still holds the words to edit.
+          // cost tracker the budget guard reads (`isLocalCommandText`). Nothing was sent, and the
+          // composer still holds the words to edit.
           dispatch({
             type: 'agent-event',
             event: { type: 'error', kind: 'slash-command', message: '', recoverable: true },
@@ -200,15 +200,11 @@ export function useChatSession(): ChatSession {
           return false
         }
         // The credential was removed between the status probe and this send: surface it as a
-        // chat-visible auth error rather than a silently swallowed turn, and re-gate the composer.
+        // chat-visible error rather than a silently swallowed turn, and re-gate the composer. Its
+        // own kind, not `auth` — nothing failed to authenticate, so "add one" is the right remedy.
         dispatch({
           type: 'agent-event',
-          event: {
-            type: 'error',
-            kind: 'auth',
-            message: 'No Claude credential is configured.',
-            recoverable: false,
-          },
+          event: { type: 'error', kind: 'no-credential', message: '', recoverable: false },
         })
         setAuthStatus(NOT_CONFIGURED)
         return false

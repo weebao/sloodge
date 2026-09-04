@@ -155,7 +155,11 @@ export function toolChipStyle(label: string): ChipStyle {
  * -------------------------------------------------------------------------------------------- */
 
 const ERROR_COPY: Record<AgentErrorKind, string> = {
-  auth: 'Authentication failed — check your Claude API key in Settings.',
+  // Two credential failures, two remedies. Neither names "API key": M2.7 stores either an API key or
+  // a subscription token, and telling a subscription user to check a key they never had is worse
+  // than saying nothing.
+  auth: 'Claude rejected your credential. Check it in Settings ▸ Auth.',
+  'no-credential': 'No Claude credential is configured — add one in Settings ▸ Auth.',
   'rate-limit': 'Claude is busy right now. Try again in a moment.',
   overloaded: 'Claude is overloaded. Try again shortly.',
   network: "Can't reach Claude. Slides and Design Mode still work offline.",

@@ -74,16 +74,41 @@
  *
  * Rounds 4 and 5 each answered this with a claim about *which writer runs* — "the tracker is always
  * restored on resume", then "a stream-json subprocess never writes the key" — and both were wrong.
- * So the answer here is structural instead, and it is what a third mining of the binary (sha256
- * matching the SDK manifest's `linux-x64` entry) actually supports: the whole binary holds exactly
- * three `lEo(` / `xws(` / `Y$r(` sites each — the definitions, plus two `lEo` call sites, the
- * interactive startup resume and the resume picker, **both inside `if (!forkSession)`**. The
- * non-interactive loader the SDK's `--print` mode uses calls none of them.
+ * So the answer here is structural instead. Mining the binary (sha256 `674f61f2…`, equal to the SDK
+ * manifest's `linux-x64` checksum) a third time gives exactly three sites per symbol. Offsets are
+ * byte offsets into *that* binary and move on any rebuild; `sdk-cost-contract.test.ts` carries the
+ * commands that reproduce them.
  *
- * `client.ts` therefore pairs every `resume` with `forkSession: true`: the process then keeps the
- * fresh uuid it minted at startup instead of adopting the resumed id, so no stored `lastSessionId`
- * can match, whichever writer ran. That is a positive guarantee rather than a negative fact about
- * call graphs, which is the kind that has now been misread twice.
+ *   `lEo(`  253843367  definition: `lEo(e){let t=xws(e);if(!t)return!1;return Y$r(t),!0}`
+ *           264561799  `cdi()`, the interactive startup resume — inside `if(!t.forkSession){…}`
+ *           267491669  the resume picker — inside `if(Me.sessionId&&!f)`, where `f` is forkSession
+ *   `xws(`  253842867  definition
+ *           253843380  the call inside `lEo`
+ *           267254355  `let tf=xws(_t)`
+ *   `Y$r(`  246916429  definition
+ *           253843409  the call inside `lEo`
+ *           267255672  `if(tf)Y$r(tf)`
+ *
+ * Both `lEo` call sites are fork-gated. The third `xws`/`Y$r` pair is **not** a third `lEo` call and
+ * is **not** fork-gated: it is an independent restore inlined into one interactive React callback
+ * (`kr.useCallback(async(_t,dr,Nr)=>{` at 267252935, reporting `tengu_session_resumed`), and its
+ * `if(tf)Y$r(tf)` runs for `Nr==="resume"` and `Nr==="fork"` alike. Reading the three counts as
+ * "the definitions plus the two fork-gated `lEo` calls" — the arithmetic that happens to work for
+ * `lEo` — concludes that every restore site is fork-gated, which is false.
+ *
+ * So the guarantee is a **pair**, not that one fact:
+ *
+ *   (a) `sHm` (`loadInitialMessages`), the loader the SDK's `--print`/stream-json mode uses, reaches
+ *       none of the nine sites — all nine are accounted for above and none lies inside it;
+ *   (b) `client.ts` pairs every `resume` with `forkSession: true`, so the process keeps the fresh
+ *       uuid it minted at startup instead of adopting the resumed id (`LBe`:
+ *       `sessionId: forkSession ? kt() : s`) and no stored `lastSessionId` can match — which also
+ *       gates out both `lEo` call sites outright.
+ *
+ * The un-gated pair is out of reach for a different reason: only the Ink TUI's session picker drives
+ * that callback, and `AgentService.send` refuses `/resume` before it could be asked for anyway. That
+ * is a positive guarantee plus a bounded exception, rather than a negative fact about call graphs —
+ * the kind that has now been misread twice.
  *
  * Were a restore to fire anyway, this rule reads **high** by the banked amount — the safe direction
  * for a spend control — never low; `session.test.ts` pins that branch, and the contract test is what

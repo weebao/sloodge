@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentService, isLocalCommandText } from '../../../src/main/agent/service'
+import { AgentService } from '../../../src/main/agent/service'
+import { isLocalCommandText } from '../../../src/main/agent/session'
 import type { AgentCredential } from '../../../src/main/agent/auth-env'
 import type { AgentQueryFn, AgentQueryHandle } from '../../../src/main/agent/query-contract'
 import type { AgentEvent } from '../../../src/shared/agent/types'

@@ -203,6 +203,44 @@ describe('AgentSession', () => {
     expect(session.openTurns).toBe(1)
   })
 
+  it('refuses local-command text itself rather than trusting its single caller', async () => {
+    // `AgentService.send` already refuses this, with a reason the renderer can explain — but this
+    // class is exported and directly constructible, so the cap's guarantee that a `/clear` never
+    // reaches the wire rested on that call site staying unique. Here it is a construction instead:
+    // no subprocess is started, no turn is opened, and nothing is written to the stream.
+    const logged: string[] = []
+    const queryFn = vi.fn(() => fakeHandle([]))
+    const session = new AgentSession({
+      queryFn: queryFn as unknown as AgentQueryFn,
+      options: OPTIONS,
+      emit: () => {},
+      log: (line) => logged.push(line),
+    })
+    session.send('  /clear ')
+    expect(queryFn).not.toHaveBeenCalled()
+    expect(session.openTurns).toBe(0)
+    expect(logged.some((line) => line.includes('local-command text refused'))).toBe(true)
+    await session.close()
+  })
+
+  it('normalises a malformed cap through the same sanitiser admission uses', async () => {
+    // A cap of 0 is rejected by `isBudgetCap` at both the IPC boundary and the file parse, so this
+    // is unreachable today. It is pinned because the two enforcers must not *disagree* about it:
+    // `evaluateBudget` reads 0 as the $2.00 default, and this used to hand `maxBudgetUsd: 0` to the
+    // query — a backstop that would end every turn on its first API call.
+    const calls: Parameters<AgentQueryFn>[0][] = []
+    const queryFn = ((params: Parameters<AgentQueryFn>[0]) => {
+      calls.push(params)
+      return fakeHandle([])
+    }) as unknown as AgentQueryFn
+    const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {}, log: () => {} })
+    session.setBudgetCap(0)
+    session.send('hi')
+    expect(calls[0]?.options.maxBudgetUsd).toBe(evaluateBudget(0, 0).capUsd)
+    expect(calls[0]?.options.maxBudgetUsd).toBe(2)
+    await session.close()
+  })
+
   describe('skillStatus — the §8 assertion that the bundled skills reached the model', () => {
     it('reports nothing missing, and no degradation notice, when init lists all three', async () => {
       const emitted: AgentEvent[] = []

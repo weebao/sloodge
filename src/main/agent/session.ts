@@ -8,7 +8,7 @@
  */
 
 import type { AgentEvent } from '../../shared/agent/types'
-import type { BudgetCap } from '../../shared/agent/budget'
+import { effectiveCap, type BudgetCap } from '../../shared/agent/budget'
 import {
   beginTurn,
   foldTurnCost,
@@ -58,6 +58,46 @@ export type SkillStatus =
 
 /** How this session is loading its slide-craft knowledge. See `SkillStatus`. */
 export type SkillMode = 'skills' | 'fallback'
+
+/**
+ * Whether the CLI would read this text as one of its own **local commands** rather than as a message.
+ *
+ * The bundled runtime dispatches a user message beginning with `/` against its command list, and its
+ * non-interactive filter keeps every `type: "local", supportsNonInteractive: true` entry — `/clear`
+ * and its aliases `/reset` and `/new` among them. That command's generator runs `Att()`, which sets
+ * the subprocess's `Ot.totalCostUSD` back to **0**. Both of Sloodge's spend controls read that
+ * counter: the fold reads it through `total_cost_usd`, and the SDK's `maxBudgetUsd` backstop compares
+ * `vS() >= cap` against it directly. So a user typing `/clear` into the chat box zeroed the meter
+ * mid-session and made the cap unenforceable — round 5 measured $1.50 read for $2.50 spent.
+ *
+ * **The predicate is the CLI's own, not an approximation of it.** In 2.1.220 (binary sha256
+ * `674f61f2…`) the runtime's parser is `function Rfe(e){let t=e.trim();if(!t.startsWith("/"))return
+ * null;…}` — the same `trim`, the same `startsWith`, on the same JS `String.prototype.trim`. There is
+ * no whitespace-class divergence to exploit: a U+FEFF-prefixed `/clear` is refused here *because*
+ * `trim` strips U+FEFF, which is exactly the case an un-trimmed `startsWith` would have let through.
+ * Text the CLI reads as prose — `x /clear`, a fullwidth `／clear`, prose with `/clear` on a second
+ * line — is prose to us too, so the refusal copy can honestly say the runtime would have run it.
+ *
+ * **Refused rather than escaped.** Escaping (a zero-width space, a leading marker, a quoted form) was
+ * the tempting alternative because it keeps the send alive, but it requires guessing how the CLI
+ * normalises text before it dispatches — a guess we cannot check without a live login, and one whose
+ * failure mode is a silent cap bypass rather than a visible error. It also spends real money
+ * answering a message the user did not mean as prose. Refusal costs nothing, is decided entirely by
+ * Sloodge, and the composer keeps the user's words so a rephrase is one keystroke away.
+ *
+ * `--disable-slash-commands` is **not** the tool: it sets the same `Ot.disableSlashCommands` that
+ * `GUe()` reads, but its own help text is "Disable all skills", and §8's skills must keep working.
+ *
+ * Deliberately not narrowed to the known command names: the command list is the runtime's to change,
+ * and a message that merely *begins* with a slash is rare enough that refusing all of them costs a
+ * rephrase, while enumerating names would let the next release add one we do not know about.
+ *
+ * It lives here, beside the only code that writes text into the CLI stream, rather than in
+ * `AgentService` where the user-facing refusal is decided — so both layers test the same predicate.
+ */
+export function isLocalCommandText(text: string): boolean {
+  return text.trim().startsWith('/')
+}
 
 /**
  * Result subtypes that end the `query()` itself, not merely the turn.
@@ -162,11 +202,14 @@ export class AgentSession {
    * The most recent `session_id` the runtime reported. Used to `resume` when a query is re-armed
    * after ending, so a budget stop does not also wipe the conversation.
    *
-   * Resume carries the *conversation*, not the CLI's cost tracker. The CLI restores `totalCostUSD`
-   * on resume only when its per-cwd project config's `lastSessionId` matches the id the process runs
-   * under, and `client.ts` pairs every `resume` with `forkSession: true`, which keeps the process on
-   * a fresh uuid — so nothing can match. A re-armed query's snapshots therefore start at $0 and the
-   * fold banks the dead generation's total rather than trusting the new one's first snapshot
+   * Resume carries the *conversation*, not the CLI's cost tracker. Every restore in the CLI reads
+   * `xws(id)`, which returns nothing unless the per-cwd project config's `lastSessionId` equals the
+   * id it is handed, and `client.ts` pairs every `resume` with `forkSession: true`, which keeps the
+   * process on the fresh uuid it minted at startup — so nothing can match. Note the guarantee is
+   * that, plus the print loader reaching no restore at all: *not* every restore site is fork-gated,
+   * and `shared/agent/cost.ts` enumerates all of them by byte offset rather than leaving that to be
+   * re-derived from the counts. A re-armed query's snapshots therefore start at $0 and the fold
+   * banks the dead generation's total rather than trusting the new one's first snapshot
    * (`shared/agent/cost.ts`).
    */
   private lastSessionId: string | null = null
@@ -219,9 +262,22 @@ export class AgentSession {
   /**
    * Enqueue a user turn, starting the query on first use. Validation happens before this is ever
    * called (IPC + preload), and the bridge cannot throw, so the input generator stays throw-free.
+   *
+   * The slash-command check is repeated here even though `AgentService.send` already refused such
+   * text (§10). Not defence against the CLI — defence against *this class*: it is exported and
+   * directly constructible, and the cap's whole guarantee that a tracker reset never reaches the
+   * wire rested on `AgentService.send` staying its only caller, which is a convention rather than a
+   * construction. A second caller that forgot would silently disarm the cap; refusing here makes it
+   * a logged no-op instead. On the shipped path this never fires — the reachable refusal happens
+   * upstream, with a reason the renderer can explain and the user's words still in the composer.
    */
   send(text: string): void {
     if (this.closed) return
+    if (isLocalCommandText(text)) {
+      const log = this.deps.log ?? defaultAgentLog
+      log('[agent] local-command text refused at AgentSession.send — admission missed it')
+      return
+    }
     if (this.handle === null || this.queryFinished) this.start()
     // Opens the cost turn on the same event the renderer opens its own on, which is what makes the
     // two accumulators agree rather than merely resemble each other (shared/agent/cost.ts).
@@ -265,7 +321,9 @@ export class AgentSession {
    * is not load-bearing on its own and `AgentService.send` refuses that text outright.
    */
   setBudgetCap(capUsd: BudgetCap): void {
-    this.capUsd = capUsd
+    // Through the same normaliser admission uses, so a malformed cap cannot mean $2.00 to
+    // `evaluateBudget` and `maxBudgetUsd: 0` here (`effectiveCap`).
+    this.capUsd = effectiveCap(capUsd)
     this.enforceCap()
   }
 

@@ -52,7 +52,7 @@ describe('cost accumulation — total_cost_usd is a running total, folded as a m
     expect(state.openTurns).toBe(0)
   })
 
-  it('is order-independent for overlapping results: whichever lands second carries the larger total', () => {
+  it('overlapping results: whichever lands second carries the larger total', () => {
     // "Out of order" means the two *turns* are answered out of order, not that the two totals arrive
     // out of order. One subprocess writes its results serially and stamps each with its running total
     // at write time, so the second to land is the larger whichever turn it belongs to. This used to be

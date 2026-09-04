@@ -13,7 +13,7 @@ import { canStartTurn, evaluateBudget, type BudgetCap } from '../../shared/agent
 import type { AgentInterruptResponse, AgentSendResponse } from '../../shared/ipc-contract'
 import type { AgentCredential } from './auth-env'
 import { defaultAgentLog, type AgentLog } from './log'
-import { AgentSession } from './session'
+import { AgentSession, isLocalCommandText } from './session'
 import type { AgentQueryFn } from './query-contract'
 
 export type AgentServiceDeps = {
@@ -60,36 +60,6 @@ export type AgentServiceDeps = {
   readonly loadBudgetCap?: () => Promise<BudgetCap>
   /** Diagnostic sink; defaults to `defaultAgentLog`. Injected so a test can read what was logged. */
   readonly log?: AgentLog
-}
-
-/**
- * Whether the CLI would read this text as one of its own **local commands** rather than as a message.
- *
- * The bundled runtime dispatches a user message beginning with `/` against its command list, and its
- * non-interactive filter keeps every `type: "local", supportsNonInteractive: true` entry — `/clear`
- * and its aliases `/reset` and `/new` among them. That command's generator runs `Att()`, which sets
- * the subprocess's `Ot.totalCostUSD` back to **0**. Both of Sloodge's spend controls read that
- * counter: the fold reads it through `total_cost_usd`, and the SDK's `maxBudgetUsd` backstop compares
- * `vS() >= cap` against it directly. So a user typing `/clear` into the chat box zeroed the meter
- * mid-session and made the cap unenforceable — round 5 measured $1.50 read for $2.50 spent.
- *
- * **Refused rather than escaped.** Escaping (a zero-width space, a leading marker, a quoted form) was
- * the tempting alternative because it keeps the send alive, but it requires guessing how the CLI
- * normalises text before it dispatches — a guess we cannot check without a live login, and one whose
- * failure mode is a silent cap bypass rather than a visible error. It also spends real money
- * answering a message the user did not mean as prose. Refusal costs nothing, is decided entirely by
- * Sloodge, and the composer keeps the user's words so a rephrase is one keystroke away.
- *
- * `--disable-slash-commands` is **not** the tool: it sets the same `Ot.disableSlashCommands` that
- * `GUe()` reads, but its own help text is "Disable all skills", and §8's skills must keep working.
- *
- * The test is a leading `/` after trimming, matching where the CLI looks. Deliberately not narrowed
- * to the known command names: the command list is the runtime's to change, and a message that merely
- * *begins* with a slash is rare enough that refusing all of them costs a rephrase, while enumerating
- * names would let the next release add one we do not know about.
- */
-export function isLocalCommandText(text: string): boolean {
-  return text.trim().startsWith('/')
 }
 
 /** The part of `MaterializeSkillsResult` the service reports on. Structural, so the seam stays thin. */

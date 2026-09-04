@@ -189,7 +189,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('hello')
     await screen.findByText(/budget reached for this session/i)
-    expect(screen.queryByText(/authentication failed/i)).toBeNull()
+    expect(screen.queryByText(/credential/i)).toBeNull()
   })
 
   it('a MAIN refusal leaves no phantom open turn — the two ledgers must not drift', async () => {
@@ -233,18 +233,21 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     await waitFor(() => expect(composer().disabled).toBe(false))
 
     send('still mine')
-    await screen.findByText(/authentication failed/i)
+    await screen.findByText(/no claude credential is configured/i)
     expect(composer().value).toBe('still mine')
   })
 
-  it('still renders the auth gate for a no-credential refusal', async () => {
+  it('names the missing credential, not a failed authentication, for a no-credential refusal', async () => {
+    // The two need opposite remedies. Nothing was authenticated and nothing failed here, and M2.7
+    // stores either an API key or a subscription token — "check your API key" was wrong twice over.
     const fake = makeFakeBridge(null, { accepted: false, reason: 'no-credential' })
     window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
     render(<ChatPanel />)
     await waitFor(() => expect(composer().disabled).toBe(false))
 
     send('hello')
-    await screen.findByText(/authentication failed/i)
+    await screen.findByText(/no claude credential is configured/i)
+    expect(screen.queryByText(/rejected your credential/i)).toBeNull()
     expect(screen.queryByText(/budget reached/i)).toBeNull()
   })
 

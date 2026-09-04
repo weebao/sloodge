@@ -9,6 +9,7 @@ import {
   BUDGET_WARN_FRACTION,
   canStartTurn,
   DEFAULT_BUDGET_CAP_USD,
+  effectiveCap,
   evaluateBudget,
   isBudgetCap,
   isBudgetSetRequest,
@@ -63,6 +64,23 @@ describe('evaluateBudget — the warn/block progression', () => {
     // The total is ours to compute, so a NaN in it is our bug — it must not refuse turns.
     expect(evaluateBudget(Number.NaN, 2).spentUsd).toBe(0)
     expect(evaluateBudget(Number.NaN, 2).level).toBe('ok')
+  })
+})
+
+describe('effectiveCap — one normaliser, so the two enforcers cannot disagree', () => {
+  it('is the single source both admission and the SDK backstop read', () => {
+    // Admission calls it through `evaluateBudget`; `AgentSession.setBudgetCap` calls it directly.
+    // When the branch lived inside `evaluateBudget` alone, a cap of 0 meant $2.00 to admission and
+    // `maxBudgetUsd: 0` to the query — a half-applied defence, which reads as an applied one.
+    for (const bad of [Number.NaN, 0, -5, Number.POSITIVE_INFINITY]) {
+      expect(effectiveCap(bad)).toBe(DEFAULT_BUDGET_CAP_USD)
+      expect(evaluateBudget(1, bad).capUsd).toBe(effectiveCap(bad))
+    }
+  })
+
+  it('honours the two values a user can actually choose', () => {
+    expect(effectiveCap(null)).toBeNull()
+    expect(effectiveCap(7.5)).toBe(7.5)
   })
 })
 

@@ -28,7 +28,10 @@ export function isAgentModelId(value: unknown): value is AgentModelId {
  * How a turn failed, surfaced as a typed event rather than a thrown string (50-agent-integration.md
  * §13). The renderer branches on `kind` to choose recovery UX; `message` is human-readable copy.
  *
- * - `auth` — 401/403; key is flagged invalid, not deleted.
+ * - `auth` — 401/403; the credential is flagged invalid, not deleted.
+ * - `no-credential` — no credential is configured at all. Distinct from `auth` because nothing was
+ *   authenticated and nothing failed, and the two need opposite remedies: "check the one you have"
+ *   versus "add one". Folding them told a subscription user to check an API key they never had.
  * - `rate-limit` / `overloaded` — 429 / 529; the SDK retries internally, so this only surfaces once
  *   it has given up.
  * - `network` — DNS/offline; the deck stays editable offline.
@@ -40,6 +43,7 @@ export function isAgentModelId(value: unknown): value is AgentModelId {
  */
 export const AGENT_ERROR_KINDS = [
   'auth',
+  'no-credential',
   'rate-limit',
   'overloaded',
   'network',

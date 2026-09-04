@@ -93,7 +93,7 @@ function sanitizeSpend(spentUsd: number): number {
 }
 
 /**
- * Classify the session against its cap. Total: any pairing of numbers produces a status.
+ * The cap a stored value actually enforces.
  *
  * **The two failure directions are not treated alike.** `null` is the user's explicit "no limit" and
  * is honoured. A cap that is *malformed* — `NaN`, negative, zero — is not a choice anyone made, and
@@ -103,23 +103,33 @@ function sanitizeSpend(spentUsd: number): number {
  * being locked out of their own chat box.
  *
  * It should be unreachable — `isBudgetCap` gates the IPC and the file, `parseBudgetCap` gates the
- * form — and it is defence for the day someone adds a fourth path that forgets to validate.
+ * form — and it is defence for the day someone adds a fourth path that forgets to validate. Which is
+ * why it is a function **both** enforcers call rather than a branch inside one of them: admission
+ * asks `evaluateBudget` and the SDK backstop is set by `AgentSession.setBudgetCap`, so a `0` that one
+ * read as $2.00 while the other handed `maxBudgetUsd: 0` to the query would be two enforcers
+ * disagreeing about the same number — a half-applied defence is the kind that reads as applied.
+ */
+export function effectiveCap(capUsd: BudgetCap): BudgetCap {
+  if (capUsd === null) return null
+  return Number.isFinite(capUsd) && capUsd > 0 ? capUsd : DEFAULT_BUDGET_CAP_USD
+}
+
+/**
+ * Classify the session against its cap. Total: any pairing of numbers produces a status.
  *
- * A malformed *spend* still reads as 0: the total is ours to compute, and a `NaN` meter must not
- * decide anyone is over budget.
+ * A malformed *spend* reads as 0: the total is ours to compute, and a `NaN` meter must not decide
+ * anyone is over budget. A malformed *cap* is normalised by `effectiveCap`.
  */
 export function evaluateBudget(spentUsd: number, capUsd: BudgetCap): BudgetStatus {
   const spent = sanitizeSpend(spentUsd)
-  if (capUsd === null) {
+  const cap = effectiveCap(capUsd)
+  if (cap === null) {
     return { level: 'off', capUsd: null, spentUsd: spent, fraction: 0 }
   }
-  if (!Number.isFinite(capUsd) || capUsd <= 0) {
-    return evaluateBudget(spent, DEFAULT_BUDGET_CAP_USD)
-  }
-  const fraction = Math.min(1, spent / capUsd)
+  const fraction = Math.min(1, spent / cap)
   const level: BudgetLevel =
-    spent >= capUsd ? 'blocked' : spent >= capUsd * BUDGET_WARN_FRACTION ? 'warn' : 'ok'
-  return { level, capUsd, spentUsd: spent, fraction }
+    spent >= cap ? 'blocked' : spent >= cap * BUDGET_WARN_FRACTION ? 'warn' : 'ok'
+  return { level, capUsd: cap, spentUsd: spent, fraction }
 }
 
 /** Whether a new turn may be started. The one question the composer asks before sending. */
