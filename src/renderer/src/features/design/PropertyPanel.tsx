@@ -33,7 +33,7 @@
  * the one with the panel open, so reserving it costs the never-selected state only.
  */
 
-import { useCallback, useMemo, useState, type JSX } from 'react'
+import { useCallback, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
 import { buildElementContextBundle } from '../../../../shared/design/element-context'
@@ -133,6 +133,12 @@ export function PropertyPanel({
   // re-render that changed neither does not re-parse.
   const map = useMemo(() => buildSlideMap(slide.id, slide.html), [slide.id, slide.html])
 
+  // Owned here, and used one level down, because it has to outlive the `key` below: committing a
+  // font pick changes `map.sourceHash`, which remounts the entire field subtree — including the
+  // trigger the dropdown had just focused. A ref above the key is what carries "give the trigger
+  // focus back" across that remount. See the effect that consumes it in `FontFamilyControl`.
+  const fontFocus = useRef(false)
+
   // "Ask Claude about this element" (§6.1, wireframe §20): build the element context bundle and attach
   // it to the next chat turn as the composer's `[⊕ctx]` chip. The bundle's authoritative field — the
   // element's source HTML — is re-derived here from the parent-owned map keyed by the parent-tracked
@@ -204,6 +210,7 @@ export function PropertyPanel({
             values={values}
             swatches={swatches}
             picker={resolvedPicker}
+            fontFocus={fontFocus}
             {...(loadFonts !== undefined ? { loadFonts } : {})}
           />
           <div className="mt-2">
@@ -229,6 +236,7 @@ interface PropertyFieldsProps {
   readonly swatches: readonly ThemeSwatch[]
   readonly picker: ColorPicker | null
   readonly loadFonts?: SystemFontLoader
+  readonly fontFocus: RefObject<boolean>
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -253,6 +261,7 @@ function PropertyFields({
   swatches,
   picker,
   loadFonts,
+  fontFocus,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -411,6 +420,7 @@ function PropertyFields({
         <FontFamilyControl
           current={values.fontFamily}
           onPick={pickFont}
+          focusOnRemount={fontFocus}
           {...(loadFonts !== undefined ? { loadFonts } : {})}
         />
       </div>

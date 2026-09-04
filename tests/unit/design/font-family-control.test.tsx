@@ -321,11 +321,13 @@ describe('FontFamilyControl — face previews and windowing', () => {
       writable: true,
       configurable: true,
     })
+    // Asserted synchronously, not through `waitFor`: `fireEvent.scroll` is wrapped in `act`, so
+    // the re-render has already flushed by the time it returns. A poll loop here adds nothing but a
+    // window for another test's timers to interleave — which is how this test red once in a full
+    // `test:win-paths` run and then passed 3/3 in isolation.
     fireEvent.scroll(list)
 
-    await waitFor(() => {
-      expect(screen.getByTestId('font-option-Face 400')).toBeTruthy()
-    })
+    expect(screen.getByTestId('font-option-Face 400')).toBeTruthy()
     expect(screen.queryByTestId('font-option-Face 000')).toBeNull()
   })
 })
@@ -391,5 +393,118 @@ describe('FontFamilyControl — enumeration seam', () => {
       expect(screen.getByTestId('font-unavailable')).toBeTruthy()
     })
     expect(screen.getByTestId('font-option-Arial')).toBeTruthy()
+  })
+})
+
+/**
+ * A restore flag nobody has set. Module-scoped so the JSX prop is a stable reference (react-perf).
+ */
+const UNSET_FOCUS_FLAG = { current: false }
+
+describe('FontFamilyControl — focus', () => {
+  it('returns focus to the trigger on Escape', async () => {
+    await open(null, vi.fn())
+    expect(document.activeElement).toBe(screen.getByTestId('font-filter'))
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
+
+    expect(screen.queryByTestId('font-listbox')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('returns focus to the trigger after a pick', async () => {
+    await open(null, vi.fn())
+
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('does not steal focus on a mount that follows no pick', () => {
+    // The focus-restore flag is consumed by the commit after a pick and by no later one; a panel
+    // that merely remounts (a different element selected, say) must leave focus where it is.
+    render(<FontFamilyControl current={null} onPick={vi.fn()} focusOnRemount={UNSET_FOCUS_FLAG} />)
+
+    expect(document.activeElement).toBe(document.body)
+  })
+})
+
+/** The face the cursor is on, read the way the ARIA does: the row marked active. */
+function activeOption(): string | null {
+  return document.querySelector('[data-active="true"]')?.textContent ?? null
+}
+
+describe('FontFamilyControl — paging and focus containment', () => {
+  const MANY = Array.from({ length: 800 }, (_, i) => `Face ${String(i).padStart(3, '0')}`)
+
+  it('closes when focus leaves the popover, so Tab cannot orphan it', async () => {
+    await open(null, vi.fn())
+    const outside = document.createElement('button')
+    document.body.append(outside)
+
+    fireEvent.focusOut(screen.getByTestId('font-filter'), { relatedTarget: outside })
+
+    expect(screen.queryByTestId('font-listbox')).toBeNull()
+    outside.remove()
+  })
+
+  it('stays open when focus goes nowhere, which is what a mousedown on a row reports', () => {
+    // Closing on a null `relatedTarget` would cancel the very click that is about to pick a face.
+    render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+
+    fireEvent.focusOut(screen.getByTestId('font-filter'), { relatedTarget: null })
+
+    expect(screen.getByTestId('font-listbox')).toBeTruthy()
+  })
+
+  it('Home and End move the cursor to the first and last face', async () => {
+    await open(null, vi.fn(), MANY, 'font-option-Face 000')
+    const filter = screen.getByTestId('font-filter')
+
+    fireEvent.keyDown(filter, { key: 'End' })
+    expect(activeOption()).toBe('Face 799')
+
+    fireEvent.keyDown(filter, { key: 'Home' })
+    expect(activeOption()).toBe(SYSTEM_FONT_GROUP[0]!.name)
+  })
+
+  it('PageDown and PageUp move by a viewport of selectable rows, skipping the group header', async () => {
+    await open(null, vi.fn(), MANY, 'font-option-Face 000')
+    const filter = screen.getByTestId('font-filter')
+
+    fireEvent.keyDown(filter, { key: 'Home' })
+    // Seven system faces, then the "Installed" header (which consumes no step), then the list.
+    fireEvent.keyDown(filter, { key: 'PageDown' })
+    expect(activeOption()).toBe('Face 001')
+
+    fireEvent.keyDown(filter, { key: 'PageUp' })
+    expect(activeOption()).toBe(SYSTEM_FONT_GROUP[0]!.name)
+  })
+})
+
+describe('FontFamilyControl — empty state', () => {
+  it('says why a face the machine has may not be listed', async () => {
+    await open(null, vi.fn())
+
+    fireEvent.change(screen.getByTestId('font-filter'), { target: { value: 'Akbar' } })
+
+    const empty = screen.getByTestId('font-empty')
+    expect(empty.textContent).toContain('No matching fonts.')
+    // The allow-list drops 8% of one real machine's faces; without this the user cannot tell a
+    // filtered-out font from a typo.
+    expect(empty.textContent).toContain('unusual characters')
+  })
+
+  it('does not blame the allow-list on a machine whose fonts could not be enumerated', async () => {
+    render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={LOAD_NOTHING} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-unavailable')).toBeTruthy()
+    })
+
+    fireEvent.change(screen.getByTestId('font-filter'), { target: { value: 'Akbar' } })
+
+    expect(screen.getByTestId('font-empty').textContent).not.toContain('unusual characters')
   })
 })

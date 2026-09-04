@@ -15,7 +15,11 @@ import {
 import { validateSlideContract } from '../../../src/shared/document/slide-contract'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { applyOps } from '../../../src/shared/design/patch'
-import { buildFieldOps, resolveElement } from '../../../src/shared/design/property-model'
+import {
+  buildFieldOps,
+  readPropertyValues,
+  resolveElement,
+} from '../../../src/shared/design/property-model'
 
 /**
  * Names sampled from the OpenType `name` tables of a real Windows 11 install. They are here because
@@ -33,6 +37,24 @@ const REAL_NON_ASCII_NAMES = [
   'HG丸ｺﾞｼｯｸM-PRO',
   '細明體_HKSCS-ExtB',
   'BIZ UDPMincho Medium',
+]
+
+/**
+ * Family names whose first character is a decimal digit that is **not** ASCII `0`-`9`.
+ *
+ * `\p{Nd}` — the class the allow-list admits as a first character — covers Arabic-Indic, Devanagari,
+ * fullwidth and the non-BMP mathematical digits, so every one of these is a name a font file on a
+ * CJK or Arabic Windows install can legitimately carry, and every one reaches the CSS composer. They
+ * are here because the leading-digit escape has to carry the character's *own* code point: a
+ * hardcoded `\3` prefix wrote U+0003 into the declaration, and for the non-BMP digit it split a
+ * surrogate pair in half.
+ */
+const DIGIT_LEAD_NAMES = [
+  '1979 Sans', // ASCII — pinned so the fix stays byte-identical for the case that already worked
+  '\u0663\u0662 Sans', // U+0663 ARABIC-INDIC DIGIT THREE
+  '\u0967 Sans', // U+0967 DEVANAGARI DIGIT ONE
+  '\uff11 Sans', // U+FF11 FULLWIDTH DIGIT ONE
+  '\u{1D7CE} Sans', // U+1D7CE MATHEMATICAL BOLD DIGIT ZERO — a surrogate pair
 ]
 
 /** Names that carry a CSS or HTML injection payload. Every one must be refused. */
@@ -224,6 +246,20 @@ describe('cssIdentFontFamily', () => {
     expect(cssIdentFontFamily('1979 Sans')).toBe('\\31 979 Sans')
   })
 
+  it('escapes a leading NON-ASCII digit with its own code point, not a hardcoded \\3', () => {
+    // `\\3` is the escape for U+0033, i.e. the character `3` — correct only for ASCII `0`-`9`.
+    // `\\3` + `\u0663` decodes as U+0003 followed by a stray `\u0663`: a font that cannot exist.
+    expect(cssIdentFontFamily('\u0663\u0662 Sans')).toBe('\\663 \u0662 Sans')
+    expect(cssIdentFontFamily('\u0967 Sans')).toBe('\\967  Sans')
+    expect(cssIdentFontFamily('\uff11 Sans')).toBe('\\ff11  Sans')
+  })
+
+  it('slices a leading digit by code point, so a non-BMP digit cannot leave a lone surrogate', () => {
+    // `out[0]` on `\u{1D7CE}` takes half a surrogate pair; the escape then carries the other half
+    // into slide source, which no longer survives a UTF-8 save.
+    expect(cssIdentFontFamily('\u{1D7CE} Sans')).toBe('\\1d7ce  Sans')
+  })
+
   it('hex-escapes a newline, which cannot follow a bare backslash', () => {
     expect(cssIdentFontFamily('a\nb')).toBe('a\\a b')
   })
@@ -253,7 +289,13 @@ describe('cssIdentFontFamily', () => {
   })
 
   it('round-trips through the reader for every payload it is handed', () => {
-    for (const name of [...REAL_NON_ASCII_NAMES, 'Foo.Bar', 'Segoe UI', 'Evil"; } body {']) {
+    for (const name of [
+      ...REAL_NON_ASCII_NAMES,
+      ...DIGIT_LEAD_NAMES,
+      'Foo.Bar',
+      'Segoe UI',
+      'Evil"; } body {',
+    ]) {
       expect(readPickedFontFamily(cssIdentFontFamily(name)), name).toBe(name)
     }
   })
@@ -399,5 +441,35 @@ describe('a picked font leaves the slide contract-valid', () => {
     const before = buildSlideMap('s1', SLIDE)
     const after = buildSlideMap('s1', pick('Papyrus'))
     expect(after.order).toEqual(before.order)
+  })
+
+  it('round-trips a non-ASCII digit lead through save, reopen and a second edit', () => {
+    for (const name of DIGIT_LEAD_NAMES) {
+      const patched = pick(name)
+      expect(patched, name).not.toBe(SLIDE)
+      expect(validateSlideContract(patched).ok, name).toBe(true)
+
+      // Save: a lone surrogate half does not survive a UTF-8 encode, it comes back as U+FFFD. And
+      // a `\\3` prefix on a non-ASCII digit decodes to a literal U+0003 in the declaration.
+      expect(Buffer.from(patched, 'utf8').toString('utf8'), name).toBe(patched)
+      expect(patched.includes('\u0003'), name).toBe(false)
+
+      // Reopen: the panel reads back the face the user actually picked, not a mangled one.
+      const reopened = buildSlideMap('s1', patched)
+      const heading = reopened.order.find((id) => reopened.byId.get(id)?.tagName === 'h1')!
+      const element = resolveElement(reopened, heading)!
+      expect(
+        readPickedFontFamily(readPropertyValues(reopened.source, element).fontFamily),
+        name,
+      ).toBe(name)
+
+      // Re-edit another property: the family declaration is re-serialised byte-identically.
+      const edited = applyOps(
+        reopened.source,
+        buildFieldOps(reopened.source, element, 'fontSize', '60'),
+      )
+      expect(edited, name).toContain(`font-family: ${buildFontFamilyValue(name)!}`)
+      expect(edited, name).toContain('font-size: 60px')
+    }
   })
 })
