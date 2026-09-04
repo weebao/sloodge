@@ -46,7 +46,7 @@ it are worth stating plainly:
   `!important` declaration there beat the host's inline `all: initial` — so the baseline became the
   value under test and the same slide scored 65 or 100 on the presence of one keyword.
 
-`LAYOUT_RESOLVED_PROPERTIES` is the inverted deny-list, and each of its ~200 entries is a written,
+`LAYOUT_RESOLVED_PROPERTIES` is the inverted deny-list, and each of its ~160 entries is a written,
 falsifiable claim about CSS. r3 falsified four of them by hand (`contain`, `content-visibility`,
 `visibility`, `content`), two of which made the exporter **invent** content the slide never showed.
 r4 falsified two more — `view-transition-name` and `will-change` — and they are the ones that turned

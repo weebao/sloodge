@@ -222,6 +222,7 @@ async function main(): Promise<number> {
   if (record) mkdirSync(recordedDir, { recursive: true })
   const registry = installSlideProtocol()
   const scriptHash = sha256(slideMeasurementScript())
+  const truthHash = sha256(groundTruthScript())
 
   const byMode: Record<Mode, SlideAssessment[]> = { auto: [], editable: [] }
   const pixelInputs: { file: string; pptx: string; ref: string }[] = []
@@ -265,6 +266,7 @@ async function main(): Promise<number> {
     const recorded: RecordedSlide = {
       file: corpus.file,
       measurementScriptSha256: scriptHash,
+      groundTruthScriptSha256: truthHash,
       measure: recordedMeasure,
       truth,
     }

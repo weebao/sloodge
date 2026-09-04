@@ -104,9 +104,12 @@ const EMPTY_MEASURE: MeasureResult = {
 
 /**
  * Build an offscreen PPTX renderer bound to `registry`. The window is created lazily and reused for
- * the whole job; `dispose()` tears it down. A measurement-pass exception yields an empty node list (so
- * the planner sees "no structured content" and, with a capture in hand, routes to raster) rather than
- * failing the slide — matching the PDF path's degrade-don't-hang policy.
+ * the whole job; `dispose()` tears it down. A measurement-pass exception yields an empty node list
+ * rather than failing the slide — matching the PDF path's degrade-don't-hang policy. Note where that
+ * lands: an empty measurement scores 100, emits nothing and reports no coverage shortfall, so the
+ * slide ships structured and *blank* rather than as the capture taken beside it (measured in M4.8a
+ * r5, 60-export.md §3.4). Rastering it instead is a trade-off — a deliberately empty slide would
+ * become a picture — so it is written down rather than changed in passing.
  */
 export function createOffscreenPptxRenderer(registry: SlideRegistry): SlidePptxRenderer {
   let win: BrowserWindow | null = null

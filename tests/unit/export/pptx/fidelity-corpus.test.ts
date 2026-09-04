@@ -15,6 +15,7 @@ import {
 } from '../../../fidelity/lib/assess'
 import { CORPUS, recordedFileName, type RecordedSlide } from '../../../fidelity/lib/corpus'
 import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback'
+import { groundTruthScript } from '../../../fidelity/lib/truth'
 
 /**
  * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 26-slide corpus.
@@ -25,8 +26,8 @@ import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback
  * `writeDeckPptx` with the real pptxgenjs — read back from the emitted `.pptx`. No app launch, no
  * Python, deterministic.
  *
- * The recordings are pinned to the measurement script that produced them: change
- * `slideMeasurementScript` and this file fails closed until `pnpm fidelity --record` is re-run.
+ * The recordings are pinned to *both* scripts that produced them: change `slideMeasurementScript`
+ * or `groundTruthScript` and this file fails closed until `pnpm fidelity --record` is re-run.
  *
  * Mutations that red this file (each was run): deleting the rotation decomposition in `walker.ts`
  * (`placement` → measured rect) reds the `rot` and box cases; reverting `scoreSlide` to ignore
@@ -211,14 +212,21 @@ const editable = await assessAll('editable')
 const summary = summarize(auto)
 
 describe('fidelity corpus recordings', () => {
-  it('cover every corpus slide and were produced by the current measurement script', () => {
+  it('cover every corpus slide and were produced by the current measurement and truth scripts', () => {
     const scriptHash = createHash('sha256').update(slideMeasurementScript(), 'utf8').digest('hex')
+    const truthHash = createHash('sha256').update(groundTruthScript(), 'utf8').digest('hex')
     expect(recorded.map((r) => r.file)).toEqual(CORPUS.map((c) => c.file))
     for (const r of recorded) {
       expect(
         r.measurementScriptSha256,
         `${r.file}: recording is stale — run \`pnpm fidelity --record\``,
       ).toBe(scriptHash)
+      // The oracle needs the same pin as the pass it judges: r4 widened `widestBorder` and nothing
+      // forced a re-record, so the suite would have gone on asserting against the truth it replaced.
+      expect(
+        r.groundTruthScriptSha256,
+        `${r.file}: recorded ground truth is stale — run \`pnpm fidelity --record\``,
+      ).toBe(truthHash)
     }
   })
 

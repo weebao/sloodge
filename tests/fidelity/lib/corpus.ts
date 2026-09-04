@@ -97,12 +97,15 @@ export const CORPUS: readonly CorpusSlide[] = [
  * One corpus slide as recorded by the Electron harness: the exporter's own measurement pass and
  * the independent ground truth, from the same loaded document. Committed under
  * `tests/fidelity/corpus/recorded/` so the structural targets run in vitest with no app launch.
- * `measurementScriptSha256` pins the recording to the script that produced it — a changed script
- * fails the corpus test closed until the harness is re-run with `--record`.
+ * Both halves are pinned to the script that produced them — `measurementScriptSha256` for the
+ * exporter's pass, `groundTruthScriptSha256` for the oracle — so changing either fails the corpus
+ * test closed until the harness is re-run with `--record`. The oracle is pinned for the same reason
+ * as the pass it judges, and against a mistake that has already happened once (r5).
  */
 export type RecordedSlide = {
   file: string
   measurementScriptSha256: string
+  groundTruthScriptSha256: string
   measure: MeasureResult
   truth: GroundTruth
 }

@@ -57,8 +57,10 @@
  * spec: `will-change: <property>` creates a stacking context exactly when the engine holds that
  * property to be one that creates a stacking context or containing block, so the whole list was
  * swept through a `z-index: -1` paint-order fixture one name at a time. `view-transition-name` was
- * the only hit in 161. `container-type` was the one entry the spec's own wording puts in doubt (it
- * applies layout containment, which does create a stacking context) and it was checked directly:
+ * the only hit in the 161 the sweep could test — `will-change` is the instrument and cannot test
+ * itself, so it was falsified directly instead. `container-type` was the one entry the spec's own
+ * wording puts in doubt (it applies layout containment, which does create a stacking context) and
+ * it was checked directly:
  * `container-type: inline-size` and `: size` both compute `contain: none` in Chromium and leave the
  * fixture's paint order alone.
  *
