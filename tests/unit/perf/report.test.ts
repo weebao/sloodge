@@ -13,6 +13,7 @@ import {
   budgetTable,
   checkBudgets,
   diffReports,
+  reportProblems,
   type PerfMetrics,
 } from '../../../perf/lib/report'
 import type { Summary } from '../../../perf/lib/stats'
@@ -49,6 +50,7 @@ function metrics(overrides: Partial<PerfMetrics> = {}): PerfMetrics {
     coldStartMs: 1500,
     deckOpenMs: 2000,
     slideSwitchMs: summary(50),
+    unmeasuredSwitches: 0,
     ramMb: summary(150),
     ramBasis: 'app-metrics-working-set-sum',
     frameIntervalMs: summary(16.7),
@@ -122,6 +124,13 @@ describe('checkBudgets', () => {
     expect(checks.find((c) => c.key === 'coldStartMs')?.samples).toBeNull()
   })
 
+  it('carries the unmeasured switch count on the slide-switch row and nowhere else', () => {
+    const checks = checkBudgets(metrics({ unmeasuredSwitches: 2 }))
+    expect(checks.find((c) => c.key === 'slideSwitchMs')?.unmeasured).toBe(2)
+    expect(checks.find((c) => c.key === 'slideSwitchMs')?.pass).toBe(true)
+    expect(checks.find((c) => c.key === 'medianRamMb')?.unmeasured).toBeNull()
+  })
+
   it('throws when a budget names a metric the report does not carry', () => {
     // A silently skipped budget is how a suite goes green while measuring nothing.
     expect(() =>
@@ -167,6 +176,22 @@ describe('diffReports', () => {
     expect(diff.find((d) => d.key === 'coldStartMs')?.regressed).toBe(false)
   })
 
+  it('flags a rise in unmeasured switches as a regression even when the median improved', () => {
+    // A switch too slow for the instrument to see is a slow switch. Before the harness waited for
+    // each load, such switches simply left the series and a bimodal regression passed the median.
+    const base = metrics({ unmeasuredSwitches: 0 })
+    const slower = diffReports(base, metrics({ slideSwitchMs: summary(40), unmeasuredSwitches: 1 }))
+    expect(slower.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(true)
+    expect(slower.find((d) => d.key === 'coldStartMs')?.regressed).toBe(false)
+    const same = diffReports(metrics({ unmeasuredSwitches: 3 }), metrics({ unmeasuredSwitches: 3 }))
+    expect(same.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(false)
+    const fewer = diffReports(
+      metrics({ unmeasuredSwitches: 3 }),
+      metrics({ unmeasuredSwitches: 1 }),
+    )
+    expect(fewer.find((d) => d.key === 'slideSwitchMs')?.regressed).toBe(false)
+  })
+
   it('honours a custom tolerance', () => {
     const base = metrics({ coldStartMs: 1000 })
     expect(
@@ -197,6 +222,15 @@ describe('budgetTable', () => {
     const table = budgetTable(checkBudgets(metrics({ slideSwitchMs: EMPTY })))
     expect(table).toContain('| Slide switch (median) | no samples | < 100 ms | FAIL |')
   })
+
+  it('downgrades a passing slide-switch row to WARN when switches went unmeasured', () => {
+    const table = budgetTable(checkBudgets(metrics({ unmeasuredSwitches: 2 })))
+    expect(table).toContain('| Slide switch (median) | 50.0 ms (+2 unmeasured) | < 100 ms | WARN |')
+    expect(table).toContain('| Median RAM during stress suite | 150.0 MB | < 200 MB | PASS |')
+    expect(
+      budgetTable(checkBudgets(metrics({ slideSwitchMs: summary(120), unmeasuredSwitches: 2 }))),
+    ).toContain('| Slide switch (median) | 120.0 ms (+2 unmeasured) | < 100 ms | FAIL |')
+  })
 })
 
 describe('PerfReportSchema', () => {
@@ -215,6 +249,52 @@ describe('PerfReportSchema', () => {
 
   it('rejects a report of another schema version', () => {
     expect(PerfReportSchema.safeParse({ ...baseline, schema: 2 }).success).toBe(false)
+  })
+
+  it('accepts a null idle RAM and a null per-run median, as the harness writes them', () => {
+    // `JSON.stringify` writes NaN as null. These fields used to be typed `number`, so a run with no
+    // idle samples produced a file the schema then refused.
+    const document: unknown = JSON.parse(
+      JSON.stringify({
+        ...baseline,
+        metrics: { ...baseline.metrics, idleRamMb: Number.NaN },
+        perRun: baseline.perRun.map((run, i) =>
+          i === 0 ? { ...run, medianSlideSwitchMs: Number.NaN } : run,
+        ),
+      }),
+    )
+    const result = PerfReportSchema.safeParse(document)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.metrics.idleRamMb).toBeNull()
+      expect(result.data.perRun[0]?.medianSlideSwitchMs).toBeNull()
+    }
+  })
+})
+
+describe('reportProblems', () => {
+  it('finds nothing wrong with the committed baseline', () => {
+    expect(reportProblems(baseline)).toStrictEqual([])
+  })
+
+  it('names a null idle RAM and a null per-run median as unfit for a baseline', () => {
+    const problems = reportProblems({
+      ...baseline,
+      metrics: { ...baseline.metrics, idleRamMb: null },
+      perRun: baseline.perRun.map((run, i) =>
+        i === 1 ? { ...run, medianSlideSwitchMs: null } : run,
+      ),
+    })
+    expect(problems).toHaveLength(2)
+    expect(problems[0]).toMatch(/metrics\.idleRamMb is null/)
+    expect(problems[1]).toMatch(/perRun\[1\]\.medianSlideSwitchMs is null/)
+  })
+
+  it('reports a schema failure by field', () => {
+    const { ramMb: _dropped, ...truncated } = baseline.metrics
+    const problems = reportProblems({ ...baseline, metrics: truncated })
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('metrics.ramMb')
   })
 })
 

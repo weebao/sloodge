@@ -38,6 +38,7 @@
       "mean": 56.74736842081735,
       "stdDev": 19.96442542420084
     },
+    "unmeasuredSwitches": 1,
     "ramMb": {
       "count": 59,
       "min": 229.7255859375,
@@ -351,7 +352,8 @@
       "coldStartMs": 1366,
       "deckOpenMs": 1433,
       "medianRamMb": 1164.4404296875,
-      "medianSlideSwitchMs": 48.100000001490116
+      "medianSlideSwitchMs": 48.100000001490116,
+      "unmeasuredSwitches": 1
     }
   ],
   "notes": [
@@ -370,6 +372,7 @@
     "Idle RAM (starter deck, before the stress deck): 472 MB on the proc-pss-sum basis.",
     "CONTENDED: other processes were competing for this machine while these numbers were taken. Memory figures survive contention well; timing figures (cold start, slide switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this.",
     "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence.",
-    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 1 phantom sample removed from 20; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement."
+    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 1 phantom sample removed from 20; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement.",
+    "unmeasuredSwitches (the same r2 re-derivation, recorded by the r3 review): each phantom is now counted rather than dropped — one per run, the click on the already-selected slide 0 — so slideSwitchMs.count + unmeasuredSwitches = 20, the 1 run(s) x 20 switches actually clicked."
   ]
 }

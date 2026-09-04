@@ -38,6 +38,7 @@
       "mean": 60.38421052642036,
       "stdDev": 23.2290636886702
     },
+    "unmeasuredSwitches": 3,
     "ramMb": {
       "count": 147,
       "min": 192.884765625,
@@ -351,19 +352,22 @@
       "coldStartMs": 1528,
       "deckOpenMs": 1751,
       "medianRamMb": 1753.794921875,
-      "medianSlideSwitchMs": 53.79999999701977
+      "medianSlideSwitchMs": 53.79999999701977,
+      "unmeasuredSwitches": 1
     },
     {
       "coldStartMs": 2310,
       "deckOpenMs": 1794,
       "medianRamMb": 1658.439453125,
-      "medianSlideSwitchMs": 56.600000001490116
+      "medianSlideSwitchMs": 56.600000001490116,
+      "unmeasuredSwitches": 1
     },
     {
       "coldStartMs": 1258,
       "deckOpenMs": 1795,
       "medianRamMb": 1729.6435546875,
-      "medianSlideSwitchMs": 48.70000000298023
+      "medianSlideSwitchMs": 48.70000000298023,
+      "unmeasuredSwitches": 1
     }
   ],
   "notes": [
@@ -382,6 +386,7 @@
     "Idle RAM (starter deck, before the stress deck): 438 MB on the proc-pss-sum basis.",
     "CONTENDED: other processes were competing for this machine while these numbers were taken. Memory figures survive contention well; timing figures (cold start, slide switch, deck open) inflate. Re-baseline on a quiet machine before diffing against this.",
     "frameRateFps and droppedFrames are unreliable under contention: rAF delivery is exactly what a loaded host disrupts, so the frame numbers above are not evidence.",
-    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 3 phantom samples removed from 60; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement."
+    "Re-derived from this run's trace after the M8.1 r2 review (app not re-run): slideSwitchMs re-paired so a click on the already-active slide (every run's first click) or a load that landed after the next click no longer counts — 3 phantom samples removed from 60; processTypes recomputed under the 90 % per-type coverage rule the totals use. Every other field is the original measurement.",
+    "unmeasuredSwitches (the same r2 re-derivation, recorded by the r3 review): each phantom is now counted rather than dropped — one per run, the click on the already-selected slide 0 — so slideSwitchMs.count + unmeasuredSwitches = 60, the 3 run(s) x 20 switches actually clicked."
   ]
 }

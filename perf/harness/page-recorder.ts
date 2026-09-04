@@ -84,28 +84,45 @@ export const INSTALL_RECORDER = `(() => {
 })()`
 
 /**
+ * True once the most recent click's canvas `load` has landed. The harness waits on this (bounded)
+ * before issuing the next click, so a slow switch is measured rather than cut off by the next click.
+ */
+export const LAST_SWITCH_LOADED = `(() => {
+  const state = globalThis.${RECORDER_GLOBAL};
+  const last = state.switches[state.switches.length - 1];
+  return state.canvasLoads.length > last.loadsBefore;
+})()`
+
+/**
  * Resolve each recorded switch to its latency by pairing the click with the first canvas-frame
- * `load` that followed it **and landed before the next click**. Runs in page context so both
- * timestamps stay on the page clock.
+ * `load` that followed it **and landed before the next click** (or, for the last click, before this
+ * read). Runs in page context so both timestamps stay on the page clock.
  *
  * The bound is what keeps a click that produced no load of its own from borrowing the next one. A
  * click on the already-active slide fires no `load` at all, and swapping the canvas `src` before the
  * previous navigation finished cancels that navigation, so the single `load` that follows belongs to
  * the later click. Without the bound every run's first switch was a phantom: it paired with the
  * second click's load and reported that latency plus the whole inter-click sleep.
+ *
+ * A click whose load did not land inside its window is **censored**, not dropped: its true latency
+ * is at least the window's length, so that is what `latencyMs` carries, and `censored` says so. The
+ * harness keeps censored records out of the latency series and counts them instead, so a switch too
+ * slow to observe shows up as a number in the report rather than as a quietly shorter series.
  */
 export const READ_SWITCHES = `(() => {
   const state = globalThis.${RECORDER_GLOBAL};
   if (!state) return [];
   return state.switches.map((s, i) => {
     const next = state.switches[i + 1];
+    const windowEnd = next === undefined ? performance.now() : next.clickAt;
     const load = state.canvasLoads[s.loadsBefore];
-    const own = load !== undefined && (next === undefined || load < next.clickAt);
+    const own = load !== undefined && load < windowEnd;
     return {
       index: s.index,
       clickAt: s.clickAt,
       loadAt: own ? load : null,
-      latencyMs: own ? load - s.clickAt : null,
+      latencyMs: own ? load - s.clickAt : windowEnd - s.clickAt,
+      censored: !own,
     };
   });
 })()`

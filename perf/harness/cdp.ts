@@ -39,6 +39,18 @@ export class CdpClosedError extends Error {
   }
 }
 
+/**
+ * `waitFor`'s deadline expired. Distinct from the errors that mean the app or the socket is gone, so
+ * a caller for whom "it never became true" is an expected outcome — the switch phase, whose bound on
+ * a slow load is the measurement's ceiling — can tolerate exactly that and nothing else.
+ */
+export class WaitTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WaitTimeoutError'
+  }
+}
+
 /** Default per-call reply deadline. Every call the harness makes is a sub-second operation. */
 const CALL_TIMEOUT_MS = 30_000
 
@@ -263,5 +275,7 @@ export async function waitFor(
   }
   guard?.()
   const cause = lastError instanceof Error ? `; last error: ${lastError.message}` : ''
-  throw new Error(`Timed out after ${String(timeoutMs)} ms waiting for: ${expression}${cause}`)
+  throw new WaitTimeoutError(
+    `Timed out after ${String(timeoutMs)} ms waiting for: ${expression}${cause}`,
+  )
 }

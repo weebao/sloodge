@@ -27,6 +27,21 @@ async function loadReport(path: string): Promise<PerfReport> {
   return parsed.data
 }
 
+const mb = (value: number | null): string => (value === null ? 'n/a' : `${value.toFixed(1)} MB`)
+
+/**
+ * Idle RAM is reported, never budgeted, so it is never a regression — but a side that is `null` is a
+ * run that took no sample inside its idle window, and the row has to say so rather than quietly
+ * print a delta against a number that was never measured.
+ */
+function idleRamRow(baseline: number | null, candidate: number | null): string {
+  const verdict =
+    baseline === null || candidate === null || baseline === 0
+      ? '— | NOT COMPARED |'
+      : `${candidate >= baseline ? '+' : ''}${(((candidate - baseline) / baseline) * 100).toFixed(1)}% | info |`
+  return `| Idle RAM (starter deck) | ${mb(baseline)} | ${mb(candidate)} | ${verdict}`
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   const positional = argv.filter((a) => !a.startsWith('--'))
   const [baselinePath, candidatePath] = positional
@@ -81,6 +96,21 @@ export async function main(argv: readonly string[]): Promise<void> {
     console.log(
       `| ${d.label} | ${d.baseline.toFixed(1)} ${d.unit} | ${d.candidate.toFixed(1)} ${d.unit} | ` +
         `${sign}${d.deltaPct.toFixed(1)}% | ${d.regressed ? 'REGRESSED' : 'ok'} |`,
+    )
+  }
+  console.log(idleRamRow(baseline.metrics.idleRamMb, candidate.metrics.idleRamMb))
+
+  const unmeasured = {
+    baseline: baseline.metrics.unmeasuredSwitches,
+    candidate: candidate.metrics.unmeasuredSwitches,
+  }
+  if (unmeasured.baseline > 0 || unmeasured.candidate > 0) {
+    console.log(
+      `\nUnmeasured switches (no canvas load within the wait bound): baseline ` +
+        `${String(unmeasured.baseline)}, candidate ${String(unmeasured.candidate)}` +
+        (unmeasured.candidate > unmeasured.baseline
+          ? ' — the rise counts as a slide-switch regression.'
+          : '.'),
     )
   }
 

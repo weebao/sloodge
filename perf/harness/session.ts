@@ -19,9 +19,10 @@
 import { access, stat } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { CdpClient } from './cdp'
-import { waitFor } from './cdp'
+import { waitFor, WaitTimeoutError } from './cdp'
 import {
   INSTALL_RECORDER,
+  LAST_SWITCH_LOADED,
   READ_FRAMES,
   READ_LONG_TASKS,
   READ_SWITCHES,
@@ -36,8 +37,19 @@ export type SwitchRecord = {
   readonly index: number
   readonly clickAt: number
   readonly loadAt: number | null
-  readonly latencyMs: number | null
+  /** Click → canvas `load`; when `censored`, a lower bound: the load had not landed by then. */
+  readonly latencyMs: number
+  readonly censored: boolean
 }
+
+/**
+ * How long a click waits for its own canvas `load` before the next click is issued. This, not the
+ * inter-click settle, is the ceiling on the latency the instrument can observe: a switch slower than
+ * it is recorded as censored (`>= SWITCH_LOAD_WAIT_MS`) and counted, never silently dropped.
+ */
+export const SWITCH_LOAD_WAIT_MS = 2000
+/** Pause after a load (or after the wait gives up) before the next click, to keep the cadence rapid rather than instant. */
+const SWITCH_SETTLE_MS = 220
 
 /** Poll interval for shell detection. The resulting error is the cold-start upper bound's precision. */
 const SHELL_POLL_MS = 25
@@ -276,32 +288,16 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
   sampler.mark('rail-scroll:end')
 
   // --- Phase: rapid slide switching -------------------------------------------------------------
-  // Indices are spread across the deck rather than sequential, so the measurement includes the cost
-  // of jumping to a slide whose frame is far outside the rail's current scroll window.
   sampler.mark('switch:start')
-  await page.evaluate<boolean>(`(() => {
-    const el = document.querySelector('${SELECTORS.railScroller}');
-    if (el) el.scrollTop = 0;
-    return true;
-  })()`)
-  const stride = Math.max(1, Math.floor(slideCount / switchCount))
-  for (let n = 0; n < switchCount; n += 1) {
-    // Starts at `stride`, not 0: `applyRemoteDeck` keeps slide 0 selected after the push, and a
-    // click on the already-active slide fires no canvas `load`, so it measures nothing.
-    const index = ((n + 1) * stride) % slideCount
-    // The rail is not virtualized today, so every item is in the DOM regardless of scroll position;
-    // if that changes (M8.3), this needs to scroll the item into view first.
-    const clicked = await page.evaluate<number | null>(
-      `globalThis.${RECORDER_GLOBAL}.clickSlide(${String(index)})`,
-    )
-    if (clicked === null) {
-      warnings.push(`Rail item ${String(index)} was not in the DOM; switch skipped.`)
-      continue
-    }
-    await sleep(220)
-  }
-  await sleep(1000)
-  const switches = await page.evaluate<SwitchRecord[]>(READ_SWITCHES)
+  const { switches, warnings: switchWarnings } = await switchSlides({
+    page,
+    slideCount,
+    switchCount,
+    loadWaitMs: SWITCH_LOAD_WAIT_MS,
+    settleMs: SWITCH_SETTLE_MS,
+    assertAlive,
+  })
+  warnings.push(...switchWarnings)
   sampler.mark('switch:end')
 
   // --- Phase: frame cadence on an animation-heavy active slide ----------------------------------
@@ -427,6 +423,68 @@ export async function runSession(options: SessionOptions): Promise<SessionResult
     processCountPeak,
     warnings,
   }
+}
+
+export type SwitchPhaseOptions = {
+  readonly page: Pick<CdpClient, 'evaluate'>
+  readonly slideCount: number
+  readonly switchCount: number
+  readonly loadWaitMs: number
+  readonly settleMs: number
+  readonly assertAlive: () => void
+}
+
+/**
+ * Click through the deck and pair every click with its canvas `load`.
+ *
+ * Indices are spread across the deck rather than sequential, so the measurement includes the cost of
+ * jumping to a slide whose frame is far outside the rail's current scroll window. Each click then
+ * waits — bounded by `loadWaitMs` — for its own `load` before the settle and the next click. Without
+ * that wait the inter-click gap was the ceiling on observable latency: anything slower than ~220 ms
+ * lost its load to the next click and vanished from the series, which is the one shape of regression
+ * (a stall every few switches) that a median gate would then wave through.
+ */
+export async function switchSlides(
+  options: SwitchPhaseOptions,
+): Promise<{ switches: SwitchRecord[]; warnings: string[] }> {
+  const { page, slideCount, switchCount, loadWaitMs, settleMs, assertAlive } = options
+  const warnings: string[] = []
+  await page.evaluate<boolean>(`(() => {
+    const el = document.querySelector('${SELECTORS.railScroller}');
+    if (el) el.scrollTop = 0;
+    return true;
+  })()`)
+  // Capped at slideCount - 1 so a single switch lands on the last slide, not back on slide 0.
+  const stride = Math.max(1, Math.min(Math.floor(slideCount / switchCount), slideCount - 1))
+  for (let n = 0; n < switchCount; n += 1) {
+    // Starts at `stride`, not 0: `applyRemoteDeck` keeps slide 0 selected after the push, and a
+    // click on the already-active slide fires no canvas `load`, so it measures nothing.
+    const index = ((n + 1) * stride) % slideCount
+    // The rail is not virtualized today, so every item is in the DOM regardless of scroll position;
+    // if that changes (M8.3), this needs to scroll the item into view first.
+    const clicked = await page.evaluate<number | null>(
+      `globalThis.${RECORDER_GLOBAL}.clickSlide(${String(index)})`,
+    )
+    if (clicked === null) {
+      warnings.push(`Rail item ${String(index)} was not in the DOM; switch skipped.`)
+      continue
+    }
+    // A load that never arrives is what this wait is here to bound: the switch is censored below and
+    // counted. Anything else — a dead app, a closed socket — is not ours to swallow.
+    await waitFor(page, LAST_SWITCH_LOADED, loadWaitMs, 20, assertAlive).catch((error: unknown) => {
+      if (!(error instanceof WaitTimeoutError)) throw error
+    })
+    await sleep(settleMs)
+  }
+  const switches = await page.evaluate<SwitchRecord[]>(READ_SWITCHES)
+  const unmeasured = switches.filter((s) => s.censored).length
+  if (unmeasured > 0) {
+    warnings.push(
+      `${String(unmeasured)} of ${String(switches.length)} switches produced no canvas load within ` +
+        `${String(loadWaitMs)} ms; recorded as >= that bound and left out of slideSwitchMs.`,
+    )
+  }
+  return { switches, warnings }
 }
 
 async function dispatchKey(page: CdpClient, key: string): Promise<void> {

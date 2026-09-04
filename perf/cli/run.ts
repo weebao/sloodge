@@ -14,7 +14,12 @@ import { cpus, platform, release, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { launchApp } from '../harness/app'
-import { runSession, type SessionResult } from '../harness/session'
+import {
+  runSession,
+  SWITCH_LOAD_WAIT_MS,
+  type SessionResult,
+  type SwitchRecord,
+} from '../harness/session'
 import { Sampler, kbToMb, processTypeBreakdown, type Sample } from '../harness/sampler'
 import {
   countDroppedFrames,
@@ -27,6 +32,7 @@ import {
   budgetTable,
   checkBudgets,
   parseRamBasis,
+  reportProblems,
   type PerfMetrics,
   type PerfReport,
   type RamBasis,
@@ -95,7 +101,13 @@ export async function loadStressDeck(
   const payloadPath = join(deckDir, `${name}.deck-update.json`)
   const regenerate = `perf/decks/${name} does not match perf/deck-hashes.json — run pnpm perf:generate`
 
-  const payload = JSON.parse(await readFile(payloadPath, 'utf8')) as DeckContent
+  const raw = await readFile(payloadPath, 'utf8').catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`${regenerate} (no generated deck on disk).`)
+    }
+    throw error
+  })
+  const payload = JSON.parse(raw) as DeckContent
   const hash = deckContentHash(payload)
   if (hash !== expected.contentSha256) {
     throw new Error(
@@ -257,9 +269,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   // Pool every run's samples for the distribution; keep per-run headlines for variance.
   const allRam = collected.flatMap((run) => ramSeriesMb(run.samples, options.ramBasis))
-  const allSwitches = collected.flatMap((run) =>
-    run.session.switches.map((s) => s.latencyMs).filter((v): v is number => v !== null),
-  )
+  const allSwitches = collected.flatMap((run) => measuredLatencies(run.session.switches))
   const allFrames = collected.flatMap((run) => [...run.session.activeSlideFrameIntervalsMs])
   const allHeap = collected.flatMap((run) =>
     run.samples
@@ -277,15 +287,20 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   if (allSwitches.length === 0) {
     throw new Error(
-      'No slide switch produced a canvas `load`; every latency is null. The canvas iframe is not ' +
-        'reloading on switch, the recorder is watching the wrong element, or every switch targeted ' +
-        'the already-active slide (a 1-slide deck).',
+      'No slide switch produced a canvas `load` within the wait bound; every switch is unmeasured. ' +
+        'The canvas iframe is not reloading on switch, the recorder is watching the wrong element, ' +
+        'every switch targeted the already-active slide (a 1-slide deck), or every switch took ' +
+        `longer than ${String(SWITCH_LOAD_WAIT_MS)} ms.`,
     )
   }
   const metrics: PerfMetrics = {
     coldStartMs: median(collected.map((r) => r.session.coldStartMs)),
     deckOpenMs: median(collected.map((r) => r.session.deckRenderMs)),
     slideSwitchMs: summarize(allSwitches),
+    unmeasuredSwitches: collected.reduce(
+      (sum, run) => sum + run.session.switches.filter((s) => s.censored).length,
+      0,
+    ),
     ramMb: summarize(allRam),
     ramBasis: options.ramBasis,
     frameIntervalMs: summarizeOrNull(allFrames),
@@ -300,14 +315,13 @@ export async function main(argv: readonly string[]): Promise<void> {
       ),
     ),
     longFrameIntervals: countDroppedFrames(allFrames),
-    idleRamMb: median(
-      collected
-        .map((r) => {
+    idleRamMb:
+      summarizeOrNull(
+        collected.flatMap((r) => {
           const idle = ramSeriesMb(idleSamples(r), options.ramBasis)
-          return idle.length > 0 ? summarize(idle).median : Number.NaN
-        })
-        .filter((v) => Number.isFinite(v)),
-    ),
+          return idle.length > 0 ? [summarize(idle).median] : []
+        }),
+      )?.median ?? null,
     rendererHeapMb: summarizeOrNull(allHeap),
   }
 
@@ -375,14 +389,13 @@ export async function main(argv: readonly string[]): Promise<void> {
     hostContention,
     perRun: collected.map((run) => {
       const ram = ramSeriesMb(run.samples, options.ramBasis)
-      const switches = run.session.switches
-        .map((s) => s.latencyMs)
-        .filter((v): v is number => v !== null)
+      const switches = measuredLatencies(run.session.switches)
       return {
         coldStartMs: run.session.coldStartMs,
         deckOpenMs: run.session.deckRenderMs,
-        medianRamMb: ram.length > 0 ? summarize(ram).median : Number.NaN,
-        medianSlideSwitchMs: switches.length > 0 ? summarize(switches).median : Number.NaN,
+        medianRamMb: summarizeOrNull(ram)?.median ?? null,
+        medianSlideSwitchMs: summarizeOrNull(switches)?.median ?? null,
+        unmeasuredSwitches: run.session.switches.filter((s) => s.censored).length,
       }
     }),
     notes: [
@@ -398,7 +411,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       `Peak Electron process count: ${collected.map((r) => String(r.session.processCountPeak)).join(', ')}.`,
       `Long tasks during the animation dwell: ${collected.map((r) => String(r.session.longTaskCount)).join(', ')}.`,
       `Shell frame rate during the dwell (fps, per run): ${collected.map((r) => frameRateFps(r.session.animationFrameCount, r.session.animationWindowMs).toFixed(1)).join(', ')}.`,
-      `Idle RAM (starter deck, before the stress deck): ${metrics.idleRamMb.toFixed(0)} MB on the ${options.ramBasis} basis.`,
+      `Idle RAM (starter deck, before the stress deck): ${metrics.idleRamMb === null ? 'not sampled' : `${metrics.idleRamMb.toFixed(0)} MB`} on the ${options.ramBasis} basis.`,
       ...(hostContention.contended
         ? [
             'CONTENDED: other processes were competing for this machine while these numbers were ' +
@@ -412,29 +425,50 @@ export async function main(argv: readonly string[]): Promise<void> {
     ],
   }
 
-  await writeFile(options.outFile, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
-
-  // Raw series, for re-deriving any summary and for flamegraph-adjacent inspection.
-  const tracePath = options.outFile.replace(/\.json$/, '.trace.json')
-  await writeFile(
-    tracePath,
-    `${JSON.stringify(
-      collected.map((run, i) => ({
-        run: i,
-        marks: run.marks,
-        samples: run.samples,
-        switches: run.session.switches,
-        frameIntervalsMs: run.session.activeSlideFrameIntervalsMs,
-      })),
-      null,
-      2,
-    )}\n`,
-    'utf8',
+  const { tracePath, problems } = await writeRunArtifacts(
+    report,
+    collected.map((run, i) => ({
+      run: i,
+      marks: run.marks,
+      samples: run.samples,
+      switches: run.session.switches,
+      frameIntervalsMs: run.session.activeSlideFrameIntervalsMs,
+    })),
+    options.outFile,
   )
 
   console.log(`\n${budgetTable(checkBudgets(metrics))}`)
   console.log(`\nReport: ${options.outFile}`)
   console.log(`Trace:  ${tracePath}`)
+  if (problems.length > 0) {
+    // The run is on disk either way; what the operator must not do is discover months later, at
+    // `perf:diff` time, that the file M8.7 gates against was never loadable.
+    console.error(
+      `\nThe report was written but cannot serve as a baseline:\n  ${problems.join('\n  ')}`,
+    )
+    process.exitCode = 1
+  }
+}
+
+/**
+ * Write the report and, beside it, the raw series every summary can be re-derived from. Both land
+ * on disk before the report is judged — a multi-minute run is kept whatever the verdict — and the
+ * judgement is made on the serialized document, because that is what `perf:diff` will read.
+ */
+export async function writeRunArtifacts(
+  report: PerfReport,
+  trace: unknown,
+  outFile: string,
+): Promise<{ tracePath: string; problems: string[] }> {
+  const json = `${JSON.stringify(report, null, 2)}\n`
+  await writeFile(outFile, json, 'utf8')
+  const tracePath = outFile.replace(/\.json$/, '.trace.json')
+  await writeFile(tracePath, `${JSON.stringify(trace, null, 2)}\n`, 'utf8')
+  return { tracePath, problems: reportProblems(JSON.parse(json)) }
+}
+
+function measuredLatencies(switches: readonly SwitchRecord[]): number[] {
+  return switches.filter((s) => !s.censored).map((s) => s.latencyMs)
 }
 
 /** Samples taken while the app sat idle on its starter deck, before the stress deck was pushed. */
@@ -450,5 +484,5 @@ function summarizeOrNull(values: readonly number[]): Summary | null {
 }
 
 function median(values: readonly number[]): number {
-  return values.length === 0 ? Number.NaN : summarize(values).median
+  return summarize(values).median
 }

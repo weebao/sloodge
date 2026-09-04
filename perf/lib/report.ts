@@ -39,8 +39,15 @@ export type PerfMetrics = {
   readonly coldStartMs: number
   /** Deck adopted → every rail frame has settled. */
   readonly deckOpenMs: number
-  /** Per-switch latency distribution, click → the canvas frame's `load`. */
+  /** Per-switch latency distribution, click → the canvas frame's `load`. Measured switches only. */
   readonly slideSwitchMs: Summary
+  /**
+   * Switches whose `load` never landed inside the harness's wait bound. They are censored, not
+   * dropped: `slideSwitchMs.count + unmeasuredSwitches` is the number of clicks issued, so a series
+   * that is short is short *visibly*. Expected to be 0; any other value is a slow-switch signal that
+   * the median alone would not show.
+   */
+  readonly unmeasuredSwitches: number
   /** Total memory across every Electron process, sampled through the whole session. */
   readonly ramMb: Summary
   /** Which series `ramMb` was computed from. */
@@ -61,8 +68,11 @@ export type PerfMetrics = {
   readonly frameRateFps: number
   /** Over-long intervals, kept as a secondary signal alongside the budget number. */
   readonly longFrameIntervals: number
-  /** Median RAM with the app idle on its starter deck, before the stress deck is pushed. */
-  readonly idleRamMb: number
+  /**
+   * Median RAM with the app idle on its starter deck, before the stress deck is pushed. Null when
+   * the idle window had no samples (`--idle-dwell=0`); the run is still written, but not as a baseline.
+   */
+  readonly idleRamMb: number | null
   /** Renderer JS heap, sampled with the same cadence as `ramMb`. Null if no read succeeded. */
   readonly rendererHeapMb: Summary | null
 }
@@ -116,12 +126,16 @@ export type PerfReport = {
     /** Set when contention was high enough that the numbers should be treated as inflated. */
     readonly contended: boolean
   }
-  /** Per-run headline numbers, so a reader can judge run-to-run variance directly. */
+  /**
+   * Per-run headline numbers, so a reader can judge run-to-run variance directly. A median is null
+   * when that run had no samples for it — written as `null`, never as a `NaN` the file cannot hold.
+   */
   readonly perRun: readonly {
     readonly coldStartMs: number
     readonly deckOpenMs: number
-    readonly medianRamMb: number
-    readonly medianSlideSwitchMs: number
+    readonly medianRamMb: number | null
+    readonly medianSlideSwitchMs: number | null
+    readonly unmeasuredSwitches: number
   }[]
   readonly notes: readonly string[]
 }
@@ -173,13 +187,14 @@ export const PerfReportSchema = z.object({
     coldStartMs: z.number(),
     deckOpenMs: z.number(),
     slideSwitchMs: SummarySchema,
+    unmeasuredSwitches: z.number(),
     ramMb: SummarySchema,
     ramBasis: z.enum(RAM_BASES),
     frameIntervalMs: SummarySchema.nullable(),
     droppedFrames: z.number(),
     frameRateFps: z.number(),
     longFrameIntervals: z.number(),
-    idleRamMb: z.number(),
+    idleRamMb: z.number().nullable(),
     rendererHeapMb: SummarySchema.nullable(),
   }),
   ramBases: z.record(z.string(), SummarySchema.nullable()),
@@ -197,12 +212,42 @@ export const PerfReportSchema = z.object({
     z.object({
       coldStartMs: z.number(),
       deckOpenMs: z.number(),
-      medianRamMb: z.number(),
-      medianSlideSwitchMs: z.number(),
+      medianRamMb: z.number().nullable(),
+      medianSlideSwitchMs: z.number().nullable(),
+      unmeasuredSwitches: z.number(),
     }),
   ),
   notes: z.array(z.string()),
 }) satisfies z.ZodType<PerfReport>
+
+/**
+ * Why a serialized report cannot serve as a baseline: it fails the schema, or a headline field holds
+ * `null` where a number was expected. Run on the JSON document rather than the in-memory report,
+ * because serialization is where a `NaN` turns into a `null` — the write side used to emit exactly
+ * that, and `perf:diff` refused the file months later. Empty means fit.
+ */
+export function reportProblems(document: unknown): string[] {
+  const parsed = PerfReportSchema.safeParse(document)
+  if (!parsed.success) return [z.prettifyError(parsed.error)]
+  const { metrics, perRun } = parsed.data
+  const problems: string[] = []
+  if (metrics.idleRamMb === null) {
+    problems.push(
+      'metrics.idleRamMb is null: no RAM sample fell inside the idle window (--idle-dwell=0?).',
+    )
+  }
+  for (const [i, run] of perRun.entries()) {
+    if (run.medianRamMb === null) {
+      problems.push(`perRun[${String(i)}].medianRamMb is null: that run had no RAM samples.`)
+    }
+    if (run.medianSlideSwitchMs === null) {
+      problems.push(
+        `perRun[${String(i)}].medianSlideSwitchMs is null: none of that run's switches was measured.`,
+      )
+    }
+  }
+  return problems
+}
 
 export type Budget = {
   readonly key: string
@@ -257,6 +302,8 @@ export type BudgetCheck = {
   readonly unit: string
   /** Sample count behind `actual` for series-backed budgets; null for scalar metrics. */
   readonly samples: number | null
+  /** Switches the series could not include (slide switch only); null for every other budget. */
+  readonly unmeasured: number | null
   readonly pass: boolean
 }
 
@@ -283,6 +330,11 @@ function budgetSampleCounts(metrics: PerfMetrics): Readonly<Record<string, numbe
   }
 }
 
+/** Observations a series-backed budget could not include; the switch series is the only one that censors. */
+function budgetUnmeasured(metrics: PerfMetrics): Readonly<Record<string, number>> {
+  return { slideSwitchMs: metrics.unmeasuredSwitches }
+}
+
 /**
  * Evaluate every budget against a report.
  *
@@ -295,6 +347,7 @@ export function checkBudgets(
 ): BudgetCheck[] {
   const actuals = budgetActuals(metrics)
   const counts = budgetSampleCounts(metrics)
+  const unmeasured = budgetUnmeasured(metrics)
   return budgets.map((budget) => {
     const actual = actuals[budget.key]
     if (actual === undefined) {
@@ -309,6 +362,7 @@ export function checkBudgets(
       actual,
       unit: budget.unit,
       samples,
+      unmeasured: unmeasured[budget.key] ?? null,
       pass: samples !== 0 && within,
     }
   })
@@ -321,7 +375,10 @@ export type MetricDiff = {
   readonly candidate: number
   readonly deltaPct: number
   readonly unit: string
-  /** True when the candidate regressed by more than the allowed tolerance, or measured nothing. */
+  /**
+   * True when the candidate regressed by more than the allowed tolerance, measured nothing, or
+   * left more switches unmeasured than the baseline did — a censored switch is a slow one.
+   */
   readonly regressed: boolean
 }
 
@@ -345,6 +402,8 @@ export function diffReports(
   const before = budgetActuals(baseline)
   const after = budgetActuals(candidate)
   const candidateCounts = budgetSampleCounts(candidate)
+  const unmeasuredBefore = budgetUnmeasured(baseline)
+  const unmeasuredAfter = budgetUnmeasured(candidate)
   return budgets.map((budget) => {
     const b = before[budget.key]
     const c = after[budget.key]
@@ -359,7 +418,10 @@ export function diffReports(
       candidate: c,
       deltaPct,
       unit: budget.unit,
-      regressed: candidateCounts[budget.key] === 0 || deltaPct > tolerancePct,
+      regressed:
+        candidateCounts[budget.key] === 0 ||
+        deltaPct > tolerancePct ||
+        (unmeasuredAfter[budget.key] ?? 0) > (unmeasuredBefore[budget.key] ?? 0),
     }
   })
 }
@@ -367,8 +429,16 @@ export function diffReports(
 /** Render budget checks as a markdown table, for pasting into a perf PR description. */
 export function budgetTable(checks: readonly BudgetCheck[]): string {
   const rows = checks.map((check) => {
-    const measured = check.samples === 0 ? 'no samples' : `${check.actual.toFixed(1)} ${check.unit}`
-    return `| ${check.label} | ${measured} | < ${String(check.limit)} ${check.unit} | ${check.pass ? 'PASS' : 'FAIL'} |`
+    const unmeasured =
+      check.unmeasured !== null && check.unmeasured > 0
+        ? ` (+${String(check.unmeasured)} unmeasured)`
+        : ''
+    const measured =
+      check.samples === 0
+        ? `no samples${unmeasured}`
+        : `${check.actual.toFixed(1)} ${check.unit}${unmeasured}`
+    const verdict = !check.pass ? 'FAIL' : unmeasured === '' ? 'PASS' : 'WARN'
+    return `| ${check.label} | ${measured} | < ${String(check.limit)} ${check.unit} | ${verdict} |`
   })
   return ['| Budget | Measured | Limit | Verdict |', '|---|---|---|---|', ...rows].join('\n')
 }
