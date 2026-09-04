@@ -409,21 +409,24 @@ created only once its URL exists, so a switch's first `load` is the slide's (a b
 | Metric                             | M8.1 baseline | M8.2 (shipped) | Note                                     |
 | ---------------------------------- | ------------: | -------------: | ---------------------------------------- |
 | Electron processes (median / peak) |     105 / 106 |     **7 / 10** | see "the process budget" below           |
-| Median PSS during the session      |       1685 MB |     **557 MB** | p95 1846 → 682                           |
-| Idle PSS (starter deck)            |        438 MB |         460 MB | unchanged — see "the floor"              |
-| Deck open (`deckOpenMs`)           |       1794 ms |         199 ms | definition v1 vs v2 — **not comparable** |
-| Slide switch (median / p95)        |   54 / 110 ms | **41 / 57 ms** | timing; baseline contended               |
-| Cold start                         |       1528 ms |        1108 ms | timing; baseline contended               |
+| Median PSS during the session      |       1685 MB |     **530 MB** | p95 1846 → 600                           |
+| Idle PSS (starter deck)            |        438 MB |         409 MB | unchanged — see "the floor"              |
+| Deck open (`deckOpenMs`)           |       1794 ms |         198 ms | definition v1 vs v2 — **not comparable** |
+| Slide switch (median / p95)        |   54 / 110 ms | **39 / 56 ms** | timing; baseline contended               |
+| Cold start                         |       1528 ms |        1039 ms | timing; baseline contended               |
+| Unmeasured switches                |             — |          **0** | every switch got its own canvas `load`   |
 
 The baseline is the committed `baseline-main.json` (harness `ef07cf4`, median 1-minute load 6.3,
-`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `60d7ef3` — this
-branch's tip, with the M8.1 round-2 harness (each switch paired with its own load) — on a quiet host
-(load 3.5, `contended: false`), so its timing columns can be believed; the baseline's cannot, and the
-process and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as
-regressed (53 → 215); that compares against a contended baseline whose frame numbers the
-"Contention" section above declares unusable. The comparable figure is the shell frame rate: 17.0 fps
-median during the dwell here (per run 13.8 / 50.2 / 17.0) against M8.1's quiet-window 7.1 fps at
-the same tier.
+`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `0dad951` — the tip of
+this branch, on the M8.1 round-3 harness (each switch waits up to 2 s for its own load and any that
+never arrives is censored at that bound and counted in `unmeasuredSwitches`, which is 0 in all three
+tiers) — on a quiet host (load 1.4, `contended: false`), so its timing columns can be believed; the
+baseline's cannot, and the process and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as
+regressed (53 → 203); that compares against a contended baseline whose frame numbers the
+"Contention" section above declares unusable. The comparable figure is the shell frame rate: 19.4 fps
+median during the dwell here (per run 9.6 / 28.4 / 19.4) against M8.1's quiet-window 7.1 fps at
+the same tier. The spread across those three runs is the reason the dwell's frame numbers are
+reported and never budgeted.
 
 ### The four URL shapes that were measured
 
@@ -439,7 +442,7 @@ fourth is what shipped.
 | `<id>` / `<id>` (per document everywhere)          |                   14 / 26 |     640 MB |         54 / 268 ms |                53 | isolated                      |
 | `slides` / `slides` (one host for everything)      |                     5 / 5 |     583 MB |   **360 / 1691 ms** |               125 | **freezes it**                |
 | `slides` / `thumbnails` (round 0)                  |                     6 / 6 |     527 MB |         38 / 210 ms |                83 | **freezes it** (measured)     |
-| **`stage-<id>` / `thumbnails` (round 1, shipped)** |                    7 / 10 |     557 MB |          41 / 57 ms |                98 | **isolated** (measured)       |
+| **`stage-<id>` / `thumbnails` (round 1, shipped)** |                    7 / 10 |     530 MB |          39 / 56 ms |                51 | **isolated** (measured)       |
 
 One host for everything is the smallest and the slowest: the canvas frame, its two pre-warmed
 neighbours and every visible thumbnail — a dozen animating documents — share one renderer main
@@ -456,21 +459,30 @@ median and four at the peak (a stepped-away stage document's process lingers for
 Chromium discards it, and the rail scroll phase briefly holds more), and a median PSS that sits
 _inside_ round 0's own two measurements (527 MB contended on the WIP commit, 605 MB uncontended on
 its final SHA). The switch p95 is not comparable across the rows: the first three were taken before
-the M8.1 round-2 fix, when every run's first switch was a phantom sample.
+the M8.1 round-2 fix, when every run's first switch was a phantom sample, and the shipped row alone
+has been re-measured on the round-3 harness, which waits for each click's own load rather than
+dropping the switches slower than the inter-click gap.
 
 ### Scaling after M8.2
 
-Every row is 3 runs at `60d7ef3`, `proc-pss-sum`, 60 paired switches.
+Every row is 3 runs at `0dad951`, `proc-pss-sum`, 60 measured switches and 0 unmeasured, every tier
+uncontended. **The switch columns are not comparable with the ones published before this round**: the
+M8.1 round-3 harness waits for each click's own `load` instead of moving on after a fixed 220 ms, so
+a switch slower than that gap is now measured rather than losing its load to the next click and
+vanishing from the series. The p95 rises accordingly — most visibly at 1000 slides, where the older
+number was also taken under contention — and that is the harness seeing more, not the app doing more.
+Medians move by a few ms and every tier stays far inside the 100 ms budget.
 
 | Slides | Processes (median / peak) | Median PSS | Idle PSS | Deck open | Slide switch (median / p95) | Host load (median) |
 | -----: | ------------------------: | ---------: | -------: | --------: | --------------------------: | -----------------: |
-|    100 |                    7 / 10 |     557 MB |   460 MB |    199 ms |                  41 / 57 ms |                3.5 |
-|    500 |                    7 / 10 |     594 MB |   453 MB |    335 ms |                  39 / 58 ms |                3.6 |
-|   1000 |                    7 / 10 |     640 MB |   453 MB |    557 ms |                  41 / 70 ms |    8.0 (contended) |
+|    100 |                    7 / 10 |     530 MB |   409 MB |    198 ms |                  39 / 56 ms |                1.4 |
+|    500 |                    7 / 10 |     593 MB |   391 MB |    329 ms |                  46 / 72 ms |                2.6 |
+|   1000 |                    7 / 10 |     580 MB |   407 MB |    493 ms |                 44 / 130 ms |                2.6 |
 
-The 1000-slide row was taken while other work ran on the box (`contended: true`); its memory and
-process columns are the trustworthy ones. The 500- and 1000-slide tiers, which could not be opened at all before (M8.1 watched `MemAvailable`
-hit 0 and 2 GB of swap fill), now open in well under a second and produce reports. Process count is
+All three tiers are uncontended this round, including 1000, which was previously measured under load
+8.0 — so its memory and timing columns can both be read now. The 500- and 1000-slide tiers, which
+could not be opened at all before (M8.1 watched `MemAvailable` hit 0 and 2 GB of swap fill), now open
+in well under a second and produce reports. Process count is
 flat at 7 from 3 slides to 1000; PSS grows with the deck only through the store's serialized source
 and main's registry entries for the mounted documents.
 
@@ -481,15 +493,15 @@ the stress deck is pushed, medians over the idle window:
 
 | Process type                                                           | Count |     PSS |
 | ---------------------------------------------------------------------- | ----: | ------: |
-| Browser (main)                                                         |     1 |  120 MB |
-| GPU (SwiftShader under WSLg; alive in some windows and not others)     |   0–1 |  199 MB |
-| Utility (network service)                                              |     1 |   25 MB |
+| Browser (main)                                                         |     1 |  116 MB |
+| GPU (SwiftShader under WSLg; alive in some windows and not others)     |   0–1 |  156 MB |
+| Utility (network service)                                              |     1 |   24 MB |
 | Tab — the app's renderer, two `stage-<id>` processes, one `thumbnails` |     4 |  113 MB |
-| **Total**                                                              |     7 | ~460 MB |
+| **Total**                                                              |     7 | ~409 MB |
 
 About 350 MB of that exists before a single slide document does. The three sandboxed slide
 processes hold all of the starter deck's live documents for well under 100 MB together (the app's
-own renderer is ~50 MB of the Tab figure). Under a 100-slide deck the session median sits ~100 MB
+own renderer is ~50 MB of the Tab figure). Under a 100-slide deck the session median sits ~120 MB
 above idle, which is the ~13 mounted documents (3 on the stage, ~10 thumbnails) plus the deck's
 source in the renderer store and main's registry — roughly 1 MB per slide of serialized HTML for the
 stress decks, and nothing per slide beyond that. The 200 MB median is therefore no longer a question
@@ -502,8 +514,12 @@ is the next decision, and this report is the input to it.
 Expected steady state on a deck with a selection away from the ends: Browser + GPU + Utility + the
 app's renderer + three `stage-<id>` processes (active, −1, +1) + one `thumbnails` process = **8**.
 The measured median is 7 because the harness spends its idle and animation phases on slide 0, whose
-window has one neighbour; the peak of 10 is the moment after a step, when the stage document that
-just left the window still has its process and the rail-scroll phase has the most miniatures live.
+window has one neighbour. The peak of 10 is the **Present** phase, which mounts its own stage window
+on top of the editor's rather than replacing it. That is now readable from the report itself:
+`processCountByPhase` in all three tiers puts the editor's phases (idle, rail-scroll, animation) at a
+median of 7, a switch at 8 — a step does briefly hold the outgoing document's process alongside the
+incoming one, but one process, not three — and Present at a flat 10/10. The `open` phase is `null` at
+the 100-slide tier because it finishes in under the sampler's 250 ms tick.
 
 ### `pnpm perf:isolation`
 
