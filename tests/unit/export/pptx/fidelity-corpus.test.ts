@@ -17,7 +17,7 @@ import { CORPUS, recordedFileName, type RecordedSlide } from '../../../fidelity/
 import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback'
 
 /**
- * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 18-slide corpus.
+ * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 26-slide corpus.
  *
  * The inputs are recordings made by `tests/fidelity/harness.ts` from the *real* export window: the
  * measurement pass production consumed, and an independent ground truth (text nodes via `Range`,
@@ -43,7 +43,11 @@ import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback
  * banner reappears as a node and as an emitted shape); dropping the `content`-replacement guard
  * reds the x15 case; removing the root census or the `rootPaint` deduction reds x11; removing
  * `contain` from `clipsBox` or putting it back in `LAYOUT_RESOLVED_PROPERTIES` reds x13; and
- * flattening the census probe back to one shadow root reds x12.
+ * flattening the census probe back to one shadow root reds x12. From review r4: putting
+ * `view-transition-name` back into `LAYOUT_RESOLVED_PROPERTIES` reds the x18 case — it returns to
+ * structured at 100 with an empty census — and so does widening that exemption from value-scoped to
+ * whole-property. Emulating the pre-r2 walker is not a mutation but a fixture here: it is what the
+ * two counterfactual cases below assert directly.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -63,6 +67,16 @@ function loadRecorded(): RecordedSlide[] {
     }
     return JSON.parse(readFileSync(path, 'utf8')) as RecordedSlide
   })
+}
+
+/** A corpus fixture's lines with comments and blanks removed, so a pair can be diffed by hand. */
+function declarationsOf(file: string): string[] {
+  const raw = readFileSync(join(process.cwd(), 'tests', 'fidelity', 'corpus', file), 'utf8')
+  return raw
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
 }
 
 async function assessAll(fidelity: PptxFidelity): Promise<SlideAssessment[]> {
@@ -138,6 +152,56 @@ async function assessAsOldExporter(): Promise<SlideAssessment[]> {
   return out
 }
 
+/**
+ * The recording as the **pre-M4.8a walker** would have read it (review r4).
+ *
+ * `NodeStyle.rotate`/`scale`/`translate` — the standalone CSS Transforms Level 2 properties, which
+ * do NOT fold into the computed `transform` — were introduced at `b42085a` (M4.8a r2). At `c20ce96`
+ * and at `fe20e2e`/`d7c37c7` the walker read `transform` and nothing else, so an element authored
+ * with `rotate: 20deg` arrived with nothing to place it by. Zeroing those three fields on today's
+ * recording reproduces that exporter; everything downstream is the real pipeline and the current,
+ * two-halved oracle.
+ */
+const withoutStandaloneTransforms = <
+  T extends { rotate: string; scale: string; translate: string },
+>(
+  spec: T,
+): T => ({ ...spec, rotate: 'none', scale: 'none', translate: 'none' })
+
+function asPreR2Walker(measure: RecordedSlide['measure']): RecordedSlide['measure'] {
+  return {
+    ...measure,
+    nodes: measure.nodes.map((n) => ({
+      ...n,
+      ancestorTransforms: n.ancestorTransforms.map(withoutStandaloneTransforms),
+      style: withoutStandaloneTransforms(n.style),
+    })),
+  }
+}
+
+/** One slide through the real pipeline, forced structured at 100, over the pre-r2 measurement. */
+async function assessPreR2Walker(file: string): Promise<SlideAssessment> {
+  const recording = loadRecorded().find((r) => r.file === file)!
+  const corpus = CORPUS.find((c) => c.file === file)!
+  const measure = asPreR2Walker(recording.measure)
+  const plan = planSlide({
+    measure,
+    fidelity: 'editable',
+    rasterDataUrl: PNG,
+    backgroundDataUrl: null,
+  })
+  const bytes = await writeDeckPptx({ title: file, author: 'test', slides: [plan] })
+  return assessSlide({
+    corpus,
+    truth: recording.truth,
+    measure,
+    readback: readbackPptx(bytes)[0]!,
+    tier: 'structured',
+    score: 100,
+    reasons: [],
+  })
+}
+
 const recorded = loadRecorded()
 const x1Readback = await readbackOf('x1-ghost-opacity.html', 'editable')
 const x4Readback = await readbackOf('x4-shadows.html', 'auto')
@@ -159,7 +223,7 @@ describe('fidelity corpus recordings', () => {
   })
 
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(24)
+    expect(recorded).toHaveLength(26)
     expect(summary.textTotal).toBeGreaterThan(40)
     expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
@@ -392,27 +456,31 @@ describe('§5.2 targets over the corpus', () => {
    * dropping a load-bearing construct; that number was itself an undercount, because the metric of
    * the day could only see three classes of construct.
    *
-   * **Read the counterfactual precisely, because there are three of them and they give three
-   * different numbers** (review r3 disputed the figure; all three were re-derived to settle it).
-   * What this test measures is the **scorer deleted outright** — every slide forced structured at a
-   * bare `score: 100, reasons: []` — while the current walker still emits. Rolling the scorer
-   * *back* to a real historical commit instead gives smaller numbers over the original 18 slides:
-   * 5 at `d7c37c7`, the last commit before M4.8a, and 3 at the post-r1 scorer. The gap is not an
-   * inconsistency: a rolled-back scorer still deducts for the constructs it did know about, and
-   * `chooseTier` then routes those slides to raster, where `constructsLost` is empty by definition.
+   * **Read the counterfactual precisely.** What this test measures is the **scorer deleted
+   * outright** — every slide forced structured at a bare `score: 100, reasons: []` — while the
+   * current walker still emits. It is the only one of the three that is asserted here, and it is
+   * end-to-end: real `planSlide` → real pptxgenjs → read back from the emitted bytes.
    *
-   * `x10-rotate-property` is absent from every one of the three lists, and that was checked rather
-   * than assumed: its shape is emitted carrying `rot = 20`, so the walker places it correctly and
-   * nothing is lost whatever the score says. A count derived from the oracle's bounds-vs-layout
-   * signature alone wrongly adds it — and `07-rotated` and `x3-rotations` with it — because that
-   * signature is only half the test; the other half is that the shape shipped at `rot = 0`.
+   * Rolling the scorer *back* to a historical commit gives smaller numbers over the original 18
+   * slides, because a rolled-back scorer still deducts for the constructs it did know about and
+   * `chooseTier` routes those slides to raster, where `constructsLost` is empty by definition. But
+   * a scorer-only rollback is a pipeline that never shipped: **the walker was different too**.
+   * `NodeStyle.rotate` — the standalone `rotate:` property — arrived at `b42085a` (r2), so at
+   * `c20ce96` and `d7c37c7` an element authored with `rotate: 20deg` shipped upright and unscaled.
+   * Under the actual pre-M4.8a pipeline, walker and scorer together, the honest historical figures
+   * are therefore **4 at `c20ce96` and 6 at `d7c37c7`** — review r3's numbers, not this builder's
+   * earlier 3 and 5, which held the walker at HEAD while naming the result by a historical commit.
+   * `x10-rotate-property` is the whole of the disagreement, and the two cases below settle it
+   * mechanically rather than in prose: x10 IS a silent lie under that walker, and `07-rotated` and
+   * `x3-rotations` are NOT, which is what falsifies the earlier diagnosis that blamed the oracle's
+   * bounds-vs-layout signature — it would have added all three, and no list contains 07 or x3.
    *
    * `x14-visibility-collapse` is absent for a different reason worth stating: its fix is in the
    * *emission*, not the score. The collapsed banner never becomes a node at all now, so even a
    * scorer-free exporter invents nothing. The old walker's losses are pinned by mutation instead,
    * one fix at a time (see the module docstring).
    */
-  it('the retroactive figure: with the scorer deleted, 13 of 24 slides are silent lies', () => {
+  it('the retroactive figure: with the scorer deleted, 14 of 26 slides are silent lies', () => {
     const lying = asOldExporter.filter((a) => a.silentLie).map((a) => a.file)
     expect(lying).toEqual([
       '01-title-body.html',
@@ -428,9 +496,32 @@ describe('§5.2 targets over the corpus', () => {
       'x13-contain-paint.html',
       'x15-content-url.html',
       'x16-gradient-hero.html',
+      'x18-view-transition-name.html',
     ])
     // …and the shipped pipeline, over the same corpus, lies about none.
     expect(summary.silentLies).toEqual([])
+  })
+
+  it('x10 IS a silent lie under the pre-M4.8a walker: `rotate:` had no support to lose', async () => {
+    const x10 = await assessPreR2Walker('x10-rotate-property.html')
+    expect(x10.rotationLost).toHaveLength(2)
+    expect(x10.rotationLost[0]).toContain('ships upright at its bounds')
+    // The standalone `scale:` is lost with it: 46px × 1.6 × 0.75 = 55.2pt, shipped as 34.5pt.
+    expect(x10.sizeWrong.join(' ')).toContain('34.5pt')
+    expect(x10.rotationsOk).toBe(0)
+    expect(x10.silentLie).toBe(true)
+  })
+
+  it('07 and x3 are NOT: their rotations come from `transform`, which that walker read', async () => {
+    // This is what falsifies blaming the count on `rotatedBoundsSignature` without `shippedUpright`:
+    // that diagnosis predicts these two join x10, and they are in nobody's list under either walker.
+    for (const file of ['07-rotated.html', 'x3-rotations.html']) {
+      // oxlint-disable-next-line no-await-in-loop -- two small decks, in order
+      const a = await assessPreR2Walker(file)
+      expect(a.rotationLost, file).toEqual([])
+      expect(a.rotationsOk, `${file}: ${a.rotationDetails.join('\n')}`).toBe(a.rotationsExpected)
+      expect(a.silentLie, file).toBe(false)
+    }
   })
 
   /**
@@ -497,6 +588,72 @@ describe('§5.2 targets over the corpus', () => {
       r.includes('clipped by overflow would spill out'),
     )
     expect(escaping).toBe(true)
+  })
+
+  /**
+   * Review r4's blocker: `view-transition-name` was exempted in `LAYOUT_RESOLVED_PROPERTIES` on the
+   * written claim that outside an active transition it "has no rendering effect at all". It creates
+   * a stacking context. The pair below is the smallest thing that shows it — two files differing in
+   * exactly one declaration — and the reason it is a *pair* is that neither slide alone proves
+   * anything: the emitted shapes are identical, in identical order, and only which one paints on
+   * top differs. The census is the only signal that can tell them apart, and it could not while the
+   * property was exempted.
+   *
+   * Restoring the exemption reds the x18 case (structured at 100, `unmodelledProperties` empty).
+   */
+  describe('the r4 paint-order pair', () => {
+    const find = (file: string) => auto.find((a) => a.file === file)!
+
+    it('differs in exactly one declaration, so the census is the only thing that can react', () => {
+      const control = declarationsOf('x17-paint-order.html')
+      const defect = declarationsOf('x18-view-transition-name.html')
+      expect(defect.filter((line) => !control.includes(line))).toEqual([
+        'view-transition-name: hero;',
+      ])
+      expect(control.filter((line) => !defect.includes(line))).toEqual([])
+    })
+
+    it('x17, the control, stays a clean structured 100', () => {
+      const control = find('x17-paint-order.html')
+      expect(control.tier).toBe('structured')
+      expect(control.score).toBe(100)
+      expect(control.unmodelledProperties).toEqual([])
+      expect(control.constructsLost).toEqual([])
+      expect(control.silentLie).toBe(false)
+    })
+
+    it('x18 censuses `view-transition-name` and routes to raster', () => {
+      const defect = find('x18-view-transition-name.html')
+      expect(defect.unmodelledProperties).toEqual(['view-transition-name'])
+      expect(defect.tier).toBe('raster')
+      // The loss is named in the forced tier too, not merely rasterized away.
+      const forced = editable.find((a) => a.file === 'x18-view-transition-name.html')!
+      expect(forced.constructsLost).toEqual(['un-modelled CSS: view-transition-name'])
+    })
+
+    it('both slides emit the same shapes in the same order — only paint order differs', async () => {
+      // Why no shape-level check could ever have caught this, stated as an assertion rather than a
+      // claim: the surplus check, the painted-box pairing and the text pairing all see one file.
+      const shapesOf = async (file: string): Promise<string> =>
+        (await readbackOf(file, 'editable')).shapes
+          .map((sh) => `${String(sh.fill)}@${sh.x.toFixed(0)},${sh.y.toFixed(0)}`)
+          .join(' ')
+      expect(await shapesOf('x18-view-transition-name.html')).toBe(
+        await shapesOf('x17-paint-order.html'),
+      )
+    })
+
+    it('the UA value on <html> is exempted, so no slide rasterizes for `root`', () => {
+      // Chromium gives the document element `view-transition-name: root`, and the census baseline —
+      // a detached <html> two shadow roots deep — computes `none`. Without the value-scoped
+      // exemption every one of the 26 slides would report it.
+      const others = [...auto, ...editable].filter(
+        (a) => a.file !== 'x18-view-transition-name.html',
+      )
+      expect(others).toHaveLength(2 * CORPUS.length - 2)
+      for (const a of others)
+        expect(a.unmodelledProperties, a.file).not.toContain('view-transition-name')
+    })
   })
 
   it('01-title-body routes to raster in auto: its bare text beside <strong>/<em> would be dropped', () => {

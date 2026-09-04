@@ -4,12 +4,12 @@
  * discovers them — but rotations and a painted body background are, because "did the exporter keep
  * it" is only checkable against a statement of what was there.
  *
- * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x16` were written *against*
+ * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x18` were written *against*
  * the finished exporter, not alongside it: each one reproduced a construct that scored 85–100 while
  * vanishing from — or arriving wrong in — the `.pptx`. `x1`–`x6` came from review r1, `x7`–`x9` from
- * r2's probe set, `x10` reproduces the standalone `rotate:`/`scale:` properties, and `x11`–`x16` are
- * r3's. They are in the corpus so the next tuning pass cannot quietly fit the scorer to the eight
- * slides it was born with.
+ * r2's probe set, `x10` reproduces the standalone `rotate:`/`scale:` properties, `x11`–`x16` are
+ * r3's, and `x17`/`x18` are r4's paint-order pair. They are in the corpus so the next tuning pass
+ * cannot quietly fit the scorer to the eight slides it was born with.
  */
 
 import type { MeasureResult } from '../../../src/shared/export/pptx/node'
@@ -86,6 +86,11 @@ export const CORPUS: readonly CorpusSlide[] = [
   { file: 'x14-visibility-collapse.html', rotations: [], bodyImage: false },
   { file: 'x15-content-url.html', rotations: [], bodyImage: false },
   { file: 'x16-gradient-hero.html', rotations: [], bodyImage: false },
+  // Review r4's probe, and the only PAIR here: two files differing in exactly one declaration
+  // (asserted), which reverses paint order while leaving every rect, colour and emitted shape
+  // identical. Neither slide shows anything alone — x17 is the control that must stay clean.
+  { file: 'x17-paint-order.html', rotations: [], bodyImage: false },
+  { file: 'x18-view-transition-name.html', rotations: [], bodyImage: false },
 ]
 
 /**

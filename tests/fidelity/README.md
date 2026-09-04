@@ -47,19 +47,53 @@ it are worth stating plainly:
   value under test and the same slide scored 65 or 100 on the presence of one keyword.
 
 `LAYOUT_RESOLVED_PROPERTIES` is the inverted deny-list, and each of its ~200 entries is a written,
-falsifiable claim about CSS. r3 falsified three of them by hand (`contain`, `visibility`, `content`),
-two of which made the exporter **invent** content the slide never showed. They are not tested
-mechanically, and the check that would test them all — render a slide setting each property to a
-non-initial value and assert the Chromium capture is pixel-identical to the same slide without it —
-needs the renderer this harness still does not have.
+falsifiable claim about CSS. r3 falsified four of them by hand (`contain`, `content-visibility`,
+`visibility`, `content`), two of which made the exporter **invent** content the slide never showed.
+r4 falsified two more — `view-transition-name` and `will-change` — and they are the ones that turned
+the pattern into a rule, because both fail the same way for the same reason:
+
+> **A property that establishes a stacking context can never be layout-resolved.** The measurement
+> pass records rects and computed colours and nothing about paint order, so such an entry cannot be
+> falsified from the recording at all: no rect moves, no colour changes, and the census, the oracle
+> and the score go blind together. `corpus/x17-paint-order.html` and
+> `corpus/x18-view-transition-name.html` are the demonstration — two files differing in exactly one
+> declaration (asserted), emitting byte-identical shapes in identical order, where the reader sees
+> red and the `.pptx` shows green.
+
+The rule is enforced in `tests/unit/export/pptx/node.test.ts` against CSS's own list of
+stacking-context creators, so putting one back reds a test rather than shipping. `will-change` was
+deleted outright; `view-transition-name` survives only as a **value-scoped** exemption for the UA's
+`root` on `<html>`, since Chromium names the document element that and the census baseline — a
+detached `<html>` two shadow roots deep, which is not _the_ root — computes `none`.
+
+Two limitations of that audit are worth having in writing:
+
+- The other ~160 entries are still not tested one slide at a time. They were swept mechanically
+  instead: `will-change: <property>` creates a stacking context exactly when Chromium holds that
+  property to be one that creates a stacking context or containing block, so every name in the list
+  was run through the `z-index: -1` fixture that way. `view-transition-name` was the only hit.
+  `container-type` — which the spec's own wording puts in doubt — was checked directly and computes
+  `contain: none`. That sweep covers paint order; it does not cover the other ways a written claim
+  could be wrong, and the check that would cover those (render each property set to a non-initial
+  value and assert the Chromium capture is pixel-identical) still needs the renderer below.
+- **The rule does not cover `MODELLED_PROPERTIES`, and one open class lives there.** `transform`,
+  `rotate`, `scale`, `translate`, `opacity` and `position: fixed` all establish a stacking context;
+  what the pipeline emits for them is a placement or an alpha, never a paint order. (`filter`,
+  `clip-path`, `mix-blend-mode`, `backdrop-filter` and `position: sticky` do too, but each carries a
+  named deduction that rasters the slide, so none of those can lie.) So a `transform: translateZ(0)`
+  card with a `z-index: -1` child is the x17/x18 defect with a modelled property in place of an
+  exempted one, and nothing in this harness can see it: the emitted shape set is identical and only
+  paint order differs. It is the pixel step's to catch, which is the strongest reason the renderer is
+  a prerequisite for M4.8 rather than a nice-to-have.
 
 ## Layout
 
-- `corpus/*.html` — 24 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
-  r1 against the finished exporter, `x7`–`x10` by r2, and `x11`–`x16` by r3. Every `x` slide
-  reproduces a construct that once scored 85–100 while vanishing from, or arriving wrong in, the
-  `.pptx` — and `x14`/`x15` two that the `.pptx` **invented**, a banner and a sentence that appear
-  nowhere on screen.
+- `corpus/*.html` — 26 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
+  r1 against the finished exporter, `x7`–`x10` by r2, `x11`–`x16` by r3 and `x17`/`x18` by r4. Every
+  `x` slide reproduces a construct that once scored 85–100 while vanishing from, or arriving wrong
+  in, the `.pptx` — and `x14`/`x15` two that the `.pptx` **invented**, a banner and a sentence that
+  appear nowhere on screen. `x17`/`x18` are the only pair: they differ in one declaration, and only
+  together do they show anything, since each on its own emits a shape list that looks correct.
 - `corpus/recorded/*.json` — per slide, the measurement pass production saw plus the ground truth,
   recorded by `--record`. `tests/unit/export/pptx/fidelity-corpus.test.ts` runs the pure pipeline
   over these with no app launch, and fails closed if `slideMeasurementScript` changed since they were
@@ -75,5 +109,12 @@ needs the renderer this harness still does not have.
   without the oracle parsing a transform.
 - `lib/readback.ts` — the `.pptx` reader (EMU boxes, `rot`, runs, `<p:bg>`); python-pptx stand-in.
 - `lib/assess.ts` — the §5.2 targets as code; shared by the harness table and the vitest assertions.
+  Every check but one runs **truth → file**, which by construction costs a fabricated shape nothing;
+  `surplusShapes` (r4) runs the other direction once, for any string and any fill, and replaces the
+  two r3 tests that could only catch fabrication by naming its literal text. It closes fabrication,
+  not compositing — it would not have caught the `x17`/`x18` blocker, where the shape sets are
+  identical. Building it immediately found a hole in the oracle beside it: `truth.ts` read
+  `borderTopWidth` only, so a `border-left` accent bar was in no `truth.box` and neither dropping nor
+  inventing it was visible. It now records the widest painted side.
 - `lib/renderer.ts` — renderer resolution (fail-closed) and the pixel diff.
 - `harness.ts` — the Electron main script; `run.ts` bundles it with vite and launches Electron.

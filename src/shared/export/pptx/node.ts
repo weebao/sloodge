@@ -39,6 +39,7 @@ import {
   LAYOUT_RESOLVED_PROPERTIES,
   MAX_UNMODELLED_PER_NODE,
   MODELLED_PROPERTIES,
+  VALUE_SCOPED_EXEMPTIONS,
 } from './properties'
 
 /** One side of a CSS border, as `getComputedStyle` reports it. */
@@ -209,6 +210,7 @@ export function slideMeasurementScript(): string {
   const MODELLED = new Set(${JSON.stringify(MODELLED_PROPERTIES)});
   const LAYOUT_RESOLVED = new Set(${JSON.stringify(LAYOUT_RESOLVED_PROPERTIES)});
   const CURRENTCOLOR = new Set(${JSON.stringify(CURRENTCOLOR_PROPERTIES)});
+  const VALUE_SCOPED = ${JSON.stringify(VALUE_SCOPED_EXEMPTIONS)};
   const MAX_UNMODELLED = ${String(MAX_UNMODELLED_PER_NODE)};
   const alphaOf = (c) => {
     const m = /^rgba?\\(([^)]+)\\)$/.exec(c.trim());
@@ -307,13 +309,19 @@ export function slideMeasurementScript(): string {
   };
   const watch = [];
   for (const name of baselineFor('div').keys()) if (!MODELLED.has(name) && !LAYOUT_RESOLVED.has(name)) watch.push(name);
-  const censusOf = (cs, tag) => {
+  // A property that establishes a stacking context can never be exempted outright — see
+  // \`properties.ts\`. \`view-transition-name\` is exempted for the UA's own \`root\` on the document
+  // element and for nothing else, so the deviation is re-checked against value AND element here.
+  const valueScoped = (el, name, value) => VALUE_SCOPED.some((e) =>
+    e.property === name && e.value === value &&
+    (!e.documentElementOnly || el === document.documentElement));
+  const censusOf = (el, cs, tag) => {
     const baseline = baselineFor(tag);
     const out = [];
     for (const name of watch) {
       const value = cs.getPropertyValue(name);
       const want = CURRENTCOLOR.has(name) ? cs.color : baseline.get(name);
-      if (value !== want) {
+      if (value !== want && !valueScoped(el, name, value)) {
         out.push(name);
         if (out.length >= MAX_UNMODELLED) break;
       }
@@ -372,7 +380,7 @@ export function slideMeasurementScript(): string {
       clippedTextPx: clippedTextPx(el, cs, isLeaf),
       // SVG interiors are accounted for wholesale by the SVG deduction and the coverage metric —
       // the walker never emits them — so a per-property census there would say nothing new.
-      unmodelledProperties: inSvg ? [] : censusOf(cs, tag),
+      unmodelledProperties: inSvg ? [] : censusOf(el, cs, tag),
       style: {
         fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',
@@ -404,7 +412,7 @@ export function slideMeasurementScript(): string {
       backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
       mixBlendMode: cs.mixBlendMode,
       clipPath: cs.clipPath || 'none',
-      unmodelledProperties: censusOf(cs, el.tagName.toLowerCase()),
+      unmodelledProperties: censusOf(el, cs, el.tagName.toLowerCase()),
     };
   };
   const body = rootPaint(document.body);

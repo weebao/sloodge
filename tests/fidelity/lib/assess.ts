@@ -49,6 +49,17 @@
  *
  * Colour and size mismatches are folded in as well, since §5.2 lists both as targets in their own
  * right and the headline "N slides scoring ≥ 90 that drop a construct" should not exclude them.
+ *
+ * ## The other direction (M4.8a, review r4)
+ *
+ * Everything above runs **truth → file**, so a shape the exporter *invents* costs nothing here by
+ * construction. r3 found two of them and each was caught only by a test naming its literal string.
+ * `surplusShapes` runs the loop the other way once, for any string and any fill: an emitted shape
+ * that carries text no recorded text accounts for, or paint at a rect no painted box occupies.
+ *
+ * It closes fabrication, not compositing. The x17/x18 pair emits the same shapes in the same order
+ * and differs only in which one paints on top — invisible to any shape comparison in either
+ * direction, and the reason the pixel step is a prerequisite rather than a nice-to-have.
  */
 
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../src/shared/export/types'
@@ -107,6 +118,11 @@ export type SlideAssessment = {
   truncatedShipped: string[]
   /** Bullet glyphs the emitted file invents for a list the reader sees unbulleted. */
   bulletsInvented: number
+  /**
+   * Emitted shapes that pair with no text and no painted box the oracle recorded — the file → truth
+   * direction, which nothing else in this file runs. Fabrication, generically, rather than by name.
+   */
+  surplusShapes: string[]
   /** Rotations the oracle measured from the rendered quad that the file does not carry. */
   rotationLost: string[]
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
@@ -297,6 +313,12 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   let textKept = 0
   let colorExact = 0
   let sizeExact = 0
+  // Which emitted shape carries which string the reader sees — built over EVERY recorded text, SVG
+  // included. The §5.2 text metric excludes SVG text (it belongs to the M4.8c hybrid), but "is this
+  // string one the reader sees at all" does not, and the surplus check below asks only that.
+  const textCarriers = new Set<ReadbackShape>()
+  for (const t of truth.texts)
+    for (const h of runsContaining(readback, expectedText(t))) textCarriers.add(h)
   for (const t of texts) {
     const expected = expectedText(t)
     const holders = runsContaining(readback, expected)
@@ -383,6 +405,26 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       opacityWrong.push(
         `box ${b.tag}: alpha ${carrier.fillOpacity.toFixed(2)} ≠ ${wantAlpha.toFixed(2)}`,
       )
+  }
+
+  // --- Surplus: emitted shapes that pair with NOTHING the reader sees (see the module docstring) ---
+  const surplusShapes: string[] = []
+  for (const shape of readback.shapes) {
+    if (shape.kind !== 'sp') continue
+    if (shape.text !== '') {
+      if (!textCarriers.has(shape)) surplusShapes.push(`text no reader sees: "${shape.text}"`)
+      continue
+    }
+    const paints =
+      (shape.fill !== null && shape.fillOpacity > INVISIBLE_ALPHA) || shape.line !== null
+    if (!paints) continue
+    // Matched loosely on purpose: `carrierOf`'s pairing is a bijection, so the three edge rects of a
+    // non-uniform border legitimately pair with nothing once the fourth has claimed the box. Sitting
+    // at — or inside — a box the reader does see is enough to be accounted for here.
+    if (truth.boxes.some((b) => samePlace(shape, b) || insideBox(shape, b))) continue
+    surplusShapes.push(
+      `paint no reader sees: ${shape.fill === null ? `line #${String(shape.line)}` : `#${shape.fill}`} ${shape.w.toFixed(0)}×${shape.h.toFixed(0)} at ${shape.x.toFixed(0)},${shape.y.toFixed(0)}`,
+    )
   }
 
   // --- Rotations ---
@@ -480,6 +522,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     for (const f of flattened) constructsLost.push(`transform flattened: ${f}`)
     constructsLost.push(...rotationLost.map((r) => `rotation wrong: ${r}`))
     for (const t of truncatedShipped) constructsLost.push(`clipped text shipped in full: "${t}"`)
+    constructsLost.push(...surplusShapes.map((sh) => `surplus shape: ${sh}`))
     if (bulletsInvented > 0)
       constructsLost.push(`${String(bulletsInvented)} invented bullet glyph(s)`)
     for (const p of unmodelledProperties) constructsLost.push(`un-modelled CSS: ${p}`)
@@ -517,6 +560,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     pseudoTotal: truth.pseudos.length,
     truncatedShipped,
     bulletsInvented,
+    surplusShapes,
     rotationLost,
     unmodelledProperties,
     rootPaintOps,

@@ -76,7 +76,9 @@ export type TruthBox = {
   bg: string | null
   bgAlpha: number
   hasGradient: boolean
+  /** Width of the widest side that actually paints — not necessarily the top one. */
   borderPx: number
+  /** Colour of that side, or null when no side paints. */
   borderColor: string | null
   transform: string
   rotate: string
@@ -254,6 +256,23 @@ export function groundTruthScript(): string {
       opacity: opacityOf(el), renderedScale: scaleChain(el),
     });
   }
+  // The widest side that actually paints, not the top one. A \`border-left: 5px\` accent bar is a
+  // paint the reader sees and the exporter emits as an edge rect, but reading \`borderTopWidth\`
+  // alone left the element out of \`boxes\` entirely — so neither dropping it nor inventing it was
+  // visible to the metric. Found by the surplus check, which accused a correct emission (r4).
+  const widestBorder = (cs) => {
+    let px = 0;
+    let color = null;
+    for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
+      const w = parseFloat(cs['border' + side + 'Width']) || 0;
+      const style = cs['border' + side + 'Style'];
+      if (w <= px || style === 'none' || style === 'hidden') continue;
+      if (alphaOf(cs['border' + side + 'Color']) <= 0.03) continue;
+      px = w;
+      color = toHex(cs['border' + side + 'Color']);
+    }
+    return { px, color };
+  };
   const boxes = [];
   for (const el of document.body.querySelectorAll('*')) {
     const cs = getComputedStyle(el);
@@ -265,12 +284,12 @@ export function groundTruthScript(): string {
     if (pseudoPaints(el, '::after')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::after' });
     const bgAlpha = alphaOf(cs.backgroundColor);
     const hasGradient = /gradient\\(/.test(cs.backgroundImage);
-    const borderPx = parseFloat(cs.borderTopWidth) || 0;
-    if (bgAlpha > 0.03 || hasGradient || borderPx > 0) {
+    const border = widestBorder(cs);
+    if (bgAlpha > 0.03 || hasGradient || border.px > 0) {
       boxes.push({
         tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height,
         bg: bgAlpha > 0.03 ? toHex(cs.backgroundColor) : null, bgAlpha, hasGradient,
-        borderPx, borderColor: borderPx > 0 ? toHex(cs.borderTopColor) : null,
+        borderPx: border.px, borderColor: border.color,
         ...spec(cs), ...layoutBox(el, r),
         opacity: opacityOf(el),
       });

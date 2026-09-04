@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { slideMeasurementScript } from '../../../../src/shared/export/pptx/node'
-import { MODELLED_PROPERTIES } from '../../../../src/shared/export/pptx/properties'
+import {
+  LAYOUT_RESOLVED_PROPERTIES,
+  MODELLED_PROPERTIES,
+  VALUE_SCOPED_EXEMPTIONS,
+} from '../../../../src/shared/export/pptx/properties'
 
 /**
  * The measurement pass runs in a browser (asserted end-to-end by the harness), so the unit test pins
@@ -89,5 +93,73 @@ describe('slideMeasurementScript', () => {
     expect(src).toContain('scrollWidth')
     expect(src).toContain('scrollHeight')
     expect(src).toContain('clippedTextPx')
+  })
+
+  it('scopes the view-transition-name exemption to one value on the document element', () => {
+    // The property creates a stacking context, so it cannot be exempted outright; but Chromium's UA
+    // sheet names <html> `root` and the census baseline (a detached <html> two shadow roots deep,
+    // which is not THE root) computes `none`, so every slide reported it (review r4).
+    expect(src).toContain(JSON.stringify(VALUE_SCOPED_EXEMPTIONS))
+    expect(src).toContain('valueScoped')
+    expect(src).toContain('el === document.documentElement')
+  })
+})
+
+/**
+ * The rule `properties.ts` states, enforced rather than described: **a property that establishes a
+ * stacking context can never be layout-resolved**, because the measurement pass records rects and
+ * colours and nothing about paint order, so such an entry is unfalsifiable from the recording alone.
+ *
+ * The list below is CSS's own set of stacking-context creators. `will-change` and
+ * `view-transition-name` were both in `LAYOUT_RESOLVED_PROPERTIES` until r4, and a slide using
+ * either exported a `z-index: -1` child on the wrong side of its parent at score 100 with an empty
+ * loss list. Adding any of these back reds this test.
+ */
+describe('the stacking-context rule', () => {
+  const STACKING_CONTEXT_PROPERTIES = [
+    'backdrop-filter',
+    'clip-path',
+    'contain',
+    'container-type',
+    'content-visibility',
+    'filter',
+    'isolation',
+    'mask',
+    'mask-border',
+    'mask-image',
+    'mix-blend-mode',
+    'offset-path',
+    'opacity',
+    'perspective',
+    'position',
+    'rotate',
+    'scale',
+    'transform',
+    'translate',
+    'view-transition-name',
+    'will-change',
+    'z-index',
+  ]
+
+  it('exempts none of them', () => {
+    const exempted = STACKING_CONTEXT_PROPERTIES.filter((p) =>
+      LAYOUT_RESOLVED_PROPERTIES.includes(p),
+    )
+    // `container-type` is on the list because CSS Contain says it applies layout containment, which
+    // does create one. Chromium disagrees — it computes `contain: none` for `container-type:
+    // inline-size` and leaves paint order alone — so it is exempted, and is the one entry here whose
+    // safety rests on a measurement rather than on the spec. Kept in the list so that a Chromium
+    // that changes its mind reds this rather than shipping silently.
+    expect(exempted).toEqual(['container-type'])
+  })
+
+  it('value-scopes the one that cannot simply be dropped', () => {
+    expect(VALUE_SCOPED_EXEMPTIONS).toEqual([
+      { property: 'view-transition-name', value: 'root', documentElementOnly: true },
+    ])
+    for (const e of VALUE_SCOPED_EXEMPTIONS) {
+      expect(MODELLED_PROPERTIES).not.toContain(e.property)
+      expect(LAYOUT_RESOLVED_PROPERTIES).not.toContain(e.property)
+    }
   })
 })

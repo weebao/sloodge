@@ -36,6 +36,41 @@
  * purpose: they change what a reader sees, nothing emits them, so a slide using one must rasterize
  * until somebody does the work.
  *
+ * ## The one entry rule that is not a judgement call
+ *
+ * **A property that establishes a stacking context can never be `LAYOUT_RESOLVED`.**
+ *
+ * The measurement pass records every element's rect and its computed colours. It records nothing
+ * about paint order. A stacking context changes *only* paint order — no rect moves and no computed
+ * colour changes — so its effect lies outside everything the recording holds, and the census, the
+ * §5.2 oracle and the score are blind to it together. That is why this is a rule rather than a
+ * case-by-case call: no amount of reading the recording can falsify such an entry.
+ *
+ * `view-transition-name` was exempted here on the written claim that, outside an active transition,
+ * "it has no rendering effect at all". It creates a stacking context. A slide carrying it exported a
+ * `z-index: -1` child painted on the wrong side of its parent — byte-identical shapes to the slide
+ * without it, at `tier=structured, score=100, reasons=[]` (review r4). `will-change` was the same
+ * defect, and both are gone from the list below: `view-transition-name` survives only as the
+ * value-scoped exemption for the UA's own `root`, and `will-change` outright.
+ *
+ * Every remaining entry was audited against this rule by asking Chromium rather than by reading the
+ * spec: `will-change: <property>` creates a stacking context exactly when the engine holds that
+ * property to be one that creates a stacking context or containing block, so the whole list was
+ * swept through a `z-index: -1` paint-order fixture one name at a time. `view-transition-name` was
+ * the only hit in 161. `container-type` was the one entry the spec's own wording puts in doubt (it
+ * applies layout containment, which does create a stacking context) and it was checked directly:
+ * `container-type: inline-size` and `: size` both compute `contain: none` in Chromium and leave the
+ * fixture's paint order alone.
+ *
+ * The exposure this rule does *not* cover is `MODELLED_PROPERTIES`: `transform`, `rotate`, `scale`,
+ * `translate`, `opacity` and `position: fixed` all establish a stacking context, and what the
+ * pipeline emits for them is a placement or an alpha, never a paint order. `filter`, `clip-path`,
+ * `mix-blend-mode`, `backdrop-filter` and `position: sticky` do too, but each carries a named
+ * deduction that routes the slide to raster, so none of those can lie. That leaves one open class —
+ * paint order under an emitted transform, opacity or `position: fixed` — which no truth↔file
+ * comparison in either direction can see, and which the pixel step is the check for. It is named as
+ * an open blind spot in tests/fidelity/README.md rather than papered over here.
+ *
  * ## Baselines
  *
  * "Non-initial" is measured against a real probe element carrying `all: initial`, read once per
@@ -323,6 +358,15 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
    * before measuring, so every box is final, and `MeasureResult.hasAnimation` reports the fact
    * separately as a speaker-notes degradation note (§4.2). A per-property flag would fire on every
    * slide with a fade-in and say nothing new.
+   *
+   * These are the one place the stacking-context rule above needs reading carefully. An animation
+   * still *in effect* when we measure — the barrier ends a finite one but pauses an infinite one a
+   * quarter of the way through — makes its element a stacking context whenever the keyframes touch
+   * `transform`/`opacity`/`filter` (measured: paint order flips, and it does not for keyframes on
+   * `background-color`). But the value that animation leaves on the element is the animated one, and
+   * those properties are `MODELLED` — so the box is placed from the value we recorded and only the
+   * paint order is unaccounted for. This is the open transform/opacity class named above, reached by
+   * a second route, not a separate blindness these entries introduce.
    */
   'animation-composition',
   'animation-delay',
@@ -338,14 +382,6 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'transition-duration',
   'transition-property',
   'transition-timing-function',
-  'will-change',
-  /**
-   * Chromium assigns `view-transition-name: root` to the document element itself, so censusing
-   * `<html>` reported it on every slide in the corpus. It names an element as a view-transition
-   * participant and paints nothing; outside an active transition — and the export path measures a
-   * settled static document — it has no rendering effect at all.
-   */
-  'view-transition-name',
 
   /**
    * Containment *inputs*: sizes and names a container query resolves against, which Chromium has
@@ -386,6 +422,34 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
    */
   'perspective-origin',
   'transform-box',
+]
+
+/**
+ * Exemptions that hold for **one value on one element**, not for the property.
+ *
+ * `view-transition-name` is why this exists, and the shape follows from the stacking-context rule in
+ * the module docstring: the property cannot be exempted, because every author-set value creates a
+ * stacking context, but it cannot simply be dropped either. Chromium's UA sheet names the document
+ * element `view-transition-name: root`, and the census baseline — a detached `<html>` two shadow
+ * roots deep, which is not *the* root element — computes `none`, so `<html>` differed on every slide
+ * in the corpus and every slide rasterized. `root` on the document element is the one value that
+ * changes nothing: `<html>` is already a stacking context by virtue of being the root.
+ *
+ * Everything else flags. `view-transition-name: root` on a `<div>` flips paint order (measured), and
+ * an author-set name on `<html>` is honest-but-conservative: it cannot change that element's paint
+ * order, and it routes to raster anyway rather than teaching the census a second special case.
+ */
+export type ValueScopedExemption = {
+  /** Longhand this applies to; it must be in neither of the two sets above. */
+  property: string
+  /** The single computed value exempted. Any other value on any element is un-modelled. */
+  value: string
+  /** True when the exemption also requires the element to be `document.documentElement`. */
+  documentElementOnly: boolean
+}
+
+export const VALUE_SCOPED_EXEMPTIONS: readonly ValueScopedExemption[] = [
+  { property: 'view-transition-name', value: 'root', documentElementOnly: true },
 ]
 
 /**

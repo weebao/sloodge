@@ -7,7 +7,7 @@ import {
 } from '../../../fidelity/lib/assess'
 import type { CorpusSlide } from '../../../fidelity/lib/corpus'
 import type { ReadbackShape, ReadbackSlide } from '../../../fidelity/lib/readback'
-import type { GroundTruth, TruthBox, TruthRootPaint } from '../../../fidelity/lib/truth'
+import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from '../../../fidelity/lib/truth'
 import { SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
 import { makeMeasure } from './_fixtures'
 
@@ -78,9 +78,45 @@ function shape(overrides: Partial<ReadbackShape> = {}): ReadbackShape {
   }
 }
 
-function assess(boxes: TruthBox[], shapes: ReadbackShape[]): SlideAssessment {
+function truthText(text: string, overrides: Partial<TruthText> = {}): TruthText {
+  return {
+    text,
+    inSvg: false,
+    parentTag: 'p',
+    x: 100,
+    y: 100,
+    w: 200,
+    h: 40,
+    color: '000000',
+    colorAlpha: 1,
+    fontSizePx: 20,
+    fontWeight: '400',
+    fontStyle: 'normal',
+    textTransform: 'none',
+    transform: 'none',
+    rotate: 'none',
+    scale: 'none',
+    translate: 'none',
+    transformed: false,
+    hostW: 200,
+    hostH: 40,
+    hostLayoutW: 200,
+    hostLayoutH: 40,
+    clipped: false,
+    bulleted: false,
+    opacity: 1,
+    renderedScale: 1,
+    ...overrides,
+  }
+}
+
+function assess(
+  boxes: TruthBox[],
+  shapes: ReadbackShape[],
+  texts: TruthText[] = [],
+): SlideAssessment {
   const truth: GroundTruth = {
-    texts: [],
+    texts,
     boxes,
     pseudos: [],
     bodyBg: null,
@@ -182,5 +218,70 @@ describe('rotationLost is derived from geometry, not from a declared angle', () 
 
   it('does not flag an untransformed box', () => {
     expect(assess([truthBox()], [shape()]).rotationLost).toEqual([])
+  })
+})
+
+/**
+ * The one check that runs **file → truth**. Every other check here asks "did the emitted file keep
+ * what the reader sees", which by construction costs an INVENTED shape nothing: review r3 found two
+ * fabrications — a `visibility: collapse` banner and a sentence a `content: url()` had replaced —
+ * and each was caught only by a test naming its own literal string, which is the fitted-to-the-
+ * fixture pattern r1 and r2 flagged. Not one case below names a string the checker could match on.
+ *
+ * What it does NOT close is compositing. The corpus pair x17/x18 emits the same shapes in the same
+ * order and differs only in which paints on top, so no shape comparison in either direction can see
+ * it; that is the pixel step's job, and it is stated as an open limitation in tests/fidelity/README.
+ */
+describe('surplusShapes catches fabrication without being told what was fabricated', () => {
+  it('flags emitted text that no recorded text accounts for', () => {
+    const a = assess([], [shape({ text: 'COLLAPSED BANNER' })], [truthText('What the reader sees')])
+    expect(a.surplusShapes).toEqual(['text no reader sees: "COLLAPSED BANNER"'])
+    expect(a.constructsLost).toContain('surplus shape: text no reader sees: "COLLAPSED BANNER"')
+    expect(a.silentLie).toBe(true)
+  })
+
+  it('does not flag text the reader sees, SVG text the §5.2 metric excludes included', () => {
+    const a = assess(
+      [],
+      [shape({ text: 'Visible heading' }), shape({ text: 'EMEA' })],
+      [truthText('Visible heading'), truthText('EMEA', { inSvg: true })],
+    )
+    expect(a.surplusShapes).toEqual([])
+  })
+
+  it('matches an uppercased run against its untransformed source text', () => {
+    const a = assess(
+      [],
+      [shape({ text: 'SHOUTING' })],
+      [truthText('Shouting', { textTransform: 'uppercase' })],
+    )
+    expect(a.surplusShapes).toEqual([])
+  })
+
+  it('flags a painted shape at a rect no painted box occupies', () => {
+    const a = assess([truthBox()], [shape(), shape({ x: 700, y: 500, fill: '00FF00' })])
+    expect(a.surplusShapes).toEqual(['paint no reader sees: #00FF00 200×100 at 700,500'])
+  })
+
+  it('does not flag the edge rects of one border, which sit inside the box they draw', () => {
+    // `carrierOf`'s pairing is a bijection, so only the first of four edge rects claims the box.
+    // Sitting inside a box the reader does see is what keeps the other three honest.
+    const bordered = truthBox({ bg: null, bgAlpha: 0, borderPx: 4, borderColor: '3B82F6' })
+    const edges = [0, 1, 2, 3].map((i) =>
+      shape({ x: 100 + i, y: 100 + i, w: 4, h: 100, fill: '3B82F6' }),
+    )
+    const a = assess([bordered], edges)
+    expect(a.paintedKept).toBe(1)
+    expect(a.surplusShapes).toEqual([])
+  })
+
+  it('ignores the raster picture, which is a whole slide rather than a shape', () => {
+    const a = assess([], [shape({ kind: 'pic', fill: null, w: 1280, h: 720, x: 0, y: 0 })])
+    expect(a.surplusShapes).toEqual([])
+  })
+
+  it('ignores a shape that paints nothing at all', () => {
+    const a = assess([], [shape({ fill: null, line: null })])
+    expect(a.surplusShapes).toEqual([])
   })
 })

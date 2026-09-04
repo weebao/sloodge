@@ -4,6 +4,14 @@
  * own offscreen window's `capturePage`, so anything else reaching the writer is a pipeline defect,
  * not user input. Checked at the writer edge so a malformed or oversized string never reaches
  * pptxgenjs, which would embed it as a broken media part without complaint.
+ *
+ * It is a **shape gate, not a content gate** (review r4): it enforces the scheme, the MIME type, the
+ * base64 alphabet and the size cap, and never decodes the payload, so `data:image/png;base64,` over
+ * arbitrary base64 passes. That is deliberate at this layer — a PPTX media part is an inert zip
+ * entry that PowerPoint never parses as markup, and the one image type it renders that could carry
+ * script, `image/svg+xml`, is refused here along with `text/html`, remote schemes, uppercase
+ * variants and `;charset=` parameter insertion. Decoding and checking the PNG/JPEG magic bytes is
+ * M4.8b's, alongside the sub-region capture that will produce more of these.
  */
 
 /** PNG or JPEG, base64. Exactly what `nativeImage.toPNG()`/`toJPEG()` encode to. */
