@@ -103,6 +103,18 @@ describe('font family name validation (M3.10)', () => {
  * them would make the slide fail its own Tier-1 contract, because SL-S04 matches its forbidden
  * tokens against the source with all whitespace stripped.
  */
+/** A minimal contract-valid slide whose only heading carries the given `font-family` head. */
+function withFace(family: string): string {
+  return [
+    '<!doctype html><html><head><style>',
+    'html,body{margin:0;padding:0}*{box-sizing:border-box}',
+    '.slide{width:1280px;height:720px;overflow:hidden;position:relative;padding:48px}',
+    '</style></head><body><div class="slide" data-sl-id="e_root">',
+    `<h1 data-sl-id="e_001" style="font-family: ${family}, sans-serif">Q3</h1>`,
+    '</div></body></html>',
+  ].join('')
+}
+
 describe('font names that would break the slide contract', () => {
   const CONTRACT_BREAKERS = [
     'Local Storage', // -> localstorage
@@ -131,11 +143,18 @@ describe('font names that would break the slide contract', () => {
     }
   })
 
-  it('proves the hazard is real: the packed source really does contain the forbidden token', () => {
-    // If this ever stops holding, the guard above is dead weight and should be deleted rather than
-    // kept as decoration.
-    const html = '<h1 style="font-family: &quot;Local Storage&quot;, sans-serif">Hi</h1>'
-    expect(html.replace(/\s+/g, '').toLowerCase()).toContain('localstorage')
+  it('would really break the slide — asked of the validator, not of a hand-packed string', () => {
+    // What makes the guard load-bearing rather than decoration: writing one of these names produces
+    // a slide the project's own Tier-1 validator rejects. If this stops holding, the guard can go.
+    expect(validateSlideContract(withFace('Bodoni MT')).ok).toBe(true)
+
+    const broken = validateSlideContract(withFace('Local Storage'))
+    expect(broken.ok).toBe(false)
+    expect(broken.issues.map((issue) => issue.rule)).toContain('SL-S04')
+
+    const viewport = validateSlideContract(withFace('Display 3vh'))
+    expect(viewport.ok).toBe(false)
+    expect(viewport.issues.map((issue) => issue.rule)).toContain('SL-G05')
   })
 })
 

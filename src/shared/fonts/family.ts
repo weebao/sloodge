@@ -30,6 +30,17 @@
  * (`Gill Sans MT Ext Condensed Bold`), so the 128-character cap below is generous headroom rather
  * than a limit anyone will meet.
  *
+ * ## What this allow-list knowingly costs
+ *
+ * Running the real enumerator on that host returns 561 families and this list accepts 515: **46 are
+ * dropped**, all of them one installed comic-lettering pack whose names are bracketed
+ * (`000 Akbar [TeddyBear]`). They come from `%LOCALAPPDATA%\Microsoft\Windows\Fonts` — the per-user
+ * directory that needs no admin rights, which is exactly the directory the threat model above is
+ * about. `[` and `]` could be admitted and escaped safely enough, but widening a security allow-list
+ * to recover a novelty font pack is the wrong trade: the cost is 8% of one unusual machine's list,
+ * and the benefit of a narrow rule is that it stays easy to argue about. Recorded here rather than
+ * left for someone to rediscover.
+ *
  * ## The second, non-obvious guard: staying inside the slide contract
  *
  * `validateSlideContract` decides SL-S04 by substring-matching forbidden API tokens against the
