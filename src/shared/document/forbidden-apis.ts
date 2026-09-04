@@ -45,8 +45,19 @@
  *   3. `shared/design/text-edit.ts` imports from `../document/forbidden-apis` directly rather than
  *      through `slide-contract.ts`, so it stops carrying a parse5 dependency it never uses.
  *
- * Executed on M3.11's head (8cb7faf) during round-3 review: typecheck 0, both branches' suites
- * green, a preload requiring only `electron`.
+ * Two ways the shape of the rebase misleads, both found by executing it rather than reading it:
+ *
+ *   - The `slide-contract.ts` conflict fires on **three** of M3.10's five commits, not one, because
+ *     M3.10 moved the tokens between that file and this one across its own review rounds. Resolve
+ *     the first straight to the end state above and the later two resolve as "keep ours".
+ *   - Step 3 **never conflicts at all**: M3.10 does not touch `text-edit.ts`, so git never asks
+ *     about it. Apply it by hand or it is silently skipped, and the leaf's whole point with it.
+ *
+ * Last executed against M3.11 d672ed7 (round-4 review, 2026-09-04): typecheck 0, 4,384 tests green,
+ * a preload requiring only `electron`. **That result has expired** — M3.11's history was rewritten
+ * afterwards (head 9c6db42, of which d672ed7 is not an ancestor). The mechanics above are the
+ * durable part; the greenness is not. Re-run the recipe against M3.11's head at merge time rather
+ * than trusting this line.
  *
  * Then re-run `pnpm typecheck` (CI runs unit tests only) and
  * `pnpm vitest run tests/unit/preload/preload-bundle-deps.test.ts`, which is what actually catches a

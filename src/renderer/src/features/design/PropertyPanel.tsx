@@ -103,7 +103,7 @@ export interface PropertyPanelProps {
 }
 
 /**
- * Would this write take the slide from clean to SL-S04-violating?
+ * Which forbidden API tokens would this write introduce that the slide did not already contain?
  *
  * The last gate before the bytes land, and deliberately duplicated: `family.ts` refuses a font name
  * whose declaration would trip the contract, but a check inside one field's composer protects one
@@ -116,12 +116,28 @@ export interface PropertyPanelProps {
  *
  * It applies to prose as much as to CSS, which is the rule as written rather than an over-reach:
  * SL-S04 packs whitespace out, so a heading reading `local storage` *is* `localStorage` to the
- * validator, and letting it land trades a reverted keystroke for a deck that fails on export naming
- * an API the user never wrote.
+ * validator, and letting it land would trade a reverted keystroke for a deck that fails on export
+ * naming an API the user never wrote.
+ *
+ * It returns the tokens rather than a boolean so the panel can name what it refused. Reverting a
+ * keystroke and explaining nothing is the shape of the bug this whole feature exists to fix, not a
+ * smaller version of it. Refusing is still the right answer here; *defusing* the prose case so the
+ * heading can be written at all is M3.14 in `.claude/plans/init/80-roadmap.md`.
  */
-function introducesForbiddenApi(before: string, after: string): boolean {
+function newlyIntroducedApiTokens(before: string, after: string): readonly string[] {
   const known = new Set(findForbiddenApiTokens(before))
-  return findForbiddenApiTokens(after).some((token) => !known.has(token))
+  return findForbiddenApiTokens(after).filter((token) => !known.has(token))
+}
+
+/**
+ * What the user sees when the gate above fires. Names the field so the message is unambiguous in a
+ * panel of eleven inputs, and the token so "why" is answerable without reading the contract; the
+ * whitespace note is the part nobody guesses, since `local storage` reads as `localStorage` only
+ * after SL-S04's packing.
+ */
+function refusalMessage(field: PropertyField, tokens: readonly string[]): string {
+  const quoted = tokens.map((token) => `“${token}”`).join(', ')
+  return `${FIELD_LABELS[field]} not applied: slides may not contain ${quoted} (spaces are ignored).`
 }
 
 /**
@@ -308,6 +324,8 @@ function PropertyFields({
     height: values.height ?? '',
   }))
 
+  const [refusal, setRefusal] = useState<string | null>(null)
+
   // The three input handlers are hoisted to stable `useCallback`s (not recreated per input per
   // render), which keeps the panel warning-clean under react-perf and means the field factory below
   // allocates only JSX, no fresh function props. Each handler reads *which* field fired from the
@@ -329,7 +347,11 @@ function PropertyFields({
       if (ops.length === 0) return
       const patched = applyOps(map.source, ops)
       if (patched === map.source) return
-      if (introducesForbiddenApi(map.source, patched)) return
+      const refused = newlyIntroducedApiTokens(map.source, patched)
+      if (refused.length > 0) {
+        setRefusal(refusalMessage(fieldName, refused))
+        return
+      }
       setSlideHtml(slide.id, patched, slId, editLabel(fieldName, value))
     },
     [slide.id, slId, setSlideHtml],
@@ -338,6 +360,10 @@ function PropertyFields({
   const handleChange = useCallback((event: React.ChangeEvent<FieldElement>): void => {
     const name = event.target.name as PropertyField
     const { value } = event.target
+    // Typing is the user acting on the refusal, so the message goes rather than sitting there
+    // contradicting the field it describes. A successful commit needs no such reset: it changes the
+    // source, and `PropertyFields` is keyed by the source hash, so the whole subtree remounts.
+    setRefusal(null)
     setDraft((prev) => ({ ...prev, [name]: value }))
   }, [])
 
@@ -457,6 +483,21 @@ function PropertyFields({
         {field('width', false)}
         {field('height', false)}
       </div>
+      {refusal !== null ? (
+        <p
+          // `role="alert"` rather than the export warning's `role="status"`: that one describes a
+          // consequence of a choice that was applied, this one reports an edit that was thrown
+          // away, and the repo announces errors assertively (`ChatPanel`, `AuthTab`, `BudgetTab`).
+          // It sits below the inputs so that appearing does not shove the field the user just left
+          // out from under the pointer.
+          role="alert"
+          data-testid="prop-refusal"
+          className="text-[11px] leading-tight text-red-600 dark:text-red-400"
+          title="This edit would make the slide fail its own export check, so it was not applied. The check ignores spaces, so “local storage” reads as “localStorage”."
+        >
+          {refusal}
+        </p>
+      ) : null}
       <ColorControls targets={colorTargets} swatches={swatches} picker={picker} onApply={commit} />
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-chrome-muted dark:text-ink-muted">Transform</span>

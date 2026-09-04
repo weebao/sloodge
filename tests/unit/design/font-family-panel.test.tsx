@@ -474,7 +474,7 @@ describe('the write gate', () => {
     useDesignStore.setState({ enabled: true, hover: null, selection: hit })
   }
 
-  it('refuses a commit that would take the slide from clean to SL-S04-violating', () => {
+  it('refuses a commit that would take the slide from clean to SL-S04-violating, and says so', () => {
     select()
     render(<Panel />)
     const before = undoDepth()
@@ -483,6 +483,38 @@ describe('the write gate', () => {
 
     expect(html()).toBe(SOURCE)
     expect(undoDepth()).toBe(before)
+
+    // The revert is only half the behaviour. A discarded keystroke with nothing to explain it is
+    // the shape of the bug this panel exists to fix, so the message is pinned here alongside it:
+    // named field, named token, and announced rather than merely painted.
+    const refusal = screen.getByTestId('prop-refusal')
+    expect(refusal.getAttribute('role')).toBe('alert')
+    expect(refusal.textContent).toContain('Text not applied')
+    expect(refusal.textContent).toContain('localStorage')
+  })
+
+  it('explains the whitespace rule when the refusal was ordinary prose', () => {
+    // The case the user cannot possibly guess: `local storage` is a phrase, not an API, and it is
+    // refused only because SL-S04 packs the space out. Saying just "not allowed" would leave them
+    // retyping the same words.
+    select()
+    render(<Panel />)
+
+    type('prop-text', 'local storage')
+
+    expect(html()).toBe(SOURCE)
+    expect(screen.getByTestId('prop-refusal').textContent).toContain('spaces are ignored')
+  })
+
+  it('drops the refusal as soon as the user edits again', () => {
+    select()
+    render(<Panel />)
+    type('prop-text', 'localStorage')
+    expect(screen.queryByTestId('prop-refusal')).not.toBeNull()
+
+    fireEvent.change(screen.getByTestId('prop-text'), { target: { value: 'a heading' } })
+
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
   })
 
   it('still commits an edit that carries no forbidden token', () => {
@@ -495,6 +527,7 @@ describe('the write gate', () => {
     type('prop-text', 'storing things locally is fine')
 
     expect(html()).toContain('storing things locally is fine')
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
   })
 
   it('leaves an already-violating slide editable', () => {

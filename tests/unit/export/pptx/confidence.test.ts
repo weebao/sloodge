@@ -13,8 +13,6 @@ import {
   WRONG_CONSTRUCT_WEIGHTS,
   chooseTier,
   decomposeTransform,
-  firstFontFamily,
-  isSystemFont,
   paintsImage,
   scoreSlide,
 } from '../../../../src/shared/export/pptx/confidence'
@@ -564,14 +562,5 @@ describe('the raster threshold is pinned to concrete scores (not the constant)',
   it('a 68-score slide routes to raster; moving the threshold to 60 would wrongly keep it structured', () => {
     const { score, hardBlocker } = scoreSlide(makeMeasure(justBelow))
     expect(chooseTier(score, 'auto', hardBlocker)).toBe('raster')
-  })
-})
-
-describe('isSystemFont', () => {
-  it('recognizes safe families and flags others', () => {
-    expect(isSystemFont('Arial, sans-serif')).toBe(true)
-    expect(isSystemFont('"Times New Roman", serif')).toBe(true)
-    expect(isSystemFont('Inter, sans-serif')).toBe(false)
-    expect(firstFontFamily('"Helvetica Neue", Arial')).toBe('helvetica neue')
   })
 })

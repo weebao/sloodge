@@ -70,6 +70,8 @@ import { findForbiddenApiTokens } from '../document/forbidden-apis'
 /**
  * Longest family name accepted. The longest real name on a stock Windows 11 install is 31
  * characters; 128 leaves room for third-party faces while bounding what can reach slide CSS.
+ *
+ * @internal Exported as a test seam. Callers ask `isValidFontFamilyName`.
  */
 export const MAX_FONT_FAMILY_NAME_LENGTH = 128
 
@@ -108,6 +110,8 @@ const VIEWPORT_UNIT_PATTERN = /\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|s
  * `Document.Cookie` composes to `Document\.Cookie`, which no longer packs to `document.cookie`.
  * Admitting a face whose name spells a forbidden API on the grounds that our own escaping defuses it
  * would rest the answer on the escaper staying exactly as it is, for a name no real font has.
+ *
+ * @internal Exported so the two scans can be tested apart. Callers ask `isValidFontFamilyName`.
  */
 export function isContractSafeFontFamilyName(name: string): boolean {
   const trimmed = name.trim()
@@ -168,12 +172,13 @@ export interface SystemFontEntry {
  * and macOS machine or is a CSS keyword, so a slide using one renders the same for the recipient —
  * which is what makes them the group worth listing first and the group that raises no warning.
  *
- * This is the dropdown's first *section*, not the definition of "safe". Every entry here is also in
- * the PPTX confidence pass's `SYSTEM_FONTS` (`src/shared/export/pptx/confidence.ts`), but that set
- * is broader — Calibri, Verdana, Tahoma and friends travel too. The export-fidelity warning asks
- * `isSystemFont()` (that broader, already-tested predicate) rather than membership of this list, so
- * picking Verdana from the installed group does not raise a warning the export report would then
- * contradict by scoring it as safe.
+ * This is the dropdown's first *section*, not the definition of "safe". Every entry here also
+ * satisfies `isSystemFont` (`./system-fonts.ts`, pinned by
+ * `tests/unit/fonts/system-fonts.test.ts`), but that predicate is broader — Calibri, Verdana,
+ * Tahoma and friends travel too. The export-fidelity warning asks `isSystemFont()` (that broader,
+ * already-tested predicate) rather than membership of this list, so picking Verdana from the
+ * installed group does not raise a warning the export report would then contradict by scoring it
+ * as safe.
  */
 export const SYSTEM_FONT_GROUP: readonly SystemFontEntry[] = [
   { name: 'Segoe UI', generic: 'sans-serif' },
@@ -230,6 +235,8 @@ export function isSystemGroupFamily(name: string): boolean {
  * escape, or a newline, which cannot follow a backslash at all. Spaces stay literal because they are
  * the separator between the identifiers of one family name, and escaping them would turn readable
  * source into `Segoe\ UI` for no gain.
+ *
+ * @internal Exported as a test seam. Callers ask `buildFontFamilyValue`.
  */
 export function cssIdentFontFamily(name: string): string {
   let out = ''
@@ -381,7 +388,11 @@ export function readPickedFontFamily(value: string | null): string | null {
  * It follows the tokenizer rather than guessing (CSS Syntax §4.3.7): a code point that is zero, a
  * surrogate half or above U+10FFFF becomes U+FFFD, and so does a backslash that ends the input or
  * precedes a newline, neither of which starts a valid escape. That is one rule for the crash and for
- * the lone-surrogate and NUL leaks that would otherwise reach the panel's state.
+ * the NUL and lone-surrogate code points an *escape* would otherwise decode into the panel's state.
+ *
+ * A surrogate written literally in the source is a different thing and passes through untouched:
+ * decoding is not the place to repair it, nothing downstream throws on it, and it can never be
+ * written back, because the character allow-list rejects `\p{Cs}`.
  */
 function unescapeCssIdent(value: string): string {
   return value.replace(

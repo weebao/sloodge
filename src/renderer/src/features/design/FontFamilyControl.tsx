@@ -50,7 +50,7 @@ import {
   isSystemGroupFamily,
   readPickedFontFamily,
 } from '../../../../shared/fonts/family'
-import { isSystemFont } from '../../../../shared/export/pptx/confidence'
+import { isSystemFont } from '../../../../shared/fonts/system-fonts'
 import type { SystemFontsResponse } from '../../../../shared/ipc-contract'
 import { getBridge } from '../../host/bridge'
 
@@ -536,7 +536,12 @@ export function FontFamilyControl({
               No matching fonts.
               {/* Without this, a face the allow-list dropped (see the header of
                   `shared/fonts/family.ts`) is indistinguishable from a typo. Said once, about the
-                  rule, rather than naming individual font files. */}
+                  rule, rather than naming individual font files.
+
+                  Deliberately here and not in a persistent footer carrying the drop count (review
+                  r4's suggestion): this fires at the one moment the drop is discoverable — someone
+                  hunting for a face and not finding it — whereas a count would sit under every
+                  dropdown open forever on the machine that has 46 of them. */}
               {(fonts?.families.length ?? 0) > 0
                 ? ' Faces with unusual characters in their names aren\u2019t listed.'
                 : null}
