@@ -1,0 +1,55 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r4, blocker B6, half two of two: the DEFECT. This file and
+     `x17-paint-order.html` differ in exactly one declaration, and a test asserts that.
+     The one added line makes `.outer` a stacking context, so `.behind` is trapped inside it and its
+     `z-index: -1` now paints it ABOVE the green background: the reader sees the whole red square.
+     Nothing else changes — same rects, same computed colours — so the census is the only thing that
+     can see it, and it could not while the property was exempted. */
+  body {
+    background: #f8fafc;
+    padding: 64px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 42px;
+    font-weight: 800;
+  }
+  .outer {
+    position: relative;
+    margin-top: 140px;
+    margin-left: 96px;
+    width: 300px;
+    height: 200px;
+    background: #22c55e;
+    view-transition-name: hero;
+  }
+  .behind {
+    position: absolute;
+    z-index: -1;
+    left: -25px;
+    top: -25px;
+    width: 120px;
+    height: 120px;
+    background: #dc2626;
+  }
+</style>
+<h1>Paint order: a z-index:-1 child under its parent</h1>
+<div class="outer">
+  <div class="behind"></div>
+</div>

@@ -1,0 +1,45 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r3, blocker B5: `content: url(...)` on an ordinary element makes it replaced — it renders
+     the image INSTEAD of its children. The exporter emitted the children as a text run, so the file
+     both dropped the image and shipped a sentence that appears nowhere on screen. */
+  body {
+    background: #ffffff;
+    padding: 64px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+  }
+  .replaced {
+    margin-top: 40px;
+    width: 300px;
+    height: 200px;
+    font-size: 26px;
+    content: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><rect width="300" height="200" fill="%23dc2626"/></svg>');
+  }
+  p {
+    margin-top: 36px;
+    font-size: 22px;
+    width: 880px;
+  }
+</style>
+<h1>A red rectangle, not a sentence</h1>
+<div class="replaced">PHANTOM TEXT — replaced by an image, never rendered</div>
+<p>The reader sees the heading, a red rectangle, and this line.</p>

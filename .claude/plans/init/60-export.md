@@ -291,7 +291,9 @@ Two structural rules:
 - **Leaf-text rule.** Only elements with no element children contribute text. This prevents emitting a heading twice (once for the `<h1>`, once for a nested `<span>`) — the classic double-render bug in naive DOM→PPTX converters.
 - **Container rule.** A non-leaf element contributes a shape *only* if it paints something itself (non-transparent background, visible border, or radius+background). Pure layout wrappers (`display: flex/grid` with no paint) are skipped entirely — PowerPoint has no concept of them.
 
-Z-order for emission is `(z, domIndex)` ascending, approximating paint order. Full CSS stacking-context semantics are not reproduced; slides that depend on them score low (§3.4) and go to raster anyway.
+Z-order for emission is `(z, domIndex)` ascending, approximating paint order. Full CSS stacking-context semantics are not reproduced, and **the score does not stand in for them** (M4.8a): a property that establishes a stacking context is either kept out of the layout-resolved exemption list — an invariant in `node.test.ts` enforces that against CSS's own list of creators, so putting one back reds a test — or it carries a named deduction that rasters the slide (`filter`, `backdrop-filter`, `clip-path`, `mix-blend-mode`, `position: sticky`).
+
+The gap is the *modelled* ones. `transform`, `rotate`, `scale`, `translate`, `opacity` and `position: fixed` all establish a stacking context, and what the pipeline emits for each is a placement or an alpha, never a paint order — so a `transform: translateZ(0)` card with a `z-index: -1` child ships structured at a high score with its layers inverted. Nothing in the measurement pass can catch it, by construction: no rect moves and no computed colour changes, so the census, the oracle and the score go blind together (`corpus/x17-paint-order.html` vs `x18-view-transition-name.html` is the demonstration). It is the pixel step's to catch, which is why the LibreOffice renderer is a **prerequisite** for a fidelity number rather than a nice-to-have. Written up in full at [`tests/fidelity/README.md`](../../../tests/fidelity/README.md) and in the `properties.ts` module docstring a maintainer adding a property has to read.
 
 ### 3.3 Node → pptxgenjs mapping
 
@@ -309,46 +311,67 @@ Z-order for emission is `(z, domIndex)` ascending, approximating paint order. Fu
 | `<ul>/<ol>` + `<li>` leaves | one `addText` with `bullet: true` runs | `<ol>` → `bullet: { type: 'number' }` |
 | `<a href>` | run `hyperlink: { url }` | |
 | Div/section with bg or border | `addShape(rect \| roundRect, { fill, line, rectRadius })` | uniform radius only |
-| Uniform 1-color `border` | `line: { color, width, dashType }` | non-uniform borders → penalty |
-| `<img>` | `addImage({ data \| path, x,y,w,h })` | re-encoded through the temp dir; `object-fit: cover` → pre-crop with sharp |
+| Uniform 1-color `border` | `line: { color, width, dashType }` | non-uniform borders → a filled rect per painted side (M4.8a) |
+| `<img>` | `addImage({ data \| path, x,y,w,h })` | **Not built.** The structured walk skips `<img>` entirely: it counts as uncovered content and takes the §3.4 deduction, so a picture-heavy slide rasters rather than shipping with holes (M4.8a) |
 | `<table>` | `addTable(rows, { colW, border })` | only for simple grid tables; any `colspan`/`rowspan` → penalty |
 | `<svg>` | rasterize subtree → `addImage` | never mapped to autoshapes; see below |
 | `<canvas>` | `toDataURL()` → `addImage` | |
-| `border-radius` on a text box | `shape: 'roundRect'` behind the text | text boxes can't be rounded directly |
+| `border-radius` on a text box | `shape: 'roundRect', rectRadius` on the text shape itself | a `p:sp` may carry any `prstGeom`, text box included — no shape behind it (M4.8a) |
 | Slide `<body>` background | `slide.background = { color } \| { data }` | gradient/image body backgrounds are rasterized to a full-bleed background image |
 
 **SVG is always rasterized, never converted.** `addShape` exposes only PowerPoint's built-in autoshape gallery — there is no arbitrary-path primitive — so a generic SVG→autoshape mapping is impossible. Attempting it would produce silently wrong geometry, which is worse than an image. The one concession: an SVG that is a *single* `<rect>`, `<circle>`, `<ellipse>`, or `<line>` with a flat fill maps to the corresponding autoshape, because that case is exact and common in generated slides (divider rules, dots, badges).
 
-**Sub-region rasterization (the hybrid case).** When a slide is otherwise convertible but contains one or two complex regions (an SVG chart, a gradient panel), those subtrees are captured individually via `capturePage({ x, y, width, height })` with the device rect derived from `getBoundingClientRect()`, and inserted as images layered at the right z-position among the native shapes. The rest of the slide stays editable. This is the intended common outcome for `svg-animation` and `interactive-graph` slides: an editable title and caption over an inert picture of the graphic.
+**Sub-region rasterization (the hybrid case) — designed, not built (M4.8c).** Today a Tier A slide omits what it cannot emit and takes the §3.4 deduction for it; the deductions are sized so that a region big enough to matter rasters the whole slide instead. The design, for when it lands: when a slide is otherwise convertible but contains one or two complex regions (an SVG chart, a gradient panel), those subtrees are captured individually via `capturePage({ x, y, width, height })` with the device rect derived from `getBoundingClientRect()`, and inserted as images layered at the right z-position among the native shapes. The rest of the slide stays editable. This is the intended common outcome for `svg-animation` and `interactive-graph` slides: an editable title and caption over an inert picture of the graphic.
 
 ### 3.4 Confidence scoring and the per-slide decision
 
-Each slide gets a score in **0–100**, starting at 100, with deductions from features that PPTX cannot represent. The score is computed from the measurement pass alone — no rendering comparison needed at decision time.
+Each slide gets a score in **0–100**, starting at 100, with deductions from features that PPTX cannot represent. The score is computed from the measurement pass alone — no rendering comparison needed at decision time. That is also its boundary: the pass records rects and computed values, so anything that lives only in paint order (§3.2) or in PowerPoint's own line breaking is outside what any deduction here can see.
+
+The table below is the one in `confidence.ts`, and it is expected to stay that way — M4.8a reweighted most of it after the fidelity corpus showed several of the old numbers were too small to route a wrong slide to a picture.
 
 | Signal | Deduction | Why |
 |---|---|---|
-| `background-image` with `gradient()` on a painting element | −12 each (cap −25) | pptxgenjs gradient support is a narrow subset of CSS |
-| `box-shadow` other than a simple outer shadow | −8 each (cap −20) | OOXML shadow ≠ CSS shadow |
+| Element `background-image` gradient/`url()` (not the body) | area-scaled −11 → −35, ceiling at 10 % of the slide; floored at −31 when a text run sits on it | The pure walk emits no shape for it, so text that sat on the panel lands on the bare slide colour. Flat, it rasterized a whole slide over one decorative pill (M4.8a r2) |
+| `box-shadow` with `inset` | −12 each (cap −24) | Outer shadows are emitted; OOXML has no inset shadow |
+| `text-shadow` on a text leaf | −12 | No run-level equivalent |
 | `filter` / `backdrop-filter` non-`none` | −25 | No OOXML equivalent at all |
 | `mix-blend-mode` non-`normal` | −20 | |
-| `clip-path` non-`none` | −20 | |
-| `transform` with rotation/skew/3D | −15 (rotation-only: −5, mapped to shape `rotate`) | Skew/3D unrepresentable |
+| `clip-path` non-`none` | −35 | The element ships as its full *unclipped* shape — a square where the reader sees a circle |
+| `transform` skew / flip / non-uniform scale / 3D, own or inherited | −35 | Flattened to an upright axis-aligned box |
+| `transform` rotation or uniform scale, own or inherited | −5 | Modelled (`rot`, scaled box and font size); still a reflow risk |
 | `<svg>` with >1 drawable primitive | −18 each (cap −40) | Forced rasterization |
+| `<img>` with a source | −18 each (cap −40) | The pure walk cannot embed the bytes |
 | `<canvas>` present | −18 | |
 | Non-system font family (§3.6) | −10 | Substitution risk on the viewer's machine |
-| Text node whose measured box would reflow differently at PPTX metrics | −6 each (cap −24) | Autofit divergence |
-| Overlapping text boxes (IoU > 0.15) | −10 each | Overlap usually implies effects we didn't model |
+| Overlapping text boxes (IoU > 0.15) | −10 each (cap −30) | Overlap usually implies effects we didn't model |
 | >120 emitted nodes | −15 | Shape explosion; also slow in PowerPoint |
-| Element count where paint order can't be linearized (nested stacking contexts) | −15 | |
+| `<body>` gradient/image background | −5 | Representable, but only as a full-bleed picture (§3.3) |
+| `filter`/`backdrop-filter`/blend/clip on `<html>` or `<body>` | −35 | Recomposites everything beneath it: *every* colour in the file is wrong, not one effect missing. `body { filter: invert(1) }` scored 100 until M4.8a r3 |
+| Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) | −35 | Dropped by the leaf-text rule — the slide loses words. M4.8b's run-level walk removes the loss and this deduction with it |
+| Painting `::before` / `::after` | −35 | No rect can be measured for them, so nothing is emitted |
+| Visible descendant escaping an element that clips overflow | −35 | PowerPoint cannot clip; it would spill out over its neighbours |
+| A leaf whose own `overflow` truncates its own text | −35 | PowerPoint ships the whole string: the ellipsised headline arrives at full length |
+| A computed property in neither the emitted nor the scored set (`properties.ts`) | −35 | The closed world (M4.8a): an unfamiliar property must fail toward a picture, never toward a confident 100 |
 | Animation present (§4) | 0 | Handled by policy, not score — final frame is a legitimate still |
+
+Two floors keep the weights honest: a **dropped** construct (the effect is missing, everything else is intact) costs at least −11, enough to leave the ≥ 90 high-confidence band; a **wrong** construct (the file shows something the reader never saw) costs at least −31, enough to raster a 100 on its own. `DROPPED_CONSTRUCT_WEIGHTS` and `WRONG_CONSTRUCT_WEIGHTS` in `confidence.ts` say which weight is which, a unit test holds each list to its floor, and both floors are derived from the thresholds rather than typed in.
+
+**Two rows this table used to promise were never built, and are deleted rather than left standing** (M4.8a r5): a −15 for element counts whose paint order cannot be linearized, and a −6/−24 for text whose measured box would reflow differently at PPTX metrics. Neither is computable from the measurement pass — it records no paint order and does not know PowerPoint's line breaking — and both are the pixel step's to catch. Scoring them from the census anyway would be a number with no measurement under it, which is the failure mode M4.8a exists to remove.
 
 Thresholds:
 
-- **score ≥ 70 → Tier A** (structured), with sub-region rasterization for the offending parts.
+- **score ≥ 70 → Tier A** (structured). Sub-region rasterization of the offending parts is M4.8c; today a Tier A slide simply omits what it cannot emit, which is what the deductions above are sized to make visible.
 - **score < 70 → Tier B** (full raster).
-- Any **hard blocker** forces Tier B regardless of score: `writing-mode` vertical, CSS `@container`/`@scope` queries in the sheet, `position: sticky`, an element with `overflow: scroll` whose content exceeds its box (i.e. content only reachable by scrolling), or a measurement-pass exception.
+- Independently of the score, `auto` rasters a slide whose structurally representable content falls below `COVERAGE_RASTER_THRESHOLD` (75 %) — an honest picture beats a slide full of holes.
+- Any **hard blocker** forces Tier B regardless of score, and overrides `editable` as well as `auto`. Two are implemented: vertical `writing-mode` and `position: sticky`.
 
-The thresholds are constants in one module with the score table beside them, tuned against the 7 experiment fixtures (§5.4) — not scattered magic numbers.
+Three things this list used to call hard blockers are not, and the difference is deliberate rather than an oversight:
+
+- **`@container` / `@scope`.** Neither needs blocking: the measurement pass reads computed styles and resolved rects, so a container query has already been applied by the time it runs. `container-type` is a layout-resolved exemption whose safety was measured directly rather than assumed (`properties.ts`).
+- **Content reachable only by scrolling.** Now the two `overflow` deductions above. Both are wrong-class, so `auto` still rasters on that signal alone; the difference is that `editable` keeps the slide structured and lists the risk in the report instead of being overridden.
+- **A measurement-pass exception.** It yields an empty node list, which scores 100 with nothing to emit — so such a slide currently ships structured and *blank*, not as the capture that was taken for it (verified by running the planner over an empty `MeasureResult`, M4.8a r5). Routing it to raster is a behaviour change with a real trade-off, since a deliberately empty slide would become a picture; it is recorded here rather than made quietly.
+
+The thresholds are constants in one module with the score table beside them — not scattered magic numbers — and the boundary is pinned by two fixtures whose *computed* scores straddle it. Since M4.8a the whole table is exercised end to end by the 26-slide fidelity corpus in [`tests/fidelity/`](../../../tests/fidelity/README.md), which runs the real planner and the real pptxgenjs and reads the shapes back out of the emitted file.
 
 ### 3.5 The raster path
 

@@ -1,0 +1,72 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #0f172a;
+  }
+  /* Outlined display numeral: the reader sees a hollow orange glyph. */
+  .year {
+    position: absolute;
+    left: 80px;
+    top: 90px;
+    font-size: 140px;
+    font-weight: 800;
+    color: #f97316;
+    -webkit-text-fill-color: transparent;
+    -webkit-text-stroke: 3px #f97316;
+  }
+  h1 {
+    position: absolute;
+    left: 80px;
+    top: 300px;
+    width: 820px;
+    font-size: 46px;
+    font-weight: 700;
+    color: #f8fafc;
+  }
+  /* A chip row. list-style is none, so the reader sees no bullets. */
+  .chips {
+    position: absolute;
+    left: 80px;
+    top: 420px;
+    list-style: none;
+  }
+  .chips li {
+    display: inline-block;
+    margin-right: 16px;
+    padding: 10px 22px;
+    border-radius: 999px;
+    background: #1e293b;
+    color: #cbd5e1;
+    font-size: 20px;
+  }
+  .note {
+    position: absolute;
+    left: 80px;
+    bottom: 70px;
+    font-size: 18px;
+    color: #94a3b8;
+  }
+</style>
+<div class="year">2026</div>
+<h1>Hollow type and an unbulleted list</h1>
+<ul class="chips">
+  <li>Discovery</li>
+  <li>Prototype</li>
+  <li>Rollout</li>
+</ul>
+<div class="note">Fidelity probe x8</div>

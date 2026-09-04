@@ -93,6 +93,77 @@ describe('writeDeckPptx (OPC validity)', () => {
     )
   })
 
+  it('emits rot on rotated text boxes and shapes, in 60000ths of a degree (M4.8a)', async () => {
+    const rotated: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 3, h: 1 },
+          runs: [{ text: 'CONFIDENTIAL' }],
+          align: 'left',
+          valign: 'top',
+          rotate: 346,
+        },
+        { kind: 'rect', box: { x: 1, y: 3, w: 2, h: 1 }, fill: { color: '00FF00' }, rotate: 3 },
+      ],
+      notes: '',
+      confidence: 95,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [rotated] })
+    const xml = strFromU8(files['ppt/slides/slide1.xml']!)
+    expect(xml).toContain(`rot="${String(346 * 60000)}"`)
+    expect(xml).toContain(`rot="${String(3 * 60000)}"`)
+  })
+
+  it('gives a text box with a radius roundRect geometry and forwards its border as a line', async () => {
+    const pill: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 2, h: 0.5 },
+          runs: [{ text: 'Shipped' }],
+          align: 'center',
+          valign: 'top',
+          fill: { color: 'FDE68A' },
+          line: { color: 'B91C1C', width: 4.5 },
+          rectRadius: 0.5,
+        },
+      ],
+      notes: '',
+      confidence: 100,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [pill] })
+    const xml = strFromU8(files['ppt/slides/slide1.xml']!)
+    expect(xml).toContain('prst="roundRect"')
+    expect(xml).toContain('B91C1C')
+  })
+
+  it('writes a data-URL background as a picture background (<p:bg> with a blip) and embeds the media', async () => {
+    const gradient: SlidePlan = { ...structuredSlide, background: { dataUrl: PNG } }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [gradient] })
+    const xml = strFromU8(files['ppt/slides/slide1.xml']!)
+    expect(xml).toMatch(/<p:bg>[\s\S]*<a:blip\b[\s\S]*<\/p:bg>/)
+    expect(Object.keys(files).some((p) => /^ppt\/media\/.+\.png$/.test(p))).toBe(true)
+  })
+
+  it('refuses a picture that is not a PNG/JPEG data URL — a pipeline defect, not something to embed', async () => {
+    const bad: SlidePlan = {
+      ...structuredSlide,
+      background: { dataUrl: 'data:text/html,<b>x</b>' },
+    }
+    await expect(build({ title: 'D', author: 'Sloodge', slides: [bad] })).rejects.toThrow(
+      /data URL/,
+    )
+    const badRaster: SlidePlan = { ...rasterSlide, rasterDataUrl: 'https://example.test/x.png' }
+    await expect(build({ title: 'D', author: 'Sloodge', slides: [badRaster] })).rejects.toThrow(
+      /data URL/,
+    )
+  })
+
   it('sanitizes ALL XML-1.0-illegal characters out of EVERY part (no corrupt .pptx)', async () => {
     const bell = String.fromCharCode(0x07) // C0
     const soh = String.fromCharCode(0x01) // C0

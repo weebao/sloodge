@@ -1,0 +1,88 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #ffffff;
+    padding: 64px;
+    display: flex;
+    flex-direction: column;
+  }
+  h1 {
+    font-size: 44px;
+    color: #111827;
+    font-weight: 800;
+    margin-bottom: 40px;
+  }
+  .cols {
+    display: flex;
+    gap: 32px;
+    flex: 1;
+  }
+  .col {
+    flex: 1;
+    border-top: 4px solid #dc2626;
+    padding-top: 20px;
+  }
+  .col:nth-child(2) {
+    border-top-color: #2563eb;
+  }
+  .col:nth-child(3) {
+    border-top-color: #059669;
+  }
+  .col h3 {
+    font-size: 24px;
+    font-weight: 700;
+    color: #111827;
+    margin-bottom: 12px;
+  }
+  .col p {
+    font-size: 18px;
+    line-height: 1.55;
+    color: #4b5563;
+  }
+  .metric {
+    font-size: 40px;
+    font-weight: 900;
+    color: #dc2626;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .col:nth-child(2) .metric {
+    color: #2563eb;
+  }
+  .col:nth-child(3) .metric {
+    color: #059669;
+  }
+</style>
+<h1>Three Signals Worth Watching</h1>
+<div class="cols">
+  <div class="col">
+    <span class="metric">24%</span>
+    <h3>Revenue growth</h3>
+    <p>Up from 19% last quarter, ahead of the 21% plan.</p>
+  </div>
+  <div class="col">
+    <span class="metric">61%</span>
+    <h3>Gross margin</h3>
+    <p>Flat sequentially despite higher hosting spend.</p>
+  </div>
+  <div class="col">
+    <span class="metric">412</span>
+    <h3>New logos</h3>
+    <p>Concentrated in the mid-market segment.</p>
+  </div>
+</div>

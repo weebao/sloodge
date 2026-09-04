@@ -1,0 +1,79 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #ffffff;
+  }
+  .head {
+    width: 1280px;
+    height: 189px;
+  }
+  h1 {
+    position: absolute;
+    left: 80px;
+    top: 70px;
+    width: 1120px;
+    font-size: 42px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  /* CSS Transforms Level 2: these do NOT fold into the computed `transform`. */
+  .badge {
+    position: absolute;
+    left: 841px;
+    top: 200px;
+    width: 299px;
+    padding: 16px 24px;
+    background: #f97316;
+    color: #ffffff;
+    font-size: 32px;
+    font-weight: 700;
+    text-align: center;
+    rotate: 20deg;
+  }
+  .stat {
+    position: absolute;
+    left: 90px;
+    top: 380px;
+    width: 110px;
+    font-size: 46px;
+    font-weight: 700;
+    color: #0ea5e9;
+    scale: 1.6;
+  }
+  .shifted {
+    position: absolute;
+    left: 80px;
+    top: 560px;
+    font-size: 24px;
+    color: #334155;
+    translate: 120px 20px;
+  }
+  .note {
+    position: absolute;
+    right: 80px;
+    bottom: 70px;
+    font-size: 18px;
+    color: #64748b;
+  }
+</style>
+<div class="head"></div>
+<h1>Individual transform properties</h1>
+<div class="badge">ROTATED 20</div>
+<div class="stat">42%</div>
+<div class="shifted">Moved by the standalone translate property</div>
+<div class="note">Fidelity probe x10</div>

@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #f8fafc;
+  }
+  /* nowrap + ellipsis: the reader sees a truncated headline. */
+  .headline {
+    position: absolute;
+    left: 80px;
+    top: 90px;
+    width: 700px;
+    font-size: 44px;
+    font-weight: 700;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* A fixed-height leaf that clips its own text: the reader sees three lines of six. */
+  .tile {
+    position: absolute;
+    left: 80px;
+    top: 200px;
+    width: 1120px;
+    height: 96px;
+    overflow: hidden;
+    font-size: 22px;
+    line-height: 1.45;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    padding: 12px 16px;
+  }
+  .foot {
+    position: absolute;
+    left: 80px;
+    bottom: 70px;
+    font-size: 18px;
+    color: #64748b;
+  }
+</style>
+<div class="headline">Consolidated quarterly revenue across every operating region</div>
+<div class="tile">
+  Retention held at ninety-one percent across the enterprise tier while the self-serve cohort
+  softened by four points, which we attribute to the pricing change in March rather than to any
+  change in product quality. The mid-market segment was flat. We expect the self-serve trend to
+  reverse once the new onboarding flow ships in the second half of the year, and we are holding
+  headcount flat until then so the operating margin is not affected by the timing.
+</div>
+<div class="foot">Fidelity probe x9</div>

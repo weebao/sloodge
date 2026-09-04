@@ -9,12 +9,56 @@
  * with no browser and no Electron.
  *
  * The script is kept here as a source string — like `slideReadinessScript` — so the one thing a unit
- * test *can* pin about it (that it applies the leaf-text rule, the container-paint rule, and rejects
- * invisible nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
+ * test *can* pin about it (that it applies the leaf-text rule, the paint rule, and rejects invisible
+ * nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
+ *
+ * ## The style subset is no longer the whole story (M4.8a, review r2)
+ *
+ * `NodeStyle` is the set of computed values the walker and scorer *read*. It used to also be, by
+ * omission, the set of CSS the pipeline claimed to understand — so a property nobody had listed
+ * (`mask-image`, `-webkit-text-stroke`, the standalone `rotate:`) was silently absent from the
+ * measurement and therefore silently absent from the score. `unmodelledProperties` closes that:
+ * every element is censused against `properties.ts`'s explicit modelled set, and anything set to a
+ * non-initial value that nobody has claimed is reported by name. See `properties.ts` for the
+ * taxonomy and how to extend it.
+ *
+ * ## …but a closed world is a claim about a quantifier (M4.8a, review r3)
+ *
+ * r3 left the list alone and attacked the enumeration instead, three ways. The census ran over
+ * `document.body.querySelectorAll('*')`, which yields neither `<body>` nor `<html>` — so paint on
+ * a root element was outside it entirely (`RootPaint` closes that). Its baseline lived one shadow
+ * root deep, and author `!important` reaches a shadow *host* — so the baseline could be made equal
+ * to the value under test (the probe is two roots deep now). And the visibility and leaf-text
+ * rules below admitted two constructs Chromium paints nowhere, so the file carried content the
+ * slide never showed — `visibility: collapse` and `content: url()`, both fixed at the filter
+ * rather than at the score, because a deduction does not help a forced-`editable` export.
  */
 
+import {
+  CURRENTCOLOR_PROPERTIES,
+  LAYOUT_RESOLVED_PROPERTIES,
+  MAX_UNMODELLED_PER_NODE,
+  MODELLED_PROPERTIES,
+  VALUE_SCOPED_EXEMPTIONS,
+} from './properties'
+
+/** One side of a CSS border, as `getComputedStyle` reports it. */
+export type BorderSide = { width: string; style: string; color: string }
+
+/**
+ * The four properties that build an element's transform, as CSS Transforms Level 2 defines them.
+ * The standalone `translate`/`rotate`/`scale` do **not** fold into the computed `transform`, so
+ * reading `transform` alone reported `none` for an element the reader sees rotated (review r2).
+ */
+export type TransformSpec = {
+  transform: string
+  rotate: string
+  scale: string
+  translate: string
+}
+
 /** The computed-style subset the walker and scorer read. All strings are `getComputedStyle` values. */
-export type NodeStyle = {
+export type NodeStyle = TransformSpec & {
   fontFamily: string
   /** Resolved font size in CSS px. */
   fontSize: number
@@ -26,22 +70,28 @@ export type NodeStyle = {
   lineHeight: string
   letterSpacing: string
   textTransform: string
+  textShadow: string
   backgroundColor: string
   backgroundImage: string
   borderRadius: string
-  borderTopWidth: string
-  borderTopStyle: string
-  borderTopColor: string
+  /**
+   * All four sides (M4.8a). A uniform border maps to the shape outline; a partial one (`border-left`
+   * accent, `border-top` rule) has no outline equivalent and becomes filled edge rects instead.
+   */
+  borderTop: BorderSide
+  borderRight: BorderSide
+  borderBottom: BorderSide
+  borderLeft: BorderSide
   boxShadow: string
   filter: string
   backdropFilter: string
   mixBlendMode: string
-  transform: string
   clipPath: string
   writingMode: string
   overflow: string
   position: string
-  opacity: string
+  /** `none` on a `list-style: none` chip row, where emitting a bullet invents a glyph (review r2). */
+  listStyleType: string
 }
 
 /** One visible element from the measurement pass. Boxes are in CSS px, relative to the viewport. */
@@ -68,13 +118,83 @@ export type SlideNode = {
   svgPrimitiveCount: number
   /** `<img>` current source, else `null`. */
   src: string | null
+  /**
+   * Untransformed border-box size (`offsetWidth`/`offsetHeight`). Equals `w`/`h` unless the element
+   * is transformed, in which case `w`/`h` are the axis-aligned bounds of the transformed box and these
+   * are the box PowerPoint must be handed together with `rot` (M4.8a).
+   */
+  layoutW: number
+  layoutH: number
+  /** Every transformed ancestor's four transform properties, nearest first. Empty in the common case. */
+  ancestorTransforms: TransformSpec[]
+  /**
+   * Direct text-node children with content on a NON-leaf element — text no leaf owns, which the
+   * leaf-text rule drops (`<p>a <b>b</b> c</p>` → 2). Always 0 on a leaf. Scored as a loss until
+   * M4.8b's run-level walk emits it.
+   */
+  bareTextCount: number
+  /**
+   * Own `opacity` times every ancestor's — the alpha the element actually paints at (M4.8a). Folded
+   * into fill/line/run transparency by the walker; an 8 % watermark used to ship fully opaque.
+   */
+  effectiveOpacity: number
+  /**
+   * `::before`/`::after` pseudo-elements that paint (text content, background, or border). They have
+   * no measurable rect, so nothing can be emitted for them; the scorer treats each as an un-modelled
+   * construct.
+   */
+  paintedPseudoCount: number
+  /**
+   * Visible descendants that extend past this element's box while it clips overflow. PowerPoint has
+   * no clipping, so each would spill out of the box; scored as an un-modelled construct.
+   */
+  escapingDescendants: number
+  /**
+   * Px of this leaf's **own text** that its own `overflow` clips away (`scrollWidth − clientWidth`,
+   * or the block-axis equivalent). PowerPoint cannot clip, so the whole string ships and overflows:
+   * an ellipsised headline arrives at full length, a three-of-six-lines tile spills over the footer
+   * (review r2). Always 0 on a non-leaf — a child escaping a clip is `escapingDescendants`.
+   */
+  clippedTextPx: number
+  /**
+   * Computed properties set to a non-initial value that `properties.ts` claims neither to emit nor to
+   * score — the closed-world signal. Names only, deduped, capped at `MAX_UNMODELLED_PER_NODE`.
+   */
+  unmodelledProperties: string[]
   style: NodeStyle
 }
 
-/** The whole measurement pass: the element list plus the slide `<body>`'s own paint. */
+/**
+ * One document root element's own paint, censused like any other element (M4.8a, review r3).
+ *
+ * `querySelectorAll('*')` on `<body>` never yields `<body>` or `<html>`, so for two rounds the
+ * census quantified over body's *descendants* while the two elements that paint underneath them all
+ * were outside it entirely. A `body { filter: invert(1) }` scored 100 with an empty loss list while
+ * every colour in the emitted deck was the exact complement of what the reader saw.
+ */
+export type RootPaint = {
+  backgroundColor: string
+  backgroundImage: string
+  /**
+   * The four properties that recolour or recomposite everything painted beneath them. On an element
+   * they cost a dropped-class deduction; here they make every emitted colour wrong, which is why
+   * `confidence.ts` scores them with `rootPaint` rather than the per-element weights.
+   */
+  filter: string
+  backdropFilter: string
+  mixBlendMode: string
+  clipPath: string
+  /** The closed-world census of this root element, exactly as for a node. */
+  unmodelledProperties: string[]
+}
+
+/** The whole measurement pass: the element list plus the paint of the two document root elements. */
 export type MeasureResult = {
   nodes: SlideNode[]
-  body: { backgroundColor: string; backgroundImage: string }
+  /** `<body>`. */
+  body: RootPaint
+  /** `<html>`. Its opacity and transform reach the nodes; its own paint does not, so it is censused. */
+  root: RootPaint
   /** True if the slide had CSS/Web/SMIL animation (now settled) — drives the degradation note (§4.2). */
   hasAnimation: boolean
 }
@@ -87,63 +207,220 @@ export type MeasureResult = {
  */
 export function slideMeasurementScript(): string {
   return `(() => {
-  const px = (v) => v;
-  const cssNum = (el, cs, r) => ({
-    slId: el.getAttribute('data-sl-id') || null,
-    tag: el.tagName.toLowerCase(),
-    x: px(r.x), y: px(r.y), w: px(r.width), h: px(r.height),
-  });
+  const MODELLED = new Set(${JSON.stringify(MODELLED_PROPERTIES)});
+  const LAYOUT_RESOLVED = new Set(${JSON.stringify(LAYOUT_RESOLVED_PROPERTIES)});
+  const CURRENTCOLOR = new Set(${JSON.stringify(CURRENTCOLOR_PROPERTIES)});
+  const VALUE_SCOPED = ${JSON.stringify(VALUE_SCOPED_EXEMPTIONS)};
+  const MAX_UNMODELLED = ${String(MAX_UNMODELLED_PER_NODE)};
+  const alphaOf = (c) => {
+    const m = /^rgba?\\(([^)]+)\\)$/.exec(c.trim());
+    if (!m) return c === 'transparent' ? 0 : 1;
+    const p = m[1].split(/[,/\\s]+/).filter(Boolean).map(parseFloat);
+    return p.length > 3 ? p[3] : 1;
+  };
+  // Up to and including <html>: the root elements paint too, and stopping short of them was how
+  // \`html { opacity: .5 }\` reached the file fully opaque (review r3).
+  const effectiveOpacity = (el) => {
+    let o = 1;
+    for (let p = el; p; p = p.parentElement) {
+      const v = parseFloat(getComputedStyle(p).opacity);
+      if (Number.isFinite(v)) o *= v;
+    }
+    return o;
+  };
+  // \`=== 'visible'\`, not \`!== 'hidden'\`: \`visibility: collapse\` paints nothing on a non-table
+  // element but is not the string 'hidden', so it passed the filter, kept its rect, and shipped a
+  // full-width banner the reader never saw — content INVENTED by the exporter (review r3).
   const visible = (el, cs, r) =>
-    cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.01 &&
+    cs.display !== 'none' && cs.visibility === 'visible' && effectiveOpacity(el) > 0.01 &&
     r.width > 0.5 && r.height > 0.5;
+  const side = (cs, s) => ({ width: cs['border' + s + 'Width'], style: cs['border' + s + 'Style'], color: cs['border' + s + 'Color'] });
+  const transformSpec = (cs) => ({ transform: cs.transform, rotate: cs.rotate || 'none', scale: cs.scale || 'none', translate: cs.translate || 'none' });
+  const transformed = (t) => t.transform !== 'none' || t.rotate !== 'none' || t.scale !== 'none' || t.translate !== 'none';
+  const pseudoPaints = (el, which) => {
+    const ps = getComputedStyle(el, which);
+    if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal') return false;
+    return ps.content !== '""' || alphaOf(ps.backgroundColor) > 0.03 ||
+      /gradient\\(|url\\(/.test(ps.backgroundImage) || (parseFloat(ps.borderTopWidth) || 0) > 0;
+  };
+  const clips = (v) => v === 'hidden' || v === 'clip' || v === 'scroll' || v === 'auto';
+  // \`contain: paint|strict|content\` clips descendants to the padding box exactly like
+  // \`overflow: hidden\` while leaving the computed \`overflow\` at \`visible\`, so a 460×340 block
+  // clipped to a 380×200 card on screen shipped unclipped and painted over the background (r3).
+  const clipsByContain = (cs) => /(^|\\s)(paint|strict|content)(\\s|$)/.test(cs.contain || '');
+  const clipsBox = (cs) => clips(cs.overflowX) || clips(cs.overflowY) || clipsByContain(cs);
+  const escapingDescendants = (el, cs, r) => {
+    if (!clipsBox(cs)) return 0;
+    let n = 0;
+    for (const d of el.querySelectorAll('*')) {
+      const dr = d.getBoundingClientRect();
+      if (!visible(d, getComputedStyle(d), dr)) continue;
+      if (dr.left < r.left - 0.5 || dr.top < r.top - 0.5 || dr.right > r.right + 0.5 || dr.bottom > r.bottom + 0.5) n++;
+    }
+    return n;
+  };
+  // How much of a leaf's OWN text its own overflow cuts off. \`scrollWidth\`/\`scrollHeight\` include
+  // the overflowing content; \`clientWidth\`/\`clientHeight\` are the visible padding box.
+  const clippedTextPx = (el, cs, isLeaf) => {
+    if (!isLeaf || (el.textContent || '').trim() === '') return 0;
+    const contained = clipsByContain(cs);
+    let px = 0;
+    if (contained || clips(cs.overflowX)) px = Math.max(px, el.scrollWidth - el.clientWidth);
+    if (contained || clips(cs.overflowY)) px = Math.max(px, el.scrollHeight - el.clientHeight);
+    return Math.max(0, px);
+  };
+  // The baseline every element is censused against: its own tag's computed style under the UA
+  // stylesheet alone. A single \`all: initial\` probe is NOT enough — the HTML UA stylesheet sets
+  // \`unicode-bidi: isolate\` on block containers but not on inline ones, so one baseline flagged
+  // either every <div> or every <span> depending which way it was read.
+  //
+  // The probes sit TWO shadow roots deep, and the nesting is the whole mechanism (review r3).
+  //
+  // One root is not enough. Author CSS cannot style inside a shadow tree, but it can style the
+  // host — and \`* { font-variant-caps: small-caps !important }\` beats the host's normal inline
+  // \`all: initial\`. The authored value then inherits host → shadow root → probe, the baseline
+  // becomes the very value the census exists to find, and the deviation vanishes: the same slide
+  // scored 65/raster or 100/structured on the presence of one keyword.
+  //
+  // The INNER host is itself inside a shadow tree, so no author rule in the document can match it
+  // at any priority, and its \`all: initial\` is uncontested. The outer host only has to stay out of
+  // the slide's layout, which its inline \`!important\` positioning guarantees (a style attribute
+  // outranks any selector at equal importance). \`direction\` is set explicitly because CSS Cascade
+  // §3.2 excludes it (and \`unicode-bidi\`) from \`all\`, so \`all\` cannot express its initial value.
+  const probeOuter = document.createElement('div');
+  probeOuter.setAttribute('style', 'position: fixed !important; top: -99999px !important; left: -99999px !important;');
+  document.documentElement.appendChild(probeOuter);
+  const probeHost = document.createElement('div');
+  probeHost.setAttribute('style', 'all: initial; direction: ltr;');
+  probeOuter.attachShadow({ mode: 'open' }).appendChild(probeHost);
+  const probeRoot = probeHost.attachShadow({ mode: 'open' });
+  const baselines = new Map();
+  const baselineFor = (tag) => {
+    let known = baselines.get(tag);
+    if (known) return known;
+    const probe = document.createElement(tag);
+    probeRoot.appendChild(probe);
+    const cs = getComputedStyle(probe);
+    known = new Map();
+    for (let i = 0; i < cs.length; i++) known.set(cs.item(i), cs.getPropertyValue(cs.item(i)));
+    probe.remove();
+    baselines.set(tag, known);
+    return known;
+  };
+  const watch = [];
+  for (const name of baselineFor('div').keys()) if (!MODELLED.has(name) && !LAYOUT_RESOLVED.has(name)) watch.push(name);
+  // A property that establishes a stacking context can never be exempted outright — see
+  // \`properties.ts\`. \`view-transition-name\` is exempted for the UA's own \`root\` on the document
+  // element and for nothing else, so the deviation is re-checked against value AND element here.
+  const valueScoped = (el, name, value) => VALUE_SCOPED.some((e) =>
+    e.property === name && e.value === value &&
+    (!e.documentElementOnly || el === document.documentElement));
+  const censusOf = (el, cs, tag) => {
+    const baseline = baselineFor(tag);
+    const out = [];
+    for (const name of watch) {
+      const value = cs.getPropertyValue(name);
+      const want = CURRENTCOLOR.has(name) ? cs.color : baseline.get(name);
+      if (value !== want && !valueScoped(el, name, value)) {
+        out.push(name);
+        if (out.length >= MAX_UNMODELLED) break;
+      }
+    }
+    return out;
+  };
+  // A non-\`normal\` \`content\` makes an ordinary element replaced: it renders the given image
+  // INSTEAD of its children. The exporter used to emit the children anyway, shipping a sentence
+  // that appears nowhere on screen (review r3). The census reports \`content\` besides, so the slide
+  // rasterizes; this is what stops the phantom text reaching a forced-\`editable\` file too.
+  const contentReplaced = (cs) => cs.content !== 'normal' && cs.content !== 'none';
   const SVG_PRIMS = 'rect,circle,ellipse,line,path,polygon,polyline';
   const nodes = [];
   const all = document.body ? document.body.querySelectorAll('*') : [];
+  const replaced = new Set();
   let domIndex = 0;
   for (const el of all) {
+    if (el.parentElement !== null && replaced.has(el.parentElement)) { replaced.add(el); continue; }
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
+    const isReplaced = contentReplaced(cs);
+    if (isReplaced) replaced.add(el);
     if (!visible(el, cs, r)) continue;
     const isLeaf = el.children.length === 0;
     const tag = el.tagName.toLowerCase();
+    const inSvg = el.namespaceURI === 'http://www.w3.org/2000/svg' || el.closest('svg') !== null;
+    const ancestorTransforms = [];
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const t = transformSpec(getComputedStyle(p));
+      if (transformed(t)) ancestorTransforms.push(t);
+    }
+    let bareTextCount = 0;
+    if (!isLeaf && !isReplaced) for (const c of el.childNodes) if (c.nodeType === 3 && (c.textContent || '').trim() !== '') bareTextCount++;
     let listType = null;
     const li = el.closest('li');
     if (li) { const list = li.parentElement; listType = list && list.tagName.toLowerCase() === 'ol' ? 'ol' : 'ul'; }
     nodes.push({
-      ...cssNum(el, cs, r),
+      slId: el.getAttribute('data-sl-id') || null,
+      tag,
+      x: r.x, y: r.y, w: r.width, h: r.height,
       z: cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0),
       domIndex: domIndex++,
       isLeaf,
-      text: isLeaf ? (el.textContent || '').trim() : '',
+      text: isLeaf && !isReplaced ? (el.textContent || '').trim() : '',
       href: tag === 'a' ? el.getAttribute('href') : null,
       listType,
       svgPrimitiveCount: tag === 'svg' ? el.querySelectorAll(SVG_PRIMS).length : 0,
       src: tag === 'img' ? (el.currentSrc || el.src || null) : null,
+      layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
+      layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
+      ancestorTransforms,
+      bareTextCount,
+      effectiveOpacity: effectiveOpacity(el),
+      paintedPseudoCount: (pseudoPaints(el, '::before') ? 1 : 0) + (pseudoPaints(el, '::after') ? 1 : 0),
+      escapingDescendants: escapingDescendants(el, cs, r),
+      clippedTextPx: clippedTextPx(el, cs, isLeaf),
+      // SVG interiors are accounted for wholesale by the SVG deduction and the coverage metric —
+      // the walker never emits them — so a per-property census there would say nothing new.
+      unmodelledProperties: inSvg ? [] : censusOf(el, cs, tag),
       style: {
         fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',
         color: cs.color, textAlign: cs.textAlign, lineHeight: cs.lineHeight,
-        letterSpacing: cs.letterSpacing, textTransform: cs.textTransform,
+        letterSpacing: cs.letterSpacing, textTransform: cs.textTransform, textShadow: cs.textShadow,
         backgroundColor: cs.backgroundColor, backgroundImage: cs.backgroundImage,
         borderRadius: cs.borderRadius,
-        borderTopWidth: cs.borderTopWidth, borderTopStyle: cs.borderTopStyle, borderTopColor: cs.borderTopColor,
+        borderTop: side(cs, 'Top'), borderRight: side(cs, 'Right'), borderBottom: side(cs, 'Bottom'), borderLeft: side(cs, 'Left'),
         boxShadow: cs.boxShadow, filter: cs.filter, backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
-        mixBlendMode: cs.mixBlendMode, transform: cs.transform, clipPath: cs.clipPath || 'none',
-        writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position, opacity: cs.opacity,
+        mixBlendMode: cs.mixBlendMode, clipPath: cs.clipPath || 'none',
+        writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position,
+        listStyleType: cs.listStyleType || 'none',
+        ...transformSpec(cs),
       },
     });
   }
-  const bodyCs = document.body ? getComputedStyle(document.body) : null;
+  // <body> and <html> are censused like any other element. \`querySelectorAll('*')\` cannot reach
+  // them, so until r3 a paint property declared on either was measured by nothing and scored by
+  // nothing — \`body { filter: invert(1) }\` shipped every colour in the deck complemented, at 100.
+  const NO_PAINT = { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none', filter: 'none',
+    backdropFilter: 'none', mixBlendMode: 'normal', clipPath: 'none', unmodelledProperties: [] };
+  const rootPaint = (el) => {
+    if (!el) return NO_PAINT;
+    const cs = getComputedStyle(el);
+    return {
+      backgroundColor: cs.backgroundColor,
+      backgroundImage: cs.backgroundImage,
+      filter: cs.filter,
+      backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
+      mixBlendMode: cs.mixBlendMode,
+      clipPath: cs.clipPath || 'none',
+      unmodelledProperties: censusOf(el, cs, el.tagName.toLowerCase()),
+    };
+  };
+  const body = rootPaint(document.body);
+  const root = rootPaint(document.documentElement);
+  probeOuter.remove();
   const hasAnimation =
     (typeof document.getAnimations === 'function' && document.getAnimations().length > 0) ||
     document.querySelectorAll('svg animate, svg animateTransform, svg animateMotion').length > 0;
-  return {
-    nodes,
-    body: {
-      backgroundColor: bodyCs ? bodyCs.backgroundColor : 'rgba(0, 0, 0, 0)',
-      backgroundImage: bodyCs ? bodyCs.backgroundImage : 'none',
-    },
-    hasAnimation,
-  };
+  return { nodes, body, root, hasAnimation };
 })()`
 }

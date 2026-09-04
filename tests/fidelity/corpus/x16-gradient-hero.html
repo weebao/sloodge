@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* Review r3, major M1: a 360x200 gradient card covers 7.8% of the slide, below the 10% saturation
+     point, so the area-scaled deduction charged 30 and the slide shipped structured at 70 — with the
+     white metric text landing on the white slide background, invisible. */
+  body {
+    background: #ffffff;
+    padding: 64px;
+    color: #0f172a;
+  }
+  h1 {
+    font-size: 40px;
+    font-weight: 800;
+  }
+  .metric {
+    margin-top: 48px;
+    width: 360px;
+    height: 200px;
+    padding: 32px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #4f46e5 0%, #0ea5e9 100%);
+    color: #ffffff;
+  }
+  .metric .value {
+    font-size: 54px;
+    font-weight: 800;
+  }
+  .metric .caption {
+    margin-top: 14px;
+    font-size: 19px;
+    line-height: 1.4;
+  }
+</style>
+<h1>White type on a gradient card</h1>
+<div class="metric">
+  <div class="value">$4.2M</div>
+  <div class="caption">Net new ARR, up 38% year over year</div>
+</div>

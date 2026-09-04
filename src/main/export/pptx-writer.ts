@@ -1,8 +1,11 @@
 /**
- * The pptxgenjs emission edge (M4.3 / 60-export.md §3.7). This is the *only* module that imports
- * pptxgenjs; it turns a fully-decided `DeckPptxPlan` (produced by the pure planner) into a `.pptx`
- * byte buffer. Because pptxgenjs is pure JS with no `electron` dependency, this module is unit-tested
- * directly: a test builds a plan, calls `writeDeckPptx`, unzips the result with fflate, and asserts on
+ * The pptxgenjs emission edge (M4.3 / 60-export.md §3.7). It turns a fully-decided `DeckPptxPlan`
+ * (produced by the pure planner) into a `.pptx` byte buffer — through `SafePptxDeck`, which is the
+ * module that actually imports pptxgenjs (see the sanitization note below; this docstring used to
+ * claim that role for itself, left stale when M4.3 extracted the boundary).
+ *
+ * Because pptxgenjs is pure JS with no `electron` dependency, this module is unit-tested directly: a
+ * test builds a plan, calls `writeDeckPptx`, unzips the result with fflate, and asserts on
  * the OPC parts — the `[Content_Types].xml`, one `ppt/slides/slideN.xml` per slide, `<a:t>` text on
  * structured slides, and a `ppt/media/*` image on raster slides. The orchestrator sees it only through
  * the injected `PptxWriter` seam, so its own logic can be tested with a fake writer.
@@ -23,9 +26,12 @@
  */
 
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
+import { MAX_IMAGE_DATA_URL_BYTES, isImageDataUrl } from '../../shared/export/pptx/image'
 import { createSafePptxDeck, type SafePptxSlide } from './safe-pptx'
 import type {
   DeckPptxPlan,
+  LineSpec,
+  ShadowSpec,
   ShapeSpec,
   SlidePlan,
   TextRunSpec,
@@ -56,6 +62,7 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
     ...(run.underline === true ? { underline: true } : {}),
     ...(run.strike === true ? { strike: true } : {}),
     ...(run.color !== undefined ? { color: run.color } : {}),
+    ...(run.transparency !== undefined ? { transparency: run.transparency } : {}),
     ...(run.fontFace !== undefined ? { fontFace: run.fontFace } : {}),
     ...(run.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
     ...(run.bullet !== undefined ? { bullet: run.bullet } : {}),
@@ -63,12 +70,45 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
   }
 }
 
-function lineProps(line: {
-  color: string
-  width: number
-  dashType?: 'solid' | 'dash'
-}): Record<string, unknown> {
-  return { color: line.color, width: line.width, dashType: line.dashType ?? 'solid' }
+/**
+ * Every picture the writer embeds comes from our own `capturePage`, so a string that is not a PNG/JPEG
+ * data URL within bounds is a pipeline defect. Thrown, not skipped: the orchestrator lets writer errors
+ * propagate rather than write a package with a broken media part.
+ */
+function checkedImage(dataUrl: string, what: string): string {
+  if (!isImageDataUrl(dataUrl)) {
+    throw new Error(
+      `${what} must be a PNG/JPEG data URL of at most ${String(MAX_IMAGE_DATA_URL_BYTES)} bytes`,
+    )
+  }
+  return dataUrl
+}
+
+function lineProps(line: LineSpec): Record<string, unknown> {
+  return {
+    color: line.color,
+    width: line.width,
+    dashType: line.dashType ?? 'solid',
+    ...(line.transparency !== undefined ? { transparency: line.transparency } : {}),
+  }
+}
+
+/**
+ * pptxgenjs substitutes its own defaults for any falsy shadow field (`angle || 270`, `blur || 8`,
+ * `offset || 4`), so a shadow cast straight right (angle 0) or a sharp one (blur 0) would silently
+ * change direction or soften. A hair above zero keeps the value ours; it rounds to a few EMU.
+ */
+const nonZero = (v: number): number => (v === 0 ? 1e-3 : v)
+
+function shadowProps(shadow: ShadowSpec): Record<string, unknown> {
+  return {
+    type: 'outer',
+    color: shadow.color,
+    blur: nonZero(shadow.blurPt),
+    offset: nonZero(shadow.offsetPt),
+    angle: nonZero(shadow.angleDeg),
+    opacity: nonZero(shadow.opacity),
+  }
 }
 
 function addShape(slide: PptxSlide, shape: ShapeSpec): void {
@@ -85,6 +125,13 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       wrap: true,
       shrinkText: false,
       ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
+      ...(shape.line !== undefined ? { line: lineProps(shape.line) } : {}),
+      ...(shape.shadow !== undefined ? { shadow: shadowProps(shape.shadow) } : {}),
+      ...(shape.rotate !== undefined ? { rotate: shape.rotate } : {}),
+      // A text box is itself a shape in pptxgenjs: give it roundRect geometry for a CSS radius.
+      ...(shape.rectRadius !== undefined
+        ? { shape: 'roundRect', rectRadius: shape.rectRadius * Math.min(box.w, box.h) }
+        : {}),
       ...(shape.lineSpacingMultiple !== undefined
         ? { lineSpacingMultiple: shape.lineSpacingMultiple }
         : {}),
@@ -103,7 +150,13 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
   }
 
   if (shape.kind === 'image') {
-    slide.addImage({ data: shape.dataUrl, x: box.x, y: box.y, w: box.w, h: box.h })
+    slide.addImage({
+      data: checkedImage(shape.dataUrl, 'image shape'),
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+    })
     return
   }
 
@@ -116,6 +169,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
     h: box.h,
     ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
     ...(shape.line !== undefined ? { line: lineProps(shape.line) } : {}),
+    ...(shape.shadow !== undefined ? { shadow: shadowProps(shape.shadow) } : {}),
     ...(shape.rotate !== undefined ? { rotate: shape.rotate } : {}),
     ...(shape.kind === 'roundRect' && shape.rectRadius !== undefined
       ? { rectRadius: shape.rectRadius * Math.min(box.w, box.h) }
@@ -130,14 +184,14 @@ function addSlideToDeck(deck: ReturnType<typeof createSafePptxDeck>, plan: Slide
   if (plan.background !== undefined) {
     slide.setBackground(
       'dataUrl' in plan.background
-        ? { data: plan.background.dataUrl }
+        ? { data: checkedImage(plan.background.dataUrl, 'slide background') }
         : { color: plan.background.color },
     )
   }
 
   if (plan.tier === 'raster' && plan.rasterDataUrl !== undefined) {
     slide.addImage({
-      data: plan.rasterDataUrl,
+      data: checkedImage(plan.rasterDataUrl, 'raster slide'),
       x: 0,
       y: 0,
       w: SLIDE_WIDTH_INCHES,

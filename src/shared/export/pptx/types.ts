@@ -17,8 +17,25 @@ export type BoxInches = { x: number; y: number; w: number; h: number }
 /** A solid fill: `color` is 6-digit uppercase hex; `transparency` is 0 (opaque) – 100 (invisible). */
 export type FillSpec = { color: string; transparency?: number }
 
-/** A shape outline: `color` hex, `width` in points. */
-export type LineSpec = { color: string; width: number; dashType?: 'solid' | 'dash' }
+/** A shape outline: `color` hex, `width` in points, `transparency` 0–100 like a fill. */
+export type LineSpec = {
+  color: string
+  width: number
+  dashType?: 'solid' | 'dash'
+  transparency?: number
+}
+
+/**
+ * An outer shadow (`box-shadow` without `inset`), in PowerPoint's terms: a direction in degrees
+ * clockwise from +x, a distance and blur in points, and the shadow colour's opacity in [0, 1].
+ */
+export type ShadowSpec = {
+  color: string
+  blurPt: number
+  offsetPt: number
+  angleDeg: number
+  opacity: number
+}
 
 /** One styled run inside a text box. `fontSize` is in points; `color` is 6-digit hex. */
 export type TextRunSpec = {
@@ -28,6 +45,8 @@ export type TextRunSpec = {
   underline?: boolean
   strike?: boolean
   color?: string
+  /** 0–100, from the colour's alpha times the element's effective `opacity`. */
+  transparency?: number
   fontFace?: string
   fontSize?: number
   bullet?: boolean | { type: 'number' }
@@ -49,8 +68,12 @@ export type ShapeSpec =
       align: TextAlign
       valign: 'top' | 'middle' | 'bottom'
       fill?: FillSpec
-      /** A rounded backing shape behind the text; PowerPoint text boxes cannot be rounded directly. */
-      rounded?: boolean
+      line?: LineSpec
+      shadow?: ShadowSpec
+      /** Corner radius as a fraction (0–1) of the shorter side; the box becomes a `roundRect` text shape. */
+      rectRadius?: number
+      /** Clockwise rotation in degrees, from the element's (and its ancestors') `transform`. */
+      rotate?: number
       lineSpacingMultiple?: number
       charSpacing?: number
     }
@@ -59,9 +82,10 @@ export type ShapeSpec =
       box: BoxInches
       fill?: FillSpec
       line?: LineSpec
+      shadow?: ShadowSpec
       /** Corner radius as a fraction (0–1) of the shorter side, for `roundRect`. */
       rectRadius?: number
-      /** Clockwise rotation in degrees, from a `transform: rotate()`. */
+      /** Clockwise rotation in degrees, from the element's (and its ancestors') `transform`. */
       rotate?: number
     }
   | { kind: 'line'; box: BoxInches; line: LineSpec }

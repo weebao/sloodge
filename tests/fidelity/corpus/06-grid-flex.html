@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  body {
+    background: #f1f5f9;
+    padding: 56px;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 28px;
+  }
+  h1 {
+    font-size: 42px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .g {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 20px;
+  }
+  .t {
+    background: #ffffff;
+    border-radius: 10px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .t .k {
+    font-size: 14px;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .t .v {
+    font-size: 36px;
+    font-weight: 800;
+    color: #0f172a;
+  }
+  .t.hi {
+    background: #0f172a;
+  }
+  .t.hi .k {
+    color: #94a3b8;
+  }
+  .t.hi .v {
+    color: #38bdf8;
+  }
+</style>
+<h1>Operating Dashboard</h1>
+<div class="g">
+  <div class="t"><span class="k">ARR</span><span class="v">$48.2M</span></div>
+  <div class="t hi"><span class="k">Growth</span><span class="v">24%</span></div>
+  <div class="t"><span class="k">NRR</span><span class="v">118%</span></div>
+  <div class="t"><span class="k">Churn</span><span class="v">1.4%</span></div>
+  <div class="t"><span class="k">Headcount</span><span class="v">286</span></div>
+  <div class="t"><span class="k">Burn</span><span class="v">$2.1M</span></div>
+  <div class="t hi"><span class="k">Runway</span><span class="v">31mo</span></div>
+  <div class="t"><span class="k">NPS</span><span class="v">62</span></div>
+</div>

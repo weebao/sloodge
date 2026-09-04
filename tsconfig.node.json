@@ -11,6 +11,7 @@
     "src/shared/**/*",
     "tests/unit/**/*.ts",
     "perf/**/*.ts",
+    "tests/fidelity/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ]

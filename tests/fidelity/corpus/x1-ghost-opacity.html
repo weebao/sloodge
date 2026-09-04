@@ -1,0 +1,97 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }</style
+><style>
+  body {
+    background: #0f172a;
+    padding: 72px;
+    position: relative;
+    color: #f8fafc;
+  }
+  .ghost {
+    position: absolute;
+    right: 40px;
+    top: -60px;
+    font-size: 420px;
+    font-weight: 900;
+    color: #ffffff;
+    opacity: 0.08;
+    line-height: 1;
+  }
+  h1 {
+    font-size: 52px;
+    font-weight: 800;
+    text-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    width: 560px;
+  }
+  h1::before {
+    content: '';
+    display: block;
+    width: 90px;
+    height: 10px;
+    background: #f59e0b;
+    margin-bottom: 18px;
+  }
+  .divider {
+    width: 520px;
+    height: 4px;
+    background: #38bdf8;
+    margin: 28px 0;
+  }
+  p {
+    font-size: 24px;
+    color: #cbd5e1;
+    width: 560px;
+    line-height: 1.5;
+  }
+  .card {
+    position: absolute;
+    left: 72px;
+    bottom: 72px;
+    width: 520px;
+    height: 150px;
+    background: #1e293b;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .blob {
+    position: absolute;
+    right: -70px;
+    bottom: -70px;
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    background: #f472b6;
+  }
+  .card p {
+    position: absolute;
+    left: 24px;
+    top: 24px;
+    width: 360px;
+    font-size: 20px;
+    color: #e2e8f0;
+  }
+</style>
+<div class="ghost">01</div>
+<h1>Ghost numeral, accent bar, divider</h1>
+<div class="divider"></div>
+<p>
+  The giant 01 is a watermark at 8% opacity. The orange bar is a ::before. The blue rule is an empty
+  div.
+</p>
+<div class="card">
+  <p>Card with an overflow-hidden pink blob clipped at its corner.</p>
+  <div class="blob"></div>
+</div>

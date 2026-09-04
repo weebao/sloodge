@@ -19,7 +19,7 @@ function fakeRenderer(
       // `capturePage` throwing surfaces as a null data URL (see `pptx-renderer.ts`), which is the
       // real production path into the planner's capture-failed downgrade.
       const rasterDataUrl = options.captureFailsOn === index ? null : PNG
-      return Promise.resolve({ measure, rasterDataUrl })
+      return Promise.resolve({ measure, rasterDataUrl, backgroundDataUrl: null })
     }),
     dispose: vi.fn(),
   }
