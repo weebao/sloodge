@@ -58,7 +58,7 @@
 // The leaf module, never `slide-contract` itself: this file is reachable from the **preload**
 // bundle, which is sandboxed and cannot `require` an external module. Importing the validator would
 // drag in parse5 and zod, and the whole preload would fail to load — see `forbidden-apis.ts`.
-import { FORBIDDEN_API_TOKENS } from '../document/forbidden-apis'
+import { FORBIDDEN_API_TOKENS, packForApiScan } from '../document/forbidden-apis'
 
 /**
  * Longest family name accepted. The longest real name on a stock Windows 11 install is 31
@@ -80,11 +80,6 @@ export const MAX_SYSTEM_FONT_FAMILIES = 2000
  */
 const FONT_FAMILY_NAME_PATTERN = /^[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd} ._-]*$/u
 
-/** Whitespace-packed, lowercased — the exact normalisation `validateSlideContract` applies. */
-function packed(value: string): string {
-  return value.replace(/\s+/g, '').toLowerCase()
-}
-
 /** SL-G05's viewport-unit test, applied to a name so a face called `Display 3vh` cannot trip it. */
 const VIEWPORT_UNIT_PATTERN = /\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|svw|lvh|lvw)\b/i
 
@@ -93,8 +88,10 @@ const VIEWPORT_UNIT_PATTERN = /\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|s
  * file header — the packing SL-S04 performs means spaces do not separate tokens.
  */
 export function isContractSafeFontFamilyName(name: string): boolean {
-  const flat = packed(name)
-  if (FORBIDDEN_API_TOKENS.some((token) => flat.includes(packed(token)))) return false
+  // `packForApiScan` comes from the validator's own module rather than being re-implemented here:
+  // this guard is only correct while its normalisation is identical to SL-S04's.
+  const flat = packForApiScan(name)
+  if (FORBIDDEN_API_TOKENS.some((token) => flat.includes(packForApiScan(token)))) return false
   return !VIEWPORT_UNIT_PATTERN.test(name)
 }
 
@@ -237,8 +234,14 @@ export function cssIdentFontFamily(name: string): string {
       : `\\${character}`
   }
   // An identifier may not begin with a digit, so a face called `1979 Sans` has to escape its first
-  // character to stay a name rather than a parse error.
-  return /^\p{Nd}/u.test(out) ? `\\3${out[0]} ${out.slice(1)}` : out
+  // character to stay a name rather than a parse error. The escape carries the character's *own*
+  // code point: `\p{Nd}` is not just `0`-`9`, and a hardcoded `\\3` prefix would turn a leading
+  // `\u0663` into `\\3\u0663`, i.e. U+0003 — a font that cannot exist and a name the panel could not
+  // read back. Sliced by code point too, so a non-BMP digit (`\u{1D7CE} Sans`) cannot leave a lone
+  // surrogate in slide source.
+  if (!/^\p{Nd}/u.test(out)) return out
+  const first = String.fromCodePoint(out.codePointAt(0)!)
+  return `\\${first.codePointAt(0)!.toString(16)} ${out.slice(first.length)}`
 }
 
 /** Letters, marks, digits, `_`, `-`, and everything from U+0080 up (CSS Syntax §4.2). */

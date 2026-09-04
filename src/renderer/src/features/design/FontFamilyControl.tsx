@@ -41,6 +41,7 @@ import {
   type CSSProperties,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
 } from 'react'
 
 import {
@@ -132,12 +133,18 @@ export interface FontFamilyControlProps {
   readonly onPick: (name: string) => void
   /** Test/demo seam, mirroring `PropertyPanel`'s `picker`. Omit to use the preload bridge. */
   readonly loadFonts?: SystemFontLoader
+  /**
+   * Focus-restore flag owned by a component *above* the commit-keyed subtree — see the focus note
+   * on the effect that consumes it. Omit when this control is not rendered inside one.
+   */
+  readonly focusOnRemount?: RefObject<boolean>
 }
 
 export function FontFamilyControl({
   current,
   onPick,
   loadFonts,
+  focusOnRemount,
 }: FontFamilyControlProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -202,6 +209,27 @@ export function FontFamilyControl({
     if (list !== null && list.scrollTop !== scrollTop) list.scrollTop = scrollTop
   }, [scrollTop])
 
+  /**
+   * Return focus to the trigger after a pick — across the remount the pick itself causes.
+   *
+   * `close(true)` focuses the trigger synchronously, which is correct for Escape and for a
+   * click-away. It is not enough for a pick: committing changes `map.sourceHash`, and
+   * `PropertyPanel` keys the whole field subtree on it, so React replaces the very button that was
+   * focused a microsecond earlier and the document is left focused on `<body>` — a keyboard user
+   * who picks a font is dumped at the top of the page. The flag therefore lives on a ref the panel
+   * owns, above the key, so the *replacement* trigger can claim focus when it mounts.
+   *
+   * No dependency array on purpose: the flag is consumed on whichever commit comes first, whether
+   * this component remounted (the usual case) or merely re-rendered (a pick that writes an
+   * identical value changes no hash). Either way it cannot survive into a later, unrelated mount
+   * and steal focus there.
+   */
+  useEffect(() => {
+    if (focusOnRemount?.current !== true) return
+    focusOnRemount.current = false
+    triggerRef.current?.focus()
+  })
+
   const close = useCallback((focusTrigger: boolean): void => {
     setOpen(false)
     setFilter('')
@@ -225,11 +253,32 @@ export function FontFamilyControl({
 
   const choose = useCallback(
     (name: string): void => {
+      if (focusOnRemount !== undefined) focusOnRemount.current = true
       onPick(name)
       close(true)
     },
-    [onPick, close],
+    [onPick, close, focusOnRemount],
   )
+
+  // Tab moves focus out of the popover but cannot close it — the only Escape handler is on the
+  // filter input, so once focus has left, the listbox is orphaned over the panel with
+  // `aria-activedescendant` pointing at a listbox the focused element does not own. Closing on
+  // focus *landing outside* fixes that. `relatedTarget === null` is deliberately not treated as
+  // leaving: that is what a mousedown on a non-focusable row reports, and closing there would
+  // cancel the pick the click is about to make. Genuine click-aways are the `pointerdown` handler's
+  // job.
+  useEffect(() => {
+    const root = rootRef.current
+    if (!open || root === null) return
+    const onFocusOut = (event: FocusEvent): void => {
+      const next = event.relatedTarget
+      if (next instanceof Node && !root.contains(next)) close(false)
+    }
+    root.addEventListener('focusout', onFocusOut)
+    return () => {
+      root.removeEventListener('focusout', onFocusOut)
+    }
+  }, [open, close])
 
   const step = useCallback(
     (from: number, delta: number): number => {
@@ -239,6 +288,20 @@ export function FontFamilyControl({
       return from
     },
     [rows],
+  )
+
+  /** A page is one viewport, walked a selectable row at a time so headers do not consume steps. */
+  const page = useCallback(
+    (from: number, delta: number): number => {
+      let index = from
+      for (let i = 0; i < VIEWPORT_ROWS; i += 1) {
+        const next = step(index, delta)
+        if (next === index) break
+        index = next
+      }
+      return index
+    },
+    [step],
   )
 
   const moveTo = useCallback((index: number): void => {
@@ -264,13 +327,29 @@ export function FontFamilyControl({
         moveTo(step(activeIndex, -1))
         return
       }
+      // Home/End/PageUp/PageDown navigate the list rather than the caret. The input is a filter,
+      // never prose — a few characters the user can reach with an arrow — while the list behind it
+      // is hundreds of rows, which is where the keys earn their keep.
+      if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault()
+        // Walking forward from before the list, or back from past its end, lands on the first or
+        // last selectable row without a second notion of what "selectable" means.
+        const target = event.key === 'End' ? step(rows.length, -1) : step(-1, 1)
+        if (rows[target]?.kind === 'font') moveTo(target)
+        return
+      }
+      if (event.key === 'PageDown' || event.key === 'PageUp') {
+        event.preventDefault()
+        moveTo(page(activeIndex, event.key === 'PageDown' ? 1 : -1))
+        return
+      }
       if (event.key === 'Enter') {
         event.preventDefault()
         const row = rows[activeIndex]
         if (row?.kind === 'font') choose(row.name)
       }
     },
-    [activeIndex, rows, step, moveTo, choose, close],
+    [activeIndex, rows, step, moveTo, choose, close, page],
   )
 
   const onFilterChange = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -343,8 +422,10 @@ export function FontFamilyControl({
           data-testid="font-export-warning"
           // Wraps rather than truncates: a caveat cut off mid-word ("…exports emb…") reads as a
           // rendering bug, and this one has to be readable to do its job. Bounded so it cannot push
-          // the rest of the row off screen, and `leading-tight` keeps two lines inside the row.
-          className="max-w-96 rounded border border-dashed border-amber-500/60 px-1.5 py-0.5 text-[11px] leading-tight text-amber-800 dark:text-amber-200"
+          // the rest of the row off screen. 32rem holds the 96-character copy on one line, which
+          // keeps the property row at its bare height — M3.11's dock is a fixed height, and a
+          // two-line caveat grew this row by ~12px the moment a non-system face was picked.
+          className="max-w-[32rem] rounded border border-dashed border-amber-500/60 px-1.5 py-0.5 text-[11px] leading-tight text-amber-800 dark:text-amber-200"
           title="Won't travel: PDF and HTML exports embed nothing; PPTX names the font and falls back on machines without it"
         >
           Won&apos;t travel: PDF and HTML exports embed nothing; PPTX names the font and falls back
@@ -411,6 +492,12 @@ export function FontFamilyControl({
               className="px-1.5 py-1 text-chrome-muted dark:text-ink-muted"
             >
               No matching fonts.
+              {/* Without this, a face the allow-list dropped (see the header of
+                  `shared/fonts/family.ts`) is indistinguishable from a typo. Said once, about the
+                  rule, rather than naming individual font files. */}
+              {(fonts?.families.length ?? 0) > 0
+                ? ' Faces with unusual characters in their names aren\u2019t listed.'
+                : null}
             </p>
           ) : null}
           {fonts !== null && fonts.source === 'none' && fonts.families.length === 0 ? (

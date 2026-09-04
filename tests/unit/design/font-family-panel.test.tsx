@@ -9,6 +9,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useMemo, type JSX } from 'react'
 
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
@@ -68,6 +69,24 @@ function select(): void {
     ancestors: [],
   }
   useDesignStore.setState({ enabled: true, hover: null, selection: hit })
+}
+
+/**
+ * The panel wired to the store the way the app wires it, rather than to a fixed `slide` prop.
+ *
+ * This matters for one test and is harmless for the rest: a commit and the subtree remount it
+ * causes (`key` carries `map.sourceHash`) then land in a SINGLE React commit, which is the commit
+ * structure the running app produces. Passing a captured `slide` and calling `rerender` afterwards
+ * splits them in two — a shape the app never produces, and the one shape in which losing focus to
+ * `<body>` is invisible.
+ */
+function Panel(): JSX.Element {
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const slide = useMemo<SlideView>(
+    () => ({ id: slideId, title: 'Slide', html: getSlideHtml(slideHtml, slideId)! }),
+    [slideHtml],
+  )
+  return <PropertyPanel slide={slide} loadFonts={LOAD_FONTS} />
 }
 
 function undoDepth(): number {
@@ -325,5 +344,77 @@ describe('font family pick — a hostile enumerator', () => {
       expect(name).not.toContain(';')
       expect(name).not.toContain('<')
     }
+  })
+})
+
+/**
+ * Focus after a pick, at the panel level — the only level where the bug exists.
+ *
+ * `close(true)` focuses the trigger synchronously and that is enough for Escape. A pick is
+ * different: it commits first, `PropertyPanel` keys the field subtree on `map.sourceHash`, and
+ * React therefore replaces the very button that was focused a microsecond earlier. Measured over
+ * CDP in the built app before the fix: `document.activeElement` was `BODY` after Enter, so a
+ * keyboard user who picked a font was dumped at the top of the document.
+ */
+describe('font family pick — focus', () => {
+  it('returns focus to the trigger after an Enter pick, across the commit-driven remount', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    const filter = screen.getByTestId('font-filter')
+    fireEvent.change(filter, { target: { value: 'Papyrus' } })
+    fireEvent.keyDown(filter, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('returns focus to the trigger after a click pick', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('returns focus to the trigger on Escape, which commits nothing', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
+
+    expect(html()).toBe(SOURCE)
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('leaves focus alone when a later remount follows no pick', async () => {
+    // The restore flag must not survive the commit that consumes it: re-selecting an element
+    // remounts the same subtree, and the font trigger must not take focus from wherever it is.
+    select()
+    render(<Panel />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    // The "Ask Claude" button lives outside the keyed subtree, so it is still the same element
+    // after the remount — which is what makes it a fair place to watch focus from.
+    screen.getByTestId('ask-claude-element').focus()
+    useDeckStore.getState().setSlideHtml(slideId, `${html()}<p>after</p>`, slideId, 'append')
+
+    await waitFor(() => {
+      expect(html()).toContain('after')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('ask-claude-element'))
   })
 })

@@ -152,7 +152,12 @@ export async function enumerateSystemFonts(
     }
 
     return { families: [], source: 'none' }
-  } catch {
+  } catch (error) {
+    // Degrading to "no installed fonts" is right; degrading silently is not. On the Windows host
+    // this feature exists for, a blocked or timed-out PowerShell would otherwise leave nothing
+    // anywhere to explain the empty dropdown.
+    // eslint-disable-next-line no-console -- main's diagnostic channel; see src/main/agent/log.ts
+    console.warn('[fonts] enumeration failed', error)
     return { families: [], source: 'none' }
   }
 }

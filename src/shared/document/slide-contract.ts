@@ -63,7 +63,7 @@
  * keeps a slipped-through slide from reaching the network.
  */
 
-import { FORBIDDEN_API_TOKENS } from './forbidden-apis'
+import { FORBIDDEN_API_TOKENS, packForApiScan } from './forbidden-apis'
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
 import {
@@ -111,7 +111,7 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
  * documents for `hasXmlIllegalChars`: a duplicated predicate drifts narrower than the rule it
  * mirrors, and the drift is invisible until someone types the spelling nobody tested.
  */
-export { FORBIDDEN_API_TOKENS } from './forbidden-apis'
+export { FORBIDDEN_API_TOKENS }
 
 /**
  * The normalization SL-S04 scans under: whitespace removed, lowercased.
