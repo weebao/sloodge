@@ -124,7 +124,7 @@ export const SCORE_WEIGHTS = {
  * a few points and a hero panel rasterizes. `WRONG_CONSTRUCT_FLOOR` is crossed at ~8.3 % of the
  * slide — about 350×220 px, a panel rather than a badge.
  */
-export const ELEMENT_IMAGE_SATURATION_FRACTION = 0.1
+const ELEMENT_IMAGE_SATURATION_FRACTION = 0.1
 
 /** Below this many clipped pixels, a leaf's `scrollHeight` excess is line-box rounding, not truncation. */
 export const CLIPPED_TEXT_MIN_PX = 2

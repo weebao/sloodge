@@ -104,8 +104,6 @@ export type SlideNode = {
   listType: 'ul' | 'ol' | null
   /** For `<svg>`: count of drawable primitives (rect/circle/ellipse/line/path/polygon/polyline). */
   svgPrimitiveCount: number
-  /** True for an `<svg>` and everything inside one — the census does not apply (see `properties.ts`). */
-  inSvg: boolean
   /** `<img>` current source, else `null`. */
   src: string | null
   /**
@@ -295,7 +293,6 @@ export function slideMeasurementScript(): string {
       href: tag === 'a' ? el.getAttribute('href') : null,
       listType,
       svgPrimitiveCount: tag === 'svg' ? el.querySelectorAll(SVG_PRIMS).length : 0,
-      inSvg,
       src: tag === 'img' ? (el.currentSrc || el.src || null) : null,
       layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
       layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,

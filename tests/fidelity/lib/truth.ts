@@ -130,9 +130,9 @@ export function groundTruthScript(): string {
   // Bounds vs layout box, measured rather than parsed. \`getBoundingClientRect\` is the axis-aligned
   // footprint AFTER the transform; \`offsetWidth\`/\`offsetHeight\` is the box before it. They disagree
   // exactly when the element is rotated or scaled, by any syntax at all.
-  const layoutBox = (el) => ({
-    layoutW: el.offsetWidth > 0 ? el.offsetWidth : el.getBoundingClientRect().width,
-    layoutH: el.offsetHeight > 0 ? el.offsetHeight : el.getBoundingClientRect().height,
+  const layoutBox = (el, r) => ({
+    layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
+    layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
   });
   const clips = (v) => v === 'hidden' || v === 'clip' || v === 'scroll' || v === 'auto';
   // Does a clipping ancestor cut this rect off in a way PowerPoint will NOT reproduce? Only the
@@ -208,6 +208,8 @@ export function groundTruthScript(): string {
     r.selectNodeContents(n);
     const b = r.getBoundingClientRect();
     if (b.width < 0.5 || b.height < 0.5) continue;
+    const host = el.getBoundingClientRect();
+    const hostLayout = layoutBox(el, host);
     texts.push({
       text: t,
       inSvg: el.namespaceURI === 'http://www.w3.org/2000/svg',
@@ -216,8 +218,8 @@ export function groundTruthScript(): string {
       color: toHex(cs.color), colorAlpha: alphaOf(cs.color), fontSizePx: parseFloat(cs.fontSize),
       fontWeight: cs.fontWeight, fontStyle: cs.fontStyle, textTransform: cs.textTransform,
       ...spec(cs), transformed: transformedAncestor(el),
-      hostW: el.getBoundingClientRect().width, hostH: el.getBoundingClientRect().height,
-      hostLayoutW: layoutBox(el).layoutW, hostLayoutH: layoutBox(el).layoutH,
+      hostW: host.width, hostH: host.height,
+      hostLayoutW: hostLayout.layoutW, hostLayoutH: hostLayout.layoutH,
       clipped: clippedBy(el, b), bulleted: bulletedText(el),
       opacity: opacityOf(el), renderedScale: scaleChain(el),
     });
@@ -237,7 +239,7 @@ export function groundTruthScript(): string {
         tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height,
         bg: bgAlpha > 0.03 ? toHex(cs.backgroundColor) : null, bgAlpha, hasGradient,
         borderPx, borderColor: borderPx > 0 ? toHex(cs.borderTopColor) : null,
-        ...spec(cs), ...layoutBox(el),
+        ...spec(cs), ...layoutBox(el, r),
         opacity: opacityOf(el),
       });
     }

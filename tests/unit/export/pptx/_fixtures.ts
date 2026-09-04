@@ -82,7 +82,6 @@ export function makeNode(
     href: null,
     listType: null,
     svgPrimitiveCount: 0,
-    inSvg: false,
     src: null,
     layoutW: 100,
     layoutH: 50,

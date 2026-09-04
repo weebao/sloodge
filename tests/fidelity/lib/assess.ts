@@ -70,7 +70,7 @@ export const OPACITY_TOLERANCE = 0.05
 /** Below this effective alpha a paint is invisible to a reader, so nothing need be emitted for it. */
 const INVISIBLE_ALPHA = 0.03
 /** Slack on "the bounds disagree with the layout box"; below it the difference is layout rounding. */
-export const TRANSFORM_BOUNDS_TOLERANCE_PX = 1
+const TRANSFORM_BOUNDS_TOLERANCE_PX = 1
 /** How far the two bounds/layout ratios may diverge and still be one uniform scale (px rounding). */
 export const UNIFORM_SCALE_TOLERANCE = 0.02
 

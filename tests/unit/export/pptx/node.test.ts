@@ -51,7 +51,7 @@ describe('slideMeasurementScript', () => {
     // nobody thought to add — the failure two review rounds found at successive layers.
     expect(src).toContain('censusOf')
     expect(src).toContain('unmodelledProperties')
-    for (const modelled of MODELLED_PROPERTIES.slice(0, 3)) expect(src).toContain(modelled)
+    expect(src).toContain(JSON.stringify(MODELLED_PROPERTIES))
     // The baseline is a real per-tag probe under the UA stylesheet, inside a shadow root so author
     // CSS cannot mask the very signal being looked for.
     expect(src).toContain('attachShadow')
