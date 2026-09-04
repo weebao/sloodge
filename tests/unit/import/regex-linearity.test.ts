@@ -16,7 +16,7 @@ import { parseAst, transformWithEsbuild } from 'vite'
  * This pins the *shape* rather than the clock — vitest timings flake under load here — by reading
  * every regex literal out of the modules that see archive input and refusing the one that
  * backtracks: not anchored at `^`, opening with an unbounded repeat (`*`, `+`, `{n,}`) of a class
- * (`\s`, `.`, `[…]`, `\p{…}`), a literal space or tab, or a flat group (`(\s|\t)`, `(?:\s)`), with
+ * (`\s`, `.`, `[…]`, `\p{…}`), a literal space or a `\t`-style escape (a raw tab character is not matched), or a flat group (`(\s|\t)`, `(?:\s)`), with
  * more pattern after it. `/\s+/g` alone is fine — nothing follows the run, so a match never
  * backtracks — and so is `/^…$/`, which is tried once.
  *
