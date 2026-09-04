@@ -934,6 +934,16 @@ the renderer and the frame can never disagree about what is selectable.
 - **Structural IDs are invalidated** by any rich-text commit (inline tags may be added/removed),
   so a reparse always follows; selection is restored by path (§1.5).
 
+**Shipped as of M3.11** (this section is still planned, not contracted): none of it. M3.11's caret
+writes a `textOnly` element's text-node span and can therefore never introduce markup, so mixed
+inline content is **refused** rather than edited as plain text — replacing the content above as text
+would silently delete the `<b>`. What M3.11 does add is that the refusal is *visible*: a double-click
+on such an element raises the overlay's `role="status"` notice saying the element has formatting
+inside it, instead of doing nothing at all (round-5). The rich-text path here, which returns
+`innerHTML` — the payload §2.2 forbids acting on authoritatively — needs its own milestone to
+reconcile the two. The read-only preview and "Edit text" button are not implemented; the panel's
+Content field is simply disabled, with a hint explaining why.
+
 ### 9.4 Other edges
 
 | Case | Handling |

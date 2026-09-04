@@ -28,6 +28,8 @@ import {
 
 let slide: SlideView
 let titleHit: SlHit
+/** The one-slide deck the canvas renders, hoisted so the prop is not a fresh array (react-perf). */
+let slides: SlideView[] = []
 
 beforeEach(() => {
   // happy-dom's `createObjectURL` has no blob store behind it; the frame's URL is irrelevant here.
@@ -36,6 +38,7 @@ beforeEach(() => {
   useDeckStore.setState(createStarterDeck(0))
   const state = useDeckStore.getState()
   slide = selectSlideViews(state.deck, state.slideHtml)[0]!
+  slides = [slide]
   const map = buildSlideMap(slide.id, getSlideHtml(state.slideHtml, slide.id)!)
   titleHit = {
     slId: [...map.byId].find(([, span]) => span.tagName === 'h1')![0],
@@ -61,7 +64,7 @@ afterEach(() => {
 
 describe('SlideCanvas — the property dock never moves the slide', () => {
   it('the dock is mounted before any selection and is the same fixed-height box after one', () => {
-    const { container } = render(<SlideCanvas slide={slide} />)
+    const { container } = render(<SlideCanvas slides={slides} currentIndex={0} />)
     const dock = screen.getByTestId('property-panel')
     expect(screen.getByTestId('property-panel-empty')).toBeTruthy()
     const stage = container.querySelector<HTMLElement>('main > div > div.relative')!
@@ -90,7 +93,7 @@ describe('SlideCanvas — the property dock never moves the slide', () => {
 
   it('clearing the selection keeps the same dock, back in its empty state', () => {
     useDesignStore.getState().setSelection(titleHit)
-    render(<SlideCanvas slide={slide} />)
+    render(<SlideCanvas slides={slides} currentIndex={0} />)
     const dock = screen.getByTestId('property-panel')
     act(() => {
       useDesignStore.getState().setSelection(null)
@@ -101,7 +104,7 @@ describe('SlideCanvas — the property dock never moves the slide', () => {
 
   it('with Design Mode off there is no dock: the live slide has no properties to show', () => {
     useDesignStore.getState().setEnabled(false)
-    render(<SlideCanvas slide={slide} />)
+    render(<SlideCanvas slides={slides} currentIndex={0} />)
     expect(screen.queryByTestId('property-panel')).toBeNull()
     expect(screen.getByTestId('canvas-live-hint')).toBeTruthy()
   })

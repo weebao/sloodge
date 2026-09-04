@@ -179,6 +179,11 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
       setGuides([])
       setDragging(false)
       if (drag === null) return false
+      // Net displacement from the origin, not maximum travel, so an excursion that returns to where
+      // it started is a click. Deliberate (round-5 minor, upheld): the drag preview is overlay-local
+      // state that never crosses the bridge, so an uncommitted gesture strands no transform and no
+      // smart-guide snap, and the fall-through click re-hit-tests at the release point — the origin
+      // — which makes it idempotent. Maximum travel would instead commit a zero-delta move.
       const wasDrag = isDragTravel(
         drag.lastClientX - drag.startClientX,
         drag.lastClientY - drag.startClientY,

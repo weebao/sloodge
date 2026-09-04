@@ -63,3 +63,73 @@ describe('useDesignBridge — SL_READY reaches onReady', () => {
     expect(onReady).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * Round-5 blocker 2. Every other send in the bridge addresses whatever `frameRef` points at when it
+ * runs, which since M8.2 is not the frame an already-open caret lives in: the outgoing slide's frame
+ * stays mounted as a hidden neighbour while the ref and the slide id move to the incoming one. A
+ * `cancel` sent that way names the wrong slide and the old frame's own slide guard drops it, leaving
+ * it `contenteditable` and showing text the deck does not have. `pinEdit` is what closes that.
+ */
+describe('useDesignBridge — pinEdit addresses the frame it was pinned to', () => {
+  interface Sent {
+    readonly slide: string
+    readonly payload: { readonly slId: string; readonly action: string }
+  }
+  interface FakeWindow {
+    readonly sent: Sent[]
+    readonly postMessage: (message: unknown) => void
+  }
+
+  function frame(): FakeWindow {
+    const sent: Sent[] = []
+    return {
+      sent,
+      postMessage: (message: unknown) => {
+        sent.push(message as Sent)
+      },
+    }
+  }
+
+  it('sends to the pinned frame and slide after the bridge has moved on', () => {
+    const outgoing = frame()
+    const incoming = frame()
+    const frameRef = { current: { contentWindow: outgoing } as unknown as HTMLIFrameElement }
+    const { result, rerender } = renderHook(
+      (props: { slideId: string }) =>
+        useDesignBridge({ frameRef, slideId: props.slideId, enabled: true, onHit: vi.fn() }),
+      { initialProps: { slideId: SLIDE } },
+    )
+
+    const send = result.current.pinEdit('e_1')
+
+    // The step: the stage promotes the neighbour, so the ref and the slide id both change.
+    frameRef.current = { contentWindow: incoming } as unknown as HTMLIFrameElement
+    rerender({ slideId: 's_next' })
+    send('cancel')
+
+    expect(outgoing.sent).toHaveLength(1)
+    expect(outgoing.sent[0]).toMatchObject({
+      slide: SLIDE,
+      payload: { slId: 'e_1', action: 'cancel' },
+    })
+    expect(incoming.sent).toEqual([])
+  })
+
+  it('is a no-op once its own frame has gone, rather than posting to a detached window', () => {
+    const gone = frame()
+    const element = { contentWindow: gone } as unknown as HTMLIFrameElement
+    const frameRef = { current: element }
+    const { result } = renderHook(() =>
+      useDesignBridge({ frameRef, slideId: SLIDE, enabled: true, onHit: vi.fn() }),
+    )
+    const send = result.current.pinEdit('e_1')
+
+    // An unmounted iframe: the element survives in the closure, its `contentWindow` does not. This
+    // is why the pin holds the element and reads the window at send time.
+    ;(element as { contentWindow: unknown }).contentWindow = null
+    send('cancel')
+
+    expect(gone.sent).toEqual([])
+  })
+})

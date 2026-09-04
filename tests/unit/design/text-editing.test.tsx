@@ -87,16 +87,26 @@ function undoDepth(): number {
 interface Harness {
   readonly result: { current: ReturnType<typeof useTextEditing> }
   readonly sent: { slId: string; action: SlEditAction }[]
+  /**
+   * What went out through a sender pinned by `pinEdit`, tagged with the slide the bridge was bound
+   * to when it was pinned. Since M8.2 that is not always the slide showing when it is *used*, and
+   * the difference is the whole point: it is how a test can tell a cancel reached the frame the
+   * caret was in rather than the frame the user navigated to.
+   */
+  readonly pinned: { slId: string; slide: string; action: SlEditAction }[]
   /** Every `onResult` the hook handed over, in request order, for tests that answer by hand. */
   readonly replies: ((result: SlEditResponse) => void)[]
 }
 
 /**
- * `confirm` makes the stubbed frame answer every `begin` with a caret at once — what the real frame
- * does, one message later. Tests about the reply itself pass `false` and answer through `replies`.
+ * The frame half of the bridge, stubbed. `confirm` makes it answer every `begin` with a caret at
+ * once — what the real frame does, one message later. Tests about the reply itself pass `false` and
+ * answer through `replies`. `currentSlide` is read at pin time, standing in for the bridge's own
+ * `slideId` binding, so a test that switches slides can pin against the old one.
  */
-function mount(confirm = true): Harness {
+function frameStub(currentSlide: () => string, confirm: boolean) {
   const sent: Harness['sent'] = []
+  const pinned: Harness['pinned'] = []
   const replies: Harness['replies'] = []
   const requestEdit = vi.fn(
     (slId: string, action: SlEditAction, onResult?: (result: SlEditResponse) => void) => {
@@ -105,8 +115,21 @@ function mount(confirm = true): Harness {
       if (confirm && action === 'begin' && onResult) onResult({ slId, text: '', editing: true })
     },
   )
-  const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
-  return { result, sent, replies }
+  const pinEdit = vi.fn((slId: string) => {
+    const slide = currentSlide()
+    return (action: SlEditAction): void => {
+      pinned.push({ slId, slide, action })
+    }
+  })
+  return { requestEdit, pinEdit, sent, pinned, replies }
+}
+
+function mount(confirm = true): Harness {
+  const stub = frameStub(() => slideId, confirm)
+  const { result } = renderHook(() =>
+    useTextEditing({ slideId, requestEdit: stub.requestEdit, pinEdit: stub.pinEdit }),
+  )
+  return { result, sent: stub.sent, pinned: stub.pinned, replies: stub.replies }
 }
 
 /** A caret opens only on the selected element, so select first — as every overlay path does. */
@@ -267,10 +290,9 @@ describe('useTextEditing — the frame is the source of truth for session start'
       harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
     })
     expect(useDesignStore.getState().editing).toBeNull()
-    expect(harness.sent).toEqual([
-      { slId: id, action: 'begin' },
-      { slId: id, action: 'cancel' },
-    ])
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    // The cancel goes to the frame that opened the caret, not to whatever the bridge is bound to.
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'cancel' }])
   })
 
   it('the store closing a session behind the hook sends the frame a cancel and unregisters it', () => {
@@ -283,7 +305,7 @@ describe('useTextEditing — the frame is the source of truth for session start'
       select(idOfClass('mixed'))
     })
     expect(useDesignStore.getState().editing).toBeNull()
-    expect(harness.sent.at(-1)).toEqual({ slId: id, action: 'cancel' })
+    expect(harness.pinned.at(-1)).toEqual({ slId: id, slide: slideId, action: 'cancel' })
     expect(activeTextEditSession()).toBeNull()
   })
 
@@ -653,10 +675,8 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     expect(currentHtml()).toContain('<h1 class="title">Old title</h1>')
     expect(undoDepth()).toBe(0)
     // What round 4 adds: the frame is put back, and the user is told.
-    expect(harness.sent).toEqual([
-      { slId: id, action: 'begin' },
-      { slId: id, action: 'revert' },
-    ])
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
     expect(harness.result.current.notice).toMatch(/too long/i)
   })
 
@@ -675,7 +695,8 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
     frameEnd(harness, { slId: id, text: 'anything' })
 
     expect(undoDepth()).toBe(0)
-    expect(harness.sent).toEqual([{ slId: id, action: 'revert' }])
+    expect(harness.sent).toEqual([])
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
     expect(harness.result.current.notice).not.toBeNull()
   })
 
@@ -724,36 +745,209 @@ describe('useTextEditing — a refused commit is put back and said out loud (rou
   })
 })
 
+/** A hook bound to a slide id the test can move, with the bridge stub that follows it. */
+function mountSwitchable(): {
+  result: { current: ReturnType<typeof useTextEditing> }
+  switchTo: (id: string) => void
+  sent: Harness['sent']
+  pinned: Harness['pinned']
+} {
+  let bound = slideId
+  const stub = frameStub(() => bound, true)
+  const { result, rerender } = renderHook(
+    (props: { slideId: string }) =>
+      useTextEditing({
+        slideId: props.slideId,
+        requestEdit: stub.requestEdit,
+        pinEdit: stub.pinEdit,
+      }),
+    { initialProps: { slideId } },
+  )
+  return {
+    result,
+    // The bridge re-binds to the incoming slide before the hook's effect runs, which is exactly the
+    // condition that made the unpinned cancel address the wrong frame.
+    switchTo: (id: string) => {
+      bound = id
+      rerender({ slideId: id })
+    },
+    sent: stub.sent,
+    pinned: stub.pinned,
+  }
+}
+
 describe('useTextEditing — a notice belongs to the slide it was raised on (round-4)', () => {
   it('clears when the slide changes', () => {
-    const sent: { slId: string; action: SlEditAction }[] = []
-    const requestEdit = vi.fn(
-      (slId: string, action: SlEditAction, onResult?: (result: SlEditResponse) => void) => {
-        sent.push({ slId, action })
-        if (action === 'begin' && onResult) onResult({ slId, text: '', editing: true })
-      },
-    )
     const id = idOfClass('title')
-    const { result, rerender } = renderHook(
-      (props: { slideId: string }) => useTextEditing({ slideId: props.slideId, requestEdit }),
-      { initialProps: { slideId } },
-    )
+    const harness = mountSwitchable()
 
     act(() => {
       select(id)
-      result.current.beginEdit(id)
+      harness.result.current.beginEdit(id)
     })
     act(() => {
-      result.current.onFrameEditEnd({
+      harness.result.current.onFrameEditEnd({
         slId: id,
         text: 'x'.repeat(MAX_TEXT_LENGTH + 1),
         reason: 'enter',
       })
     })
-    expect(result.current.notice).not.toBeNull()
+    expect(harness.result.current.notice).not.toBeNull()
 
-    rerender({ slideId: 'some-other-slide' })
+    harness.switchTo('some-other-slide')
 
-    expect(result.current.notice).toBeNull()
+    expect(harness.result.current.notice).toBeNull()
+  })
+})
+
+describe('useTextEditing — a caret is cancelled on its own frame, not the current one (round-5)', () => {
+  it('a slide switch cancels the session on the frame it was opened in', () => {
+    const id = idOfClass('title')
+    const harness = mountSwitchable()
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    expect(harness.result.current.editing).toBe(id)
+    const opened = slideId
+
+    harness.switchTo('some-other-slide')
+
+    // The flag goes, as it always did...
+    expect(harness.result.current.editing).toBeNull()
+    // ...and so does the frame's `contenteditable`: a cancel addressed to the slide the caret was
+    // opened on. Before M8.2 that frame was destroyed by the switch and this was unnecessary; it now
+    // survives as a hidden neighbour, so without this it stays typeable and shows uncommitted text.
+    expect(harness.pinned).toEqual([{ slId: id, slide: opened, action: 'cancel' }])
+    // Nothing went to the *incoming* frame, which has no session and a different slide guard.
+    expect(harness.sent.filter((message) => message.action === 'cancel')).toEqual([])
+  })
+
+  it('switching back re-arms the element, and the new caret pins the frame it is now in', () => {
+    const id = idOfClass('title')
+    const harness = mountSwitchable()
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    harness.switchTo('some-other-slide')
+    harness.switchTo(slideId)
+
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    expect(harness.result.current.editing).toBe(id)
+    expect(harness.result.current.notice).toBeNull()
+
+    // And this session's own end goes to the frame pinned on the way back in, not the one the first
+    // caret was cancelled on — the pin is per session, not per element.
+    act(() => {
+      useDesignStore.getState().setSelection(null)
+    })
+    expect(harness.pinned).toEqual([
+      { slId: id, slide: slideId, action: 'cancel' },
+      { slId: id, slide: slideId, action: 'cancel' },
+    ])
+  })
+
+  it('the store closing a session behind the hook cancels the pinned frame too', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+
+    // A shift-click or a marquee moves the selection, which clears `editing` in the store.
+    act(() => {
+      useDesignStore.getState().setSelection(null)
+    })
+
+    expect(harness.result.current.editing).toBeNull()
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'cancel' }])
+  })
+
+  it('a refused commit reverts through the pinned frame', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
+
+    expect(harness.pinned).toEqual([{ slId: id, slide: slideId, action: 'revert' }])
+    expect(harness.result.current.notice).not.toBeNull()
+  })
+
+  it('a committed session cancels nothing — the frame already ended it', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    frameEnd(harness, { slId: id, text: 'New title' })
+
+    expect(currentHtml()).toContain('New title')
+    expect(harness.pinned).toEqual([])
+  })
+})
+
+describe('useTextEditing — a caret that will not open says why (round-5)', () => {
+  it('mixed inline content is refused out loud rather than silently', () => {
+    const harness = mount()
+    const id = idOfClass('mixed')
+    let opened = true
+    act(() => {
+      select(id)
+      opened = harness.result.current.beginEdit(id)
+    })
+
+    expect(opened).toBe(false)
+    // The exact failure the milestone exists to answer: a double-click that does nothing at all.
+    expect(harness.result.current.notice).toContain('formatting')
+    // Refusing still means refusing: no request reached the frame, no session was opened.
+    expect(harness.sent).toEqual([])
+    expect(harness.result.current.editing).toBeNull()
+  })
+
+  it('a locked element says it is locked', () => {
+    const harness = mount()
+    const id = idOfClass('locked')
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    expect(harness.result.current.notice).toContain('locked')
+  })
+
+  it('an id the map no longer has says the element is gone', () => {
+    const harness = mount()
+    act(() => {
+      harness.result.current.beginEdit('sl-not-here')
+    })
+    expect(harness.result.current.notice).toContain('no longer on this slide')
+  })
+
+  it('the frame declining a begin on its live DOM says so too', () => {
+    const harness = mount(false)
+    const id = idOfClass('title')
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    // Author JS split the text into spans after the source was parsed, so the frame refuses.
+    act(() => {
+      harness.replies[0]?.({ slId: id, text: 'Old title', editing: false })
+    })
+
+    expect(harness.result.current.editing).toBeNull()
+    expect(harness.result.current.notice).toContain('formatting')
+  })
+
+  it('a caret that does open says nothing, and clears a previous refusal', () => {
+    const harness = mount()
+    act(() => {
+      select(idOfClass('mixed'))
+      harness.result.current.beginEdit(idOfClass('mixed'))
+    })
+    expect(harness.result.current.notice).not.toBeNull()
+
+    open(harness, idOfClass('title'))
+    expect(harness.result.current.notice).toBeNull()
+    expect(harness.result.current.editing).toBe(idOfClass('title'))
   })
 })

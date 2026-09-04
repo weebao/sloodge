@@ -347,3 +347,70 @@ describe('shift-click reaches the selection as a toggle', () => {
     expect(useDesignStore.getState().selections.map((entry) => entry.slId)).toEqual([rootHit.slId])
   })
 })
+
+/**
+ * Round-5 major 1. The group-gap rule asks "did this click land on a member?", and round 4 asked it
+ * of the member's *unrotated* layout box. For an element M3.6 has rotated that is not the shape on
+ * screen, so the rule was wrong in both directions at once — and both were reproduced in the built
+ * app before being written down here.
+ *
+ * The fixture is one rotated member (`h1`, 45°) and one plain one, chosen so that the union box
+ * contains both of the points below. `rotate(45deg)` about the h1's centre maps its unrotated
+ * (810, 350) to (822, 281) and its unrotated (822, 380) — which is *outside* the box — back to
+ * (810, 310). So (822, 281) is visibly on the element and outside its layout box, and (810, 310) is
+ * visibly on empty space and inside it: one point for each direction of the error.
+ */
+describe('a rotated member is judged by the shape the user sees (round-5 major)', () => {
+  let spunHit: SlHit
+  let plainHit: SlHit
+
+  beforeEach(() => {
+    const state = useDeckStore.getState()
+    const html = getSlideHtml(state.slideHtml, slideId)!
+    // The overlay reads rotation from source bytes, never from the hit payload, so the rotation has
+    // to be in the deck for the rule to see it.
+    const spun = html.replace('<h1 ', '<h1 style="transform: rotate(45deg)" ')
+    state.setSlideHtml(slideId, spun, '', 'rotate')
+    const map = buildSlideMap(slideId, getSlideHtml(useDeckStore.getState().slideHtml, slideId)!)
+    const idOf = (tag: string): string => [...map.byId].find(([, span]) => span.tagName === tag)![0]
+    spunHit = {
+      ...hitFor(idOf('h1'), 'h1', { x: 760, y: 240, width: 280, height: 180 }),
+      box: { x: 800, y: 300, width: 200, height: 60 },
+    }
+    plainHit = hitFor(idOf('p'), 'p', { x: 200, y: 200, width: 100, height: 40 })
+    useDesignStore.setState({ selections: [spunHit, plainHit], selection: plainHit })
+  })
+
+  it('a click on the rotated member is not swallowed as gap', () => {
+    const { frameRef, posted } = fakeFrame()
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-group'), { detail: 1, clientX: 822, clientY: 281 })
+
+    // Against the unrotated box this point reads as gap and the click vanishes: the user aims at a
+    // visible element and the app does nothing.
+    expect(hitTests(posted)).toHaveLength(1)
+    expect(hitTests(posted)[0]!.payload).toMatchObject({ x: 822, y: 281, mode: 'select' })
+  })
+
+  it('a click on empty space inside the rotated member’s layout box keeps the group', () => {
+    const { frameRef, posted } = fakeFrame()
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-group'), { detail: 1, clientX: 810, clientY: 310 })
+
+    // Against the unrotated box this reads as "on a member", falls through, and the hit-test answers
+    // the full-bleed slide root — a click on apparent whitespace destroying the multi-selection.
+    expect(hitTests(posted)).toEqual([])
+    expect(useDesignStore.getState().selections).toHaveLength(2)
+  })
+
+  it('an unrotated member is unaffected: its box is still its shape', () => {
+    const { frameRef, posted } = fakeFrame()
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-group'), { detail: 1, clientX: 250, clientY: 220 })
+
+    expect(hitTests(posted)).toHaveLength(1)
+  })
+})

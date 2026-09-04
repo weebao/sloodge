@@ -309,6 +309,11 @@ function PropertyFields({
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
     const disabled = name === 'text' && textDisabled
+    // A disabled field that says only "mixed" tells the user nothing about why they cannot type in
+    // it, and this is the same element a double-click on the canvas also refuses (round-5 major 2).
+    const disabledHint = disabled
+      ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
+      : undefined
     return (
       <label
         className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
@@ -320,7 +325,8 @@ function PropertyFields({
           data-testid={`prop-${name}`}
           value={draft[name]}
           disabled={disabled}
-          placeholder={disabled ? 'mixed' : ''}
+          placeholder={disabled ? 'mixed content' : ''}
+          title={disabledHint}
           inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
           onChange={handleChange}
           onBlur={handleBlur}

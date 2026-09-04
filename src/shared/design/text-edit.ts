@@ -139,6 +139,14 @@ export const LOCK_ATTR = 'data-sl-lock'
 export const MAX_TEXT_LENGTH = 65_536
 
 /**
+ * Why a caret will not open on an element: it is not a text-bearing tag, it is `data-sl-lock`ed, it
+ * holds mixed inline content M3.11 cannot edit as plain text, its text is already past the cap, or
+ * the id is not on this slide. Distinct from `TextEditRefusal`, which is about a value the user has
+ * already typed rather than about whether they may start typing.
+ */
+export type TextEditBlock = 'not-text' | 'locked' | 'mixed-content' | 'too-long' | 'unknown-element'
+
+/**
  * Whether an element can be edited in place — the definition of §3.2's undefined `editableText`.
  *
  * Narrower than `textOnly` in three ways that matter: the element must render as **one** DOM node,
@@ -160,13 +168,32 @@ export const MAX_TEXT_LENGTH = 65_536
  * delete the `<b>`.
  */
 export function isTextEditable(element: ElementSpan): boolean {
-  if (!element.textOnly || element.inner === null) return false
-  if (element.minDomNodeCount !== 1) return false
-  if (NON_EDITABLE_TAGS.has(element.tagName)) return false
+  return textEditBlock(element) === null
+}
+
+/**
+ * Why an element cannot take a caret, or `null` when it can — `isTextEditable` with its reason kept.
+ *
+ * The reason exists so the refusal can be *said*: a double-click that opens nothing and explains
+ * nothing is the report M3.11 was written to answer (round-5 major), and these four cases want four
+ * different sentences. `null` for the element means the id is not in the current map at all.
+ *
+ * Order is by what is most worth telling the user, not by cost: a `<script>` is never prose whatever
+ * it contains, and a locked element stays locked whatever is inside it, so both are reported ahead of
+ * the mixed-content rule that would otherwise absorb them.
+ */
+export function textEditBlock(element: ElementSpan | null): TextEditBlock | null {
+  if (element === null) return 'unknown-element'
+  if (NON_EDITABLE_TAGS.has(element.tagName)) return 'not-text'
+  if (element.attrs[LOCK_ATTR] !== undefined) return 'locked'
+  // No `inner` span at all is a void element (`<img>`): there is nothing between its tags to type
+  // into, which is a different thing to say than "this has formatting in it".
+  if (element.inner === null) return 'not-text'
+  if (!element.textOnly || element.minDomNodeCount !== 1) return 'mixed-content'
   // Text already past the cap is read-only rather than lossy: no caret opens, the overlay says why,
   // and the property panel keeps its own (unbounded) text field. See `MAX_TEXT_LENGTH`.
-  if ((element.textContent?.length ?? 0) > MAX_TEXT_LENGTH) return false
-  return element.attrs[LOCK_ATTR] === undefined
+  if ((element.textContent?.length ?? 0) > MAX_TEXT_LENGTH) return 'too-long'
+  return null
 }
 
 /**

@@ -89,6 +89,17 @@ export interface DesignBridgeApi {
     action: SlEditAction,
     onResult?: (result: SlEditResponse) => void,
   ) => void
+  /**
+   * Bind an edit sender to the frame and slide that are current **now**, and return it. Everything
+   * else here addresses whatever `frameRef` points at when it is called, which is right for a live
+   * gesture and wrong for ending a session the user has already navigated away from: since M8.2 the
+   * outgoing slide's frame stays mounted (hidden and `inert`) while `frameRef` and `slideId` move
+   * on, so a `cancel` sent afterwards would name the *new* slide and be rejected by the old frame's
+   * own slide guard — leaving its element `contenteditable` with text the document does not have.
+   * Pinning at `begin` is the same "capture at the start of the gesture" discipline the drag path
+   * uses for its pointer target. The sender is a no-op once its frame is gone.
+   */
+  readonly pinEdit: (slId: string) => (action: SlEditAction) => void
 }
 
 export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
@@ -214,5 +225,24 @@ export function useDesignBridge(options: DesignBridgeOptions): DesignBridgeApi {
     [frameRef, slideId],
   )
 
-  return { requestHit, requestElements, requestEdit }
+  const pinEdit = useCallback<DesignBridgeApi['pinEdit']>(
+    (slId) => {
+      // The iframe *element*, not its `contentWindow`: a frame that reloaded under the same element
+      // has a new window, and reading it at send time addresses the live document rather than a
+      // detached one. A frame that unmounted has no `contentWindow` at all, which is the no-op.
+      const frame = frameRef.current
+      const pinnedSlide = slideId
+      return (action) => {
+        const frameWindow = frame?.contentWindow
+        if (!frameWindow) return
+        frameWindow.postMessage(
+          makeEditRequest(nextId.current(), pinnedSlide, { slId, action }),
+          '*',
+        )
+      }
+    },
+    [frameRef, slideId],
+  )
+
+  return { requestHit, requestElements, requestEdit, pinEdit }
 }

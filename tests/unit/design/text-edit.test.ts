@@ -21,6 +21,7 @@ import {
   resolveTextEdit,
   escapeAndNeutralizeText,
   isTextEditable,
+  textEditBlock,
   LOCK_ATTR,
   MAX_TEXT_LENGTH,
   NON_EDITABLE_TAGS,
@@ -128,6 +129,48 @@ describe('isTextEditable', () => {
   it('rejects a data-sl-lock element — selectable but not mutable (30-slide-format §3.4)', () => {
     expect(isTextEditable(only(`<p ${LOCK_ATTR}>chrome</p>`))).toBe(false)
     expect(isTextEditable(only(`<p ${LOCK_ATTR}="">chrome</p>`))).toBe(false)
+  })
+})
+
+/**
+ * Round-5 major 2: the refusal has to be sayable. `isTextEditable` is the same predicate with the
+ * reason thrown away, so the two are asserted to agree on every case as well as separately.
+ */
+describe('textEditBlock', () => {
+  it.each([
+    ['a plain element', '<p>hello</p>', null],
+    ['mixed inline content', '<p>Revenue <b>18%</b> Q3</p>', 'mixed-content'],
+    ['a void element', '<img src="x">', 'not-text'],
+    ['a locked element', `<p ${LOCK_ATTR}>chrome</p>`, 'locked'],
+  ])('%s', (_label, html, expected) => {
+    const map = mapOf(html)
+    const element = map.byId.get(map.order[0]!)!
+    expect(textEditBlock(element)).toBe(expected)
+    expect(isTextEditable(element)).toBe(expected === null)
+  })
+
+  it('reports text already past the cap rather than opening a lossy caret', () => {
+    const element = only(`<p>${'x'.repeat(MAX_TEXT_LENGTH + 1)}</p>`)
+    expect(textEditBlock(element)).toBe('too-long')
+  })
+
+  it('reports an id the map does not have', () => {
+    expect(textEditBlock(null)).toBe('unknown-element')
+  })
+
+  it('a locked element with formatting inside reports the lock, the more useful of the two', () => {
+    const map = mapOf(`<p ${LOCK_ATTR}>Revenue <b>18%</b> Q3</p>`)
+    expect(textEditBlock(map.byId.get(idOf(map, 'p'))!)).toBe('locked')
+  })
+
+  it('agrees with isTextEditable across the corpus', () => {
+    for (const entry of CORPUS) {
+      const map = mapOf(entry.html)
+      for (const id of map.order) {
+        const element = map.byId.get(id)!
+        expect(textEditBlock(element) === null).toBe(isTextEditable(element))
+      }
+    }
   })
 })
 

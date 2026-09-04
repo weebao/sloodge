@@ -57,10 +57,20 @@
  * exists to prevent, reached by clicking *inside* one's own multi-selection.
  *
  * So the rule for a group is decided by the members, not by the union: a stationary click that lands
- * on a member's box falls through as before (collapsing to that member, which is what PowerPoint,
- * Figma and Keynote do and what round 3 accepted), and a click in the gap is **swallowed — the group
+ * on a member falls through as before (collapsing to that member, which is what PowerPoint, Figma
+ * and Keynote do and what round 3 accepted), and a click in the gap is **swallowed — the group
  * survives**. Nudging a group therefore cannot lose it, and the group is still dismissible by `Esc`,
  * by the Clear selection button, and by clicking outside the union.
+ *
+ * "On a member" means the member's **rotated hull**, not its layout box. Round 4 asked the question
+ * of `boxOf(hit)`, which is the unrotated box, and for a member turned by M3.6 that is not the shape
+ * on screen — so the rule was wrong in both directions at once (round-5 major, both reproduced in the
+ * built app with a member at `rotate(45deg)`). A click on the member's visible corner fell outside
+ * its unrotated box, was read as gap and swallowed: the user aimed at an element and got nothing. A
+ * click on visibly empty space that happened to lie inside that unrotated box was read as a member,
+ * fell through, and the hit-test answered the full-bleed slide root — destroying the multi-selection
+ * from a click on apparent whitespace, which is the failure this whole rule exists to prevent. The
+ * test is now `rotatedRectContainsPoint` against each member's own source rotation.
  */
 
 import {
@@ -88,10 +98,16 @@ import {
   unionRects,
 } from '../../../../shared/design/overlay-geometry'
 import { buildDragPatch } from '../../../../shared/design/drag-commit'
-import { boxOf, rectContainsPoint, shiftHit } from '../../../../shared/design/hit-geometry'
+import {
+  boxOf,
+  rectContainsPoint,
+  rotatedRectContainsPoint,
+  shiftHit,
+} from '../../../../shared/design/hit-geometry'
 import { buildMultiElementPatch, type ElementMove } from '../../../../shared/design/multi-commit'
 import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smart-guides'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
+import type { SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readStyleProp } from '../../../../shared/design/patch'
 import { readRotation } from '../../../../shared/design/transform'
@@ -236,7 +252,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     [setHover, setSelection, toggleSelection],
   )
 
-  const { requestHit, requestElements, requestEdit } = useDesignBridge({
+  const { requestHit, requestElements, requestEdit, pinEdit } = useDesignBridge({
     frameRef,
     slideId,
     enabled: true,
@@ -249,6 +265,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     useTextEditing({
       slideId,
       requestEdit,
+      pinEdit,
     })
   useEffect(() => {
     editEndRef.current = onFrameEditEnd
@@ -381,16 +398,42 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     onSelect: setSelections,
   })
 
-  // The single-element rotation (M3.6), read from source bytes (never a bridge payload). Group
-  // selections are not rotated as a unit, so this is 0 while multi-selected.
+  // Rotation is read from source bytes, never from a bridge payload (§2.2). One parse serves both
+  // readers below, and it happens on the first question rather than when the memo is built: with
+  // nothing selected nobody asks, and `buildSlideMap` is a full pass over the source that would
+  // otherwise run once per agent token as `slideHtml` streams.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const sourceAngle = useMemo<number>(() => {
-    if (isMulti || selection === null || source === undefined) return 0
-    const element = buildSlideMap(slideId, source).byId.get(selection.slId)
-    if (element === undefined) return 0
-    return readRotation(readStyleProp(source, element, 'transform'))
-  }, [source, slideId, selection, isMulti])
+  const angleOf = useMemo<(slId: string) => number>(() => {
+    if (source === undefined) return () => 0
+    let map: SlideMap | null = null
+    return (slId) => {
+      map ??= buildSlideMap(slideId, source)
+      const element = map.byId.get(slId)
+      if (element === undefined) return 0
+      return readRotation(readStyleProp(source, element, 'transform'))
+    }
+  }, [source, slideId])
+
+  // The single-element rotation (M3.6). Group selections are not rotated as a unit, so this is 0
+  // while multi-selected.
+  const sourceAngle = useMemo<number>(
+    () => (isMulti || selection === null ? 0 : angleOf(selection.slId)),
+    [angleOf, selection, isMulti],
+  )
+
+  // What counts as "on a member" for the group-gap rule: each member's box turned by its own source
+  // rotation, so the region tested is the one the user sees. See the header.
+  const memberHulls = useMemo(
+    () =>
+      selections.map((hit) => ({
+        box: boxOf(hit),
+        // With no `box` the only geometry is the *rendered* rect, which is the axis-aligned bounds a
+        // rotation already inflated; turning that again would test a region that exists nowhere.
+        angle: hit.box === undefined ? 0 : angleOf(hit.slId),
+      })),
+    [selections, angleOf],
+  )
 
   const actions = useElementActions(slideId)
   useDuplicateKey(actions.duplicate, actions.hasSelection)
@@ -508,11 +551,13 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       // from the member rects the overlay already holds — no round trip, so the frame cannot answer
       // after the click has been settled.
       if (groupBox !== null && rectContainsPoint(groupBox, point)) {
-        if (!selections.some((hit) => rectContainsPoint(boxOf(hit), point))) return
+        if (!memberHulls.some((hull) => rotatedRectContainsPoint(hull.box, hull.angle, point))) {
+          return
+        }
       }
       requestHit(point.x, point.y, event.shiftKey ? 'toggle' : 'select', event.altKey)
     },
-    [framePoint, requestHit, isMarqueeing, consumeDragClick, groupBox, selections],
+    [framePoint, requestHit, isMarqueeing, consumeDragClick, groupBox, memberHulls],
   )
 
   // Double-click edits the element the first click selected — it does *not* hit-test the pointer
@@ -831,7 +876,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
       {/* A refused text edit, said where the edit happened. `status` rather than `alert`, matching
           the chat transcript's notice: the element is intact and back to its stored text, so this is
-          a caveat on what the user just did, not a failure of the app. */}
+          a caveat on what the user just did, not a failure of the app.
+
+          It does not auto-dismiss, deliberately (round-5 minor, upheld on review): the notice is the
+          only account of why an edit did not stick, and a timer that removed it would leave a user
+          who looked away with vanished work and no explanation. It has an explicit ✕, a new caret
+          clears it, and a slide switch clears it. */}
       {notice !== null ? (
         <div
           role="status"
