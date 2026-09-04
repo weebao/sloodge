@@ -141,10 +141,18 @@ describe('FontFamilyControl — ARIA', () => {
     expect(element?.getAttribute('role')).toBe('option')
   })
 
-  it('marks the current family as the selected option', async () => {
+  it('marks the current family as the one selected option, and no other', async () => {
     await open('Papyrus, Segoe UI, system-ui, sans-serif', vi.fn())
     expect(screen.getByTestId('font-option-Papyrus').getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByTestId('font-option-Verdana').getAttribute('aria-selected')).toBe('false')
+    // Absent, not `false`: a single-select listbox that says "not selected" on every other row
+    // announces ten negatives where the useful statement is the one positive.
+    expect(screen.getByTestId('font-option-Verdana').getAttribute('aria-selected')).toBeNull()
+    expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(1)
+  })
+
+  it('reports no selected option at all before a face has been picked', async () => {
+    await open(null, vi.fn())
+    expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(0)
   })
 
   it('opens with the cursor on the current family, so Enter is not a surprise', async () => {
@@ -257,6 +265,48 @@ describe('FontFamilyControl — keyboard', () => {
     fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
     expect(screen.queryByTestId('font-listbox')).toBeNull()
     expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('clears a typed filter on the first Escape and dismisses on the second', async () => {
+    // Otherwise a mistyped filter has no keyboard exit short of closing and reopening the popover.
+    const onPick = vi.fn()
+    await open(null, onPick)
+    const input = screen.getByTestId('font-filter')
+    fireEvent.change(input, { target: { value: 'papyr' } })
+    await waitFor(() => {
+      expect(screen.queryByTestId('font-option-Verdana')).toBeNull()
+    })
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.getByTestId('font-listbox')).toBeTruthy()
+    expect(screen.getByTestId<HTMLInputElement>('font-filter').value).toBe('')
+    await waitFor(() => {
+      expect(screen.getByTestId('font-option-Verdana')).toBeTruthy()
+    })
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
+    expect(screen.queryByTestId('font-listbox')).toBeNull()
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('does not yank the cursor back to the current face while the user types', async () => {
+    // Why the open-effect's dependencies are `[open, fonts]` and not the `rows`/`picked` it reads.
+    // Adding them re-homes the cursor on every keystroke: the user filters to a face they want,
+    // and Enter picks the one they already had.
+    const onPick = vi.fn()
+    await open('Verdana, sans-serif', onPick)
+    await waitFor(() => {
+      expect(activeOption()).toBe('Verdana')
+    })
+
+    fireEvent.change(screen.getByTestId('font-filter'), { target: { value: 'a' } })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('font-option-Segoe UI')).toBeNull()
+    })
+    expect(activeOption()).toBe('Arial')
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Enter' })
+    expect(onPick).toHaveBeenCalledWith('Arial')
   })
 
   it('type-to-filter narrows the list and lands the cursor on a match', async () => {
@@ -437,6 +487,30 @@ function activeOption(): string | null {
 describe('FontFamilyControl — paging and focus containment', () => {
   const MANY = Array.from({ length: 800 }, (_, i) => `Face ${String(i).padStart(3, '0')}`)
 
+  it('dismisses on the first Tab and hands the trigger back its tab stop', async () => {
+    // The r2 defect this pins, measured over CDP: Tab #1 landed focus on the scrollable listbox —
+    // still inside the root, so `focusout` saw nothing leave — and left an open popover whose
+    // arrows scrolled instead of navigating. Only Tab #2 closed it. `close(true)` before the
+    // default action means Tab continues from the trigger, which is the combobox's own tab stop.
+    const onPick = vi.fn()
+    await open(null, onPick)
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Tab' })
+
+    expect(screen.queryByTestId('font-listbox')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('keeps the scrollable listbox out of the sequential tab order', async () => {
+    // The *attribute*, not the IDL property: `element.tabIndex` reads -1 either way, and it is the
+    // presence of an explicit `tabindex` that opts an overflowing container out of Chromium's
+    // keyboard-focusable-scrollers rule. Dropping it is what put focus on the list in the first
+    // place, and no jsdom-level Tab would notice.
+    await open(null, vi.fn())
+    expect(screen.getByTestId('font-listbox').getAttribute('tabindex')).toBe('-1')
+  })
+
   it('closes when focus leaves the popover, so Tab cannot orphan it', async () => {
     await open(null, vi.fn())
     const outside = document.createElement('button')
@@ -446,6 +520,38 @@ describe('FontFamilyControl — paging and focus containment', () => {
 
     expect(screen.queryByTestId('font-listbox')).toBeNull()
     outside.remove()
+  })
+
+  it('closes on a pointerdown outside, before the click underneath it lands', async () => {
+    // `pointerdown`, not `click`: the popover floats over the panel, and a click aimed at whatever
+    // is behind it must reach that control on the same gesture rather than only dismissing.
+    await open(null, vi.fn())
+    const outside = document.createElement('button')
+    document.body.append(outside)
+
+    fireEvent.pointerDown(outside)
+
+    expect(screen.queryByTestId('font-listbox')).toBeNull()
+    outside.remove()
+  })
+
+  it('re-homes the cursor on the current face after a close, not where it was left', async () => {
+    // `close()` resets the moved-cursor flag. Without that reset the flag is sticky for the life of
+    // the control, and every later open leaves the cursor on whatever row the *previous* session
+    // had arrowed to — including a row the current face is nowhere near.
+    await open('Papyrus, Segoe UI, system-ui, sans-serif', vi.fn())
+    await waitFor(() => {
+      expect(activeOption()).toBe('Papyrus')
+    })
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'ArrowUp' })
+    expect(activeOption()).toBe('Bodoni MT')
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+
+    await waitFor(() => {
+      expect(activeOption()).toBe('Papyrus')
+    })
   })
 
   it('stays open when focus goes nowhere, which is what a mousedown on a row reports', () => {
@@ -506,5 +612,78 @@ describe('FontFamilyControl — empty state', () => {
     fireEvent.change(screen.getByTestId('font-filter'), { target: { value: 'Akbar' } })
 
     expect(screen.getByTestId('font-empty').textContent).not.toContain('unusual characters')
+  })
+})
+
+/**
+ * The session-long enumeration cache, exercised through the real bridge rather than the `loadFonts`
+ * seam — the seam bypasses the cache, which is the thing under test. `vi.resetModules()` gives each
+ * test its own module instance, because the cache is module scope by design.
+ */
+async function freshControl(): Promise<typeof FontFamilyControl> {
+  vi.resetModules()
+  const module = await import('../../../src/renderer/src/features/design/FontFamilyControl')
+  return module.FontFamilyControl
+}
+
+function installBridge(listSystemFonts: () => Promise<SystemFontsResponse>): void {
+  window.sloodge = { onMenuAction: () => () => {}, listSystemFonts }
+}
+
+describe('FontFamilyControl — the shared enumeration', () => {
+  afterEach(() => {
+    delete window.sloodge
+  })
+
+  it('spawns the enumerator once and serves every later open from the cache', async () => {
+    const listSystemFonts = vi.fn(async (): Promise<SystemFontsResponse> => ({
+      families: INSTALLED,
+      source: 'powershell',
+    }))
+    installBridge(listSystemFonts)
+    const Control = await freshControl()
+
+    const { unmount } = render(<Control current={null} onPick={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-option-Papyrus')).toBeTruthy()
+    })
+    unmount()
+
+    render(<Control current={null} onPick={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-option-Papyrus')).toBeTruthy()
+    })
+    expect(listSystemFonts).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries after an enumeration that came back with nothing', async () => {
+    // `src/main/fonts/install.ts` deliberately refuses to memoise a failed enumeration, because one
+    // transient spawn failure would otherwise cost the user their installed fonts for the rest of
+    // the session. Caching the empty answer here would throw that protection away one layer up.
+    let attempt = 0
+    const listSystemFonts = vi.fn(async (): Promise<SystemFontsResponse> => {
+      attempt += 1
+      return attempt === 1
+        ? { families: [], source: 'none' }
+        : { families: INSTALLED, source: 'powershell' }
+    })
+    installBridge(listSystemFonts)
+    const Control = await freshControl()
+
+    const { unmount } = render(<Control current={null} onPick={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-unavailable')).toBeTruthy()
+    })
+    unmount()
+
+    render(<Control current={null} onPick={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-option-Papyrus')).toBeTruthy()
+    })
+    expect(listSystemFonts).toHaveBeenCalledTimes(2)
   })
 })

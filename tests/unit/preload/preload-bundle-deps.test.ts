@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseAst, transformWithEsbuild } from 'vite'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
@@ -21,13 +22,29 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
  * ## Two halves, and which one actually protects you
  *
  * The bundle half below is the stronger evidence — it reads the `require` calls that really survive
- * into `out/preload` — but it can only run after a build, and **no CI job builds before it tests**:
- * `.github/workflows/test.yml` is install → lint → test, and `release.yml` runs `pnpm test` before
- * `pnpm pack:win:release`. So on every machine that is not a developer's, the source-graph half is
- * the only protection, and it has to stand on its own. That is why the edge patterns below cover
- * every shape that costs a `require` rather than just the common one, and why the scanner is
- * exercised against fixtures at the bottom of this file: a guard whose own blind spots are untested
- * is a guard that reports green for the bug it was written to catch.
+ * into `out/preload` — but it can only run after a build, and `.github/workflows/test.yml` is
+ * install → lint → test with no build in it. So on the development path the source-graph half is the
+ * only protection, and it has to stand on its own.
+ *
+ * ## Why the source half parses instead of matching patterns
+ *
+ * It used to be a list of regexes, one per import shape someone had thought of. Two consecutive
+ * reviews found a shape missing from that list — a re-export chain in the first, a CommonJS
+ * `require()` in the second — each of which sailed through the source half, through `tsc` and
+ * through oxlint while the built preload grew a `require` it cannot service. A pattern list is only
+ * as good as its author's imagination, and this guard is the only thing standing between a rename
+ * and an app with no `window.sloodge`.
+ *
+ * So the scanner runs each module through the repo's own build toolchain instead: esbuild strips the
+ * types exactly as `electron-vite` does, and rollup's parser — the one that actually decides what
+ * ends up in `out/preload/index.cjs` — hands back the AST. Coverage is then a property of the
+ * parser rather than of the patterns; every import form is just a node. `verbatimModuleSyntax`,
+ * which `tsconfig.base.json` sets repo-wide, is what makes the erasure match the real build in both
+ * directions: `import type` goes, an unused value import stays.
+ *
+ * A `require()` or `import()` whose argument is not a literal is reported rather than ignored: the
+ * scanner cannot prove such an edge safe, and a guard that silently passes what it cannot read is
+ * the failure mode this whole file exists to remove.
  */
 
 interface SourceTree {
@@ -35,29 +52,66 @@ interface SourceTree {
   readonly read: (file: string) => string
 }
 
-/**
- * Every import shape that costs a runtime `require`, and none that does not.
- *
- * `import type` / `export type` are erased before the bundler runs, so a type-only edge neither
- * costs a `require` nor drags the target's own dependencies in — following one would report
- * `document/types.ts -> zod` for a module the preload never loads.
- */
-const EDGE_PATTERNS: readonly RegExp[] = [
-  // `import x from 'p'` and — the shape `slide-contract.ts` uses today — `export { x } from 'p'`,
-  // `export * from 'p'`.
-  /^[ \t]*(?:import|export)[ \t]+(?!type\s)[^'"]*?from[ \t]*['"]([^'"]+)['"]/gm,
-  // Side-effect import: no bindings, still a `require`.
-  /^[ \t]*import[ \t]+['"]([^'"]+)['"]/gm,
-  // `await import('p')`. Not line-anchored — it is an expression, so it appears mid-statement.
-  /\bimport[ \t]*\([ \t]*['"]([^'"]+)['"]/g,
-]
+/** A specifier the module names at runtime. `null` is one the parser found but could not read. */
+type Edge = string | null
 
-function importEdges(source: string): string[] {
-  const specs: string[] = []
-  for (const pattern of EDGE_PATTERNS) {
-    for (const match of source.matchAll(pattern)) specs.push(match[1]!)
+const STRIP_TYPES: Parameters<typeof transformWithEsbuild>[2] = {
+  target: 'esnext',
+  // `jsx: 'react'` keeps the output plain JS without the `react/jsx-runtime` import the automatic
+  // runtime would inject — an import the module never wrote and the bundler would never see.
+  tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true, jsx: 'react' } },
+}
+
+/** The string a specifier node names, or `null` for one the scanner cannot read. */
+function specifierOf(node: unknown): Edge {
+  if (typeof node !== 'object' || node === null) return null
+  const record = node as { type?: string; value?: unknown }
+  return record.type === 'Literal' && typeof record.value === 'string' ? record.value : null
+}
+
+/** Every specifier `source` names, found by parsing it the way the bundler will. */
+async function importEdges(file: string, source: string): Promise<Edge[]> {
+  const js = await transformWithEsbuild(source, file, STRIP_TYPES)
+  const edges: Edge[] = []
+
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    const record = node as Record<string, unknown> & { type?: string }
+
+    switch (record['type']) {
+      // `import … from 'p'`, `import 'p'`, `export … from 'p'`, `export * from 'p'`.
+      case 'ImportDeclaration':
+      case 'ExportNamedDeclaration':
+      case 'ExportAllDeclaration':
+        if (record['source'] !== undefined && record['source'] !== null) {
+          edges.push(specifierOf(record['source']))
+        }
+        break
+      // `import('p')`, anywhere an expression may appear.
+      case 'ImportExpression':
+        edges.push(specifierOf(record['source']))
+        break
+      // `require('p')` — including the `import x = require('p')` esbuild lowers to it.
+      case 'CallExpression': {
+        const callee = record['callee'] as { type?: string; name?: string } | undefined
+        if (callee?.type === 'Identifier' && callee.name === 'require') {
+          edges.push(specifierOf((record['arguments'] as unknown[] | undefined)?.[0]))
+        }
+        break
+      }
+    }
+
+    for (const key of Object.keys(record)) {
+      if (key !== 'type') walk(record[key])
+    }
   }
-  return specs
+
+  walk(parseAst(js.code))
+  return edges
 }
 
 /** Resolve a relative specifier to the source file it names, or `null` if it names none. */
@@ -79,29 +133,38 @@ interface Offender {
 }
 
 /** Walk the value-import graph from `entry`, collecting every edge to a non-`electron` package. */
-function scanPreloadGraph(
+async function scanPreloadGraph(
   entry: string,
   tree: SourceTree,
-): { offenders: Offender[]; visited: string[] } {
+): Promise<{ offenders: Offender[]; visited: string[] }> {
   const seen = new Set<string>()
   const offenders: Offender[] = []
-  const queue = [entry]
 
-  while (queue.length > 0) {
-    const file = queue.pop()!
-    if (seen.has(file)) continue
+  // Recursive rather than a queue, so a module's children are parsed together instead of one at a
+  // time down the chain. `seen` is checked and set before the first `await`, so two paths into the
+  // same module cannot both walk it.
+  const visit = async (file: string): Promise<void> => {
+    if (seen.has(file)) return
     seen.add(file)
 
-    for (const spec of importEdges(tree.read(file))) {
-      if (spec.startsWith('.')) {
-        const next = resolveLocal(tree, file, spec)
-        if (next !== null) queue.push(next)
+    const children: string[] = []
+    for (const spec of await importEdges(file, tree.read(file))) {
+      if (spec === null) {
+        offenders.push({ file, spec: '<computed specifier>' })
+      } else if (spec.startsWith('.')) {
+        const target = resolveLocal(tree, file, spec)
+        if (target !== null) children.push(target)
       } else if (spec !== 'electron') {
         offenders.push({ file, spec })
       }
     }
+    await Promise.all(children.map(visit))
   }
+  await visit(entry)
 
+  // Sorted because the walk resolves concurrently: a report whose order depends on which parse
+  // finished first would be a test that fails on a busy machine and nowhere else.
+  offenders.sort((a, b) => `${a.file} ${a.spec}`.localeCompare(`${b.file} ${b.spec}`))
   return { offenders, visited: [...seen] }
 }
 
@@ -115,10 +178,10 @@ describe('the preload bundle', () => {
 
   it('requires nothing but electron', (ctx) => {
     if (!existsSync(bundle)) {
-      // A loud, named skip rather than `it.runIf`: this half is the one that reads the real
-      // artifact, no CI job builds before testing, and a guard that vanishes without saying so
-      // invites a green run to be read as coverage it is not. Set PRELOAD_BUNDLE_REQUIRED=1 (after
-      // `pnpm build`) to make its absence a failure instead.
+      // A named skip rather than `it.runIf`: this half is the one that reads the real artifact, and
+      // a guard that vanishes without saying so invites a green run to be read as coverage it is
+      // not. `.github/workflows/release.yml` builds before it tests and runs the suite with
+      // PRELOAD_BUNDLE_REQUIRED=1, so on the path that ships an installer this half cannot skip.
       if (process.env['PRELOAD_BUNDLE_REQUIRED'] === '1') {
         expect.fail('out/preload/index.cjs is missing — run `pnpm build` before this suite')
       }
@@ -141,8 +204,8 @@ describe('the preload bundle', () => {
  * package that would have to be `require`d at runtime.
  */
 describe('the preload source graph', () => {
-  it('never reaches a module that imports a runtime package other than electron', () => {
-    const { offenders, visited } = scanPreloadGraph(join(ROOT, 'src/preload/index.ts'), DISK)
+  it('never reaches a module that imports a runtime package other than electron', async () => {
+    const { offenders, visited } = await scanPreloadGraph(join(ROOT, 'src/preload/index.ts'), DISK)
 
     expect(offenders.map((o) => `${o.file.slice(ROOT.length + 1)} -> ${o.spec}`)).toEqual([])
     // A guard that walked nothing would pass vacuously.
@@ -153,34 +216,36 @@ describe('the preload source graph', () => {
 /**
  * The scanner's own coverage, over fixtures rather than over the repo.
  *
- * Each case is one shape that a previous version of this guard waved through while the app it
- * protects would have failed to load. They are here because the only way to know a guard fails on
- * the bug is to hand it the bug.
+ * Each case is one shape that costs a runtime `require`, and each was confirmed red by planting it
+ * in real preload-reachable source and watching this file fail. They are here because the only way
+ * to know a guard catches the bug is to hand it the bug — and because the two shapes that escaped
+ * the regex era (the re-export chain, and `require()`) are now the two most explicitly pinned.
  */
 describe('the preload source-graph scanner', () => {
   const ENTRY = '/preload/index.ts'
 
-  function specsFor(files: Record<string, string>): string[] {
+  async function specsFor(files: Record<string, string>): Promise<string[]> {
     const tree: SourceTree = { exists: (file) => file in files, read: (file) => files[file] ?? '' }
-    return scanPreloadGraph(ENTRY, tree).offenders.map((offender) => offender.spec)
+    const { offenders } = await scanPreloadGraph(ENTRY, tree)
+    return offenders.map((offender) => offender.spec)
   }
 
-  it('allows electron and relative edges, and reports nothing for a clean graph', () => {
+  it('allows electron and relative edges, and reports nothing for a clean graph', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "import { contextBridge } from 'electron'\nimport { a } from './a'\n",
         '/preload/a.ts': 'export const a = 1\n',
       }),
     ).toEqual([])
   })
 
-  it('catches a direct package import', () => {
-    expect(specsFor({ [ENTRY]: "import { z } from 'zod'\n" })).toEqual(['zod'])
+  it('catches a direct package import', async () => {
+    expect(await specsFor({ [ENTRY]: "import { z } from 'zod'\n" })).toEqual(['zod'])
   })
 
-  it('catches one two modules deep', () => {
+  it('catches one two modules deep', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "import { a } from './a'\n",
         '/preload/a.ts': "import { b } from './b'\n",
         '/preload/b.ts': "import { parse } from 'parse5'\n",
@@ -188,9 +253,9 @@ describe('the preload source-graph scanner', () => {
     ).toEqual(['parse5'])
   })
 
-  it('catches a re-export chain — the shape slide-contract.ts uses today', () => {
+  it('catches a re-export chain — the shape slide-contract.ts uses today', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "export { TOKENS } from './a'\n",
         '/preload/a.ts': "export * from './b'\n",
         '/preload/b.ts': "import { z } from 'zod'\nexport const TOKENS = z\n",
@@ -198,43 +263,97 @@ describe('the preload source-graph scanner', () => {
     ).toEqual(['zod'])
   })
 
-  it('catches a bare side-effect import', () => {
+  it('catches a bare side-effect import', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "import './a'\n",
         '/preload/a.ts': "import 'zod'\n",
       }),
     ).toEqual(['zod'])
   })
 
-  it('catches a dynamic import', () => {
+  it('catches a dynamic import', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "async function load() {\n  const { z } = await import('zod')\n  return z\n}\n",
       }),
     ).toEqual(['zod'])
   })
 
-  it('follows a dynamic import of a local module', () => {
+  it('follows a dynamic import of a local module', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "const later = () => import('./a')\n",
         '/preload/a.ts': "import { z } from 'zod'\n",
       }),
     ).toEqual(['zod'])
   })
 
-  it('ignores type-only edges, which are erased before the bundler runs', () => {
+  it('catches a CommonJS require, wherever in the module body it hides', async () => {
+    // The shape the regex era missed: it type-checks, it lints clean, and it emits a bare
+    // `require("zod")` into a bundle that cannot service one.
     expect(
-      specsFor({
+      await specsFor({
+        [ENTRY]: "import { a } from './a'\nexport const b = a\n",
+        '/preload/a.ts':
+          'export function a(flag: boolean): unknown {\n' +
+          "  if (flag) { return require('zod') }\n" +
+          '  return null\n' +
+          '}\n',
+      }),
+    ).toEqual(['zod'])
+  })
+
+  it('catches `import x = require()`, which no import-shaped pattern would match', async () => {
+    // `erasableSyntaxOnly` rejects this form in `src/`, so it is defence behind a compiler flag
+    // rather than the front line — but the flag is one edit away and the parser costs nothing here.
+    expect(await specsFor({ [ENTRY]: "import z = require('zod')\nexport const a = z\n" })).toEqual([
+      'zod',
+    ])
+  })
+
+  it('follows a require of a local module', async () => {
+    expect(
+      await specsFor({
+        [ENTRY]: "export const a = require('./a')\n",
+        '/preload/a.ts': "import { z } from 'zod'\n",
+      }),
+    ).toEqual(['zod'])
+  })
+
+  it('reports a require it cannot read rather than waving it through', async () => {
+    // Not a real hazard in this repo, but the alternative is a scanner whose blind spot is silence.
+    expect(
+      await specsFor({ [ENTRY]: 'declare const name: string\nexport const a = require(name)\n' }),
+    ).toEqual(['<computed specifier>'])
+  })
+
+  it('ignores type-only edges, which are erased before the bundler runs', async () => {
+    expect(
+      await specsFor({
         [ENTRY]: "import type { A } from 'zod'\nexport type { B } from 'parse5'\n",
       }),
     ).toEqual([])
   })
 
-  it('follows a .js-suffixed specifier to its .ts source', () => {
+  it('still reports an import left holding only `type` specifiers', async () => {
+    // `verbatimModuleSyntax` — which `tsconfig.base.json` turns on repo-wide — strips the specifier
+    // and keeps the statement, so this emits `import {} from 'fflate'` and costs a real `require`.
+    // Reading that off the compiler setting rather than off a rule of thumb is the point of parsing.
+    expect(await specsFor({ [ENTRY]: "import { type C } from 'fflate'\n" })).toEqual(['fflate'])
+  })
+
+  it('still reports a value import whose bindings are never used', async () => {
+    // `verbatimModuleSyntax` is what keeps this red: without it esbuild elides the unused binding
+    // and the scanner would go quiet on an import the bundler would have kept.
+    expect(await specsFor({ [ENTRY]: "import { z } from 'zod'\nexport const a = 1\n" })).toEqual([
+      'zod',
+    ])
+  })
+
+  it('follows a .js-suffixed specifier to its .ts source', async () => {
     expect(
-      specsFor({
+      await specsFor({
         [ENTRY]: "import { a } from './a.js'\n",
         '/preload/a.ts': "import { z } from 'zod'\n",
       }),

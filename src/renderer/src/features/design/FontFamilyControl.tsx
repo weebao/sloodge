@@ -74,9 +74,16 @@ const NO_FONTS: SystemFontsResponse = { families: [], source: 'none' }
 let sharedFonts: Promise<SystemFontsResponse> | null = null
 
 function loadFromBridge(): Promise<SystemFontsResponse> {
-  sharedFonts ??= (getBridge()?.listSystemFonts?.() ?? Promise.resolve(NO_FONTS)).catch(
-    () => NO_FONTS,
-  )
+  sharedFonts ??= (getBridge()?.listSystemFonts?.() ?? Promise.resolve(NO_FONTS))
+    .catch(() => NO_FONTS)
+    .then((result) => {
+      // A failure is not an answer, so it is not cached. `src/main/fonts/install.ts` goes out of
+      // its way not to memoise a rejection for exactly this reason, and holding onto the empty
+      // result here would have thrown that protection away one layer up: one transient spawn
+      // failure and the user is on system fonts only until they restart the app.
+      if (result.source === 'none' && result.families.length === 0) sharedFonts = null
+      return result
+    })
   return sharedFonts
 }
 
@@ -260,13 +267,12 @@ export function FontFamilyControl({
     [onPick, close, focusOnRemount],
   )
 
-  // Tab moves focus out of the popover but cannot close it — the only Escape handler is on the
-  // filter input, so once focus has left, the listbox is orphaned over the panel with
-  // `aria-activedescendant` pointing at a listbox the focused element does not own. Closing on
-  // focus *landing outside* fixes that. `relatedTarget === null` is deliberately not treated as
-  // leaving: that is what a mousedown on a non-focusable row reports, and closing there would
-  // cancel the pick the click is about to make. Genuine click-aways are the `pointerdown` handler's
-  // job.
+  // Focus can still leave without Tab — a click into another field, a programmatic `focus()` — and
+  // once it has, the listbox is orphaned over the panel with `aria-activedescendant` pointing at a
+  // listbox the focused element does not own. Closing on focus *landing outside* fixes that.
+  // `relatedTarget === null` is deliberately not treated as leaving: that is what a mousedown on a
+  // non-focusable row reports, and closing there would cancel the pick the click is about to make.
+  // Genuine click-aways are the `pointerdown` handler's job.
   useEffect(() => {
     const root = rootRef.current
     if (!open || root === null) return
@@ -312,8 +318,23 @@ export function FontFamilyControl({
 
   const onKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>): void => {
+      // `close(true)` moves focus to the trigger *before* the default action runs, so Tab
+      // continues from the combobox's own tab stop and lands on the next control after it.
+      // Deliberately not `preventDefault`ed: swallowing Tab would trap a keyboard user in a
+      // popover that is already dismissed.
+      if (event.key === 'Tab') {
+        close(true)
+        return
+      }
       if (event.key === 'Escape') {
         event.preventDefault()
+        // A non-empty filter is a state the user can otherwise only leave by reopening the
+        // popover, so the first Escape clears it and the second dismisses (APG).
+        if (filter !== '') {
+          setFilter('')
+          setScrollTop(0)
+          return
+        }
         close(true)
         return
       }
@@ -349,7 +370,7 @@ export function FontFamilyControl({
         if (row?.kind === 'font') choose(row.name)
       }
     },
-    [activeIndex, rows, step, moveTo, choose, close, page],
+    [activeIndex, rows, step, moveTo, choose, close, page, filter],
   )
 
   const onFilterChange = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -421,15 +442,16 @@ export function FontFamilyControl({
           role="status"
           data-testid="font-export-warning"
           // Wraps rather than truncates: a caveat cut off mid-word ("…exports emb…") reads as a
-          // rendering bug, and this one has to be readable to do its job. Bounded so it cannot push
-          // the rest of the row off screen. 32rem holds the 96-character copy on one line, which
-          // keeps the property row at its bare height — M3.11's dock is a fixed height, and a
-          // two-line caveat grew this row by ~12px the moment a non-system face was picked.
+          // rendering bug, and this one has to be readable to do its job. The cap and the copy were
+          // then set against each other by measurement in the built app, not by eye: 32rem computes
+          // to 512px, this string measures 485px on one line there, and showing or hiding the
+          // warning leaves the property panel at 279.5px either way. The longer wording it replaced
+          // measured 631px, wrapped to two lines, and grew the panel by 9px on every non-system
+          // pick. `title` carries the full sentence for anyone who wants the rest of it.
           className="max-w-[32rem] rounded border border-dashed border-amber-500/60 px-1.5 py-0.5 text-[11px] leading-tight text-amber-800 dark:text-amber-200"
-          title="Won't travel: PDF and HTML exports embed nothing; PPTX names the font and falls back on machines without it"
+          title="Won't travel: PDF and HTML exports embed nothing; PPTX names the font and falls back on machines that do not have it"
         >
-          Won&apos;t travel: PDF and HTML exports embed nothing; PPTX names the font and falls back
-          on machines without it
+          Won&apos;t travel: PDF and HTML exports embed no fonts; PPTX falls back without this one
         </span>
       ) : null}
 
@@ -457,6 +479,13 @@ export function FontFamilyControl({
             role="listbox"
             aria-label="Font family"
             data-testid="font-listbox"
+            // An *explicit* `tabindex` is what keeps this out of the tab order. Chromium's
+            // keyboard-focusable-scrollers rule puts an overflowing container with no focusable
+            // children into sequential focus by itself, and the IDL `tabIndex` already reads -1
+            // there, so only the attribute distinguishes the two states. Without it Tab parked
+            // focus on the list — still inside `rootRef`, so `focusout` saw nothing leave — and
+            // left an open popover whose arrows scrolled instead of navigating.
+            tabIndex={-1}
             onScroll={onListScroll}
             style={LIST_STYLE}
             className="overflow-y-auto"
@@ -547,7 +576,9 @@ function FontOption({ id, name, active, selected, onChoose }: FontOptionProps): 
     <li
       id={id}
       role="option"
-      aria-selected={selected}
+      // Only the picked row carries it. `aria-selected="false"` on all ten rows announces ten
+      // negatives where the useful statement is the single positive, or its absence.
+      aria-selected={selected ? true : undefined}
       data-testid={`font-option-${name}`}
       data-active={active ? 'true' : undefined}
       onClick={onClick}

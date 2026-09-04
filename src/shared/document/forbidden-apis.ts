@@ -23,6 +23,28 @@
  * obvious shape and two sibling milestones each proposed it — that re-creates the bug the moment any
  * preload-reachable module consumes it. Add to this file; do not move it back.
  * `tests/unit/preload/preload-bundle-deps.test.ts` is what notices if someone does.
+ *
+ * ## Rebasing M3.10 onto M3.11 — resolve the conflict THIS way
+ *
+ * M3.11 lands first and does exactly the thing above: it declares `export const
+ * FORBIDDEN_API_TOKENS`, `packForApiScan` and `findForbiddenApiTokens` in `slide-contract.ts`, and
+ * `shared/design/text-edit.ts` imports all three from there. The two branches rewrite the same three
+ * regions of that file, so the rebase produces a real conflict — and the tempting resolution, take
+ * M3.11's side because it is the newer file, puts preload-reachable `family.ts` back on a `parse5` +
+ * `zod` import and silently kills `window.sloodge` in the packaged app. The suite stays green
+ * throughout.
+ *
+ * Resolve by keeping this leaf and moving M3.11's additions into it:
+ *
+ *   1. `findForbiddenApiTokens` moves here, beside `packForApiScan` and the token list.
+ *   2. `slide-contract.ts` keeps `import { … } from './forbidden-apis'` and re-exports all three, so
+ *      M3.11's existing importers keep compiling unchanged.
+ *   3. `shared/design/text-edit.ts` imports from `../document/forbidden-apis` directly rather than
+ *      through `slide-contract.ts`, so it stops carrying a parse5 dependency it never uses.
+ *
+ * Then re-run `pnpm typecheck` (CI runs unit tests only) and
+ * `pnpm vitest run tests/unit/preload/preload-bundle-deps.test.ts`, which is what actually catches a
+ * bad resolution.
  */
 
 /**
