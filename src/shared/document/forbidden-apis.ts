@@ -31,16 +31,22 @@
  * `shared/design/text-edit.ts` imports all three from there. The two branches rewrite the same three
  * regions of that file, so the rebase produces a real conflict — and the tempting resolution, take
  * M3.11's side because it is the newer file, puts preload-reachable `family.ts` back on a `parse5` +
- * `zod` import and silently kills `window.sloodge` in the packaged app. The suite stays green
- * throughout.
+ * `zod` import and silently kills `window.sloodge` in the packaged app. The only thing that goes red
+ * is `preload-bundle-deps.test.ts`'s source-graph half — nothing else in the suite notices, which is
+ * why that guard exists.
  *
  * Resolve by keeping this leaf and moving M3.11's additions into it:
  *
- *   1. `findForbiddenApiTokens` moves here, beside `packForApiScan` and the token list.
- *   2. `slide-contract.ts` keeps `import { … } from './forbidden-apis'` and re-exports all three, so
+ *   1. `findForbiddenApiTokens` already lives here, so keep this side and drop M3.11's copy rather
+ *      than merging the two.
+ *   2. `slide-contract.ts` keeps `import { … } from './forbidden-apis'` — widened to every name it
+ *      still calls locally, since `export … from` binds nothing — and re-exports all three, so
  *      M3.11's existing importers keep compiling unchanged.
  *   3. `shared/design/text-edit.ts` imports from `../document/forbidden-apis` directly rather than
  *      through `slide-contract.ts`, so it stops carrying a parse5 dependency it never uses.
+ *
+ * Executed on M3.11's head (8cb7faf) during round-3 review: typecheck 0, both branches' suites
+ * green, a preload requiring only `electron`.
  *
  * Then re-run `pnpm typecheck` (CI runs unit tests only) and
  * `pnpm vitest run tests/unit/preload/preload-bundle-deps.test.ts`, which is what actually catches a
@@ -74,3 +80,13 @@ export const FORBIDDEN_API_TOKENS: readonly string[] = [
   'eval(',
   'new Function(',
 ]
+
+/**
+ * The forbidden tokens `value` contains, under SL-S04's own packing. Asked by the validator deciding
+ * SL-S04 and by the writers that refuse to produce a slide it would then reject — see the note on
+ * `packForApiScan` for why they share one scan instead of each carrying their own.
+ */
+export function findForbiddenApiTokens(value: string): string[] {
+  const packed = packForApiScan(value)
+  return FORBIDDEN_API_TOKENS.filter((token) => packed.includes(packForApiScan(token)))
+}

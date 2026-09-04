@@ -199,13 +199,22 @@ export function FontFamilyControl({
    */
   const cursorMovedRef = useRef(false)
 
+  /** Did the popover open from ArrowUp, which APG says lands on the *last* option? */
+  const openAtEndRef = useRef(false)
+
   // Opening lands the active row on the current face so Enter is a no-op rather than a surprise; so
   // does the font list arriving, since an installed pick is not in the list until then.
   useEffect(() => {
     if (!open || cursorMovedRef.current) return
+    // ArrowUp asks for the *last* option, and until the enumeration lands the only rows are the
+    // System group — so hold the intent rather than spend it on the last system face.
+    if (openAtEndRef.current && fonts === null) return
     const list = rowsRef.current
-    const index = list.findIndex((row) => row.kind === 'font' && row.name === pickedRef.current)
+    const index = openAtEndRef.current
+      ? list.findLastIndex((row) => row.kind === 'font')
+      : list.findIndex((row) => row.kind === 'font' && row.name === pickedRef.current)
     const target = index >= 0 ? index : list.findIndex((row) => row.kind === 'font')
+    openAtEndRef.current = false
     setActiveIndex(target)
     setScrollTop(target > 0 ? scrollTopFor(target, 0) : 0)
   }, [open, fonts])
@@ -241,6 +250,7 @@ export function FontFamilyControl({
     setOpen(false)
     setFilter('')
     cursorMovedRef.current = false
+    openAtEndRef.current = false
     if (focusTrigger) triggerRef.current?.focus()
   }, [])
 
@@ -391,11 +401,14 @@ export function FontFamilyControl({
     setScrollTop(event.currentTarget.scrollTop)
   }, [])
 
+  // The three APG openers. Alt+ArrowDown is the "open without moving the cursor" spelling — which is
+  // what the effect above does anyway, since it homes on the current face — and ArrowUp opens onto
+  // the last option. Enter and Space need no branch: they fire the button's own click.
   const onTriggerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setOpen(true)
-    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    openAtEndRef.current = event.key === 'ArrowUp'
+    setOpen(true)
   }, [])
 
   const toggle = useCallback((): void => {

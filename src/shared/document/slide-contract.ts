@@ -63,7 +63,7 @@
  * keeps a slipped-through slide from reaching the network.
  */
 
-import { FORBIDDEN_API_TOKENS, packForApiScan } from './forbidden-apis'
+import { FORBIDDEN_API_TOKENS, findForbiddenApiTokens } from './forbidden-apis'
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
 import {

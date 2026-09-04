@@ -13,6 +13,7 @@ import {
   readPickedFontFamily,
 } from '../../../src/shared/fonts/family'
 import { validateSlideContract } from '../../../src/shared/document/slide-contract'
+import { findForbiddenApiTokens } from '../../../src/shared/document/forbidden-apis'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { applyOps } from '../../../src/shared/design/patch'
 import {
@@ -81,6 +82,25 @@ const INJECTION_NAMES = [
   // left the whole suite green.
   'Angle<Bracket>',
 ]
+
+/**
+ * Names carrying no forbidden token that the CSS escape layer *puts* one into.
+ *
+ * A leading digit has to be hex-escaped, and the escape ends in a space that SL-S04's packing then
+ * strips: `८ventsource` (U+096E) composes to `\\96e ventsource, …` and packs to `\\96eventsource…`,
+ * which contains `eventsource`. Enumerated rather than sampled — every `\p{Nd}` code point whose hex
+ * spelling ends in `e` is one — so the test is over the property, not over three lucky examples.
+ */
+const ESCAPE_SYNTHESISED_NAMES = ((): string[] => {
+  const names: string[] = []
+  // Hex ending in `e` is exactly the low nibble being 14, so only one code point in sixteen is worth
+  // testing at all — the whole of Unicode without the whole of Unicode's cost.
+  for (let codePoint = 0xe; codePoint <= 0x10ffff; codePoint += 0x10) {
+    const digit = String.fromCodePoint(codePoint)
+    if (/\p{Nd}/u.test(digit)) names.push(`${digit}ventsource`)
+  }
+  return names
+})()
 
 describe('font family name validation (M3.10)', () => {
   it('accepts the plain Latin names a stock machine actually has', () => {
@@ -181,6 +201,56 @@ describe('font names that would break the slide contract', () => {
     const viewport = validateSlideContract(withFace('Display 3vh'))
     expect(viewport.ok).toBe(false)
     expect(viewport.issues.map((issue) => issue.rule)).toContain('SL-G05')
+  })
+})
+
+/**
+ * The half the character allow-list and the raw-name scan both miss: a name that is clean until the
+ * composer touches it. The guard has to run on the bytes about to be written, or it is guarding a
+ * string the slide never sees.
+ */
+describe('font names the CSS escape layer would turn into a forbidden token', () => {
+  it('covers every code point that can do it — 18 of them', () => {
+    expect(ESCAPE_SYNTHESISED_NAMES.length).toBe(18)
+    expect(ESCAPE_SYNTHESISED_NAMES).toContain('\u096Eventsource')
+    expect(ESCAPE_SYNTHESISED_NAMES).toContain('\u0A6Eventsource')
+    expect(ESCAPE_SYNTHESISED_NAMES).toContain('\u0AEEventsource')
+  })
+
+  it('carries no forbidden token in the raw name, which is why scanning it is not enough', () => {
+    for (const name of ESCAPE_SYNTHESISED_NAMES) {
+      expect(findForbiddenApiTokens(name), name).toEqual([])
+      // …and the character allow-list has no opinion either: a `\p{Nd}` lead is legitimate.
+      expect(/^[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd} ._-]*$/u.test(name), name).toBe(true)
+    }
+  })
+
+  it('composes into one, which is the string the guard has to read', () => {
+    for (const name of ESCAPE_SYNTHESISED_NAMES) {
+      const hex = name.codePointAt(0)!.toString(16)
+      expect(
+        `\\${hex} ventsource, Segoe UI, system-ui, sans-serif`.replace(/\s+/g, ''),
+        name,
+      ).toContain('eventsource')
+    }
+  })
+
+  it('is refused at every gate the name can reach', () => {
+    for (const name of ESCAPE_SYNTHESISED_NAMES) {
+      expect(isContractSafeFontFamilyName(name), name).toBe(false)
+      expect(isValidFontFamilyName(name), name).toBe(false)
+      expect(buildFontFamilyValue(name), name).toBeNull()
+      expect(normalizeFontFamilies([name]), name).toEqual([])
+    }
+  })
+
+  it('would really break the slide, asked of the validator', () => {
+    // What makes this a blocker rather than a curiosity: the composed declaration in a real slide
+    // is one SL-S04 rejects. Hand-composed here, because the composer now refuses to produce it.
+    const slide = withFace('\\96e ventsource')
+    const broken = validateSlideContract(slide)
+    expect(broken.ok).toBe(false)
+    expect(broken.issues.map((issue) => issue.rule)).toContain('SL-S04')
   })
 })
 
@@ -340,10 +410,48 @@ describe('buildFontFamilyValue', () => {
     expect(buildFontFamilyValue('Courier New')).toBe('Courier New, monospace')
   })
 
-  it('escapes a face whose name is a CSS keyword, so it stays a family', () => {
-    // Bare `Serif` would resolve to the generic, not to the installed face called Serif.
-    expect(buildFontFamilyValue('Serif')).toBe('\\53 erif, Segoe UI, system-ui, sans-serif')
-    expect(buildFontFamilyValue('Inherit')).toBe('\\49 nherit, Segoe UI, system-ui, sans-serif')
+  it('refuses a face whose name is a CSS keyword instead of escaping it', () => {
+    // Escaping the first character was the old answer and it is inert: CSS resolves escapes into the
+    // ident's value, so `\\53 erif` IS `serif` — Chromium computes it to the generic and drops
+    // `\\49 nherit` entirely. Quoting is the only emission that would work, and a quoted family in an
+    // inline style is a source-corrupting write here. So these names are simply not written.
+    for (const name of [
+      'Serif',
+      'sans-serif',
+      'MONOSPACE',
+      'cursive',
+      'fantasy',
+      'math',
+      'emoji',
+      'fangsong',
+      'ui-serif',
+      'ui-sans-serif',
+      'ui-monospace',
+      'ui-rounded',
+      'Inherit',
+      'initial',
+      'unset',
+      'revert',
+      'revert-layer',
+      'Default',
+    ]) {
+      expect(isValidFontFamilyName(name), name).toBe(false)
+      expect(buildFontFamilyValue(name), name).toBeNull()
+    }
+    // Never emitted, so never shown: a row the user can click that does nothing is worse than one
+    // name fewer in a list of hundreds.
+    expect(normalizeFontFamilies(['Arial', 'Serif', 'Default', 'Georgia'])).toEqual([
+      'Arial',
+      'Georgia',
+    ])
+  })
+
+  it('keeps a name that merely contains a keyword, and the system-ui keyword itself', () => {
+    expect(buildFontFamilyValue('Serif Pro')).toBe('Serif Pro, Segoe UI, system-ui, sans-serif')
+    expect(buildFontFamilyValue('Default Gothic')).toBe(
+      'Default Gothic, Segoe UI, system-ui, sans-serif',
+    )
+    expect(isValidFontFamilyName('system-ui')).toBe(true)
   })
 
   it('leaves the system-ui keyword unquoted', () => {
@@ -384,6 +492,49 @@ describe('readPickedFontFamily', () => {
   it('is null for an absent declaration', () => {
     expect(readPickedFontFamily(null)).toBeNull()
     expect(readPickedFontFamily('')).toBeNull()
+  })
+
+  /**
+   * Slide HTML is model-authored and the Tier-1 contract has nothing to say about a `font-family`
+   * escape, so this reader runs on untrusted source — inside the property panel's render, where a
+   * throw unmounts the tree. Every one of these threw a `RangeError` before the clamp.
+   */
+  it('never throws on a declaration no one validated', () => {
+    for (const value of [
+      'A\\ffffff B, serif',
+      'A\\110000 B, serif',
+      'A\\7fffffff B, serif',
+      'A\\d800 B, serif',
+      'A\\dfff B, serif',
+      'A\\0 B, serif',
+      '\\ffffff',
+      'A\\',
+      '\\',
+      'A\\\nB',
+      '"A\\ffffff B"',
+    ]) {
+      expect(() => readPickedFontFamily(value), JSON.stringify(value)).not.toThrow()
+    }
+  })
+
+  it('substitutes U+FFFD for an escape the CSS tokenizer would not accept', () => {
+    // CSS Syntax §4.3.7: out of range, a surrogate half or zero is U+FFFD, and so is a backslash
+    // that starts no escape at all.
+    expect(readPickedFontFamily('A\\ffffff B, serif')).toBe('A\uFFFDB')
+    expect(readPickedFontFamily('A\\110000 B, serif')).toBe('A\uFFFDB')
+    expect(readPickedFontFamily('A\\d800 B, serif')).toBe('A\uFFFDB')
+    expect(readPickedFontFamily('A\\0 B, serif')).toBe('A\uFFFDB')
+    expect(readPickedFontFamily('\\')).toBe('\uFFFD')
+    // In range and legal, so it still decodes: U+10FFFF is the boundary from the other side.
+    expect(readPickedFontFamily('A\\10ffff B, serif')).toBe('A\u{10FFFF}B')
+  })
+
+  it('leaks neither a NUL nor a lone surrogate into the panel state', () => {
+    for (const value of ['A\\0 B', 'A\\d800 B', 'A\\dfff B', 'A\\dc00 B']) {
+      const read = readPickedFontFamily(value)!
+      expect(read.includes('\u0000'), value).toBe(false)
+      expect(/\p{Cs}/u.test(read), value).toBe(false)
+    }
   })
 })
 
@@ -435,8 +586,15 @@ describe('a picked font leaves the slide contract-valid', () => {
   })
 
   it('leaves the source byte-identical for a hostile or contract-breaking name', () => {
-    for (const name of [...INJECTION_NAMES, 'Local Storage', 'Display 3vh']) {
+    for (const name of [...INJECTION_NAMES, 'Local Storage', 'Display 3vh', 'Serif']) {
       expect(pick(name), name).toBe(SLIDE)
+    }
+  })
+
+  it('stays valid for a name whose escape would have synthesised a forbidden token', () => {
+    for (const name of ESCAPE_SYNTHESISED_NAMES) {
+      expect(pick(name), name).toBe(SLIDE)
+      expect(validateSlideContract(pick(name)).ok, name).toBe(true)
     }
   })
 
