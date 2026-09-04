@@ -38,6 +38,7 @@
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
 import { sanitizeXmlText } from '../../export/pptx/sanitize'
+import { decodeXmlEntities } from '../xml'
 
 type Element = DefaultTreeAdapterTypes.Element
 type ChildNode = DefaultTreeAdapterTypes.ChildNode
@@ -190,8 +191,8 @@ export function scanTextSpans(xml: string): TextSpan[] {
  * the day the legality rules change, this path changes with them.
  *
  * Sanitizing does **not** disturb the byte-minimality property the round-trip depends on:
- * `sanitizeXmlText` is the identity for legal text, so a run whose content is unchanged still encodes
- * to bytes identical to the original span and is skipped rather than rewritten.
+ * `sanitizeXmlText` is the identity for legal text, so a run whose content is unchanged still
+ * decodes equal to the original span and is skipped rather than rewritten.
  */
 export function escapeXmlText(value: string): string {
   return sanitizeXmlText(value)
@@ -307,11 +308,13 @@ export function rewriteSlideText(originalXml: string, html: string): RewriteResu
     if (replacement === undefined) {
       return { ok: false, reason: `text span ${String(index)} has no run marker in the slide HTML` }
     }
-    const encoded = escapeXmlText(replacement)
-    // Compare the *encoded* form against the original bytes: text that differs only in how it was
-    // escaped (`&#39;` vs `'`) is not an edit, and rewriting it would dirty a part for nothing.
-    if (encoded === span.raw) continue
+    // Compare *decoded* text, not the re-encoded bytes: a producer that wrote `&#39;` where this
+    // writer would emit `'` has not been edited, and re-spelling it would dirty a run for nothing
+    // (M4.6 review round 6). `escapeXmlText` never emits `&#39;`, `&quot;` or `&apos;`, so a byte
+    // comparison would count every such run as changed.
+    if (decodeXmlEntities(span.raw) === sanitizeXmlText(replacement)) continue
 
+    const encoded = escapeXmlText(replacement)
     changedRuns.push(index)
     pieces.push(originalXml.slice(cursor, span.tagStart))
     if (span.selfClosing) {

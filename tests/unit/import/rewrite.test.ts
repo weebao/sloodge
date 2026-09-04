@@ -142,6 +142,23 @@ describe('rewriteSlideText', () => {
     expect(result.xml).toBe(source)
   })
 
+  it("leaves a producer's own entity spelling alone when only another run changed", () => {
+    // The other direction: the *part* spells `'` as `&#39;` (or `&quot;`, `&apos;`), which this
+    // writer never emits. An untouched run must not be counted as changed and re-spelt just
+    // because its bytes differ from what `escapeXmlText` would produce (M4.6 review round 6).
+    const source = '<p:sld><a:t>it&#39;s</a:t><a:t>say &quot;hi&quot;</a:t><a:t>two</a:t></p:sld>'
+    const marked =
+      '<div><span data-sl-run="0">it\'s</span><span data-sl-run="1">say "hi"</span>' +
+      '<span data-sl-run="2">three</span></div>'
+    const result = rewriteSlideText(source, marked)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.changedRuns).toEqual([2])
+    expect(result.xml).toBe(
+      '<p:sld><a:t>it&#39;s</a:t><a:t>say &quot;hi&quot;</a:t><a:t>three</a:t></p:sld>',
+    )
+  })
+
   it('re-opens a self-closing text element when it gains content', () => {
     const source = '<p:sld><a:t/></p:sld>'
     const marked = '<div><span data-sl-run="0">now has text</span></div>'

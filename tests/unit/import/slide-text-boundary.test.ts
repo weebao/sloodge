@@ -54,6 +54,13 @@ function sourceFiles(dir: string): string[] {
   return out
 }
 
+/** Source files (repo-relative, `/`-separated) containing a `function <name>(` declaration. */
+function definers(pattern: RegExp): string[] {
+  return sourceFiles(SRC_ROOT)
+    .filter((file) => pattern.test(readFileSync(file, 'utf8')))
+    .map((file) => relative(process.cwd(), file).split(sep).join('/'))
+}
+
 function producers(): { file: string; source: string }[] {
   return sourceFiles(SRC_ROOT)
     .map((file) => ({
@@ -102,13 +109,18 @@ describe('text into slide HTML goes through slideText', () => {
   })
 
   it('escapeHtml and the defuser are defined once, in slide-text.ts', () => {
-    const definers = sourceFiles(SRC_ROOT)
-      .filter((file) =>
-        /function (?:escapeHtml|defuseForbiddenTokens|slideText)\(/.test(
-          readFileSync(file, 'utf8'),
-        ),
-      )
-      .map((file) => relative(process.cwd(), file).split(sep).join('/'))
-    expect(definers).toEqual(['src/shared/document/slide-text.ts'])
+    expect(definers(/function (?:escapeHtml|defuseForbiddenTokens|slideText)\(/)).toEqual([
+      'src/shared/document/slide-text.ts',
+    ])
+  })
+
+  it('the SL-S04 matcher is defined once, in slide-contract.ts', () => {
+    // Round 5 lifted `foldForScan`/`forbiddenBreakPoints`/`tokenPattern` out of Design Mode's
+    // text editor so the importer and the editor share one matcher. Until M3.11's branch is
+    // rebased onto that, it carries byte-identical private copies in `text-edit.ts`; this pin
+    // reds the moment both land in one tree, so the dedupe is enforced rather than remembered.
+    expect(definers(/function (?:foldForScan|forbiddenBreakPoints|tokenPattern)\(/)).toEqual([
+      'src/shared/document/slide-contract.ts',
+    ])
   })
 })
