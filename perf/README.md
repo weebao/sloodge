@@ -417,12 +417,13 @@ created only once its URL exists, so a switch's first `load` is the slide's (a b
 | Unmeasured switches                |             — |          **0** | every switch got its own canvas `load`   |
 
 The baseline is the committed `baseline-main.json` (harness `ef07cf4`, median 1-minute load 6.3,
-`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `0dad951` — the tip of
-this branch, on the M8.1 round-3 harness (each switch waits up to 2 s for its own load and any that
-never arrives is censored at that bound and counted in `unmeasuredSwitches`, which is 0 in all three
-tiers) — on a quiet host (load 1.4, `contended: false`), so its timing columns can be believed; the
-baseline's cannot, and the process and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as
-regressed (53 → 203); that compares against a contended baseline whose frame numbers the
+`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `0dad951` — the commit
+that wrote it, and the last one on this branch to touch the harness, which is the M8.1 round-3 one:
+each switch waits up to 2 s for its own load, and any that never arrives is censored at that bound
+and counted in `unmeasuredSwitches`, which is 0 in all three tiers. The host was quiet (load 1.4,
+`contended: false`), so its timing columns can be believed; the baseline's cannot, and the process
+and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as regressed
+(53 → 203); that compares against a contended baseline whose frame numbers the
 "Contention" section above declares unusable. The comparable figure is the shell frame rate: 19.4 fps
 median during the dwell here (per run 9.6 / 28.4 / 19.4) against M8.1's quiet-window 7.1 fps at
 the same tier. The spread across those three runs is the reason the dwell's frame numbers are

@@ -105,13 +105,12 @@ export function SlideStage({
   }, [])
 
   const active = frames.find((frame) => frame.role === 'active')?.slide
-  // Memoized on the same key as the frame's own copy, and for the same reason: `documentFor` is a
-  // full parse of the document, and the gate is read on *every* render — including the
-  // ResizeObserver ticks that `useElementSize` turns into renders while a splitter is dragged. In
-  // the render body this was a parse per render; here it is one per document.
-  // Keyed on the id and the source html rather than on `active` itself, for the same reason the
-  // frame's memo below is: a deck update rebuilds the `SlideView` objects, and keying on the object
-  // would re-instrument on every agent token even though the document is unchanged.
+  // `documentFor` is a full parse of the document, and the gate is read on *every* render —
+  // including the ResizeObserver ticks that `useElementSize` turns into renders while the panel
+  // splitter is dragged, which is why this may not sit in the render body. Keyed on the id and the
+  // source html rather than on `active` itself, like the frame's own memo below: a deck update
+  // rebuilds the `SlideView` objects, and keying on the object would re-instrument on every agent
+  // token even though the document is unchanged.
   const activeId = active?.id
   const activeSource = active?.html
   const activeHtml = useMemo(
