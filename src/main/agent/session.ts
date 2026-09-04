@@ -229,7 +229,11 @@ export class AgentSession {
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
     this.bridge = createChatBridge()
-    this.capUsd = deps.options.maxBudgetUsd ?? null
+    // Through `effectiveCap` for the same reason `setBudgetCap` is (r6): a cap of 0 must mean the
+    // same thing to the admission gate and to `maxBudgetUsd`, and this constructor is the session's
+    // other writer of `capUsd`. Unreachable today — `service.ts` omits the option and the IPC
+    // boundary rejects 0 — but a normaliser one writer misses is the shape r6 set out to remove.
+    this.capUsd = effectiveCap(deps.options.maxBudgetUsd ?? null)
   }
 
   /** Client-side cost estimate accumulated across this session's turns. */

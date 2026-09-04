@@ -241,6 +241,28 @@ describe('AgentSession', () => {
     await session.close()
   })
 
+  it('normalises a malformed cap supplied to the constructor, not just to setBudgetCap', async () => {
+    // The session has two writers of `capUsd`; r7 found the constructor skipped the sanitiser the
+    // other one uses, so a cap of 0 passed straight through as `maxBudgetUsd: 0`. Same reachability
+    // as above (nothing constructs a session with a cap today) and the same reason to pin it: a
+    // normaliser that one writer bypasses is not a normaliser.
+    const calls: Parameters<AgentQueryFn>[0][] = []
+    const queryFn = ((params: Parameters<AgentQueryFn>[0]) => {
+      calls.push(params)
+      return fakeHandle([])
+    }) as unknown as AgentQueryFn
+    const session = new AgentSession({
+      queryFn,
+      options: { ...OPTIONS, maxBudgetUsd: 0 },
+      emit: () => {},
+      log: () => {},
+    })
+    session.send('hi')
+    expect(calls[0]?.options.maxBudgetUsd).toBe(evaluateBudget(0, 0).capUsd)
+    expect(calls[0]?.options.maxBudgetUsd).toBe(2)
+    await session.close()
+  })
+
   describe('skillStatus — the §8 assertion that the bundled skills reached the model', () => {
     it('reports nothing missing, and no degradation notice, when init lists all three', async () => {
       const emitted: AgentEvent[] = []
