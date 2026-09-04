@@ -201,7 +201,9 @@ export function createAgentBridge(
         ? null
         : rec?.reason === 'budget'
           ? 'budget'
-          : 'no-credential'
+          : rec?.reason === 'slash-command'
+            ? 'slash-command'
+            : 'no-credential'
       return { accepted, reason }
     },
 

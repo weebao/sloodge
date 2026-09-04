@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentErrorKind, AgentEvent, AgentUsage } from '../../../src/shared/agent/types'
+import {
+  AGENT_ERROR_KINDS,
+  type AgentEvent,
+  type AgentUsage,
+} from '../../../src/shared/agent/types'
 import {
   errorCopy,
   initialTranscript,
@@ -416,20 +420,10 @@ describe('toolChipStyle', () => {
 })
 
 describe('errorCopy', () => {
-  const kinds: AgentErrorKind[] = [
-    'auth',
-    'rate-limit',
-    'overloaded',
-    'network',
-    'budget',
-    'max-turns',
-    'interrupted',
-    'runtime-missing',
-    'unknown',
-  ]
-
   it('returns non-empty copy for every kind', () => {
-    for (const kind of kinds) expect(errorCopy(kind, '').length).toBeGreaterThan(0)
+    // Driven off the shared list rather than a hand-kept copy of it: a kind added to
+    // `AGENT_ERROR_KINDS` with no sentence would otherwise ship as a blank chat bubble.
+    for (const kind of AGENT_ERROR_KINDS) expect(errorCopy(kind, '').length).toBeGreaterThan(0)
   })
 
   it('surfaces the raw message for an unknown kind, and a generic line when it is empty', () => {

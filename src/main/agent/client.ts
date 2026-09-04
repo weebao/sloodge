@@ -138,7 +138,16 @@ export function buildSdkOptions(o: AgentQueryOptions): Options {
     model: o.model,
     includePartialMessages: true,
     persistSession: true,
-    ...(o.resumeSessionId !== undefined ? { resume: o.resumeSessionId } : {}),
+    // --- resume (§12), forked to keep §10's cost baseline exact ---
+    // The fold banks a dead generation's total and starts the replacement from its own snapshots,
+    // which is only right while a resumed subprocess's cost tracker starts at $0. The CLI can instead
+    // restore it, keyed on the session id the process runs under; `--fork-session` keeps the process
+    // on the fresh uuid it minted at startup, so there is no id for a stored `lastSessionId` to match
+    // (`shared/agent/cost.ts` has the symbols and why this is a flag rather than an argument about
+    // call graphs). What it costs: the conversation is copied into a new transcript, so each re-arm
+    // leaves one more JSONL under the app-owned config dir — negligible while re-arms are rare and
+    // mid-session, and §12 says what to weigh again when per-deck resume persists ids.
+    ...(o.resumeSessionId !== undefined ? { resume: o.resumeSessionId, forkSession: true } : {}),
   }
 }
 

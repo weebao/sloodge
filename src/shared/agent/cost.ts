@@ -20,8 +20,9 @@
  *
  *   beginTurn (user sends)        ──▶ openTurns + 1
  *   turn-end {generation, snapshot} ──▶ openTurns > 0 ? fold : no-op, where fold is
- *       same generation  : liveUsd = max(liveUsd, snapshot)
- *       later generation : closedUsd += liveUsd; liveUsd = snapshot
+ *       same generation, snapshot ≥ liveUsd : liveUsd = snapshot
+ *       same generation, snapshot < liveUsd : closedUsd += liveUsd; liveUsd = snapshot  (reset)
+ *       later generation                    : closedUsd += liveUsd; liveUsd = snapshot
  *   totalUsd = closedUsd + liveUsd
  *
  * `generation` is `AgentSession`'s query counter — each `query()` is one CLI subprocess with its own
@@ -29,9 +30,37 @@
  * previous one is known to be finished: its last reported total is banked into `closedUsd` and the
  * new process starts from zero. That baseline is **deliberately additive** — see below.
  *
+ * ## Why a *decrease* banks too
+ *
+ * A cumulative total cannot go down, so a same-generation snapshot below the live maximum is proof
+ * the subprocess's tracker was reset under us. The CLI has exactly that move: `Att()` is
+ * `{ Ot.totalCostUSD = 0, … }`, and it is reachable from a non-interactive turn — the `/clear`
+ * command is declared `{ type:"local", aliases:["reset","new"], supportsNonInteractive:!0 }` and its
+ * generator runs `Att()`. (Read out of the binary; that a stream-json *user message* is dispatched
+ * against that command list is the documented behaviour of the flag and of `system:init`'s
+ * `slash_commands`, not something the minifier lets you follow call by call — which is one more
+ * reason not to rest on it either way.) Round 5 measured what the plain maximum reads: snapshots
+ * 1.5 → 0 → 1.0 in one generation reported **$1.50 for $2.50 of real spend**, on both ledgers, and
+ * the SDK's own `maxBudgetUsd` backstop compares the same zeroed tracker — so the cap was bypassable
+ * by typing `/clear`. Banking on a decrease reads $2.50.
+ *
+ * This is a *detector*, not a proof: it only fires when the post-reset total is observed below the
+ * pre-reset peak. A reset whose next reported total already exceeds that peak is invisible here and
+ * still under-reads by the peak. So the fold is the second line, not the first — `AgentService.send`
+ * refuses text the CLI would read as a local command, which is what keeps the reset off the wire at
+ * all. Both exist because either alone is one bug away from an undercount.
+ *
+ * Main's own end-of-query close (`AgentSession.closeOpenTurns`) folds a synthetic `$0` snapshot in
+ * the dying generation, which trips the same branch. That is harmless by construction: banking moves
+ * money between `closedUsd` and `liveUsd` without changing their sum, and no live query survives a
+ * `closeOpenTurns` — every caller either has a drained generator or bumps the generation immediately
+ * after, so nothing from that generation can fold again.
+ *
  * `max` makes a repeated or out-of-order `result` harmless to the money: the same snapshot twice is
  * the same maximum, and two overlapping turns' results carry the totals in the order the process
- * emitted them, so whichever lands second is the larger. The uuid dedup in `event-mapping.ts` is
+ * emitted them, so whichever lands second is the larger. Neither is a decrease, so neither trips the
+ * reset branch — a repeat is *equal*, and out-of-order results still arrive in the order the one
+ * process wrote them. The uuid dedup in `event-mapping.ts` is
  * still load-bearing, but for the **turn count**: `openTurns` is what settles the composer and lets
  * `AgentSession.closeOpenTurns` know how many turns a dead query owes, and a duplicated `result` would
  * consume a live turn's slot.
@@ -40,14 +69,25 @@
  *
  * When `AgentSession` re-arms after a query ends it passes `resume`, and the CLI *can* restore its
  * tracker on resume: `xws(id)` returns `{ totalCostUSD: lastCost }` when the per-cwd project config's
- * `lastSessionId` equals the resumed id. If that happened, the new generation's first snapshot would
- * already include the old spend and banking would double-count it. It does not happen on the SDK
- * path: the only writer of `lastSessionId`/`lastCost` is `nZu()`, whose callers are the `/clear`
- * conversation reset (`PSi()`) and the interactive REPL's exit hook (`Vzf`, a React effect that also
- * prints "Cost:" to stdout). A stream-json session never runs either, so the resumed process's total
- * starts at $0 and the additive baseline is exact. Were a future CLI to restore it, this rule reads
- * **high** by the banked amount — the safe direction for a spend control — never low; the contract
- * test is what turns that "were" into a deliberate decision.
+ * `lastSessionId` equals the resumed id. If that fired, the new generation's first snapshot would
+ * already include the old spend and banking would double-count it.
+ *
+ * Rounds 4 and 5 each answered this with a claim about *which writer runs* — "the tracker is always
+ * restored on resume", then "a stream-json subprocess never writes the key" — and both were wrong.
+ * So the answer here is structural instead, and it is what a third mining of the binary (sha256
+ * matching the SDK manifest's `linux-x64` entry) actually supports: the whole binary holds exactly
+ * three `lEo(` / `xws(` / `Y$r(` sites each — the definitions, plus two `lEo` call sites, the
+ * interactive startup resume and the resume picker, **both inside `if (!forkSession)`**. The
+ * non-interactive loader the SDK's `--print` mode uses calls none of them.
+ *
+ * `client.ts` therefore pairs every `resume` with `forkSession: true`: the process then keeps the
+ * fresh uuid it minted at startup instead of adopting the resumed id, so no stored `lastSessionId`
+ * can match, whichever writer ran. That is a positive guarantee rather than a negative fact about
+ * call graphs, which is the kind that has now been misread twice.
+ *
+ * Were a restore to fire anyway, this rule reads **high** by the banked amount — the safe direction
+ * for a spend control — never low; `session.test.ts` pins that branch, and the contract test is what
+ * turns "were" into a deliberate decision rather than a stale belief.
  *
  * ## Why a counter for turns
  *
@@ -114,8 +154,13 @@ export function foldTurnCost(state: CostState, snapshot: CostSnapshot): CostStat
   const reported =
     Number.isFinite(snapshot.snapshotUsd) && snapshot.snapshotUsd > 0 ? snapshot.snapshotUsd : 0
   const advanced = snapshot.generation > state.generation
-  const closedUsd = advanced ? state.closedUsd + state.liveUsd : state.closedUsd
-  const liveUsd = Math.max(advanced ? 0 : state.liveUsd, reported)
+  // A running total that went *down* is a tracker that restarted (`Att()`), not a cheaper turn. Bank
+  // what the generation had reached and start its live total again from the new snapshot — the same
+  // move a new generation gets, for the same reason: the number before it is finished being counted.
+  const restarted = !advanced && reported < state.liveUsd
+  const banked = advanced || restarted
+  const closedUsd = banked ? state.closedUsd + state.liveUsd : state.closedUsd
+  const liveUsd = banked ? reported : Math.max(state.liveUsd, reported)
   return {
     totalUsd: closedUsd + liveUsd,
     closedUsd,

@@ -95,6 +95,17 @@ describe('buildSdkOptions — isolation invariants (§5)', () => {
     expect('resume' in buildSdkOptions(OPTIONS)).toBe(false)
     expect(buildSdkOptions({ ...OPTIONS, resumeSessionId: 'sess-9' }).resume).toBe('sess-9')
   })
+
+  it('forks every resume, so the cost baseline cannot depend on a stale session id (§10)', () => {
+    // The fold banks a finished generation and starts the replacement from its own snapshots, which
+    // is exact only while the resumed subprocess's cost tracker starts at $0. The CLI can restore it
+    // instead — `xws(id)` returns the per-cwd `lastCost` when `lastSessionId` matches the id the
+    // process is running under. Under `--fork-session` the process keeps the fresh uuid it minted at
+    // startup rather than adopting the resumed one, so no stale entry can match. Never set without a
+    // resume: forking nothing is meaningless, and it would show up as a stray CLI flag.
+    expect('forkSession' in buildSdkOptions(OPTIONS)).toBe(false)
+    expect(buildSdkOptions({ ...OPTIONS, resumeSessionId: 'sess-9' }).forkSession).toBe(true)
+  })
 })
 
 describe('realQuery', () => {

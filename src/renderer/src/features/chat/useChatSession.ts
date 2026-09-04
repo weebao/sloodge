@@ -189,6 +189,16 @@ export function useChatSession(): ChatSession {
           dispatch({ type: 'agent-event', event: budgetRefusalEvent(budget.capUsd) })
           return false
         }
+        if (result.reason === 'slash-command') {
+          // The text would have reached the runtime as one of its own commands, which resets the
+          // cost tracker the budget guard reads (`AgentService.isLocalCommandText`). Nothing was
+          // sent, and the composer still holds the words to edit.
+          dispatch({
+            type: 'agent-event',
+            event: { type: 'error', kind: 'slash-command', message: '', recoverable: true },
+          })
+          return false
+        }
         // The credential was removed between the status probe and this send: surface it as a
         // chat-visible auth error rather than a silently swallowed turn, and re-gate the composer.
         dispatch({

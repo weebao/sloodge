@@ -44,6 +44,7 @@ export const AGENT_ERROR_KINDS = [
   'overloaded',
   'network',
   'budget',
+  'slash-command',
   'max-turns',
   'interrupted',
   'runtime-missing',

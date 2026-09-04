@@ -95,13 +95,13 @@ export type AgentKeyStatusResponse = { status: ApiKeyStatus }
  */
 export type AgentAuthStatusResponse = { status: AuthStatus }
 /**
- * Why a refused send carries a reason (M2.5): there are now two ways to be turned away, and the
- * renderer's response to them is opposite. `no-credential` gates the composer and points at Settings
- * ▸ Auth; `budget` leaves the composer usable and points at Settings ▸ Budget. A bare
- * `accepted: false` would have made a budget refusal render as "authentication failed", which is the
- * kind of wrong error message that costs a user an hour.
+ * Why a refused send carries a reason (M2.5): there are three ways to be turned away, and the
+ * renderer's response to them differs. `no-credential` gates the composer and points at Settings
+ * ▸ Auth; `budget` leaves the composer usable and points at Settings ▸ Budget; `slash-command` says
+ * the text itself has to change. A bare `accepted: false` would have made a budget refusal render as
+ * "authentication failed", which is the kind of wrong error message that costs a user an hour.
  */
-export type AgentSendRefusal = 'no-credential' | 'budget'
+export type AgentSendRefusal = 'no-credential' | 'budget' | 'slash-command'
 export type AgentSendResponse = { accepted: boolean; reason?: AgentSendRefusal }
 export type AgentInterruptResponse = { interrupted: boolean }
 /** The session spend cap (M2.5, 50-agent-integration.md §10). `null` is "no limit". */

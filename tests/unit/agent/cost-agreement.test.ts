@@ -15,9 +15,10 @@
  *    next uncrossed pair.
  * 2. **Models the runtime that exists.** The fake emits `total_cost_usd` the way the CLI does: one
  *    running total per subprocess, carried on every `result` that subprocess writes, starting at $0
- *    for every `query()` Sloodge opens (the CLI's resume restore never fires on the SDK path —
- *    `sdk-cost-contract.test.ts`). A turn's `costUsd` is the delta it adds to that total when its
- *    result is written; it never appears on the wire by itself.
+ *    for every `query()` Sloodge opens (every resume is forked, so the CLI's cost-tracker restore has
+ *    no session id to match — `client.ts`, `sdk-cost-contract.test.ts`) — and, under `reset`, zeroed
+ *    mid-subprocess the way `/clear` zeroes it. A turn's `costUsd` is the delta it adds to that total
+ *    when its result is written; it never appears on the wire by itself.
  * 3. **Checks both ledgers against a model of the script**, not merely against each other. The model
  *    is one sentence: *the session spent the sum, over subprocesses, of the last total each one
  *    reported; a turn whose subprocess dies before its `result` adds nothing; a `result` with no turn
@@ -81,6 +82,10 @@ const CAP = 2
  * - `survivor`    — a cap-stop `interrupt()` lands between turns: the runtime answers with no
  *                   result, and the queued T3 runs to its own result at full cost (the CLI's
  *                   `still_queued` semantics — `Query.interrupt()` does not cancel queued turns).
+ * - `reset`       — the subprocess zeroes its own cost tracker mid-generation and keeps running: the
+ *                   `/clear` turn (`Att()` sets `Ot.totalCostUSD = 0`), modelled as the zero-cost
+ *                   turn it is. Round 5: the plain maximum kept the pre-reset peak and read $1.50 for
+ *                   $2.50, on both ledgers, with the SDK backstop reading the same zeroed counter.
  */
 const CONDITIONS = [
   'overlap',
@@ -97,6 +102,7 @@ const CONDITIONS = [
   'refused',
   'crash',
   'survivor',
+  'reset',
 ] as const
 
 type Condition = (typeof CONDITIONS)[number]
@@ -117,12 +123,16 @@ const T1: Turn = { id: 'T1', text: 'one', costUsd: 0.1, uuid: 'r-1' }
 const T2: Turn = { id: 'T2', text: 'two', costUsd: 0.25, uuid: 'r-2' }
 const T3: Turn = { id: 'T3', text: 'three', costUsd: 1, uuid: 'r-3' }
 const T4: Turn = { id: 'T4', text: 'four', costUsd: 0.5, uuid: 'r-4' }
+/** The `/clear` turn: it makes no API call, so it adds nothing — the tracker reset is the whole event. */
+const TC: Turn = { id: 'TC', text: 'clear', costUsd: 0, uuid: 'r-c' }
 
 type Step =
   | { readonly kind: 'send'; readonly turn: Turn }
   | { readonly kind: 'stop' }
   | { readonly kind: 'result'; readonly turn: Turn; readonly subtype: string }
   | { readonly kind: 'stray' }
+  /** The live subprocess zeroes its running total; the turn that did it reports next. */
+  | { readonly kind: 'tracker-reset' }
   /** The runtime ends its stream; `closes` is how many unanswered turns main must close at $0. */
   | { readonly kind: 'query-ends'; readonly closes: number }
   /** The runtime throws (a transport failure); `closes` as above, plus one typed error. */
@@ -199,6 +209,15 @@ function compose(active: ReadonlySet<Condition>): Script {
   if (has('raise')) setCap(10, null)
   if (has('interrupt')) stop()
   result(T1)
+  if (has('reset')) {
+    // The user's next turn is `/clear`: the subprocess zeroes its tracker and writes a $0 result for
+    // that turn, so the generation's running total restarts below the peak it had reached. The model
+    // is untouched — this turn cost nothing and every later delta is still counted once — which is
+    // exactly the property the plain maximum broke.
+    send(TC)
+    steps.push({ kind: 'tracker-reset' })
+    result(TC)
+  }
   if (has('refused')) steps.push({ kind: 'refused-send' })
   if (has('stray')) steps.push({ kind: 'stray' })
 
@@ -309,6 +328,8 @@ type Runtime = {
   /** Write a `result` for `turn`: adds its delta to this subprocess's total and reports that total. */
   readonly result: (turn: Turn, subtype: string) => unknown
   readonly deliver: (messages: readonly unknown[]) => void
+  /** Zero the running total without ending the subprocess — the CLI's `Att()` on `/clear`. */
+  readonly reset: () => void
   readonly end: () => void
   readonly fail: (error: unknown) => void
 }
@@ -319,7 +340,8 @@ type Runtime = {
  * stream first so a session closed mid-turn does not hang on a generator parked at its wake-up await.
  *
  * `spent` starts at 0 for every runtime, including one opened with `resumeSessionId`: the CLI's
- * resume restore is keyed on a config entry the SDK path never writes (cost.ts).
+ * resume restore is keyed on the session id the process runs under, and every resume is forked onto
+ * a fresh one (cost.ts, client.ts). `reset()` zeroes it again mid-subprocess, which `/clear` does.
  */
 function scriptedRuntime(onInterrupt: () => void): Runtime {
   const queue: unknown[] = []
@@ -371,6 +393,9 @@ function scriptedRuntime(onInterrupt: () => void): Runtime {
     deliver: (messages) => {
       queue.push(...messages)
       nudge()
+    },
+    reset: () => {
+      spent = 0
     },
     end,
     fail: (error) => {
@@ -481,6 +506,9 @@ async function run(script: Script, duplicate: boolean): Promise<Outcome> {
         ends += 1
         // eslint-disable-next-line no-await-in-loop
         await untilTurnEnds(ends)
+        break
+      case 'tracker-reset':
+        current().reset()
         break
       case 'stray':
         // A poison total no real subprocess would report: proof it is the open-turn count, not the

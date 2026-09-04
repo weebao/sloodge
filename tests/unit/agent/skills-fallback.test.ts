@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
+import path from 'node:path'
 import { AgentSession } from '../../../src/main/agent/session'
 import type {
   AgentQueryFn,
@@ -78,6 +79,15 @@ const fs = (files: Record<string, string>): Pick<SkillFs, 'readFile'> => ({
     return value
   },
 })
+
+/**
+ * A bundle path built the way `readSkillBodies` builds it. Keying this fake with posix literals made
+ * every lookup miss under `pnpm test:win-paths` (which runs the suite with `path` bound to
+ * `path.win32`), because the code under test joins with the platform separator — the exact
+ * Windows-only breakage that simulation exists to catch, and one that would red the release job's
+ * `windows-latest` run.
+ */
+const skillFile = (name: string): string => path.join('/bundle', name, 'SKILL.md')
 
 describe('§8 fallback restart', () => {
   it('restarts once with skills: [] and the SKILL.md bodies when init reports skills missing', async () => {
@@ -354,9 +364,9 @@ describe('readSkillBodies', () => {
     const bodies = await readSkillBodies({
       sourceDir: '/bundle',
       fs: fs({
-        '/bundle/slide-deck/SKILL.md': '---\nname: slide-deck\n---\nA',
-        '/bundle/svg-animation/SKILL.md': '---\nname: svg-animation\n---\nB',
-        '/bundle/interactive-graph/SKILL.md': '---\nname: interactive-graph\n---\nC',
+        [skillFile('slide-deck')]: '---\nname: slide-deck\n---\nA',
+        [skillFile('svg-animation')]: '---\nname: svg-animation\n---\nB',
+        [skillFile('interactive-graph')]: '---\nname: interactive-graph\n---\nC',
       }),
     })
     expect(bodies.map((b) => b.name)).toEqual(ALL_SKILLS)
@@ -368,7 +378,7 @@ describe('readSkillBodies', () => {
     // the user their chat box.
     const bodies = await readSkillBodies({
       sourceDir: '/bundle',
-      fs: fs({ '/bundle/slide-deck/SKILL.md': 'A' }),
+      fs: fs({ [skillFile('slide-deck')]: 'A' }),
     })
     expect(bodies).toEqual([{ name: 'slide-deck', body: 'A' }])
   })

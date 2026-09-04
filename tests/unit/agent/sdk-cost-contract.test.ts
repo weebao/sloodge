@@ -1,21 +1,37 @@
 /**
  * The pin behind `shared/agent/cost.ts`: the fold treats `result.total_cost_usd` as the CLI
- * subprocess's **cumulative** total, and banks a finished query's total because the SDK path never
- * restores the tracker on resume. Both facts were read out of the bundled CLI binary, not out of any
- * documentation, so they are only known to hold for the exact version they were read from.
+ * subprocess's **cumulative** total, banks a finished query's total, and banks again whenever that
+ * total is seen to drop. Every one of those facts was read out of the bundled CLI binary, not out of
+ * any documentation, so they are only known to hold for the exact version they were read from —
+ * verified against the binary whose sha256 equals this manifest's `linux-x64` checksum.
  *
- * If either assertion below fails, do not bump the pin blindly. Re-verify against the new binary
- * (`node_modules/.pnpm/@anthropic-ai+claude-agent-sdk-<platform>@<ver>/.../claude`):
+ * Three rounds of review have now stated a *negative* fact about this binary ("the tracker is always
+ * restored on resume", "a stream-json subprocess never writes the key", "the restore runs on the
+ * non-interactive resume path") and been wrong. Prefer positive, structural guarantees; that is why
+ * every resume is forked rather than trusted (`client.ts`).
+ *
+ * If an assertion below fails, do not bump the pin blindly. Re-verify against the new binary, using
+ * fixed-string byte-offset lookups (`grep -abo -F` then `dd`) — it is ~275 MB and a broad regex will
+ * not finish:
  *
  *  1. the cost tracker is still process-cumulative — in 2.1.220: `Jbi(e,t,r){...Ot.totalCostUSD+=e}`
  *     per API call, `vS(){return Ot.totalCostUSD}`, every result builder writes
- *     `total_cost_usd:vS()`, and the only reset `j2m()` has no callers;
- *  2. the SDK stream-json path still never persists `lastSessionId`/`lastCost` — in 2.1.220 the
- *     only writer is `nZu()`, reached from the `/clear` reset (`PSi()`) and the interactive REPL's
- *     React exit hook (`Vzf`), so `xws(id)` never matches and a resumed query starts at $0;
- *  3. the ceiling check is still `vS() >= maxBudgetUsd` (`zcr`) on that same tracker.
+ *     `total_cost_usd:vS()`, and the only *per-turn* reset `j2m()` has no callers;
+ *  2. a live subprocess can still have that tracker zeroed under it — in 2.1.220
+ *     `Att(){Ot.totalCostUSD=0,...}`, reached from the `/clear` command (`type:"local"`,
+ *     `aliases:["reset","new"]`, `supportsNonInteractive:!0`). This is what the fold's reset branch
+ *     and `AgentService.isLocalCommandText` exist for; if `Att` ever stops being reachable from a
+ *     non-interactive turn, they are belt-and-braces rather than load-bearing — do not delete them
+ *     on that basis alone, since the guard is also what keeps the command list from mattering;
+ *  3. the resume restore is still fork-gated — in 2.1.220 the whole binary holds exactly three
+ *     `lEo(`/`xws(`/`Y$r(` sites each: the definitions, and two `lEo` call sites (the interactive
+ *     startup resume and the resume picker) that both sit inside `if(!forkSession)`. The
+ *     non-interactive loader `sHm` — the one the SDK's `--print` mode uses — calls none of them at
+ *     all. `--fork-session` additionally keeps the process on the fresh uuid it minted at startup
+ *     (`LBe`: `sessionId: forkSession ? kt() : s`), so no stale `lastSessionId` can match;
+ *  4. the ceiling check is still `vS() >= maxBudgetUsd` (`zcr`) on that same tracker.
  *
- * Then update the pin and, if any of the three moved, `cost.ts` and 50-agent-integration.md §10.
+ * Then update the pin and, if any of the four moved, `cost.ts` and 50-agent-integration.md §10.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -38,6 +54,20 @@ describe('SDK cost contract — the runtime the fold was written against', () =>
     const sdk = (JSON.parse(read('package.json')) as { version: string }).version
     const cli = (JSON.parse(read('manifest.json')) as { version: string }).version
     expect({ sdk, cli }).toEqual(VERIFIED)
+  })
+
+  it('declares only the result variants whose money fields have been read', () => {
+    // The scan below inspects the two concrete result types by name. A new variant carrying its own
+    // cost field would slip past it silently, so the *set* is pinned too: adding one reds this test
+    // and sends whoever added it to the fold. `SDKResultMessage` is the union of the other two.
+    const names = [
+      ...read('sdk.d.ts').matchAll(/^export declare type (SDKResult[A-Za-z]*) =/gm),
+    ].map((m) => m[1])
+    expect([...new Set(names)].toSorted()).toEqual([
+      'SDKResultError',
+      'SDKResultMessage',
+      'SDKResultSuccess',
+    ])
   })
 
   it('result messages carry exactly one money field, and it is the cumulative one', () => {

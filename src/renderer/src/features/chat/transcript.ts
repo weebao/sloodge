@@ -162,6 +162,9 @@ const ERROR_COPY: Record<AgentErrorKind, string> = {
   // Shared by both budget paths: our turn-admission refusal and the SDK's mid-turn
   // `error_max_budget_usd` ceiling.
   budget: 'Budget reached for this session. Raise the limit in Settings ▸ Budget to continue.',
+  // Not sent, so the composer still has the user's words: say what to change, not what went wrong.
+  'slash-command':
+    'A message can’t start with “/” — the Claude runtime reads that as one of its own commands. Put a word before it, or rephrase.',
   'max-turns': 'This got complicated — Claude stopped after the step limit.',
   interrupted: 'Stopped.',
   'runtime-missing': 'The Claude runtime is missing. Reinstall Sloodge.',

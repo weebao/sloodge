@@ -160,11 +160,14 @@ export class AgentSession {
   private capCrossingAnnounced = false
   /**
    * The most recent `session_id` the runtime reported. Used to `resume` when a query is re-armed
-   * after ending, so a budget stop does not also wipe the conversation. Resume carries the
-   * *conversation*, not the CLI's cost tracker: the CLI restores `totalCostUSD` on resume only when
-   * its per-cwd project config's `lastSessionId` matches, and the SDK's stream-json path never
-   * writes that key (see `shared/agent/cost.ts`), so a re-armed query's snapshots start at $0 and
-   * the fold banks the dead generation's total rather than trusting the new one's first snapshot.
+   * after ending, so a budget stop does not also wipe the conversation.
+   *
+   * Resume carries the *conversation*, not the CLI's cost tracker. The CLI restores `totalCostUSD`
+   * on resume only when its per-cwd project config's `lastSessionId` matches the id the process runs
+   * under, and `client.ts` pairs every `resume` with `forkSession: true`, which keeps the process on
+   * a fresh uuid — so nothing can match. A re-armed query's snapshots therefore start at $0 and the
+   * fold banks the dead generation's total rather than trusting the new one's first snapshot
+   * (`shared/agent/cost.ts`).
    */
   private lastSessionId: string | null = null
   /**
@@ -250,13 +253,16 @@ export class AgentSession {
    * stopped as soon as main can see that the folded total has reached the cap. What it does not
    * bound is the spend of the turn currently streaming — cost only reaches us on its `result`. The
    * SDK ceiling bounds that: the CLI compares its running total against `maxBudgetUsd` (`vS() >=
-   * maxBudgetUsd`), and that total starts at $0 for every query Sloodge opens (the resume restore
-   * never fires on the SDK path — `lastSessionId`), so a query re-armed after a stop is bounded by
-   * the cap *on its own*, on top of what the session had already spent. Passing the absolute cap is
-   * still right: a remainder would let a single re-armed turn run only to the leftover, and if a
-   * future CLI ever did restore the tracker on resume, a remainder would be checked as (prior + new)
-   * ≥ remainder and stop "raise the limit and carry on" after its first API call. The Budget tab
-   * states the prior-plus-cap bound in plain words.
+   * maxBudgetUsd`), and that total starts at $0 for every query Sloodge opens (every resume is
+   * forked, so the restore has no id to match — `client.ts`), so a query re-armed after a stop is
+   * bounded by the cap *on its own*, on top of what the session had already spent. Passing the
+   * absolute cap is still right: a remainder would let a single re-armed turn run only to the
+   * leftover, and if a future CLI ever did restore the tracker on resume, a remainder would be
+   * checked as (prior + new) ≥ remainder and stop "raise the limit and carry on" after its first API
+   * call. The Budget tab states the prior-plus-cap bound in plain words.
+   *
+   * The ceiling reads the *same* counter a `/clear` would zero (`Att()`), which is why the backstop
+   * is not load-bearing on its own and `AgentService.send` refuses that text outright.
    */
   setBudgetCap(capUsd: BudgetCap): void {
     this.capUsd = capUsd

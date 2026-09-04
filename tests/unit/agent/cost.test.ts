@@ -52,8 +52,38 @@ describe('cost accumulation — total_cost_usd is a running total, folded as a m
     expect(state.openTurns).toBe(0)
   })
 
-  it('is order-independent for overlapping results: the maximum wins either way', () => {
-    expect(fold([0.5, 0.8]).totalUsd).toBeCloseTo(fold([0.8, 0.5]).totalUsd)
+  it('is order-independent for overlapping results: whichever lands second carries the larger total', () => {
+    // "Out of order" means the two *turns* are answered out of order, not that the two totals arrive
+    // out of order. One subprocess writes its results serially and stamps each with its running total
+    // at write time, so the second to land is the larger whichever turn it belongs to. This used to be
+    // written as `fold([0.5, 0.8]) === fold([0.8, 0.5])`, which asserted the fold treats a *descending*
+    // pair as the same event — a sequence a cumulative counter cannot produce, and the exact signature
+    // the reset branch below now reads as a restarted tracker. The property that is real is this one.
+    expect(fold([0.5, 0.8]).totalUsd).toBeCloseTo(0.8, 10)
+    expect(fold([0.5, 0.8]).closedUsd).toBe(0)
+  })
+
+  it('reads a mid-generation drop as a restarted tracker, not as a cheaper turn', () => {
+    // Round 5's blocker, at the arithmetic. `/clear` (aliases `reset`, `new`) is `supportsNonInteractive`
+    // and its generator runs `Att()`, which sets the live subprocess's `Ot.totalCostUSD` back to 0. The
+    // plain maximum kept the pre-reset peak and made every dollar after it invisible until the restarted
+    // total climbed past $1.50: $1.50 read for $2.50 spent, on both ledgers, with the SDK's own
+    // `maxBudgetUsd` backstop comparing the same zeroed counter — so a $2.00 cap did not bind.
+    const state = fold([1.5, 0, 1])
+    expect(state.totalUsd).toBeCloseTo(2.5, 10)
+    expect(state.closedUsd).toBeCloseTo(1.5, 10)
+    expect(state.liveUsd).toBeCloseTo(1, 10)
+  })
+
+  it('banks every reset segment, so repeated resets keep adding', () => {
+    // Three segments — peaks 0.4, 0.9 and 0.2 — in one subprocess.
+    expect(fold([0.4, 0.1, 0.9, 0.2]).totalUsd).toBeCloseTo(1.5, 10)
+  })
+
+  it('a reset banks without advancing the generation: the live query is still live', () => {
+    const state = fold([1.5, 0])
+    expect(state.generation).toBe(0)
+    expect(state.totalUsd).toBeCloseTo(1.5, 10)
   })
 
   it('folds no more results than turns were opened', () => {
@@ -74,9 +104,9 @@ describe('cost accumulation — total_cost_usd is a running total, folded as a m
   })
 
   it('banks a finished generation when the next one reports: totals add across queries', () => {
-    // A re-armed query is a new subprocess with a fresh tracker (the CLI's resume restore never
-    // fires on the SDK path — cost.ts). Its first snapshot is what tells the fold the old
-    // generation's last total is final.
+    // A re-armed query is a new subprocess with a fresh tracker: every resume is a fork, so the
+    // CLI's cost-tracker restore has no session id to match (cost.ts, client.ts). Its first snapshot
+    // is what tells the fold the old generation's last total is final.
     let state = fold([0.1, 0.35])
     state = fold([0.5], 1, state)
     expect(state.closedUsd).toBeCloseTo(0.35)
@@ -86,12 +116,15 @@ describe('cost accumulation — total_cost_usd is a running total, folded as a m
   })
 
   it('a zero-cost close from the dead generation does not disturb its banked total', () => {
-    // `closeOpenTurns` folds `0` for the dead query's turns before the replacement opens; `max`
-    // ignores it and the generation stays put until the replacement actually reports.
+    // `closeOpenTurns` folds `0` for the dead query's turns before the replacement opens. That trips
+    // the reset branch — a $0 snapshot is below the live total — which moves the money from `liveUsd`
+    // to `closedUsd` and leaves the sum alone. Harmless because banking is sum-preserving and no live
+    // query survives a `closeOpenTurns`: the generation stays put until the replacement reports.
     let state = fold([0.35])
     state = beginTurn(state)
     state = foldTurnCost(state, at(0, 0))
     expect(state.totalUsd).toBeCloseTo(0.35)
+    expect(state.closedUsd).toBeCloseTo(0.35)
     expect(state.generation).toBe(0)
   })
 

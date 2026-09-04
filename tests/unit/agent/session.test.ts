@@ -6,6 +6,7 @@ import type {
   AgentQueryOptions,
 } from '../../../src/main/agent/query-contract'
 import type { AgentEvent } from '../../../src/shared/agent/types'
+import { evaluateBudget } from '../../../src/shared/agent/budget'
 
 const OPTIONS: AgentQueryOptions = {
   credential: { kind: 'api-key', value: 'sk-ant-test' },
@@ -385,10 +386,37 @@ describe('AgentSession — total_cost_usd is the query’s running total (M2.5 r
     await session.close()
   })
 
+  it('a mid-generation tracker reset is banked, so a /clear cannot hide spend or the cap', async () => {
+    // Round 5's blocker, end to end. `/clear` runs `Att()` inside the live subprocess, so its running
+    // total restarts at $0 while the query keeps going: snapshots 1.5 → 0 → 1.0 in ONE generation for
+    // $2.50 of real spend. Under the plain maximum both ledgers read $1.50, the $2.00 cap never bound
+    // at admission, and the SDK's own backstop compared the same zeroed counter — the cap was
+    // bypassable by typing a slash command. The fold now banks on the drop, and the cap binds.
+    const emitted: AgentEvent[] = []
+    const rt = liveRuntime()
+    const session = new AgentSession({
+      queryFn: () => rt.handle,
+      options: { ...OPTIONS, maxBudgetUsd: 2 },
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    for (const [i, snapshot] of [1.5, 0, 1].entries()) {
+      session.send(`m${String(i)}`)
+      rt.deliver(result(`r${String(i)}`, snapshot))
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() => expect(turnEnds(emitted)).toBe(i + 1))
+    }
+    expect(session.estimatedSpendUsd).toBeCloseTo(2.5, 10)
+    // Both halves of the ledger agree on where the money went: the pre-reset segment is banked.
+    expect(evaluateBudget(session.estimatedSpendUsd, 2).level).toBe('blocked')
+    await session.close()
+  })
+
   it('a re-armed query starts a fresh tracker: its snapshots add to the dead query’s final total', async () => {
-    // The CLI restores its cost tracker on `resume` only when its per-cwd project config's
-    // `lastSessionId` matches, and the SDK's stream-json path never writes that key (cost.ts). So the
-    // replacement's `total_cost_usd` restarts at $0 and the old generation's last total is banked.
+    // Every resume is a fork (`client.ts`), so the CLI's cost-tracker restore — `xws(id)`, gated on
+    // the per-cwd project config's `lastSessionId` matching the id the process is running under — has
+    // no id to match. So the replacement's `total_cost_usd` restarts at $0 and the old generation's
+    // last total is banked.
     const emitted: AgentEvent[] = []
     const runtimes: ReturnType<typeof liveRuntime>[] = []
     const resumes: (string | undefined)[] = []
@@ -424,12 +452,15 @@ describe('AgentSession — total_cost_usd is the query’s running total (M2.5 r
   })
 
   it('if a future CLI restored the tracker on resume, the ledger would read high — never low', async () => {
-    // Pinned deliberately. A resumed query whose first snapshot already carried the old spend
-    // (2.4 + 0.1) is folded as a fresh generation, so the session reads 2.4 + 2.5 = 4.9 for a real
-    // 2.5. That is the over-counting direction, which a spend control can live with; the alternative
-    // rule ("a resumed snapshot IS the session total") reads 2.5 when the restore does not fire —
-    // which is every Sloodge session on the bundled CLI (sdk-cost-contract.test.ts) — and that is an
-    // undercount of the entire prior spend. Change this only with the contract test.
+    // Pinned deliberately, as the fallback behind `forkSession`. A resumed query whose first snapshot
+    // already carried the old spend (2.4 + 0.1) is folded as a fresh generation, so the session reads
+    // 2.4 + 2.5 = 4.9 for a real 2.5. That is the over-counting direction, which a spend control can
+    // live with; the alternative rule ("a resumed snapshot IS the session total") reads 2.5 when the
+    // restore does not fire — which is every Sloodge session on the bundled CLI
+    // (sdk-cost-contract.test.ts) — and that is an undercount of the entire prior spend. Note the
+    // restore's first snapshot is *above* the banked total, so the reset branch does not fire on it
+    // either: a restore reads high, a reset reads exact, and neither reads low. Change this only with
+    // the contract test.
     const emitted: AgentEvent[] = []
     const runtimes: ReturnType<typeof liveRuntime>[] = []
     const session = new AgentSession({

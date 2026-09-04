@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentService } from '../../../src/main/agent/service'
+import { AgentService, isLocalCommandText } from '../../../src/main/agent/service'
 import type { AgentCredential } from '../../../src/main/agent/auth-env'
 import type { AgentQueryFn, AgentQueryHandle } from '../../../src/main/agent/query-contract'
 import type { AgentEvent } from '../../../src/shared/agent/types'
@@ -567,6 +567,65 @@ describe('AgentService', () => {
     // A send after dispose starts a fresh session rather than reusing the closed one.
     await service.send(3, 'again', () => {})
     expect(rec.starts()).toBe(2)
+  })
+
+  describe('slash-command admission (M2.5 round 5)', () => {
+    // The bundled CLI honours its own local commands over stream-json: `/clear` (aliases `/reset`,
+    // `/new`) is declared `supportsNonInteractive`, and its generator runs `Att()`, which sets the
+    // subprocess's `Ot.totalCostUSD` to 0. Sloodge forwards composer text verbatim (`bridge.ts`), so
+    // that text reset the counter BOTH spend controls read — the fold, through `total_cost_usd`, and
+    // the SDK's `maxBudgetUsd` backstop, through `vS() >= cap`. The guard keeps it off the wire.
+    it.each([
+      ['/clear', 'the reset itself'],
+      ['/reset', 'an alias'],
+      ['/new', 'an alias'],
+      [' /clear', 'leading whitespace — the CLI trims too'],
+      ['/clear\n', 'trailing whitespace'],
+      ['/CLEAR', 'a case the runtime may fold'],
+      ['/clear extra', 'a command with arguments'],
+      ['/compact', 'a command this guard does not need to know the name of'],
+      ['/', 'a bare slash'],
+    ])('refuses %s (%s) without creating a session or a subprocess', async (text) => {
+      const { queryFn, starts } = recordingQueryFn()
+      const loadCredential = vi.fn(async () => LIVE)
+      const service = new AgentService({ queryFn, loadCredential, resolvePaths: PATHS })
+      expect(await service.send(1, text, () => {})).toEqual({
+        accepted: false,
+        reason: 'slash-command',
+      })
+      // Refused before anything is created: no credential read, no workspace, no `query()`.
+      expect(loadCredential).not.toHaveBeenCalled()
+      expect(starts()).toBe(0)
+      await service.disposeAll()
+    })
+
+    it.each([
+      'What does src/main/agent/session.ts do?',
+      'Use a 3/4 width column for the chart.',
+      'Compare 10/10 and 9/10 on the same slide.',
+      'not/a/command',
+    ])('sends ordinary prose containing a slash: %s', async (text) => {
+      const { queryFn, starts } = recordingQueryFn()
+      const service = new AgentService({
+        queryFn,
+        loadCredential: async () => LIVE,
+        resolvePaths: PATHS,
+      })
+      expect(await service.send(1, text, () => {})).toEqual({ accepted: true })
+      expect(starts()).toBe(1)
+      await service.disposeAll()
+    })
+
+    it('tests the leading slash, not a list of command names', () => {
+      // The command list belongs to the runtime and grows with every release, so enumerating names
+      // would silently stop covering the next one. A message that merely *begins* with a slash is
+      // rare enough that refusing all of them costs a rephrase.
+      expect(isLocalCommandText('/anything-at-all')).toBe(true)
+      expect(isLocalCommandText('  \n /clear ')).toBe(true)
+      expect(isLocalCommandText('')).toBe(false)
+      expect(isLocalCommandText('a/b')).toBe(false)
+      expect(isLocalCommandText('Show me the 1/2 scale.')).toBe(false)
+    })
   })
 
   describe('prepareWorkspace (M2.4 skill materialization)', () => {

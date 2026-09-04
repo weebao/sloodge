@@ -62,6 +62,36 @@ export type AgentServiceDeps = {
   readonly log?: AgentLog
 }
 
+/**
+ * Whether the CLI would read this text as one of its own **local commands** rather than as a message.
+ *
+ * The bundled runtime dispatches a user message beginning with `/` against its command list, and its
+ * non-interactive filter keeps every `type: "local", supportsNonInteractive: true` entry — `/clear`
+ * and its aliases `/reset` and `/new` among them. That command's generator runs `Att()`, which sets
+ * the subprocess's `Ot.totalCostUSD` back to **0**. Both of Sloodge's spend controls read that
+ * counter: the fold reads it through `total_cost_usd`, and the SDK's `maxBudgetUsd` backstop compares
+ * `vS() >= cap` against it directly. So a user typing `/clear` into the chat box zeroed the meter
+ * mid-session and made the cap unenforceable — round 5 measured $1.50 read for $2.50 spent.
+ *
+ * **Refused rather than escaped.** Escaping (a zero-width space, a leading marker, a quoted form) was
+ * the tempting alternative because it keeps the send alive, but it requires guessing how the CLI
+ * normalises text before it dispatches — a guess we cannot check without a live login, and one whose
+ * failure mode is a silent cap bypass rather than a visible error. It also spends real money
+ * answering a message the user did not mean as prose. Refusal costs nothing, is decided entirely by
+ * Sloodge, and the composer keeps the user's words so a rephrase is one keystroke away.
+ *
+ * `--disable-slash-commands` is **not** the tool: it sets the same `Ot.disableSlashCommands` that
+ * `GUe()` reads, but its own help text is "Disable all skills", and §8's skills must keep working.
+ *
+ * The test is a leading `/` after trimming, matching where the CLI looks. Deliberately not narrowed
+ * to the known command names: the command list is the runtime's to change, and a message that merely
+ * *begins* with a slash is rare enough that refusing all of them costs a rephrase, while enumerating
+ * names would let the next release add one we do not know about.
+ */
+export function isLocalCommandText(text: string): boolean {
+  return text.trim().startsWith('/')
+}
+
 /** The part of `MaterializeSkillsResult` the service reports on. Structural, so the seam stays thin. */
 export type WorkspacePreparation = {
   readonly installed: readonly string[]
@@ -100,12 +130,23 @@ export class AgentService {
    * composer can explain itself without a round trip, but a guard that only exists in the renderer is
    * a guard a renderer bug can walk past — and the number both sides compare against is the same one,
    * because the cost accumulators are the same function (`shared/agent/cost.ts`).
+   *
+   * The slash-command refusal above it has no renderer twin on purpose: unlike the budget, nothing
+   * about it is stale by a round trip, and one authoritative copy of a rule is easier to keep true
+   * than two.
    */
   async send(
     senderId: number,
     text: string,
     emit: (event: AgentEvent) => void,
   ): Promise<AgentSendResponse> {
+    // Before anything is created or awaited: text the CLI would run as a local command never reaches
+    // a subprocess, because `/clear` resets the very counter both spend controls read
+    // (`isLocalCommandText`). Checked here rather than in the bridge so the refusal has a reason the
+    // renderer can explain, and so no session or subprocess is created for a message we will not send.
+    if (isLocalCommandText(text)) {
+      return { accepted: false, reason: 'slash-command' }
+    }
     const existing = this.sessions.get(senderId)
     // When there is no session yet, creation must be kicked off **synchronously**: two racing sends
     // dedupe on the `creating` map, and awaiting anything before this would let both observe "no

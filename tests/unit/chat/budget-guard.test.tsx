@@ -21,6 +21,7 @@ import type { AgentEvent, ApiKeyStatus } from '../../../src/shared/agent/types'
 import type { AuthStatus } from '../../../src/shared/agent/auth'
 import { DEFAULT_ENDPOINT } from '../../../src/shared/agent/endpoint'
 import type { BudgetCap } from '../../../src/shared/agent/budget'
+import type { AgentSendRefusal } from '../../../src/shared/ipc-contract'
 
 type Emit = (event: AgentEvent) => void
 
@@ -33,7 +34,7 @@ const CONFIGURED: AuthStatus = {
   endpoint: DEFAULT_ENDPOINT,
 }
 
-type SendResult = { accepted: boolean; reason: 'no-credential' | 'budget' | null }
+type SendResult = { accepted: boolean; reason: AgentSendRefusal | null }
 
 function makeFakeBridge(
   cap: BudgetCap,
@@ -364,5 +365,27 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     await waitFor(() => expect(useSessionMeterStore.getState().skills).toBe('fallback'))
     // A repaired session says nothing in chat — the status line is the whole notification.
     expect(screen.queryByText(/slide skills unavailable/i)).toBeNull()
+  })
+})
+
+/**
+ * The other half of the same guard (M2.5 round 5). `/clear` is a CLI local command that zeroes the
+ * subprocess's cost counter — the number the cap is compared against — so `AgentService.send` refuses
+ * any text starting with a slash. This covers what the user sees when it does.
+ */
+describe('slash-command refusal — the guard that keeps the meter honest', () => {
+  it('rolls the optimistic turn back, explains itself, and keeps the words to edit', async () => {
+    const fake = makeFakeBridge(null, { accepted: false, reason: 'slash-command' })
+    window.sloodge = { onMenuAction: () => () => undefined, agent: fake.bridge }
+    render(<ChatPanel />)
+    await waitFor(() => expect(useBudgetStore.getState().loaded).toBe(true))
+
+    send('/clear')
+    await screen.findByText(/can’t start with/i)
+    // The turn main never opened is taken back, so the composer is usable and the two open-turn
+    // counts the budget guard compares have not drifted.
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    expect(composer().value).toBe('/clear')
+    expect(useSessionMeterStore.getState().costUsd).toBe(0)
   })
 })
