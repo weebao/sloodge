@@ -186,6 +186,30 @@ const BLOCK_NOTICE: Readonly<Record<TextEditBlock, string>> = {
   'unknown-element': 'That element is no longer on this slide.',
 }
 
+/**
+ * End a caret from the parent: take the `contenteditable` away and put the element back to the text
+ * the session opened with. Both actions, always, because the parent cannot know which of the frame's
+ * two states it is talking to.
+ *
+ * `cancel` reaches a session the frame still has **open**. `revert` (`frameScript`'s `revertEdit`,
+ * over the `lastEnded` it keeps for exactly this) reaches one the frame has already **closed by
+ * itself** — and a re-render is precisely the thing that closes one first: it blurs the editing host,
+ * whose `endEdit(false)` drops the `contenteditable` and deliberately keeps the typed text, while the
+ * `SL_EDIT` it posts back arrives too late to be the session the parent still believes in. That is
+ * the round-6 blocker: a `deck:updated` leaving the edited slide's own bytes untouched (the agent
+ * writing another slide, or the deck re-sent) left the frame showing text no document contained,
+ * which vanished silently at the next unrelated commit.
+ *
+ * Sending both is safe, not merely convenient: `revertEdit` applies once, only to that sl-id, and
+ * only while the node is still in the document, so on the open-session path it lands on the text
+ * `cancel` just restored and writes the same value. It is the one-two `commitText` already sends for
+ * a refused commit.
+ */
+function endFrameCaret(send: ((action: SlEditAction) => void) | null): void {
+  send?.('cancel')
+  send?.('revert')
+}
+
 /** The Edit-menu label for a committed text edit, trimmed so the menu stays readable. */
 function commitLabel(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim()
@@ -223,7 +247,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     // disagree about whether a caret exists. Every end this hook performs itself nulls the ref
     // *before* the store, so those never arrive here with `previous` set.
     if (previous === null || editing !== null) return
-    sessionFrameRef.current?.('cancel')
+    endFrameCaret(sessionFrameRef.current)
     sessionFrameRef.current = null
   }, [editing, pinEdit])
 
@@ -252,11 +276,10 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    * End a session the *parent* is abandoning: put the frame's element back to the text the caret
    * opened with and take the `contenteditable` away, then drop the flag. Addressed to the frame the
    * session was pinned to at `begin`, which since M8.2 may no longer be the one the bridge is bound
-   * to — see `pinEdit`. Sending `cancel` (not `revert`) is what reaches an *open* session: `revert`
-   * only rewinds a session the frame has already closed by itself.
+   * to — see `pinEdit`, and see `endFrameCaret` for why ending one takes two messages.
    */
   const cancelSession = useCallback((): void => {
-    sessionFrameRef.current?.('cancel')
+    endFrameCaret(sessionFrameRef.current)
     dropSession()
   }, [dropSession])
 

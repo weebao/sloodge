@@ -107,7 +107,7 @@ import {
 import { buildMultiElementPatch, type ElementMove } from '../../../../shared/design/multi-commit'
 import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smart-guides'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
-import type { SlideMap } from '../../../../shared/design/types'
+import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readStyleProp } from '../../../../shared/design/patch'
 import { readRotation } from '../../../../shared/design/transform'
@@ -398,20 +398,33 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     onSelect: setSelections,
   })
 
-  // Rotation is read from source bytes, never from a bridge payload (§2.2). One parse serves both
-  // readers below, and it happens on the first question rather than when the memo is built: with
-  // nothing selected nobody asks, and `buildSlideMap` is a full pass over the source that would
-  // otherwise run once per agent token as `slideHtml` streams.
+  // What this overlay needs from the slide's *bytes* — a rotation and an element's shape — read from
+  // the source, never from a bridge payload (§2.2).
+  //
+  // `buildSlideMap` is a full pass over the slide, and `slideHtml` changes once per token while the
+  // agent streams, so the parse is both lazy and shared: nobody selected means nobody asks and it
+  // never runs, and every reader below goes through this one map rather than parsing again. Round-6
+  // major 1 measured the alternative — `canEditSelection` parsing on its own doubled the cost to two
+  // full parses per token for the ordinary case of watching the agent write with something selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const angleOf = useMemo<(slId: string) => number>(() => {
-    if (source === undefined) return () => 0
+  const { elementOf, angleOf } = useMemo<{
+    elementOf: (slId: string) => ElementSpan | undefined
+    angleOf: (slId: string) => number
+  }>(() => {
+    if (source === undefined) return { elementOf: () => undefined, angleOf: () => 0 }
     let map: SlideMap | null = null
-    return (slId) => {
+    const lookup = (slId: string): ElementSpan | undefined => {
       map ??= buildSlideMap(slideId, source)
-      const element = map.byId.get(slId)
-      if (element === undefined) return 0
-      return readRotation(readStyleProp(source, element, 'transform'))
+      return map.byId.get(slId)
+    }
+    return {
+      elementOf: lookup,
+      angleOf: (slId) => {
+        const element = lookup(slId)
+        if (element === undefined) return 0
+        return readRotation(readStyleProp(source, element, 'transform'))
+      },
     }
   }, [source, slideId])
 
@@ -424,6 +437,13 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   // What counts as "on a member" for the group-gap rule: each member's box turned by its own source
   // rotation, so the region tested is the one the user sees. See the header.
+  //
+  // "Its own" is literal: a member rotated only by an ancestor (`<div style="transform:rotate(30deg)">
+  // <p>member</p></div>`) reads 0 here and is tested against its unrotated box. That agrees with what
+  // the overlay *paints* — M3.6 draws such an element's selection box unrotated too — so the hull never
+  // contradicts the handles the user sees, and the cost is one group-gap click swallowed that should
+  // have fallen through, or the reverse, both recoverable by clicking again (round-6 minor). When M3.6
+  // composes an ancestor's rotation into a member's effective angle, read that here instead.
   const memberHulls = useMemo(
     () =>
       selections.map((hit) => ({
@@ -728,10 +748,10 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // the source bytes rather than asked of the hook, because editability is a property of the
   // *source* — mixed content, a lock attribute — so it has to recompute when the bytes change.
   const canEditSelection = useMemo(() => {
-    if (isMulti || selection === null || source === undefined) return false
-    const element = buildSlideMap(slideId, source).byId.get(selection.slId)
+    if (isMulti || selection === null) return false
+    const element = elementOf(selection.slId)
     return element !== undefined && isTextEditable(element)
-  }, [isMulti, selection, slideId, source])
+  }, [isMulti, selection, elementOf])
 
   const showHover =
     hoverStyle &&

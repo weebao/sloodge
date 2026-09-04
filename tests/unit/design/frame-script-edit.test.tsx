@@ -395,6 +395,41 @@ describe('designBridgeFrameMain SL_EDIT — revert (round-4)', () => {
     expect(lastPayload(parent)).toBeNull()
   })
 
+  /**
+   * The parent's `endFrameCaret` one-two, against the real frame rather than the model of it in
+   * `text-editing.test.tsx`. Round-6 blocker: whichever state the frame is in when the parent
+   * abandons a caret, the element ends up showing the text the session began with.
+   */
+  it('cancel then revert restores a session the frame already closed on its own blur', () => {
+    const parent = arm(PLAIN)
+    postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }), parent)
+    target().textContent = 'GHOST'
+    // A re-render around the editing host: `endEdit(false)` drops the caret and keeps the text.
+    target().dispatchEvent(new FocusEvent('blur'))
+    expect(target().textContent).toBe('GHOST')
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'cancel' }, 12), parent)
+    // `cancel` alone cannot reach a closed session — this is the bug, in one line.
+    expect(target().textContent).toBe('GHOST')
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }, 13), parent)
+
+    expect(target().textContent).toBe('bars')
+    expect(target().hasAttribute('contenteditable')).toBe(false)
+  })
+
+  it('cancel then revert over a still-open session restores once, and the revert adds nothing', () => {
+    const parent = arm(PLAIN)
+    postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }), parent)
+    target().textContent = 'GHOST'
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'cancel' }, 12), parent)
+    expect(target().textContent).toBe('bars')
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }, 13), parent)
+
+    expect(target().textContent).toBe('bars')
+    expect(target().hasAttribute('contenteditable')).toBe(false)
+  })
+
   it('refuses to revert an element other than the one that was edited', () => {
     const parent = arm(
       `<section data-sl-id="s_x:0" class="slide"><div data-sl-id="${EDITABLE}">bars</div>` +
