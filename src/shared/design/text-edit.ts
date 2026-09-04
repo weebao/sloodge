@@ -47,7 +47,7 @@
  * caught, because the neutralizer sees what the validator will see.
  *
  * Neutralization is a **UX** measure: it keeps honest prose editable. The **guarantee** is the
- * assertion in `buildTextEditPatch`, which recomputes `findForbiddenApiTokens` over the whole patched
+ * assertion in `resolveTextEdit`, which recomputes `findForbiddenApiTokens` over the whole patched
  * source and refuses the edit if it gained a token the original did not have. That catches anything
  * neutralization missed, including a token formed across the boundary between the inserted text and
  * the surrounding source. Both use `slide-contract.ts`'s exported token list and pack function, so
@@ -134,7 +134,7 @@ export const LOCK_ATTR = 'data-sl-lock'
  * replaced by the first 65 536 — 4 465 authored characters deleted with no warning (round-3 review,
  * measured). So an element whose text is already over the cap is not editable at all
  * (`isTextEditable`), and an over-cap value arriving from the frame is refused at the commit
- * (`buildTextEditPatch`), leaving the source exactly as it was.
+ * (`resolveTextEdit`), leaving the source exactly as it was.
  */
 export const MAX_TEXT_LENGTH = 65_536
 
@@ -199,7 +199,7 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
  *
  * Length is **not** touched here. This function runs on both sides of the "did the text change?"
  * comparison, so a truncating sanitizer compared a cut value against a cut value and then wrote the
- * cut value into the source — see `MAX_TEXT_LENGTH`. The cap is a refusal in `buildTextEditPatch`,
+ * cut value into the source — see `MAX_TEXT_LENGTH`. The cap is a refusal in `resolveTextEdit`,
  * not a normalization.
  */
 export function sanitizeEditedText(raw: string): string {
@@ -328,25 +328,47 @@ export function escapeAndNeutralizeText(text: string): string {
 }
 
 /**
- * Turn a committed text value into patched slide source, or `null` when the edit must not land.
+ * Why an edit did not become bytes. Only the `refused` reasons are worth telling the user about;
+ * `unchanged` is the overwhelmingly common outcome (double-click, look, leave) and saying anything
+ * about it would be noise.
+ */
+export type TextEditRefusal = 'too-long' | 'not-editable' | 'unknown-element' | 'forbidden-token'
+
+/** What `resolveTextEdit` decided: bytes to write, nothing to do, or a refusal with its reason. */
+export type TextEditOutcome =
+  | { readonly kind: 'patched'; readonly source: string }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'refused'; readonly reason: TextEditRefusal }
+
+/**
+ * Turn a committed text value into patched slide source, saying *why* when it does not.
  *
- * `null` is returned — and the caller commits nothing, leaving the document and the undo stack
- * untouched — when the sl-id is unknown to the map, the element is not editable, the value is over
- * `MAX_TEXT_LENGTH`, the text is unchanged (a no-op edit must never consume a Ctrl+Z), the patch
- * would change no bytes, or the patched source would gain an SL-S04 forbidden token the original did
- * not have.
+ * Nothing is written — the document and the undo stack are untouched — when the sl-id is unknown to
+ * the map, the element is not editable, the value is over `MAX_TEXT_LENGTH`, the text is unchanged
+ * (a no-op edit must never consume a Ctrl+Z), the patch would change no bytes, or the patched source
+ * would gain an SL-S04 forbidden token the original did not have.
+ *
+ * The reason exists because a refusal used to be indistinguishable from "nothing to do" at the call
+ * site, so the caller silently dropped the edit while the frame went on displaying the text it had
+ * rejected — a 70 000-character paste read as accepted right up until an unrelated slide switch
+ * reverted it (round-4 major). A caller that knows it refused can put the frame back and say so.
  *
  * `slId` is the **parent-tracked** selection id and `source` is the parent's current bytes: per §2.2
  * neither may come from a bridge payload. The only payload-derived input is `rawText`.
  */
-export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string): string | null {
+export function resolveTextEdit(map: SlideMap, slId: string, rawText: string): TextEditOutcome {
   const element = resolveElement(map, slId)
-  if (element === null || element.inner === null || element.textContent === null) return null
-  if (!isTextEditable(element)) return null
+  // Two different answers, because the user is told which. An id the map has never had means the
+  // slide moved under the edit; an element that *is* there but has no text-node span of its own —
+  // mixed inline content, a void tag — was simply never editable.
+  if (element === null) return { kind: 'refused', reason: 'unknown-element' }
+  if (element.inner === null || element.textContent === null || !isTextEditable(element)) {
+    return { kind: 'refused', reason: 'not-editable' }
+  }
   // Refuse an over-cap value rather than trimming it to fit — see `MAX_TEXT_LENGTH`. Measured on the
   // raw string, before sanitizing, so the guard cannot be walked past with control characters that
   // the sanitizer would strip back under the cap.
-  if (rawText.length > MAX_TEXT_LENGTH) return null
+  if (rawText.length > MAX_TEXT_LENGTH) return { kind: 'refused', reason: 'too-long' }
 
   const text = sanitizeEditedText(rawText)
   // "Unchanged" is judged on what the user saw, never on bytes: the frame returns decoded text, so
@@ -354,7 +376,7 @@ export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string)
   // holding an entity would push a phantom undo entry, dirty the document and rewrite the author's
   // entities. The same sanitizer runs on both sides so a stray control character in the source
   // cannot make an untouched edit look like a change either.
-  if (text === sanitizeEditedText(element.textContent)) return null
+  if (text === sanitizeEditedText(element.textContent)) return { kind: 'unchanged' }
 
   const source = map.source
   // `<pre>` and `<listing>` lose a leading newline when parsed, so `element.textContent` — and the
@@ -378,7 +400,7 @@ export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string)
   // the revision and reload the frame — the exact opposite of the "a no-op edit must never consume a
   // Ctrl+Z" contract above. Reachable when the decoded-text comparison says "changed" but the written
   // bytes land identical, which is what the uncompensated `<pre>` newline used to do.
-  if (patched === source) return null
+  if (patched === source) return { kind: 'unchanged' }
 
   // The guarantee (see the file header). Neutralization is best-effort UX; this is the invariant.
   // A *subset* check, not "is empty": a slide that already violated SL-S04 elsewhere is still
@@ -391,7 +413,9 @@ export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string)
   // could produce, and the failure it prevents (a slide that no longer passes its own validator)
   // is silent at the point of edit.
   const before = new Set(findForbiddenApiTokens(source))
-  if (findForbiddenApiTokens(patched).some((token) => !before.has(token))) return null
+  if (findForbiddenApiTokens(patched).some((token) => !before.has(token))) {
+    return { kind: 'refused', reason: 'forbidden-token' }
+  }
 
-  return patched
+  return { kind: 'patched', source: patched }
 }

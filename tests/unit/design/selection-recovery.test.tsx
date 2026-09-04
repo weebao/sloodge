@@ -17,7 +17,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { RefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SL_HITTEST, type SlHit } from '../../../src/shared/design/bridge-protocol'
+import {
+  SL_HITTEST,
+  SL_MAGIC,
+  SL_PROTOCOL_VERSION,
+  type SlHit,
+} from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { SelectionOverlay } from '../../../src/renderer/src/features/design/SelectionOverlay'
@@ -254,5 +259,91 @@ describe('a selection never outlives its slide (round-3 major)', () => {
     rerender(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={0.5} />)
 
     expect(useDesignStore.getState().selection?.slId).toBe(titleHit.slId)
+  })
+})
+
+/**
+ * Shift-click, at the gesture level. The store's `toggleSelection` is tested directly in
+ * `design-store.test.ts`, but that bypasses the overlay entirely — nothing asserted that a
+ * shift-click *arrives* as a toggle. The round-3 builder skipped these on the grounds that
+ * "happy-dom's MouseEvent drops shiftKey"; that is false — `fireEvent` maps `click` to a real
+ * MouseEvent and `MouseEvent` reads `shiftKey` from its init, which the Esc test above already
+ * relies on. So the gap was unforced, and this is the test that was missing.
+ *
+ * The assertion cannot be on the wire: the frame only understands `hover` and `select`, so a toggle
+ * goes out as `select` and the toggle semantics live entirely in the parent's response handling
+ * (`useDesignBridge`, `HitMode`). The observable is therefore what the answered hit-test *does* to
+ * the selection — which is the behaviour anyone cares about anyway.
+ */
+describe('shift-click reaches the selection as a toggle', () => {
+  /** Answer the parent's most recent hit-test with `hit`, as the frame would. */
+  function answerHit(posted: readonly Posted[], frameWindow: unknown, hit: SlHit | null): void {
+    const request = hitTests(posted).at(-1) as unknown as { id: number }
+    const event = new MessageEvent('message', {
+      data: {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: request.id,
+        dir: 'res',
+        type: SL_HITTEST,
+        slide: slideId,
+        payload: hit,
+      },
+    })
+    Object.defineProperty(event, 'source', { value: frameWindow, configurable: true })
+    window.dispatchEvent(event)
+  }
+
+  it('adds to the ordered set instead of replacing it', () => {
+    const { frameRef, posted } = fakeFrame()
+    const frameWindow = frameRef.current!.contentWindow
+    useDesignStore.getState().setSelection(titleHit)
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-selection'), {
+      detail: 1,
+      clientX: 600,
+      clientY: 400,
+      shiftKey: true,
+    })
+    answerHit(posted, frameWindow, rootHit)
+
+    expect(useDesignStore.getState().selections.map((entry) => entry.slId)).toEqual([
+      titleHit.slId,
+      rootHit.slId,
+    ])
+  })
+
+  it('a second shift-click on the same element takes it back out', () => {
+    const { frameRef, posted } = fakeFrame()
+    const frameWindow = frameRef.current!.contentWindow
+    useDesignStore.setState({ selections: [titleHit, rootHit], selection: rootHit })
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-group'), {
+      detail: 1,
+      clientX: 600,
+      clientY: 70,
+      shiftKey: true,
+    })
+    answerHit(posted, frameWindow, rootHit)
+
+    expect(useDesignStore.getState().selections.map((entry) => entry.slId)).toEqual([titleHit.slId])
+  })
+
+  it('a plain click on the same box collapses to one element', () => {
+    const { frameRef, posted } = fakeFrame()
+    const frameWindow = frameRef.current!.contentWindow
+    useDesignStore.getState().setSelection(titleHit)
+    mount(frameRef)
+
+    fireEvent.click(screen.getByTestId('design-selection'), {
+      detail: 1,
+      clientX: 600,
+      clientY: 400,
+    })
+    answerHit(posted, frameWindow, rootHit)
+
+    expect(useDesignStore.getState().selections.map((entry) => entry.slId)).toEqual([rootHit.slId])
   })
 })

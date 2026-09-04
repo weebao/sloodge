@@ -18,7 +18,7 @@ import {
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { escapeText } from '../../../src/shared/design/patch'
 import {
-  buildTextEditPatch,
+  resolveTextEdit,
   escapeAndNeutralizeText,
   isTextEditable,
   LOCK_ATTR,
@@ -31,6 +31,16 @@ import { CORPUS } from './corpus'
 
 function mapOf(html: string): SlideMap {
   return buildSlideMap('s', html)
+}
+
+/**
+ * The bytes `resolveTextEdit` would write, or `null` for every outcome that writes nothing. Most of
+ * these tests only care whether an edit lands and what it lands as; the ones that care *why* it did
+ * not — the round-4 refusal reasons — call `resolveTextEdit` directly.
+ */
+function patchOf(map: SlideMap, slId: string, rawText: string): string | null {
+  const outcome = resolveTextEdit(map, slId, rawText)
+  return outcome.kind === 'patched' ? outcome.source : null
 }
 
 /** The first mapped element of a one-element fixture. */
@@ -112,7 +122,7 @@ describe('isTextEditable', () => {
     expect(bold.textOnly).toBe(true)
     expect(bold.minDomNodeCount).toBe(2)
     expect(isTextEditable(bold)).toBe(false)
-    expect(buildTextEditPatch(map, bold.slId, 'z')).toBeNull()
+    expect(patchOf(map, bold.slId, 'z')).toBeNull()
   })
 
   it('rejects a data-sl-lock element — selectable but not mutable (30-slide-format §3.4)', () => {
@@ -205,7 +215,7 @@ describe('escapeAndNeutralizeText', () => {
   it('an honest sentence using the whitespace-free spelling is written, not refused', () => {
     const map = mapOf('<div class="slide"><h1>Old</h1></div>')
     const prose = 'avoid newFunction( in modern JS'
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), prose)
+    const patched = patchOf(map, idOf(map, 'h1'), prose)
     expect(patched).not.toBeNull()
     expect(findForbiddenApiTokens(patched!)).toEqual([])
     expect(renderedText(patched!, 'h1')).toBe(prose)
@@ -219,19 +229,19 @@ describe('escapeAndNeutralizeText', () => {
   })
 })
 
-describe('buildTextEditPatch', () => {
+describe('resolveTextEdit', () => {
   const fixture = '<div class="slide"><h1 id="t">Old</h1></div>'
 
   it('splices only the inner span, leaving every other byte identical', () => {
     const map = mapOf(fixture)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'New')
+    const patched = patchOf(map, idOf(map, 'h1'), 'New')
     expect(patched).toBe('<div class="slide"><h1 id="t">New</h1></div>')
   })
 
   it('preserves the author formatting, attributes and quoting around the edit', () => {
     const source = `<div class='slide'>\n  <!-- keep -->\n  <h1   id='t'  >Old</h1>\n</div>`
     const map = mapOf(source)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'New')!
+    const patched = patchOf(map, idOf(map, 'h1'), 'New')!
     expect(patched).toContain(`<h1   id='t'  >New</h1>`)
     expect(patched).toContain('<!-- keep -->')
     expect(patched).toContain(`<div class='slide'>`)
@@ -239,38 +249,38 @@ describe('buildTextEditPatch', () => {
 
   it('returns null for an unchanged value so a no-op cannot consume an undo entry', () => {
     const map = mapOf(fixture)
-    expect(buildTextEditPatch(map, idOf(map, 'h1'), 'Old')).toBeNull()
+    expect(patchOf(map, idOf(map, 'h1'), 'Old')).toBeNull()
   })
 
   it('returns null for an sl-id the map does not know', () => {
-    expect(buildTextEditPatch(mapOf(fixture), 's:999', 'New')).toBeNull()
+    expect(patchOf(mapOf(fixture), 's:999', 'New')).toBeNull()
   })
 
   it('returns null for a non-editable target even when the id is real', () => {
     const map = mapOf('<div class="slide"><p>a<b>c</b></p></div>')
-    expect(buildTextEditPatch(map, idOf(map, 'p'), 'plain')).toBeNull()
+    expect(patchOf(map, idOf(map, 'p'), 'plain')).toBeNull()
   })
 
   it('returns null for a locked element', () => {
     const map = mapOf(`<div class="slide"><h1 ${LOCK_ATTR}>Old</h1></div>`)
-    expect(buildTextEditPatch(map, idOf(map, 'h1'), 'New')).toBeNull()
+    expect(patchOf(map, idOf(map, 'h1'), 'New')).toBeNull()
   })
 
   it('round-trips typed markup as visible prose through edit -> save -> reopen', () => {
     const map = mapOf(fixture)
     const typed = 'use <div> & <span> for layout'
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), typed)!
+    const patched = patchOf(map, idOf(map, 'h1'), typed)!
     expect(renderedText(patched, 'h1')).toBe(typed)
 
     // Reopen: re-parse the saved bytes, edit again with the same text, and the value is stable —
     // no double-escaping ratchet across sessions.
     const reopened = mapOf(patched)
-    expect(buildTextEditPatch(reopened, idOf(reopened, 'h1'), typed)).toBeNull()
+    expect(patchOf(reopened, idOf(reopened, 'h1'), typed)).toBeNull()
   })
 
   it('cannot inject an element: a typed <script> stays text', () => {
     const map = mapOf(fixture)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), '<script>alert(1)</script>')!
+    const patched = patchOf(map, idOf(map, 'h1'), '<script>alert(1)</script>')!
     expect(patched).not.toContain('<script')
     expect(renderedText(patched, 'script')).toBe('')
   })
@@ -280,7 +290,7 @@ describe('buildTextEditPatch', () => {
     (token) => {
       const map = mapOf(fixture)
       const prose = `we call ${token} in prose`
-      const patched = buildTextEditPatch(map, idOf(map, 'h1'), prose)
+      const patched = patchOf(map, idOf(map, 'h1'), prose)
       expect(patched).not.toBeNull()
       expect(findForbiddenApiTokens(patched!)).toEqual([])
       expect(renderedText(patched!, 'h1')).toBe(prose)
@@ -295,7 +305,7 @@ describe('buildTextEditPatch', () => {
     // pre-existing violation would be permanently uneditable.
     const dirty = '<div class="slide"><h1>Old</h1><p>localStorage</p></div>'
     const map = mapOf(dirty)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'New')
+    const patched = patchOf(map, idOf(map, 'h1'), 'New')
     expect(patched).not.toBeNull()
     expect(findForbiddenApiTokens(patched!)).toEqual(['localStorage'])
   })
@@ -303,7 +313,7 @@ describe('buildTextEditPatch', () => {
   it('keeps every data-sl-id stable across an edit', () => {
     const source = '<div class="slide"><h1>A</h1><p>B</p><span>C</span></div>'
     const map = mapOf(source)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'Changed')!
+    const patched = patchOf(map, idOf(map, 'h1'), 'Changed')!
     const after = mapOf(patched)
     expect([...after.order]).toEqual([...map.order])
     for (const id of map.order) {
@@ -313,7 +323,7 @@ describe('buildTextEditPatch', () => {
 
   it('strips control characters on the way into source', () => {
     const map = mapOf(fixture)
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'a\u0000\u0007b')!
+    const patched = patchOf(map, idOf(map, 'h1'), 'a\u0000\u0007b')!
     expect(patched).toContain('<h1 id="t">ab</h1>')
   })
 })
@@ -340,23 +350,23 @@ const MIS_NESTED = [
   ['text then a block inside the formatting element', '<div><b>x<p>y</b>z</p></div>', 'b'],
 ] as const
 
-describe('buildTextEditPatch — mis-nested source is refused, never patched', () => {
+describe('resolveTextEdit — mis-nested source is refused, never patched', () => {
   it.each([...MIS_NESTED])('%s: not text-only, not editable, no patch', (_label, html, tag) => {
     const map = mapOf(html)
     const element = map.byId.get(idOf(map, tag))!
     expect(element.textOnly).toBe(false)
     expect(element.textContent).toBeNull()
     expect(isTextEditable(element)).toBe(false)
-    expect(buildTextEditPatch(map, element.slId, 'hello')).toBeNull()
+    expect(patchOf(map, element.slId, 'hello')).toBeNull()
     // A forged SL_EDIT naming the shared id with an empty text is refused the same way.
-    expect(buildTextEditPatch(map, element.slId, '')).toBeNull()
+    expect(patchOf(map, element.slId, '')).toBeNull()
   })
 
   it('keeps a well-formed inline element inside mis-nested siblings editable', () => {
     // The <em> is not a clone and its text covers its inner exactly: still a text box.
     const html = '<div><p><strong>Q3 <em>revenue</em></p><p>rose</strong></p></div>'
     const map = mapOf(html)
-    expect(buildTextEditPatch(map, idOf(map, 'em'), 'sales')).toBe(
+    expect(patchOf(map, idOf(map, 'em'), 'sales')).toBe(
       '<div><p><strong>Q3 <em>sales</em></p><p>rose</strong></p></div>',
     )
   })
@@ -371,7 +381,7 @@ describe('buildTextEditPatch — mis-nested source is refused, never patched', (
     (_name, html) => {
       const map = mapOf(html)
       for (const id of map.order) {
-        const patched = buildTextEditPatch(map, id, 'edited <text> & more')
+        const patched = patchOf(map, id, 'edited <text> & more')
         if (patched === null) continue
         const after = mapOf(patched)
         expect([...after.order], id).toEqual([...map.order])
@@ -387,7 +397,7 @@ describe('buildTextEditPatch — mis-nested source is refused, never patched', (
   it('the corpus exercises the invariant: most entries accept at least one edit', () => {
     const accepting = CORPUS.filter((entry) => {
       const map = mapOf(entry.html)
-      return map.order.some((id) => buildTextEditPatch(map, id, 'edited') !== null)
+      return map.order.some((id) => patchOf(map, id, 'edited') !== null)
     })
     expect(accepting.length).toBeGreaterThan(CORPUS.length / 2)
   })
@@ -400,8 +410,8 @@ describe('textOnly coverage rule — the shapes around the blocker', () => {
     const p = map.byId.get(idOf(map, 'p'))!
     expect(p.textOnly).toBe(true)
     expect(p.textContent).toBe('ab')
-    expect(buildTextEditPatch(map, p.slId, 'ab')).toBeNull()
-    expect(buildTextEditPatch(map, p.slId, 'abc')).toBe('<div><p>abc</p></div>')
+    expect(patchOf(map, p.slId, 'ab')).toBeNull()
+    expect(patchOf(map, p.slId, 'abc')).toBe('<div><p>abc</p></div>')
   })
 
   it('a <pre> whose leading newline the parser drops stays text-only', () => {
@@ -409,8 +419,8 @@ describe('textOnly coverage rule — the shapes around the blocker', () => {
     const pre = map.byId.get(idOf(map, 'pre'))!
     expect(pre.textOnly).toBe(true)
     expect(pre.textContent).toBe('line')
-    expect(buildTextEditPatch(map, pre.slId, 'line')).toBeNull()
-    expect(buildTextEditPatch(map, pre.slId, 'code')).toBe('<div><pre>code</pre></div>')
+    expect(patchOf(map, pre.slId, 'line')).toBeNull()
+    expect(patchOf(map, pre.slId, 'code')).toBe('<div><pre>code</pre></div>')
   })
 })
 
@@ -419,14 +429,14 @@ describe('textOnly coverage rule — the shapes around the blocker', () => {
  * inverses. Every case asserts the *rendered* text after a re-parse, not the bytes — the bytes are
  * only interesting in that they must survive a round trip.
  */
-describe('buildTextEditPatch — the <pre> leading newline round-trips (round-3 major)', () => {
+describe('resolveTextEdit — the <pre> leading newline round-trips (round-3 major)', () => {
   it('keeps a blank first line that an unrelated edit did not touch', () => {
     const source = '<div><pre>\n\nHello</pre></div>'
     const map = mapOf(source)
     const pre = map.byId.get(idOf(map, 'pre'))!
     expect(pre.textContent).toBe('\nHello')
 
-    const patched = buildTextEditPatch(map, pre.slId, '\nHello!')!
+    const patched = patchOf(map, pre.slId, '\nHello!')!
     expect(patched).not.toBeNull()
     // The blank line is still there after the edit — this is the assertion that reds without the
     // compensating newline (it read back 'Hello!', one line short).
@@ -440,24 +450,24 @@ describe('buildTextEditPatch — the <pre> leading newline round-trips (round-3 
     const source = '<div><pre>\nHello</pre></div>'
     const map = mapOf(source)
     const pre = map.byId.get(idOf(map, 'pre'))!
-    const patched = buildTextEditPatch(map, pre.slId, '\nHello')!
+    const patched = patchOf(map, pre.slId, '\nHello')!
     expect(patched).not.toBe(source)
     expect(mapOf(patched).byId.get(idOf(mapOf(patched), 'pre'))!.textContent).toBe('\nHello')
   })
 
   it('adds no newline when the committed text does not start with one', () => {
     const map = mapOf('<div><pre>\nHello</pre></div>')
-    expect(buildTextEditPatch(map, idOf(map, 'pre'), 'Bye')).toBe('<div><pre>Bye</pre></div>')
+    expect(patchOf(map, idOf(map, 'pre'), 'Bye')).toBe('<div><pre>Bye</pre></div>')
   })
 
   it('does not compensate a tag that keeps its leading newline', () => {
     const map = mapOf('<div><p>Hello</p></div>')
-    expect(buildTextEditPatch(map, idOf(map, 'p'), '\nHello')).toBe('<div><p>\nHello</p></div>')
+    expect(patchOf(map, idOf(map, 'p'), '\nHello')).toBe('<div><p>\nHello</p></div>')
   })
 
   it('the element stays editable after the compensated write', () => {
     const map = mapOf('<div><pre>\n\nHello</pre></div>')
-    const patched = buildTextEditPatch(map, idOf(map, 'pre'), '\nHello!')!
+    const patched = patchOf(map, idOf(map, 'pre'), '\nHello!')!
     const next = mapOf(patched)
     // A `&#10;` "fix" would land here as textOnly:false — the element it just edited, uneditable.
     expect(isTextEditable(next.byId.get(idOf(next, 'pre'))!)).toBe(true)
@@ -465,12 +475,12 @@ describe('buildTextEditPatch — the <pre> leading newline round-trips (round-3 
 
   it('a <listing> is compensated the same way', () => {
     const map = mapOf('<div><listing>\n\nx</listing></div>')
-    const patched = buildTextEditPatch(map, idOf(map, 'listing'), '\nxy')!
+    const patched = patchOf(map, idOf(map, 'listing'), '\nxy')!
     expect(mapOf(patched).byId.get(idOf(mapOf(patched), 'listing'))!.textContent).toBe('\nxy')
   })
 })
 
-describe('buildTextEditPatch — a patch that changes no byte is not an edit (round-3 major)', () => {
+describe('resolveTextEdit — a patch that changes no byte is not an edit (round-3 major)', () => {
   it('returns null when the write lands identical to the source', () => {
     // The only shape that reaches this guard: a map whose `textContent` disagrees with what `inner`
     // actually spells, so the decoded-text comparison says "changed" and the byte comparison says
@@ -500,8 +510,8 @@ describe('buildTextEditPatch — a patch that changes no byte is not an edit (ro
       byId: new Map([[element.slId, element]]),
       order: [element.slId],
     }
-    expect(buildTextEditPatch(map, 's:0', 'X')).toBeNull()
-    expect(buildTextEditPatch(map, 's:0', 'Z')).toBe('Z')
+    expect(patchOf(map, 's:0', 'X')).toBeNull()
+    expect(patchOf(map, 's:0', 'Z')).toBe('Z')
   })
 })
 
@@ -519,7 +529,7 @@ describe('MAX_TEXT_LENGTH refuses rather than truncating (round-3 major)', () =>
     const map = mapOf(bodyOf('x'.repeat(MAX_TEXT_LENGTH)))
     const p = map.byId.get(idOf(map, 'p'))!
     expect(isTextEditable(p)).toBe(true)
-    expect(buildTextEditPatch(map, p.slId, 'short')).toBe(bodyOf('short'))
+    expect(patchOf(map, p.slId, 'short')).toBe(bodyOf('short'))
   })
 
   it('an element one character past the cap is not editable at all', () => {
@@ -527,16 +537,16 @@ describe('MAX_TEXT_LENGTH refuses rather than truncating (round-3 major)', () =>
     const p = map.byId.get(idOf(map, 'p'))!
     expect(isTextEditable(p)).toBe(false)
     // The tail is not deleted: the source is returned untouched, whatever the commit said.
-    expect(buildTextEditPatch(map, p.slId, 'x'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
-    expect(buildTextEditPatch(map, p.slId, 'short')).toBeNull()
+    expect(patchOf(map, p.slId, 'x'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
+    expect(patchOf(map, p.slId, 'short')).toBeNull()
   })
 
   it('an over-cap value committed into a small element is refused, not trimmed', () => {
     const map = mapOf(bodyOf('small'))
     const p = map.byId.get(idOf(map, 'p'))!
-    expect(buildTextEditPatch(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
+    expect(patchOf(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
     // Exactly at the cap still lands.
-    const atCap = buildTextEditPatch(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH))!
+    const atCap = patchOf(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH))!
     expect(renderedText(atCap, 'p')).toHaveLength(MAX_TEXT_LENGTH)
   })
 
@@ -545,13 +555,11 @@ describe('MAX_TEXT_LENGTH refuses rather than truncating (round-3 major)', () =>
     const p = map.byId.get(idOf(map, 'p'))!
     // Sanitizing would strip the NULs and bring this back under the cap; the guard reads the raw
     // length, so it refuses.
-    expect(
-      buildTextEditPatch(map, p.slId, `${'y'.repeat(10)}${'\u0000'.repeat(MAX_TEXT_LENGTH)}`),
-    ).toBeNull()
+    expect(patchOf(map, p.slId, `${'y'.repeat(10)}${'\u0000'.repeat(MAX_TEXT_LENGTH)}`)).toBeNull()
   })
 })
 
-describe('buildTextEditPatch — entity-bearing text (review major)', () => {
+describe('resolveTextEdit — entity-bearing text (review major)', () => {
   const ENTITY_SOURCE =
     '<div class="slide"><h1>a&nbsp;b &mdash; &quot;c&quot; &lt;d&gt; e&amp;f</h1></div>'
 
@@ -562,7 +570,7 @@ describe('buildTextEditPatch — entity-bearing text (review major)', () => {
     const seen = renderedText(ENTITY_SOURCE, 'h1')
     expect(seen).toBe('a\u00A0b — "c" <d> e&f')
     expect(h1.textContent).toBe(seen)
-    expect(buildTextEditPatch(map, h1.slId, seen)).toBeNull()
+    expect(patchOf(map, h1.slId, seen)).toBeNull()
   })
 
   it.each(['&nbsp;', '&mdash;', '&quot;', '&rarr;', '&copy;', '&#8212;', '&#x2014;', '&amp;'])(
@@ -570,14 +578,14 @@ describe('buildTextEditPatch — entity-bearing text (review major)', () => {
     (entity) => {
       const html = `<div class="slide"><p>x ${entity} y</p></div>`
       const map = mapOf(html)
-      expect(buildTextEditPatch(map, idOf(map, 'p'), renderedText(html, 'p'))).toBeNull()
+      expect(patchOf(map, idOf(map, 'p'), renderedText(html, 'p'))).toBeNull()
     },
   )
 
   it('a real change lands, and the no-break space keeps its entity spelling', () => {
     const map = mapOf(ENTITY_SOURCE)
     const typed = 'a\u00A0b — "c" <d> e&f!'
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), typed)!
+    const patched = patchOf(map, idOf(map, 'h1'), typed)!
     expect(patched).toBe('<div class="slide"><h1>a&nbsp;b — "c" &lt;d> e&amp;f!</h1></div>')
     expect(renderedText(patched, 'h1')).toBe(typed)
   })
@@ -587,8 +595,8 @@ describe('buildTextEditPatch — entity-bearing text (review major)', () => {
     // both sides of the comparison.
     const html = '<div class="slide"><p>a\u0001b</p></div>'
     const map = mapOf(html)
-    expect(buildTextEditPatch(map, idOf(map, 'p'), 'a\u0001b')).toBeNull()
-    expect(buildTextEditPatch(map, idOf(map, 'p'), 'ab')).toBeNull()
+    expect(patchOf(map, idOf(map, 'p'), 'a\u0001b')).toBeNull()
+    expect(patchOf(map, idOf(map, 'p'), 'ab')).toBeNull()
   })
 })
 
@@ -625,7 +633,7 @@ describe('escapeAndNeutralizeText — folds case the way the validator does (rev
     ['mixed: Kelvin inside spaced token', 'W e b S o c K e t'],
   ])('%s: the patch is never refused and never violates SL-S04', (_label, text) => {
     const map = mapOf('<div class="slide"><h1>Old</h1></div>')
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), text)
+    const patched = patchOf(map, idOf(map, 'h1'), text)
     expect(patched).not.toBeNull()
     expect(findForbiddenApiTokens(patched!)).toEqual([])
     expect(renderedText(patched!, 'h1')).toBe(text)
@@ -658,8 +666,8 @@ describe('escapeAndNeutralizeText — folds case the way the validator does (rev
       byId: new Map([[element.slId, element]]),
       order: [element.slId],
     }
-    expect(buildTextEditPatch(map, 's:0', 'h')).toBeNull()
-    expect(buildTextEditPatch(map, 's:0', 'Y')).toBe('fetcY(')
+    expect(patchOf(map, 's:0', 'h')).toBeNull()
+    expect(patchOf(map, 's:0', 'Y')).toBe('fetcY(')
   })
 })
 
@@ -681,9 +689,48 @@ describe('sanitizeEditedText — lone surrogates (review minor)', () => {
 
   it('edit -> save -> reopen is identity for a pasted lone surrogate', () => {
     const map = mapOf('<div class="slide"><h1>Old</h1></div>')
-    const patched = buildTextEditPatch(map, idOf(map, 'h1'), 'a\uD800b')!
+    const patched = patchOf(map, idOf(map, 'h1'), 'a\uD800b')!
     // A UTF-8 round trip changes nothing, because nothing lone is left to become U+FFFD on save.
     expect(Buffer.from(patched, 'utf8').toString('utf8')).toBe(patched)
     expect(renderedText(patched, 'h1')).toBe('a�b')
+  })
+})
+
+/**
+ * Round-4: the outcome is discriminated, because "nothing to do" and "I refused that" must not look
+ * the same to the caller. A refusal puts the frame back and tells the user; an unchanged value does
+ * neither, and mixing them either nags on every stray double-click or hides a rejected paste.
+ */
+describe('resolveTextEdit — why an edit did not land', () => {
+  const html = '<div><h1>Old</h1><p>Mixed <b>x</b></p><p data-sl-lock>Chrome</p></div>'
+
+  it('separates unchanged from refused', () => {
+    const map = mapOf(html)
+    expect(resolveTextEdit(map, idOf(map, 'h1'), 'Old')).toEqual({ kind: 'unchanged' })
+    expect(resolveTextEdit(map, idOf(map, 'h1'), 'New')).toMatchObject({ kind: 'patched' })
+  })
+
+  it.each([
+    [
+      'an over-cap value',
+      () => idOf(mapOf(html), 'h1'),
+      'x'.repeat(MAX_TEXT_LENGTH + 1),
+      'too-long',
+    ],
+    ['mixed inline content', () => idOf(mapOf(html), 'p'), 'plain', 'not-editable'],
+    ['an sl-id the map has never had', () => 's:999', 'New', 'unknown-element'],
+  ])('names %s', (_label, idFor, text, reason) => {
+    expect(resolveTextEdit(mapOf(html), idFor(), text)).toEqual({ kind: 'refused', reason })
+  })
+
+  it('names a locked element not-editable', () => {
+    const map = mapOf(html)
+    const locked = map.order
+      .map((id) => map.byId.get(id)!)
+      .find((el) => 'data-sl-lock' in el.attrs)!
+    expect(resolveTextEdit(map, locked.slId, 'New')).toEqual({
+      kind: 'refused',
+      reason: 'not-editable',
+    })
   })
 })

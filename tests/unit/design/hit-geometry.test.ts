@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
-import { boxOf, shiftHit } from '../../../src/shared/design/hit-geometry'
+import { boxOf, rectContainsPoint, shiftHit } from '../../../src/shared/design/hit-geometry'
 
 const base: SlHit = {
   slId: 's:1',
@@ -48,5 +48,27 @@ describe('shiftHit', () => {
     const snapshot = JSON.parse(JSON.stringify(base)) as SlHit
     shiftHit(base, 5, 5)
     expect(base).toEqual(snapshot)
+  })
+})
+
+describe('rectContainsPoint', () => {
+  const rect = { x: 10, y: 20, width: 100, height: 50 }
+
+  it.each([
+    ['the centre', { x: 60, y: 45 }, true],
+    ['the top-left corner', { x: 10, y: 20 }, true],
+    ['the bottom-right corner', { x: 110, y: 70 }, true],
+    ['just left', { x: 9.9, y: 45 }, false],
+    ['just right', { x: 110.1, y: 45 }, false],
+    ['just above', { x: 60, y: 19.9 }, false],
+    ['just below', { x: 60, y: 70.1 }, false],
+  ])('%s', (_label, point, expected) => {
+    expect(rectContainsPoint(rect, point)).toBe(expected)
+  })
+
+  it('a zero-area rect contains only its own corner', () => {
+    const point = { x: 5, y: 5 }
+    expect(rectContainsPoint({ x: 5, y: 5, width: 0, height: 0 }, point)).toBe(true)
+    expect(rectContainsPoint({ x: 5, y: 5, width: 0, height: 0 }, { x: 5.1, y: 5 })).toBe(false)
   })
 })

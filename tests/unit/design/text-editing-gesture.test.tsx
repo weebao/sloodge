@@ -17,7 +17,14 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { RefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SL_EDIT, SL_HITTEST, type SlHit } from '../../../src/shared/design/bridge-protocol'
+import {
+  SL_EDIT,
+  SL_HITTEST,
+  SL_MAGIC,
+  SL_PROTOCOL_VERSION,
+  type SlHit,
+} from '../../../src/shared/design/bridge-protocol'
+import { MAX_TEXT_LENGTH } from '../../../src/shared/design/text-edit'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { SelectionOverlay } from '../../../src/renderer/src/features/design/SelectionOverlay'
@@ -224,5 +231,73 @@ describe('SelectionOverlay — a session ending never steals focus (round-2 bloc
       useDesignStore.setState({ editing: null })
     })
     expect(document.activeElement).toBe(root)
+  })
+})
+
+/**
+ * Round-4 major 2, rendered. The hook's half is asserted in `text-editing.test.tsx`; this is the
+ * part the user actually meets — a refused edit says so, on the canvas, at the moment it is refused,
+ * rather than reverting silently at some unrelated later moment.
+ */
+describe('SelectionOverlay — a refused text edit is visible (round-4)', () => {
+  /** Deliver the frame's own session end, as `useDesignBridge` does after validating the envelope. */
+  function frameEnded(frameWindow: unknown, text: string): void {
+    const event = new MessageEvent('message', {
+      data: {
+        __sl: SL_MAGIC,
+        v: SL_PROTOCOL_VERSION,
+        id: 0,
+        dir: 'evt',
+        type: SL_EDIT,
+        slide: slideId,
+        payload: { slId: titleHit.slId, text, reason: 'enter' },
+      },
+    })
+    Object.defineProperty(event, 'source', { value: frameWindow, configurable: true })
+    act(() => {
+      window.dispatchEvent(event)
+    })
+  }
+
+  function openCaret(frameRef: RefObject<HTMLIFrameElement | null>): void {
+    act(() => {
+      useDesignStore.getState().setSelection(titleHit)
+    })
+    overlay(frameRef)
+    act(() => {
+      useDesignStore.getState().beginEditing(titleHit.slId)
+    })
+  }
+
+  it('shows a notice and asks the frame to revert an over-cap value', () => {
+    const { frameRef, posted } = fakeFrame()
+    openCaret(frameRef)
+
+    frameEnded(frameRef.current!.contentWindow, 'x'.repeat(MAX_TEXT_LENGTH + 1))
+
+    const notice = screen.getByTestId('design-notice')
+    expect(notice.getAttribute('role')).toBe('status')
+    expect(notice.textContent).toMatch(/too long/i)
+    expect(posted.filter((m) => m.type === SL_EDIT).map((m) => m.payload['action'])).toContain(
+      'revert',
+    )
+  })
+
+  it('says nothing for an accepted edit, and the notice dismisses', () => {
+    const { frameRef } = fakeFrame()
+    openCaret(frameRef)
+
+    frameEnded(frameRef.current!.contentWindow, 'A new title')
+    expect(screen.queryByTestId('design-notice')).toBeNull()
+
+    act(() => {
+      useDesignStore.getState().setSelection(titleHit)
+      useDesignStore.getState().beginEditing(titleHit.slId)
+    })
+    frameEnded(frameRef.current!.contentWindow, 'y'.repeat(MAX_TEXT_LENGTH + 1))
+    expect(screen.getByTestId('design-notice')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }), { detail: 1 })
+    expect(screen.queryByTestId('design-notice')).toBeNull()
   })
 })

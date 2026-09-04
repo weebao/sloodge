@@ -19,6 +19,7 @@ import type {
 } from '../../../src/shared/design/bridge-protocol'
 import { findForbiddenApiTokens } from '../../../src/shared/document/slide-contract'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
+import { MAX_TEXT_LENGTH } from '../../../src/shared/design/text-edit'
 import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/history'
 import { runEditAction } from '../../../src/renderer/src/app/editActions'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
@@ -631,5 +632,128 @@ describe('useTextEditing — entity-bearing text is a no-op when unchanged (revi
     expect(currentHtml()).toBe(html)
     expect(undoDepth()).toBe(before)
     expect(useDeckStore.getState().canUndo).toBe(canUndo)
+  })
+})
+
+/**
+ * Round-4 major 2: a refusal used to be indistinguishable from "nothing to do". The 64 KiB cap did
+ * refuse and the source was never touched — but the frame went on showing the rejected text, so the
+ * user read the paste as accepted and lost it later, at an unrelated moment, with no warning at any
+ * point (70 000 characters, reproduced in the built app).
+ */
+describe('useTextEditing — a refused commit is put back and said out loud (round-4)', () => {
+  it('tells the frame to revert an over-cap value and raises a notice', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+
+    frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
+
+    // The refusal itself: the source is byte-identical and nothing reached the undo stack.
+    expect(currentHtml()).toContain('<h1 class="title">Old title</h1>')
+    expect(undoDepth()).toBe(0)
+    // What round 4 adds: the frame is put back, and the user is told.
+    expect(harness.sent).toEqual([
+      { slId: id, action: 'begin' },
+      { slId: id, action: 'revert' },
+    ])
+    expect(harness.result.current.notice).toMatch(/too long/i)
+  })
+
+  it.each([
+    ['a locked element', 'locked'],
+    ['mixed inline content', 'mixed'],
+  ])('reverts and notifies for %s', (_label, cls) => {
+    const harness = mount()
+    const id = idOfClass(cls)
+    // These elements decline a caret, so the session is forced open the way a frame that judged its
+    // live DOM differently from the source would leave it.
+    act(() => {
+      select(id)
+      useDesignStore.getState().beginEditing(id)
+    })
+    frameEnd(harness, { slId: id, text: 'anything' })
+
+    expect(undoDepth()).toBe(0)
+    expect(harness.sent).toEqual([{ slId: id, action: 'revert' }])
+    expect(harness.result.current.notice).not.toBeNull()
+  })
+
+  it('stays silent when the text is simply unchanged', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+
+    frameEnd(harness, { slId: id, text: 'Old title' })
+
+    expect(undoDepth()).toBe(0)
+    // No revert: there is nothing to put back, and no notice, because nothing went wrong.
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    expect(harness.result.current.notice).toBeNull()
+  })
+
+  it('an accepted commit neither reverts nor notifies', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+
+    frameEnd(harness, { slId: id, text: 'New title' })
+
+    expect(currentHtml()).toContain('New title')
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    expect(harness.result.current.notice).toBeNull()
+  })
+
+  it('a notice is dismissible, and a new caret clears it', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
+    expect(harness.result.current.notice).not.toBeNull()
+
+    act(() => {
+      harness.result.current.dismissNotice()
+    })
+    expect(harness.result.current.notice).toBeNull()
+
+    // A fresh caret is about a fresh edit; a notice from the last one must not follow it.
+    open(harness, id)
+    expect(harness.result.current.notice).toBeNull()
+    frameEnd(harness, { slId: id, text: 'x'.repeat(MAX_TEXT_LENGTH + 1) })
+    expect(harness.result.current.notice).not.toBeNull()
+  })
+})
+
+describe('useTextEditing — a notice belongs to the slide it was raised on (round-4)', () => {
+  it('clears when the slide changes', () => {
+    const sent: { slId: string; action: SlEditAction }[] = []
+    const requestEdit = vi.fn(
+      (slId: string, action: SlEditAction, onResult?: (result: SlEditResponse) => void) => {
+        sent.push({ slId, action })
+        if (action === 'begin' && onResult) onResult({ slId, text: '', editing: true })
+      },
+    )
+    const id = idOfClass('title')
+    const { result, rerender } = renderHook(
+      (props: { slideId: string }) => useTextEditing({ slideId: props.slideId, requestEdit }),
+      { initialProps: { slideId } },
+    )
+
+    act(() => {
+      select(id)
+      result.current.beginEdit(id)
+    })
+    act(() => {
+      result.current.onFrameEditEnd({
+        slId: id,
+        text: 'x'.repeat(MAX_TEXT_LENGTH + 1),
+        reason: 'enter',
+      })
+    })
+    expect(result.current.notice).not.toBeNull()
+
+    rerender({ slideId: 'some-other-slide' })
+
+    expect(result.current.notice).toBeNull()
   })
 })

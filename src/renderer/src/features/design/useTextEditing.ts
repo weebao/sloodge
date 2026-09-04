@@ -16,8 +16,21 @@
  * history past the 200-entry cap — cannot recur here: the cap is never approached because the entry
  * count is bounded by *sessions*, not by input events.
  *
- * A session that changed nothing commits nothing: `buildTextEditPatch` returns `null` for an
- * unchanged value, so tabbing through text without editing leaves the undo stack untouched.
+ * A session that changed nothing commits nothing: `resolveTextEdit` answers `unchanged` for an
+ * untouched value, so tabbing through text without editing leaves the undo stack untouched.
+ *
+ * ## A refused edit is put back, and said out loud (M3.11 round-4)
+ *
+ * `resolveTextEdit` can also *refuse* — an over-cap value, a locked or non-editable target, an sl-id
+ * the map no longer has, an SL-S04 violation. Refusing is right; refusing **silently** was not. The
+ * frame ends a session on its own keystrokes and hands the text over afterwards, so a rejected
+ * 70 000-character paste stayed on screen looking accepted, and vanished later at an unrelated
+ * moment when something else reloaded the slide (reproduced in the built app). So a refusal now does
+ * two things: it sends the frame a `revert`, which puts the element back to the text the session
+ * began with — the committed text, since nothing was written — and it raises a notice the overlay
+ * shows. What the user sees then matches what is stored, at the moment it is decided.
+ *
+ * `unchanged` stays silent: it is the ordinary outcome of opening a caret and leaving.
  *
  * ## Ctrl/⌘+Z *inside* the caret is the field's undo, never the deck's
  *
@@ -85,14 +98,18 @@
  *
  * The committed string arrives over postMessage from a realm the slide's own JS shares, so it is
  * untrusted (§2.2). This hook never treats it as markup: it re-derives the element from the parent's
- * own `SlideMap` by the parent-tracked `slId` and hands the string to `buildTextEditPatch`, which
+ * own `SlideMap` by the parent-tracked `slId` and hands the string to `resolveTextEdit`, which
  * escapes it into a text-node position and refuses any edit that would break the slide contract.
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SlEditEventPayload } from '../../../../shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
-import { buildTextEditPatch, isTextEditable } from '../../../../shared/design/text-edit'
+import {
+  isTextEditable,
+  resolveTextEdit,
+  type TextEditRefusal,
+} from '../../../../shared/design/text-edit'
 import { resolveElement } from '../../../../shared/design/property-model'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
@@ -117,6 +134,18 @@ export interface TextEditingApi {
   readonly onFrameReady: () => void
   /** The sl-id with an open session, or `null`. */
   readonly editing: string | null
+  /** A refused edit to tell the user about, or `null`. Cleared by `dismissNotice`. */
+  readonly notice: string | null
+  /** Drop the current notice — the user acknowledged it, or started editing again. */
+  readonly dismissNotice: () => void
+}
+
+/** What to tell the user about an edit that was refused. One sentence, no jargon, no id. */
+const REFUSAL_NOTICE: Readonly<Record<TextEditRefusal, string>> = {
+  'too-long': 'That text is too long to store on a slide, so the element was left as it was.',
+  'not-editable': 'That element can no longer be edited here, so it was left as it was.',
+  'unknown-element': 'That element is no longer on this slide, so the edit was not applied.',
+  'forbidden-token': 'That text is not allowed in a slide, so the element was left as it was.',
 }
 
 /** The Edit-menu label for a committed text edit, trimmed so the menu stays readable. */
@@ -131,6 +160,10 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   const editing = useDesignStore((state) => state.editing)
   const beginEditing = useDesignStore((state) => state.beginEditing)
   const endEditing = useDesignStore((state) => state.endEditing)
+  const [notice, setNotice] = useState<string | null>(null)
+  const dismissNotice = useCallback((): void => {
+    setNotice(null)
+  }, [])
 
   // Read through a ref inside callbacks that outlive a render (the frame's event can arrive at any
   // time), so a stale closure can never commit against the wrong session.
@@ -173,6 +206,9 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     (slId: string): boolean => {
       if (!canEdit(slId)) return false
       pendingRef.current = slId
+      // A new caret supersedes whatever the last one was told; leaving the notice up would attach it
+      // to the wrong element.
+      setNotice(null)
       requestEdit(slId, 'begin', (result) => {
         if (pendingRef.current !== slId) return
         pendingRef.current = null
@@ -202,14 +238,19 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     (slId: string, text: string): void => {
       const source = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (source === undefined) return
-      const patched = buildTextEditPatch(buildSlideMap(slideId, source), slId, text)
-      // `null` covers every refusal — unchanged text, a non-editable or locked target, an sl-id the
-      // map no longer has, or a patch that would introduce an SL-S04 violation. None of them may
-      // push an undo entry.
-      if (patched === null) return
-      useDeckStore.getState().setSlideHtml(slideId, patched, slId, commitLabel(text))
+      const outcome = resolveTextEdit(buildSlideMap(slideId, source), slId, text)
+      // Nothing to write, and nothing worth saying: an untouched caret must not push an undo entry.
+      if (outcome.kind === 'unchanged') return
+      // Refused. The frame is still showing the value that was turned down, so put it back before
+      // anything else can make the mismatch look like a save — see the header.
+      if (outcome.kind === 'refused') {
+        requestEdit(slId, 'revert')
+        setNotice(REFUSAL_NOTICE[outcome.reason])
+        return
+      }
+      useDeckStore.getState().setSlideHtml(slideId, outcome.source, slId, commitLabel(text))
     },
-    [slideId],
+    [slideId, requestEdit],
   )
 
   const onFrameEditEnd = useCallback(
@@ -242,6 +283,9 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   useEffect(() => {
     if (slideRef.current === slideId) return
     slideRef.current = slideId
+    // A notice names an element on the slide the user just left; carrying it over would attach it to
+    // whatever the new slide has (observed in the built app, where it survived a there-and-back).
+    setNotice(null)
     if (editingRef.current !== null) dropSession()
   }, [slideId, dropSession])
 
@@ -274,5 +318,5 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     }
   }, [editing, requestEdit])
 
-  return { beginEdit, onFrameEditEnd, onFrameReady, editing }
+  return { beginEdit, onFrameEditEnd, onFrameReady, editing, notice, dismissNotice }
 }

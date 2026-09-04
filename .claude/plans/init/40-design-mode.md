@@ -449,6 +449,14 @@ zoom.
 | `Alt`-click | select the *deepest* node under cursor, bypassing the "grabbable" filter |
 | `Cmd/Ctrl+D` | toggle Design Mode |
 
+**Shipped as of M3.11** (the rest of this table is planned, not contracted): `Esc`, `Enter`/`F2`,
+`Alt`-click and `Cmd/Ctrl+D`. Arrow traversal (parent/child/sibling) and `Tab` traversal are not
+implemented. `Esc` ships as **two** stages, not three — deselect, then close a text-edit session —
+and stage three (exit Design Mode) is deliberately deferred: with Design Mode on by default (M3.11)
+an `Esc` that turned it off would leave the user in the inert, click-does-nothing state the M3.11
+default exists to eliminate, one keystroke from a gesture they meant as "cancel". `Cmd/Ctrl+D` and
+the toolbar toggle remain the deliberate ways out. See `useDeselectKey.ts`.
+
 ### 4.3 The grabbable filter
 
 Plain `elementFromPoint` returns the deepest node, which is often a layout-only `<span>` or a

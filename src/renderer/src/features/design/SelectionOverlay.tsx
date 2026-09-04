@@ -38,12 +38,29 @@
  *
  * So the box swallows exactly one thing: the synthetic `click` the browser fires on the `pointerup`
  * that ended a real drag, where the pointer has moved and re-hit-testing would select whatever now
- * sits under it. A **stationary** click falls through to the root's hit-test, which asks the frame
- * for the innermost grabbable element under the pointer. The click landed on the box, so the box
- * contains the point, so that hit-test can only answer with the selected element itself (idempotent)
- * or with something inside it — a container's box can never block selecting its children. `Esc`
- * (§4.2, `useDeselectKey`) and a visible **Clear selection** button are the two escapes that do not
- * depend on the pointer at all.
+ * sits under it. `useDragGesture` classifies the gesture (`DRAG_SLOP_PX`) and this file only asks it
+ * — `consumeDragClick` — so the swallow and the commit can never disagree about what a drag is.
+ * A **stationary** click falls through to the root's hit-test, which asks the frame for the innermost
+ * grabbable element under the pointer. `Esc` (§4.2, `useDeselectKey`) and a visible **Clear
+ * selection** button are the two escapes that do not depend on the pointer at all.
+ *
+ * ## Why a group box needs its own rule (M3.11 round-4)
+ *
+ * The fall-through above is safe for a single element because the box *is* the element: the click
+ * landed on the box, so the box contains the point, so the hit-test can only answer with that element
+ * (idempotent) or something inside it — a container's box can never block selecting its children.
+ *
+ * That argument is **false for a group**. A group box is the union of its members' rects, and a union
+ * contains points that belong to no member: the whitespace gap between a title and a subtitle is
+ * inside the union and inside neither. Falling through there answers with whatever is actually under
+ * the pointer, which on a normal slide is the full-bleed slide root — the exact state this round
+ * exists to prevent, reached by clicking *inside* one's own multi-selection.
+ *
+ * So the rule for a group is decided by the members, not by the union: a stationary click that lands
+ * on a member's box falls through as before (collapsing to that member, which is what PowerPoint,
+ * Figma and Keynote do and what round 3 accepted), and a click in the gap is **swallowed — the group
+ * survives**. Nudging a group therefore cannot lose it, and the group is still dismissible by `Esc`,
+ * by the Clear selection button, and by clicking outside the union.
  */
 
 import {
@@ -71,7 +88,7 @@ import {
   unionRects,
 } from '../../../../shared/design/overlay-geometry'
 import { buildDragPatch } from '../../../../shared/design/drag-commit'
-import { boxOf, shiftHit } from '../../../../shared/design/hit-geometry'
+import { boxOf, rectContainsPoint, shiftHit } from '../../../../shared/design/hit-geometry'
 import { buildMultiElementPatch, type ElementMove } from '../../../../shared/design/multi-commit'
 import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smart-guides'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
@@ -80,7 +97,7 @@ import { readStyleProp } from '../../../../shared/design/patch'
 import { readRotation } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
-import { useDesignStore } from './designStore'
+import { useDesignStore, type DesignSnapshot } from './designStore'
 import { useDesignBridge, type HitMode } from './useDesignBridge'
 import { useDragGesture, type ResolvedDrag } from './useDragGesture'
 import { useMarqueeGesture } from './useMarqueeGesture'
@@ -147,17 +164,20 @@ const ROTATE_HANDLE: CSSProperties = {
 
 const SLIDE_SIZE = { width: CANVAS_WIDTH, height: CANVAS_HEIGHT }
 
-/**
- * How far the pointer may travel between `pointerdown` and `click` on the selection body and still
- * count as a stationary click rather than a drag — small enough that a deliberate nudge is a drag,
- * large enough that hand tremor on a click is not.
- */
-const DRAG_SLOP_PX = 3
-
 function label(hit: Pick<SlCrumb, 'tag' | 'id' | 'classes'>): string {
   const id = hit.id ? `#${hit.id}` : ''
   const cls = hit.classes.length > 0 ? `.${hit.classes[0]}` : ''
   return `${hit.tag}${id}${cls}`
+}
+
+/**
+ * The elements a gesture starting now will transform: the whole ordered set when multi-selected,
+ * else the anchor on its own. Read from the store rather than the render closure at `pointerdown`,
+ * and held for the life of the gesture — see `dragTargetRef`.
+ */
+function gestureTarget(state: Pick<DesignSnapshot, 'selection' | 'selections'>): readonly SlHit[] {
+  if (state.selections.length >= 2) return state.selections
+  return state.selection === null ? [] : [state.selection]
 }
 
 /** The Edit-menu label for a gesture: a resize touched a dimension, otherwise it was a move. */
@@ -225,10 +245,11 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     onReady,
   })
 
-  const { beginEdit, onFrameEditEnd, onFrameReady, editing } = useTextEditing({
-    slideId,
-    requestEdit,
-  })
+  const { beginEdit, onFrameEditEnd, onFrameReady, editing, notice, dismissNotice } =
+    useTextEditing({
+      slideId,
+      requestEdit,
+    })
   useEffect(() => {
     editEndRef.current = onFrameEditEnd
   }, [onFrameEditEnd])
@@ -263,40 +284,43 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // Cache of every grabbable element (rects) for smart-guide snapping, refreshed on each drag start.
   const elementsRef = useRef<readonly SlHit[]>([])
 
-  // Where the current selection-body gesture started, so its `click` can be told from a drag's.
-  const bodyDownRef = useRef<Point | null>(null)
+  // The elements the live gesture is transforming, captured at `pointerdown` alongside the start rect
+  // `useDragGesture` captures. The commit writes to *these*, never to whatever `selections` holds at
+  // `pointerup`: a second pointer's click, or a hit-test response that lands mid-drag, can replace the
+  // selection between the two, and applying one element's delta to another moved a subtitle the user
+  // never touched (round-4 major).
+  const dragTargetRef = useRef<readonly SlHit[]>([])
 
   // Commit a completed single-element drag as one undoable command (M3.5).
   const onCommitGeometry = useCallback(
-    (startRect: SlRect, nextRect: SlRect): void => {
-      if (selection === null) return
+    (target: SlHit, startRect: SlRect, nextRect: SlRect): void => {
       const current = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (current === undefined) return
-      const patched = buildDragPatch(slideId, current, selection.slId, startRect, nextRect)
+      const patched = buildDragPatch(slideId, current, target.slId, startRect, nextRect)
       if (patched === current) return
       if (
         useDeckStore
           .getState()
-          .setSlideHtml(slideId, patched, selection.slId, gestureLabel(startRect, nextRect))
+          .setSlideHtml(slideId, patched, target.slId, gestureLabel(startRect, nextRect))
       ) {
-        setSelection({ ...selection, rect: nextRect })
+        setSelection({ ...target, rect: nextRect })
       }
     },
-    [selection, slideId, setSelection],
+    [slideId, setSelection],
   )
 
   // Commit a completed group move as one undoable command: shift every selected element by the same
   // delta, patch them all into one source, push a single `setSlideHtml` (M3.7).
   const onCommitGroupMove = useCallback(
-    (startRect: SlRect, nextRect: SlRect): void => {
+    (target: readonly SlHit[], startRect: SlRect, nextRect: SlRect): void => {
       const dx = Math.round(nextRect.x) - Math.round(startRect.x)
       const dy = Math.round(nextRect.y) - Math.round(startRect.y)
       if (dx === 0 && dy === 0) return
-      const anchor = selections.at(-1)
+      const anchor = target.at(-1)
       if (anchor === undefined) return
       const current = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (current === undefined) return
-      const edits: ElementMove[] = selections.map((hit) => {
+      const edits: ElementMove[] = target.map((hit) => {
         const start = boxOf(hit)
         return {
           slId: hit.slId,
@@ -307,18 +331,21 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       const patched = buildMultiElementPatch(slideId, current, edits)
       if (patched === current) return
       if (useDeckStore.getState().setSlideHtml(slideId, patched, anchor.slId, 'Move elements')) {
-        setSelections(selections.map((hit) => shiftHit(hit, dx, dy)))
+        setSelections(target.map((hit) => shiftHit(hit, dx, dy)))
       }
     },
-    [selections, slideId, setSelections],
+    [slideId, setSelections],
   )
 
   const onCommitGesture = useCallback(
     (startRect: SlRect, nextRect: SlRect): void => {
-      if (isMulti) onCommitGroupMove(startRect, nextRect)
-      else onCommitGeometry(startRect, nextRect)
+      const target = dragTargetRef.current
+      const anchor = target.at(-1)
+      if (anchor === undefined) return
+      if (target.length >= 2) onCommitGroupMove(target, startRect, nextRect)
+      else onCommitGeometry(anchor, startRect, nextRect)
     },
-    [isMulti, onCommitGroupMove, onCommitGeometry],
+    [onCommitGroupMove, onCommitGeometry],
   )
 
   // The box a gesture starts from: the group bounding box when multi-selected, else the anchor's own
@@ -340,7 +367,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     [selectedIds],
   )
 
-  const { startDrag, previewRect, guides, isDragging } = useDragGesture({
+  const { startDrag, previewRect, guides, isDragging, consumeDragClick } = useDragGesture({
     scale,
     selectionRect: selectionBox,
     onCommit: onCommitGesture,
@@ -463,6 +490,10 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   const onClick = useCallback(
     (event: React.MouseEvent): void => {
+      // The synthetic click that ended a real drag — see the header. Consumed here, at the one place
+      // the fall-through hit-test runs, so it is swallowed wherever the release happened to land: on
+      // the box, on the root after an `Esc`-cancelled drag snapped the box away, or after a resize.
+      if (consumeDragClick()) return
       // A marquee that passed the click threshold ends with a synthetic click the browser fires on
       // pointerup; swallow it so a sweep does not also run a point hit-test that collapses the set.
       if (isMarqueeing) return
@@ -471,9 +502,17 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       // slide between the two clicks pick a different element out from under the gesture.
       if (event.detail === 2) return
       const point = framePoint(event)
+      // The group-gap rule — see the header. A single selection's box *is* its element, so its
+      // clicks always fall through; a group's box is a union rect, so only the parts of it that are
+      // actually a member do, and a click in the whitespace between members keeps the group. Decided
+      // from the member rects the overlay already holds — no round trip, so the frame cannot answer
+      // after the click has been settled.
+      if (groupBox !== null && rectContainsPoint(groupBox, point)) {
+        if (!selections.some((hit) => rectContainsPoint(boxOf(hit), point))) return
+      }
       requestHit(point.x, point.y, event.shiftKey ? 'toggle' : 'select', event.altKey)
     },
-    [framePoint, requestHit, isMarqueeing],
+    [framePoint, requestHit, isMarqueeing, consumeDragClick, groupBox, selections],
   )
 
   // Double-click edits the element the first click selected — it does *not* hit-test the pointer
@@ -516,7 +555,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // element's geometry so smart guides have targets to snap against.
   const onBodyPointerDown = useCallback(
     (event: React.PointerEvent): void => {
-      bodyDownRef.current = { x: event.clientX, y: event.clientY }
+      dragTargetRef.current = gestureTarget(useDesignStore.getState())
       requestElements((hits) => {
         elementsRef.current = hits
       })
@@ -527,7 +566,9 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const onHandlePointerDown = useCallback(
     (event: React.PointerEvent): void => {
       const handle = event.currentTarget.getAttribute('data-handle') as DragHandle | null
-      if (handle !== null) startDrag(handle, event)
+      if (handle === null) return
+      dragTargetRef.current = gestureTarget(useDesignStore.getState())
+      startDrag(handle, event)
     },
     [startDrag],
   )
@@ -541,18 +582,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     event.stopPropagation()
   }, [])
 
-  // A click on the selection body falls through to the root's hit-test unless the gesture that
-  // produced it actually moved the pointer — see the header. `useDragGesture` has no distance
-  // threshold of its own (it goes active on `pointerdown` and commits a zero-distance gesture as a
-  // no-op), so the origin is recorded here and compared against the `click`'s own coordinates.
-  const onBodyClick = useCallback((event: React.MouseEvent): void => {
-    const down = bodyDownRef.current
-    bodyDownRef.current = null
-    if (down === null) return
-    const moved = Math.hypot(event.clientX - down.x, event.clientY - down.y) > DRAG_SLOP_PX
-    if (moved) event.stopPropagation()
-  }, [])
-
   // Clearing from the canvas itself. This used to be an `sr-only` button, which meant a user who
   // clicked into a full-bleed selection had no visible way out at all; it is the pointer twin of
   // `Esc` and says so on its face. The click must not also reach the root's hit-test, or clearing
@@ -563,6 +592,16 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       clearTransient()
     },
     [clearTransient],
+  )
+
+  // Same reason the Clear button stops propagation: dismissing must not also re-select what is under
+  // the notice.
+  const onDismissNotice = useCallback(
+    (event: React.MouseEvent): void => {
+      event.stopPropagation()
+      dismissNotice()
+    },
+    [dismissNotice],
   )
 
   const hoverStyle = useMemo<CSSProperties | null>(() => {
@@ -722,7 +761,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           }
           style={selectionStyle}
           onPointerDown={onBodyPointerDown}
-          onClick={onBodyClick}
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
@@ -789,6 +827,28 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           className="absolute border border-accent bg-accent/10"
           style={marqueeStyle}
         />
+      ) : null}
+
+      {/* A refused text edit, said where the edit happened. `status` rather than `alert`, matching
+          the chat transcript's notice: the element is intact and back to its stored text, so this is
+          a caveat on what the user just did, not a failure of the app. */}
+      {notice !== null ? (
+        <div
+          role="status"
+          data-testid="design-notice"
+          className="absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 items-center gap-2 rounded bg-amber-600 px-2 py-1 text-[11px] leading-4 text-white"
+          style={CAPTURE_POINTER}
+        >
+          <span>{notice}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className="shrink-0 rounded px-1 hover:bg-black/20"
+            onClick={onDismissNotice}
+          >
+            ✕
+          </button>
+        </div>
       ) : null}
 
       {crumbs.length > 0 ? (

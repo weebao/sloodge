@@ -396,6 +396,12 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
    * ---------------------------------------------------------------------------------------- */
 
   let session: { el: HTMLElement; original: string; stop: () => void } | null = null
+  // The element and pre-edit text of the session that ended most recently, kept so the parent can
+  // `revert` an edit it refused. The frame ends a session on its own keystrokes and reports the text
+  // afterwards, so by the time the parent decides the value is unwritable there is no open session
+  // left to cancel — and the rejected text would otherwise stay on screen until something unrelated
+  // reloaded the slide (round-4 major). Cleared once used, and by the next `begin`.
+  let lastEnded: { el: HTMLElement; original: string } | null = null
 
   /** Whether this element can host a caret: character-data children only, unlocked, editable tag. */
   const isFrameEditable = (el: Element): boolean => {
@@ -414,6 +420,7 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     const open = session
     if (!open) return ''
     session = null
+    lastEnded = { el: open.el, original: open.original }
     open.stop()
     if (restore) open.el.textContent = open.original
     open.el.removeAttribute(EDIT_ATTR)
@@ -434,6 +441,7 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     const node = doc.querySelector('[' + ID_ATTR + '="' + slId + '"]')
     if (!node) return null
     if (session) endEdit(false)
+    lastEnded = null
     if (!isFrameEditable(node)) return { slId, text: node.textContent ?? '', editing: false }
 
     const el = node as HTMLElement
@@ -559,9 +567,23 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
     return { slId, text: original, editing: true }
   }
 
+  /**
+   * Put the element the last session edited back to the text it began with. Only for that element,
+   * only once, and only while it is still in the document — anything else and the frame answers with
+   * what is actually there rather than writing over an element the parent may no longer mean.
+   */
+  const revertEdit = (slId: string) => {
+    const last = lastEnded
+    lastEnded = null
+    if (!last || last.el.getAttribute(ID_ATTR) !== slId || !doc.contains(last.el)) return null
+    last.el.textContent = last.original
+    return { slId, text: last.original, editing: false }
+  }
+
   /** Apply an `SL_EDIT` request and describe the resulting state. */
   const applyEdit = (slId: string, action: string) => {
     if (action === 'begin') return beginEdit(slId)
+    if (action === 'revert') return revertEdit(slId)
     const open = session
     // A commit/cancel/undo/redo for an element that is not the open session must not touch the
     // document.
@@ -641,6 +663,7 @@ export function designBridgeFrameMain(trustedParent?: Window): void {
         action !== 'begin' &&
         action !== 'commit' &&
         action !== 'cancel' &&
+        action !== 'revert' &&
         action !== 'undo' &&
         action !== 'redo'
       ) {

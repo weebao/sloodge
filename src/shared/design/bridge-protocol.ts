@@ -224,7 +224,14 @@ export type SlElementsResponse = readonly SlHit[]
  * so the parent forwards the intent here instead of running the *deck's* undo under an open caret.
  * Ignored when no session is open on `slId`.
  */
-export type SlEditAction = 'begin' | 'commit' | 'cancel' | 'undo' | 'redo'
+/**
+ * `revert` is the parent's answer to an edit it refused: put the element back to the text it held
+ * when the session began. It carries no text — the frame already has that string — so the parent
+ * never writes into the frame's DOM, and the frame never has to trust a payload. It exists because
+ * the frame ends a session on its own keystrokes (Enter, Escape, Tab, blur) and only *then* does the
+ * parent get to judge the value, by which point `cancel` has nothing left to restore (round-4 major).
+ */
+export type SlEditAction = 'begin' | 'commit' | 'cancel' | 'revert' | 'undo' | 'redo'
 
 /** `SL_EDIT` request payload: which element, and which transition. */
 export interface SlEditRequest {

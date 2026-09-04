@@ -355,3 +355,68 @@ describe('designBridgeFrameMain SL_EDIT — forwarded undo/redo', () => {
     expect(target().getAttribute('contenteditable')).not.toBeNull()
   })
 })
+
+/**
+ * Round-4 major 2, frame side. The frame ends a session on its own keystrokes and reports the text
+ * afterwards, so by the time the parent judges the value unwritable there is no open session left
+ * for `cancel` to restore — and the rejected text stayed on screen. `revert` is the parent's answer:
+ * put the element back to what it held when the session began. It carries no text, so the parent
+ * never writes into the frame's DOM and the frame never has to trust a payload.
+ */
+describe('designBridgeFrameMain SL_EDIT — revert (round-4)', () => {
+  function endedSession(parent: FakeParent, typed: string): void {
+    postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }), parent)
+    target().textContent = typed
+    postToFrame(editRequest({ slId: EDITABLE, action: 'commit' }), parent)
+    parent.postMessage.mockClear()
+  }
+
+  it('puts back the text the session began with', () => {
+    const parent = arm(PLAIN)
+    endedSession(parent, 'a rejected 70,000-character paste')
+    expect(target().textContent).toBe('a rejected 70,000-character paste')
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }), parent)
+
+    expect(target().textContent).toBe('bars')
+    expect(lastPayload(parent)).toMatchObject({ slId: EDITABLE, text: 'bars', editing: false })
+  })
+
+  it('reverts once — a second revert is a no-op, not a second rewind', () => {
+    const parent = arm(PLAIN)
+    endedSession(parent, 'typed')
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }), parent)
+    target().textContent = 'written by something else'
+    parent.postMessage.mockClear()
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }), parent)
+
+    expect(target().textContent).toBe('written by something else')
+    expect(lastPayload(parent)).toBeNull()
+  })
+
+  it('refuses to revert an element other than the one that was edited', () => {
+    const parent = arm(
+      `<section data-sl-id="s_x:0" class="slide"><div data-sl-id="${EDITABLE}">bars</div>` +
+        `<div data-sl-id="s_x:2">other</div></section>`,
+    )
+    endedSession(parent, 'typed')
+
+    postToFrame(editRequest({ slId: 's_x:2', action: 'revert' }), parent)
+
+    expect(document.querySelector('[data-sl-id="s_x:2"]')?.textContent).toBe('other')
+    expect(target().textContent).toBe('typed')
+  })
+
+  it('a fresh begin discards the previous session’s revert point', () => {
+    const parent = arm(PLAIN)
+    endedSession(parent, 'typed')
+    postToFrame(editRequest({ slId: EDITABLE, action: 'begin' }), parent)
+    parent.postMessage.mockClear()
+
+    postToFrame(editRequest({ slId: EDITABLE, action: 'revert' }), parent)
+
+    // The open session is what `cancel` is for; `revert` must not reach behind it to an older value.
+    expect(target().textContent).toBe('typed')
+  })
+})
