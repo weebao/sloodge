@@ -54,6 +54,13 @@
       }
     },
     {
+      "files": ["perf/**"],
+      "rules": {
+        "no-console": "off",
+        "no-await-in-loop": "off"
+      }
+    },
+    {
       "files": ["src/shared/**"],
       "rules": {
         "no-restricted-imports": [

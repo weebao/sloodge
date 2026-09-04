@@ -10,6 +10,7 @@
     "src/preload/**/*",
     "src/shared/**/*",
     "tests/unit/**/*.ts",
+    "perf/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ]

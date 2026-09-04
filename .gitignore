@@ -18,3 +18,12 @@ experiments/
 
 # Agent worktrees are local scratch, never tracked
 .claude/worktrees/
+
+# Generated stress decks and raw harness output (M8.1). Decks are exactly reproducible from their
+# seed — perf/deck-hashes.json is committed so a regeneration is verifiable — and the raw traces run
+# to tens of MB. The committed artifact is the summarized report in perf/results/baseline-*.json.
+perf/decks/
+perf/results/*.trace.json
+perf/results/export-*
+perf/results/run-*.json
+perf/results/sweep-*.json
