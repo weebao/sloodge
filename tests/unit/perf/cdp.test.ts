@@ -1,7 +1,7 @@
 /**
  * `waitFor` against a fake client. No socket: what is pinned is which deadline each tick is given,
  * what the failure message carries, and which errors end the wait at once. Real-peer behaviour
- * (SIGKILL, SIGSTOP) is probed by hand against a Node inspector; see perf/README.md.
+ * (SIGKILL, SIGSTOP) is probed by hand against a Node inspector, not in vitest.
  */
 
 import { describe, expect, it } from 'vitest'

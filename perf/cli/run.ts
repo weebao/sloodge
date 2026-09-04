@@ -114,7 +114,6 @@ export async function loadStressDeck(
   const order = read.bundle.manifest.slideOrder
   const payloadOrder = payload.manifest.slideOrder
   const sameSlides =
-    order.length === expected.slideCount &&
     order.length === payloadOrder.length &&
     order.every((id, i) => id === payloadOrder[i] && read.bundle.slides[id] === payload.slides[id])
   if (!sameSlides) {

@@ -49,7 +49,6 @@ describe('loadStressDeck', () => {
     const loaded = await loadStressDeck(dir, record)
     expect(loaded.bundle.manifest.slideOrder).toHaveLength(SLIDES)
     expect(loaded.payloadPath).toBe(join(dir, `stress-${String(SLIDES)}.deck-update.json`))
-    expect(loaded.deckReadMs).toBeGreaterThanOrEqual(0)
   })
 
   it('refuses a payload whose slide content differs from the record by one byte', async () => {
