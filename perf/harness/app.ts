@@ -14,6 +14,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { assertBundleBuiltFromSource } from './bundle'
 import { CdpClient, waitForTarget } from './cdp'
 
 export type LaunchedApp = {
@@ -70,6 +71,9 @@ export function electronBinaryPath(repoRoot: string): string {
 
 export async function launchApp(options: LaunchOptions): Promise<LaunchedApp> {
   const { repoRoot, cdpPort, inspectPort, display, timeoutMs = 60_000 } = options
+  // Before anything is spawned: `out/` has to be what `src/` says, or the measurement describes
+  // code nobody is reviewing.
+  await assertBundleBuiltFromSource(repoRoot)
   const userDataDir = await mkdtemp(join(tmpdir(), 'sloodge-perf-'))
   const binary = electronBinaryPath(repoRoot)
 

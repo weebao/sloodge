@@ -21,6 +21,19 @@ export type SlideCanvasProps = {
 }
 
 /**
+ * Design Mode's document for one slide: the source parsed and addressed (`instrument`), then given
+ * the in-frame agent bridge.
+ *
+ * At module scope so its identity is fixed for the process rather than merely memoized. The stage
+ * keys its per-frame memo and its pre-warm gate on `(documentFor, id, html)`, and the canvas
+ * re-renders on every `ResizeObserver` tick — so an instrumenter built in the render body re-parses
+ * all three mounted documents per animation frame while the panel splitter is dragged, with nothing
+ * visibly wrong. A constant cannot drift back into that; a memo can, by being deleted.
+ */
+const instrumentDocument = (id: SlideId, html: string): string =>
+  injectDesignBridge(instrument(buildSlideMap(id, html)))
+
+/**
  * Center stage: the current slide, live, in a sandboxed 1280x720 frame scaled to fit its mat.
  *
  * Capped at 1:1 (`maxScale: 1`). Beyond that the slide is not sharper, only bigger — the document
@@ -66,15 +79,8 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
     enabled: designModeActive,
   })
 
-  // Only pay for the parse + instrument + inject while Design Mode is on. Stable across renders so
-  // the stage's per-frame memo holds; the stage calls it once per frame per html.
-  const documentFor = useMemo(
-    () =>
-      designEnabled
-        ? (id: SlideId, html: string) => injectDesignBridge(instrument(buildSlideMap(id, html)))
-        : undefined,
-    [designEnabled],
-  )
+  // Only pay for the parse + instrument + inject while Design Mode is on.
+  const documentFor = designEnabled ? instrumentDocument : undefined
 
   // Memoized so the relative wrapper's style is not a fresh object on every render (react-perf).
   const stageStyle = useMemo(

@@ -14,7 +14,7 @@ explicit directive. M8.7 will add a cheap CI job that diffs _committed numbers_ 
 ## Quick start
 
 ```bash
-pnpm build                 # the harness drives out/main/index.js; it does not build for you
+pnpm build                 # the harness drives out/, and refuses to run if out/ is older than src/
 pnpm perf:generate         # writes perf/decks/stress-{25,50,100,200,300,500,1000} (+ deck-update payloads)
 pnpm perf:run --slides=100 --runs=3 --ram-basis=proc-pss-sum
 pnpm perf:diff perf/results/baseline-main.json perf/results/run-100.json
@@ -417,17 +417,18 @@ created only once its URL exists, so a switch's first `load` is the slide's (a b
 | Unmeasured switches                |             — |          **0** | every switch got its own canvas `load`   |
 
 The baseline is the committed `baseline-main.json` (harness `ef07cf4`, median 1-minute load 6.3,
-`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, taken at `0dad951` — the commit
-that wrote it, and the last one on this branch to touch the harness, which is the M8.1 round-3 one:
-each switch waits up to 2 s for its own load, and any that never arrives is censored at that bound
-and counted in `unmeasuredSwitches`, which is 0 in all three tiers. The host was quiet (load 1.4,
+`contended: true`). The M8.2 column is `m82-lazy-mounting-100.json`, and the tree it was measured on
+is recorded in that file's own `commit` field — stated nowhere else, because a SHA copied into prose
+is a second copy to rot the next time a rebase rewrites it. It ran on the M8.1 round-3 harness: each
+switch waits up to 2 s for its own load, and any that never arrives is censored at that bound and
+counted in `unmeasuredSwitches`, which is 0 in all three tiers. The host was quiet (load 1.4,
 `contended: false`), so its timing columns can be believed; the baseline's cannot, and the process
-and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as regressed
-(53 → 203); that compares against a contended baseline whose frame numbers the
-"Contention" section above declares unusable. The comparable figure is the shell frame rate: 19.4 fps
-median during the dwell here (per run 9.6 / 28.4 / 19.4) against M8.1's quiet-window 7.1 fps at
-the same tier. The spread across those three runs is the reason the dwell's frame numbers are
-reported and never budgeted.
+and PSS rows are the claim. `perf:diff` against the baseline flags `droppedFrames` as regressed (53
+→ 203); that compares against a contended baseline whose frame numbers the "Contention" section
+above declares unusable. The comparable figure is the shell frame rate: 19.4 fps median during the
+dwell here (per run 9.6 / 28.4 / 19.4) against M8.1's quiet-window 7.1 fps at the same tier. The
+spread across those three runs is the reason the dwell's frame numbers are reported and never
+budgeted.
 
 ### The four URL shapes that were measured
 
@@ -466,9 +467,9 @@ dropping the switches slower than the inter-click gap.
 
 ### Scaling after M8.2
 
-Every row is 3 runs at `0dad951`, `proc-pss-sum`, 60 measured switches and 0 unmeasured, every tier
-uncontended. **The switch columns are not comparable with the ones published before this round**: the
-M8.1 round-3 harness waits for each click's own `load` instead of moving on after a fixed 220 ms, so
+Every row is 3 runs of that tier's own report (`commit` field as above), `proc-pss-sum`, 60 measured
+switches and 0 unmeasured, every tier uncontended. **The switch columns are not comparable with the
+ones published before this round**: the M8.1 round-3 harness waits for each click's own `load` instead of moving on after a fixed 220 ms, so
 a switch slower than that gap is now measured rather than losing its load to the next click and
 vanishing from the series. The p95 rises accordingly — most visibly at 1000 slides, where the older
 number was also taken under contention — and that is the harness seeing more, not the app doing more.
@@ -527,6 +528,14 @@ the 100-slide tier because it finishes in under the sampler's 250 ms tick.
 The URL change is safe only if nothing that keeps slides apart lived in the per-document host, and
 the per-document _stage_ host is worth its processes only if it actually isolates a hung neighbour.
 The probe tests both in the built app and exits non-zero if either fails.
+
+It is a claim about the _built_ app, so the harness refuses to launch at all when any artifact in
+`out/` is older than the newest file under `src/`, naming both paths (`perf/harness/bundle.ts`,
+which `perf:run` goes through too). Without that refusal the probe reported `CONTAINED: 110 of 110`
+and `ISOLATED: 62 ms` for a tree whose `slideDocumentHost` had been mutated to break exactly the
+property it was certifying — and since `pnpm build` is `pnpm typecheck && electron-vite build`, a
+type error leaves the previous bundle in place, so the honest-looking pass can come from a build
+that failed.
 
 **Containment.** It pushes a three-slide deck whose slides are probes, and from inside each running
 slide reaches for the host (`parent.document`, `top.document`, `parent.sloodge`), every sibling frame

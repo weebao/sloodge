@@ -70,10 +70,11 @@ export type SlideRequest = {
 /**
  * Resolve a `slide://` request against the registry.
  *
- * The accepted surface is as narrow as it can be made: `GET` only, the exact scheme, the one fixed
- * host, and a path that is exactly `/<well-formed id>/`. Everything else is a 404 with no detail —
- * distinguishing "no such id" from "bad path" in the response would hand a slide a probe for its
- * siblings' ids, and there is no debugging value in it that a main-process log cannot serve better.
+ * The accepted surface is as narrow as it can be made: `GET` only, the exact scheme, a host that is
+ * either `thumbnails` or the stage host for the id in the path, and a path that is exactly
+ * `/<well-formed id>/`. Everything else is a 404 with no detail — distinguishing "no such id" from
+ * "bad path" in the response would hand a slide a probe for its siblings' ids, and there is no
+ * debugging value in it that a main-process log cannot serve better.
  */
 export function resolveSlideRequest(
   registry: SlideRegistry,
