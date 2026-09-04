@@ -148,8 +148,11 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
           </div>
         )}
       </div>
-      {/* Docked bottom-of-canvas (wireframe §20): the local property panel, only in Design Mode
-          and only when an element is selected (the panel returns null otherwise). */}
+      {/* Docked bottom-of-canvas (wireframe §20): the local property panel, mounted for as long as
+          Design Mode is on — with nothing selected it shows an empty state. It must be there *before*
+          the first selection: mounting it on select shrank the mat, `useElementSize` re-fit the
+          slide ~116px higher, and the second click of a double-click landed on a different element
+          (round-2 review). The panel's height is fixed for the same reason. */}
       {designModeActive && slide ? <PropertyPanel slide={slide} inspect={inspect} /> : null}
     </main>
   )

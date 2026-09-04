@@ -69,9 +69,13 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('PropertyPanel', () => {
-  it('renders nothing when there is no selection', () => {
+  it('renders the dock with an empty state and no fields when there is no selection', () => {
+    // The dock is always mounted in Design Mode (round-2 review: mounting it on select re-fit the
+    // slide under a double-click), so no selection means the shell plus a hint, never `null`.
     render(<PropertyPanel slide={currentSlide()} />)
-    expect(screen.queryByTestId('property-panel')).toBeNull()
+    expect(screen.getByTestId('property-panel')).toBeTruthy()
+    expect(screen.getByTestId('property-panel-empty').textContent).toContain('Double-click text')
+    expect(screen.queryByTestId('prop-text')).toBeNull()
   })
 
   it('populates fields from the element’s source values', () => {

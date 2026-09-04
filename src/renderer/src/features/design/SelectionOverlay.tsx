@@ -214,15 +214,26 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     beginEditRef.current = beginEdit
   }, [beginEdit])
 
-  // A session that ends leaves focus inside the iframe, where `window` key listeners in the host
-  // document never see it — `Ctrl/⌘+D` and the selection keys would all be dead. Pulling focus back
-  // to the overlay restores them, and gives the keyboard path somewhere sensible to land.
+  // A session that ends by `Enter`/`Escape` leaves focus inside the iframe, where `window` key
+  // listeners in the host document never see it — `Ctrl/⌘+D` and the selection keys would all be
+  // dead. Pulling focus back to the overlay restores them, and gives the keyboard path somewhere
+  // sensible to land.
+  //
+  // Only when focus went nowhere useful, though. A session also ends because the user clicked the
+  // chat composer, a property-panel field, or opened Settings — the frame's `blur` commits it — and
+  // whatever took focus must keep it: stealing it back swallowed the next keystrokes and left the
+  // Settings modal with a dead `Escape` (round-2 review, executed in Electron).
   const wasEditing = useRef(false)
   useEffect(() => {
     const isEditing = editing !== null
-    if (wasEditing.current && !isEditing) rootRef.current?.focus()
+    if (wasEditing.current && !isEditing) {
+      const active = document.activeElement
+      if (active === null || active === document.body || active === frameRef.current) {
+        rootRef.current?.focus()
+      }
+    }
     wasEditing.current = isEditing
-  }, [editing])
+  }, [editing, frameRef])
 
   // Cache of every grabbable element (rects) for smart-guide snapping, refreshed on each drag start.
   const elementsRef = useRef<readonly SlHit[]>([])
@@ -405,23 +416,36 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       // A marquee that passed the click threshold ends with a synthetic click the browser fires on
       // pointerup; swallow it so a sweep does not also run a point hit-test that collapses the set.
       if (isMarqueeing) return
+      // The second click of a double-click selects nothing: the first already chose the element and
+      // `onDoubleClick` edits that choice. Hit-testing again here would let anything that moved the
+      // slide between the two clicks pick a different element out from under the gesture.
+      if (event.detail === 2) return
       const point = framePoint(event)
       requestHit(point.x, point.y, event.shiftKey ? 'toggle' : 'select', event.altKey)
     },
     [framePoint, requestHit, isMarqueeing],
   )
 
-  // Double-click opens a caret on whatever is under the pointer. It hit-tests rather than reusing
-  // the current selection so that double-clicking straight into an unselected element works in one
-  // gesture — and the hit is only used as "the user gestured near this id": `beginEdit` re-derives
-  // the element from the parent's own map before anything is written (§2.2).
+  // Double-click edits the element the first click selected — it does *not* hit-test the pointer
+  // again. The first click's selection mounts the property panel, and anything that reflows the
+  // stage between the two clicks makes a second hit-test at the same screen point land elsewhere;
+  // on a fresh deck it landed on the slide root and no caret opened (round-2 review). The store is
+  // read directly, not through the render closure, so the first click's hit response counts even
+  // when it arrived after this handler's last render. Only with nothing selected — that response
+  // still in flight — does it fall back to a hit-test in `edit` mode, which selects and then edits.
   const onDoubleClick = useCallback(
     (event: React.MouseEvent): void => {
       if (isMarqueeing) return
+      const current = useDesignStore.getState().selections
+      const only = current.length === 1 ? current[0] : undefined
+      if (only !== undefined) {
+        beginEdit(only.slId)
+        return
+      }
       const point = framePoint(event)
       requestHit(point.x, point.y, 'edit', event.altKey)
     },
-    [framePoint, requestHit, isMarqueeing],
+    [framePoint, requestHit, isMarqueeing, beginEdit],
   )
 
   const onMouseLeave = useCallback((): void => {

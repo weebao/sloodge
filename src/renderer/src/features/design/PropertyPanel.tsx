@@ -21,6 +21,16 @@
  * so a typing burst in one field is one undo step; the frame reloads once per commit. The finer
  * 600 ms cross-field merge of §7.2 needs a coalescing API `history.ts` does not expose yet and is
  * deferred — each committed field edit is its own clean undo unit, which is the safe default.
+ *
+ * ## Always mounted, fixed height — the dock must never move the slide
+ *
+ * The panel is a real dock (wireframe §20, "docked bottom of canvas"), so it takes its space from
+ * the slide's mat. It therefore renders for as long as Design Mode is on — an empty state with
+ * nothing selected — and at a fixed height regardless of content. Mounting it on selection made the
+ * first click on a fresh deck re-fit the slide ~116px higher, so the second click of a double-click
+ * hit a different element and no caret opened (round-2 review, executed in Electron). A layout that
+ * jumps on select is a defect in its own right, and the working layout — an element selected — is
+ * the one with the panel open, so reserving it costs the never-selected state only.
  */
 
 import { useCallback, useMemo, useState, type JSX } from 'react'
@@ -140,8 +150,7 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
     void askAboutElement()
   }, [askAboutElement])
 
-  if (selection === null) return null
-  const element = resolveElement(map, selection.slId)
+  const element = selection === null ? null : resolveElement(map, selection.slId)
   // The selected sl-id no longer resolves (e.g. a structural edit reparsed the slide): show the
   // shell but no fields rather than guessing an element. Re-resolution by path is M3.5's job.
   const values = element === null ? null : readPropertyValues(map.source, element)
@@ -150,16 +159,26 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
     <section
       aria-label="Properties"
       data-testid="property-panel"
-      className="shrink-0 border-t border-chrome-line bg-shell-bg/95 px-4 py-2.5 text-[12px] dark:border-ink-line dark:bg-ink-alt/95"
+      // `h-64` + `overflow-y-auto`, not content height: the dock's size must not depend on what is
+      // selected (see the header). 256px is the fields' unwrapped height at a 740px-wide canvas plus
+      // a little slack; narrower canvases wrap the field rows and scroll inside the dock.
+      className="h-64 shrink-0 overflow-y-auto border-t border-chrome-line bg-shell-bg/95 px-4 py-2.5 text-[12px] dark:border-ink-line dark:bg-ink-alt/95"
     >
       <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-chrome-muted dark:text-ink-muted">
         <span>Properties</span>
-        <span className="font-normal normal-case text-chrome-muted/80 dark:text-ink-muted/80">
-          {selection.tag}
-          {selection.id ? `#${selection.id}` : ''}
-        </span>
+        {selection === null ? null : (
+          <span className="font-normal normal-case text-chrome-muted/80 dark:text-ink-muted/80">
+            {selection.tag}
+            {selection.id ? `#${selection.id}` : ''}
+          </span>
+        )}
       </div>
-      {element === null || values === null ? (
+      {selection === null ? (
+        <p data-testid="property-panel-empty" className="text-chrome-muted dark:text-ink-muted">
+          Click an element to see its properties. Double-click text, or press Enter, to edit it in
+          place.
+        </p>
+      ) : element === null || values === null ? (
         <p className="text-chrome-muted dark:text-ink-muted">Selection is no longer available.</p>
       ) : (
         <>

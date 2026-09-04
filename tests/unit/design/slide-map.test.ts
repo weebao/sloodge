@@ -766,6 +766,21 @@ describe('buildSlideMap — textOnly requires the text nodes to cover inner exac
     ['text then a block inside the formatting element', '<b>x<p>y</b>z</p>', 'b'],
     ['text foster-parented out of a table', '<table>x</table>', 'table'],
     ['head the parser locates inverted', '<head>x</head>', 'head'],
+    // Ignored *start* tags are refused: writing over `<body class="x">` drops the attributes the
+    // parser merged onto the real body (round-2 review), and `<tr>` is refused with it rather than
+    // enumerating which ignored start tags have side effects.
+    [
+      'ignored body start tag whose attributes merge onto the body',
+      '<h1>a<body class="x">b</h1>',
+      'h1',
+    ],
+    [
+      'ignored html start tag whose attributes merge onto the root',
+      '<p>a<html lang="x">b</p>',
+      'p',
+    ],
+    ['stray ignored start tag inside a paragraph', '<p>a<tr>b</p>', 'p'],
+    ['start tag after a dropped newline and an entity', '<pre>\n&amp;<tr>x</pre>', 'pre'],
   ])('%s: not textOnly, textContent null', (_label, html, tag) => {
     const element = one(build(html), tag)
     expect(element.textOnly).toBe(false)
@@ -778,11 +793,28 @@ describe('buildSlideMap — textOnly requires the text nodes to cover inner exac
     ['entities decoded', '<p>a&nbsp;b &mdash; &lt;c&gt; &amp;d</p>', 'p', 'a b — <c> &d'],
     ['crlf normalized', '<p>a\r\nb</p>', 'p', 'a\nb'],
     ['stray ignored end tag merged into one text node', '<p>a</b>b</p>', 'p', 'ab'],
-    ['stray ignored start tag merged into one text node', '<p>a<tr>b</p>', 'p', 'ab'],
     ['pre with the leading newline the parser drops', '<pre>\nx</pre>', 'pre', 'x'],
     ['pre with a dropped CRLF', '<pre>\r\nx</pre>', 'pre', 'x'],
+    ['pre with a dropped lone CR', '<pre>\rx</pre>', 'pre', 'x'],
     ['pre holding only the dropped newline', '<pre>\n</pre>', 'pre', ''],
+    ['pre holding only a lone CR', '<pre>\r</pre>', 'pre', ''],
     ['textarea with the leading newline dropped', '<textarea>\nx</textarea>', 'textarea', 'x'],
+    // parse5 keeps the whitespace run's start (before the dropped newline) as the node's start.
+    ['pre with newline then indentation', '<pre>\n  code</pre>', 'pre', '  code'],
+    ['pre with two newlines', '<pre>\n\nx</pre>', 'pre', '\nx'],
+    ['pre with CRLF then indentation', '<pre>\r\n  x</pre>', 'pre', '  x'],
+    // parse5 locates a text node that begins with a character reference at the reference's last byte.
+    ['pre with newline then an entity', '<pre>\n&amp;x</pre>', 'pre', '&x'],
+    ['pre with CRLF then an entity', '<pre>\r\n&amp;x</pre>', 'pre', '&x'],
+    ['pre with newline then a numeric reference', '<pre>\r\n&#x41;b</pre>', 'pre', 'Ab'],
+    ['pre with newline then an unterminated legacy entity', '<pre>\n&ampx</pre>', 'pre', '&x'],
+    ['pre with newline then only an entity', '<pre>\n&nbsp;</pre>', 'pre', ' '],
+    ['listing with newline then an entity', '<listing>\n&lt;a</listing>', 'listing', '<a'],
+    ['textarea with newline then an entity', '<textarea>\n&amp;x</textarea>', 'textarea', '&x'],
+    ['pre with newline then a bare ampersand', '<pre>\n& x</pre>', 'pre', '& x'],
+    // RCDATA: a `<` in a textarea or title is text, not an ignored tag.
+    ['textarea holding a literal tag', '<textarea>a<b>c</textarea>', 'textarea', 'a<b>c'],
+    ['title holding a literal tag', '<title>a<b>c</title>', 'title', 'a<b>c'],
     ['whitespace inside a table', '<table> </table>', 'table', ' '],
     ['svg text', '<svg><text>a</text></svg>', 'text', 'a'],
     ['unclosed at eof', '<p>tail', 'p', 'tail'],

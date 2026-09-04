@@ -12,7 +12,11 @@
 
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SlEditAction, SlEditEventPayload } from '../../../src/shared/design/bridge-protocol'
+import type {
+  SlEditAction,
+  SlEditEventPayload,
+  SlEditResponse,
+} from '../../../src/shared/design/bridge-protocol'
 import { findForbiddenApiTokens } from '../../../src/shared/document/slide-contract'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/history'
@@ -82,15 +86,48 @@ function undoDepth(): number {
 interface Harness {
   readonly result: { current: ReturnType<typeof useTextEditing> }
   readonly sent: { slId: string; action: SlEditAction }[]
+  /** Every `onResult` the hook handed over, in request order, for tests that answer by hand. */
+  readonly replies: ((result: SlEditResponse) => void)[]
 }
 
-function mount(): Harness {
-  const sent: { slId: string; action: SlEditAction }[] = []
-  const requestEdit = vi.fn((slId: string, action: SlEditAction) => {
-    sent.push({ slId, action })
-  })
+/**
+ * `confirm` makes the stubbed frame answer every `begin` with a caret at once — what the real frame
+ * does, one message later. Tests about the reply itself pass `false` and answer through `replies`.
+ */
+function mount(confirm = true): Harness {
+  const sent: Harness['sent'] = []
+  const replies: Harness['replies'] = []
+  const requestEdit = vi.fn(
+    (slId: string, action: SlEditAction, onResult?: (result: SlEditResponse) => void) => {
+      sent.push({ slId, action })
+      if (onResult) replies.push(onResult)
+      if (confirm && action === 'begin' && onResult) onResult({ slId, text: '', editing: true })
+    },
+  )
   const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
-  return { result, sent }
+  return { result, sent, replies }
+}
+
+/** A caret opens only on the selected element, so select first — as every overlay path does. */
+function select(slId: string): void {
+  useDesignStore.getState().setSelection({
+    slId,
+    tag: 'h1',
+    id: null,
+    classes: [],
+    rect: { x: 0, y: 0, width: 1, height: 1 },
+    ancestors: [],
+  })
+}
+
+/** Select `slId` and ask for a caret, as the overlay's double-click does. */
+function open(harness: Harness, slId: string): boolean {
+  let opened = false
+  act(() => {
+    select(slId)
+    opened = harness.result.current.beginEdit(slId)
+  })
+  return opened
 }
 
 /** Deliver a frame-originated session end, as `useDesignBridge` would after validating it. */
@@ -123,10 +160,7 @@ describe('useTextEditing — opening a session', () => {
     const harness = mount()
     const id = idOfClass('title')
 
-    let opened = false
-    act(() => {
-      opened = harness.result.current.beginEdit(id)
-    })
+    const opened = open(harness, id)
 
     expect(opened).toBe(true)
     expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
@@ -139,10 +173,7 @@ describe('useTextEditing — opening a session', () => {
   ])('declines %s without touching the frame', (_label, cls) => {
     const harness = mount()
 
-    let opened = true
-    act(() => {
-      opened = harness.result.current.beginEdit(idOfClass(cls))
-    })
+    const opened = open(harness, idOfClass(cls))
 
     expect(opened).toBe(false)
     expect(harness.sent).toEqual([])
@@ -152,13 +183,126 @@ describe('useTextEditing — opening a session', () => {
   it('declines an sl-id the map does not know', () => {
     const harness = mount()
 
-    let opened = true
-    act(() => {
-      opened = harness.result.current.beginEdit('nope:999')
-    })
+    const opened = open(harness, 'nope:999')
 
     expect(opened).toBe(false)
     expect(harness.sent).toEqual([])
+  })
+})
+
+/**
+ * Round-2 review, minor 4: the frame is the source of truth for whether a caret exists. `editing` is
+ * set on the frame's confirmation, never on the request — and the frame is told when the store
+ * closes a session without going through the hook.
+ */
+describe('useTextEditing — the frame is the source of truth for session start', () => {
+  it('editing is set only when the frame confirms the caret', () => {
+    const harness = mount(false)
+    const id = idOfClass('title')
+
+    expect(open(harness, id)).toBe(true)
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(activeTextEditSession()).toBeNull()
+
+    act(() => {
+      harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+    expect(useDesignStore.getState().editing).toBe(id)
+    expect(activeTextEditSession()).not.toBeNull()
+  })
+
+  it.each([
+    ['editing:false', { slId: '', text: 'x', editing: false }],
+    ['null', null],
+  ])('a frame that declines (%s) never sets editing, so nothing is stranded', (_label, answer) => {
+    const harness = mount(false)
+    const id = idOfClass('title')
+    open(harness, id)
+
+    act(() => {
+      harness.replies[0]!(answer === null ? null : { ...answer, slId: id })
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+    // Enter/F2 stay armed: a fresh begin is asked for, not refused.
+    expect(open(harness, id)).toBe(true)
+  })
+
+  it('a frame that never answers leaves the overlay in selection mode, not pass-through', () => {
+    const harness = mount(false)
+    open(harness, idOfClass('title'))
+    expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  it('a reply to a superseded begin is dropped; only the newest request may open', () => {
+    // A second editable target: the fixture's third paragraph with its lock removed.
+    slideId = seedDeck(SLIDE_HTML.replace(' data-sl-lock', ''))
+    const harness = mount(false)
+    const title = idOfClass('title')
+    const second = idOfClass('locked')
+    open(harness, title)
+    open(harness, second)
+
+    act(() => {
+      harness.replies[0]!({ slId: title, text: 'Old title', editing: true })
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    act(() => {
+      harness.replies[1]!({ slId: second, text: 'Chrome', editing: true })
+    })
+    expect(useDesignStore.getState().editing).toBe(second)
+  })
+
+  it('a confirmation that arrives after the selection moved on cancels the caret', () => {
+    const harness = mount(false)
+    const id = idOfClass('title')
+    open(harness, id)
+    act(() => {
+      select(idOfClass('mixed'))
+    })
+
+    act(() => {
+      harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent).toEqual([
+      { slId: id, action: 'begin' },
+      { slId: id, action: 'cancel' },
+    ])
+  })
+
+  it('the store closing a session behind the hook sends the frame a cancel and unregisters it', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    expect(activeTextEditSession()).not.toBeNull()
+
+    act(() => {
+      select(idOfClass('mixed'))
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent.at(-1)).toEqual({ slId: id, action: 'cancel' })
+    expect(activeTextEditSession()).toBeNull()
+  })
+
+  it('a session the hook ends itself sends no redundant cancel', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    frameEnd(harness, { slId: id, text: 'New title' })
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
+  })
+
+  it('unmounting with a session open clears the flag and asks the frame for nothing', () => {
+    // The bridge's listener is gone before this cleanup runs, so a `commit` request could never be
+    // answered (round-2 review, minor 3); the frame's blur is what commits on every real path.
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    cleanup()
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(harness.sent).toEqual([{ slId: id, action: 'begin' }])
   })
 })
 
@@ -168,9 +312,7 @@ describe('useTextEditing — committing', () => {
     const id = idOfClass('title')
     const before = undoDepth()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: 'New title' })
 
     expect(currentHtml()).toContain('<h1 class="title">New title</h1>')
@@ -182,9 +324,7 @@ describe('useTextEditing — committing', () => {
     const harness = mount()
     const id = idOfClass('title')
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: 'New title' })
     act(() => {
       useDeckStore.getState().undo()
@@ -198,9 +338,7 @@ describe('useTextEditing — committing', () => {
     const id = idOfClass('title')
     const before = undoDepth()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: 'Old title' })
 
     expect(undoDepth()).toBe(before)
@@ -212,9 +350,7 @@ describe('useTextEditing — committing', () => {
     const id = idOfClass('title')
     const before = undoDepth()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     // A forged event naming a different element must not write to it.
     frameEnd(harness, { slId: idOfClass('mixed'), text: 'hijacked' })
 
@@ -244,9 +380,7 @@ describe('useTextEditing — the undo cap cannot be flooded', () => {
     const id = idOfClass('title')
     const before = undoDepth()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     // Only the first is accepted: the session closes on the first end, so the rest are unsolicited.
     for (let index = 0; index < 200; index += 1) {
       frameEnd(harness, { slId: id, text: `burst ${String(index)}` })
@@ -260,9 +394,7 @@ describe('useTextEditing — the undo cap cannot be flooded', () => {
     const id = idOfClass('title')
 
     for (let index = 0; index < 300; index += 1) {
-      act(() => {
-        harness.result.current.beginEdit(id)
-      })
+      open(harness, id)
       frameEnd(harness, { slId: id, text: `title ${String(index)}` })
     }
 
@@ -277,9 +409,7 @@ describe('useTextEditing — the text is untrusted', () => {
     const harness = mount()
     const id = idOfClass('title')
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: '<img src=x onerror=alert(1)>' })
 
     const html = currentHtml()
@@ -295,9 +425,7 @@ describe('useTextEditing — the text is untrusted', () => {
     const harness = mount()
     const id = idOfClass('title')
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: 'Do not call fetch( or localStorage' })
 
     expect(findForbiddenApiTokens(currentHtml())).toEqual([])
@@ -328,20 +456,14 @@ describe('useTextEditing — the text is untrusted', () => {
 describe('useTextEditing — the document moving under an open caret ends the session', () => {
   function openSession(harness: Harness): string {
     const id = idOfClass('title')
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     expect(useDesignStore.getState().editing).toBe(id)
     return id
   }
 
   /** Enter/F2 are armed again only when `editing` is null; a fresh `beginEdit` proves the same. */
   function canBeginAgain(harness: Harness): boolean {
-    let opened = false
-    act(() => {
-      opened = harness.result.current.beginEdit(idOfClass('title'))
-    })
-    return opened
+    return open(harness, idOfClass('title'))
   }
 
   it('a deck:updated snapshot replacing the slide ends the session and re-arms editing', () => {
@@ -431,45 +553,6 @@ describe('useTextEditing — the document moving under an open caret ends the se
   })
 })
 
-describe('useTextEditing — the frame declining a begin does not strand the overlay', () => {
-  it('ends the session when the frame answers editing:false or null', () => {
-    for (const answer of [{ slId: '', text: 'x', editing: false }, null]) {
-      const calls: ((r: unknown) => void)[] = []
-      const requestEdit = vi.fn((_slId: string, _action: SlEditAction, cb?: (r: never) => void) => {
-        if (cb) calls.push(cb as (r: unknown) => void)
-      })
-      const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
-      const id = idOfClass('title')
-      act(() => {
-        result.current.beginEdit(id)
-      })
-      expect(useDesignStore.getState().editing).toBe(id)
-
-      act(() => {
-        calls[0]!(answer === null ? null : { ...answer, slId: id })
-      })
-      expect(useDesignStore.getState().editing).toBeNull()
-      cleanup()
-    }
-  })
-
-  it('keeps the session when the frame confirms editing:true', () => {
-    const calls: ((r: unknown) => void)[] = []
-    const requestEdit = vi.fn((_slId: string, _action: SlEditAction, cb?: (r: never) => void) => {
-      if (cb) calls.push(cb as (r: unknown) => void)
-    })
-    const { result } = renderHook(() => useTextEditing({ slideId, requestEdit }))
-    const id = idOfClass('title')
-    act(() => {
-      result.current.beginEdit(id)
-    })
-    act(() => {
-      calls[0]!({ slId: id, text: 'Old title', editing: true })
-    })
-    expect(useDesignStore.getState().editing).toBe(id)
-  })
-})
-
 /**
  * Round-1 review blocker 2, half (a): while a caret is open the Edit menu's Undo/Redo must reach the
  * *field's* undo inside the frame, never the deck's. The session registers a forwarder for exactly
@@ -480,9 +563,7 @@ describe('useTextEditing — registers the open session for the Edit menu', () =
     const harness = mount()
     expect(activeTextEditSession()).toBeNull()
     const id = idOfClass('title')
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
 
     const session = activeTextEditSession()
     expect(session).not.toBeNull()
@@ -498,23 +579,17 @@ describe('useTextEditing — registers the open session for the Edit menu', () =
     const harness = mount()
     const id = idOfClass('title')
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     frameEnd(harness, { slId: id, text: 'x' })
     expect(activeTextEditSession()).toBeNull()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     act(() => {
       harness.result.current.onFrameReady()
     })
     expect(activeTextEditSession()).toBeNull()
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     cleanup()
     expect(activeTextEditSession()).toBeNull()
   })
@@ -522,9 +597,7 @@ describe('useTextEditing — registers the open session for the Edit menu', () =
   it('menu Undo with focus on the iframe runs the frame field’s undo, not the deck’s', () => {
     const harness = mount()
     const id = idOfClass('title')
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     const deck = { undo: vi.fn(), redo: vi.fn() }
     const iframe = document.createElement('iframe')
 
@@ -551,9 +624,7 @@ describe('useTextEditing — entity-bearing text is a no-op when unchanged (revi
     const before = undoDepth()
     const canUndo = useDeckStore.getState().canUndo
 
-    act(() => {
-      harness.result.current.beginEdit(id)
-    })
+    open(harness, id)
     // What the frame's textContent reads for that heading.
     frameEnd(harness, { slId: id, text: 'Q3\u00A0Revenue — 2026', reason: 'escape' })
 

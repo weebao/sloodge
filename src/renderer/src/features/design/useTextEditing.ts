@@ -52,6 +52,16 @@
  * element's content") and PowerPoint, where `Esc` leaves your typing and selects the shape. Undo is
  * the cancel path and it is exactly one entry, so nothing is trapped.
  *
+ * ## The frame is the source of truth for whether a caret exists
+ *
+ * `designStore.editing` is set when the frame *confirms* a `begin`, not when the parent asks. The
+ * flag is what puts the overlay into pass-through and disarms `Enter`/`F2`, so setting it early
+ * would leave a live slide with no caret and no way back in whenever the frame did not answer (a
+ * slide whose author JS swallowed the bridge's `message` handler). The reverse desync is closed
+ * too: when the store clears `editing` behind this hook's back — `setSelection` of another element,
+ * a shift-click, a marquee — the hook sends the frame a `cancel`, so a `contenteditable` never
+ * outlives the flag that says it exists.
+ *
  * ## The document moving under an open caret ends the session — by *cancel*, deterministically
  *
  * Three things can replace the frame's document while a caret is open: the slide switches, the slide's
@@ -96,8 +106,9 @@ export interface TextEditingOptions {
 
 export interface TextEditingApi {
   /**
-   * Open a session on `slId` if that element is editable. Returns `true` when a session was opened,
-   * so a caller can fall back to another gesture when it was not.
+   * Ask the frame for a caret on `slId` if that element is editable in the source. Returns `true`
+   * when it asked, so a caller can fall back to another gesture when it did not; the session itself
+   * opens when the frame confirms (see the header).
    */
   readonly beginEdit: (slId: string) => boolean
   /** Handle a session the frame ended itself. Wire this into `useDesignBridge`'s `onEditEnd`. */
@@ -125,8 +136,14 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   // time), so a stale closure can never commit against the wrong session.
   const editingRef = useRef(editing)
   useEffect(() => {
+    const previous = editingRef.current
     editingRef.current = editing
-  }, [editing])
+    // The store closed the session behind this hook's back — `setSelection` of another element, a
+    // shift-click, a marquee — and the frame still has a live `contenteditable`. Tell it, or the two
+    // disagree about whether a caret exists. Every end this hook performs itself nulls the ref
+    // *before* the store, so those never arrive here with `previous` set.
+    if (previous !== null && editing === null) requestEdit(previous, 'cancel')
+  }, [editing, requestEdit])
 
   /**
    * Whether `slId` can take a caret in the *current* bytes. Internal: the overlay derives the same
@@ -148,21 +165,33 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     endEditing()
   }, [endEditing])
 
+  // The `begin` this hook is waiting on. Only the newest request may open a session; a reply to an
+  // older one — an element asked for and then abandoned before the frame answered — is dropped.
+  const pendingRef = useRef<string | null>(null)
+
   const beginEdit = useCallback(
     (slId: string): boolean => {
       if (!canEdit(slId)) return false
-      beginEditing(slId)
-      editingRef.current = slId
+      pendingRef.current = slId
       requestEdit(slId, 'begin', (result) => {
+        if (pendingRef.current !== slId) return
+        pendingRef.current = null
         // The frame judges editability on its live DOM, which author JS may have changed since the
-        // source was parsed (a script that split the text into spans). If it declined, no caret
-        // exists, and leaving `editing` set would strand the overlay in pass-through mode.
-        if (editingRef.current !== slId) return
-        if (result === null || !result.editing) dropSession()
+        // source was parsed (a script that split the text into spans). Declined means no caret, and
+        // `editing` was never set, so nothing is stranded.
+        if (result === null || !result.editing) return
+        // The selection moved on while the frame was answering: the caret it just opened is on an
+        // element nobody has selected, so close it rather than draw a caret frame around another.
+        if (useDesignStore.getState().selection?.slId !== slId) {
+          requestEdit(slId, 'cancel')
+          return
+        }
+        editingRef.current = slId
+        beginEditing(slId)
       })
       return true
     },
-    [canEdit, beginEditing, requestEdit, dropSession],
+    [canEdit, beginEditing, requestEdit],
   )
 
   /**
@@ -194,40 +223,27 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     [dropSession, commitText],
   )
 
-  // Ending a session the parent initiated: ask the frame for the text, then commit it. Used when the
-  // app — not the frame — decides editing is over (Design Mode off, the slide changed, unmount).
-  const endFromParent = useCallback(
-    (slId: string, commit: boolean): void => {
-      dropSession()
-      requestEdit(slId, commit ? 'commit' : 'cancel', (result) => {
-        if (commit && result !== null) commitText(slId, result.text)
-      })
-    },
-    [dropSession, commitText, requestEdit],
-  )
-
-  // Design Mode turned off (or the overlay unmounted) with a session open: commit rather than
-  // discard — the user's characters are on screen and losing them silently would be the worse bug.
-  const endRef = useRef(endFromParent)
-  useEffect(() => {
-    endRef.current = endFromParent
-  }, [endFromParent])
+  // Unmount with a session open — Design Mode turned off, the deck emptied. The bridge's listener is
+  // already gone (it is declared before this hook in the overlay) and postMessage is asynchronous, so
+  // the frame cannot be asked for its text from here. What saves the text on those paths is the
+  // frame's own `blur`: a click on the Design Mode toggle, on Present, or the Settings accelerator
+  // moves focus out of the frame, which commits, before React unmounts anything (all three executed
+  // in Electron, round 2). Only the flag is cleared here.
   useEffect(() => {
     return () => {
-      const open = editingRef.current
-      if (open !== null) endRef.current(open, true)
+      if (editingRef.current !== null) dropSession()
     }
-  }, [])
+  }, [dropSession])
 
-  // The slide changed under an open session: the frame is about to be replaced and its `slId` refers
-  // to the *previous* slide's map, so committing would write the wrong element. Abandon instead.
+  // The slide changed under an open session: the frame is being replaced and its `slId` refers to
+  // the *previous* slide's map, so committing would write the wrong element. Abandon instead — the
+  // bridge is already bound to the new slide id, so there is no frame to send a cancel to either.
   const slideRef = useRef(slideId)
   useEffect(() => {
     if (slideRef.current === slideId) return
-    const open = editingRef.current
     slideRef.current = slideId
-    if (open !== null) endRef.current(open, false)
-  }, [slideId])
+    if (editingRef.current !== null) dropSession()
+  }, [slideId, dropSession])
 
   // The slide's bytes changed under an open session from outside this hook — see the header. The
   // frame is reloading with the new bytes, so there is no session left to cancel there; only the

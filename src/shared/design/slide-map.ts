@@ -209,9 +209,33 @@ function isContentless(
 /**
  * Elements whose leading newline the tree builder discards ("pre", "listing" and "textarea" start
  * tags: "if the next token is a U+000A LINE FEED character token, then ignore that token"). It is
- * the one place character bytes inside `inner` are not represented by any text node.
+ * the one place character bytes inside `inner` are not represented by any text node. The input
+ * stream preprocessor has already turned a lone CR into LF, so `\n`, `\r\n` and `\r` are all dropped.
  */
 const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea'])
+
+/**
+ * Elements whose content the tokenizer reads as character data (RCDATA and raw text): a `<` in
+ * their bytes is text, never a tag the tree builder saw and ignored.
+ */
+const CHARACTER_DATA_CONTENT: ReadonlySet<string> = new Set([
+  'title',
+  'textarea',
+  'script',
+  'style',
+  'xmp',
+  'iframe',
+  'noembed',
+  'noframes',
+  'noscript',
+  'plaintext',
+])
+
+/** The bytes of a start tag — `<` then an ASCII letter — whatever the tree builder did with it. */
+const START_TAG_BYTES = /<[A-Za-z]/
+
+/** A character reference up to but not including its last byte: `&`, an optional `#`, alphanumerics. */
+const CHAR_REF_HEAD = /^&#?[0-9A-Za-z]*$/
 
 /**
  * The decoded character data of an element whose `inner` bytes are exactly its text-node children,
@@ -223,11 +247,24 @@ const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 
  * that landed *outside* the element, a `<head>` whose location the parser reports inverted — and
  * splicing over those bytes is exactly the corruption this refuses.
  *
- * A text node's span may legitimately contain bytes that are not text: the parser *ignores* a stray
- * `</b>` or an out-of-place `<tr>` inside `<p>a</b>b</p>`, merges the character tokens around it into
- * one node and extends that node's span across the ignored tag. Those bytes produced no element, so
- * nothing addressable is lost by writing over them; the decoded value is still the whole truth of
- * what the element renders.
+ * A text node's span may contain bytes that are not text: the parser *ignores* a stray `</b>` inside
+ * `<p>a</b>b</p>`, merges the character tokens around it into one node and extends that node's span
+ * across the ignored tag. An ignored **end** tag is inert — it produced no element and changed none —
+ * so writing over it loses nothing. An ignored **start** tag is not reliably inert: a stray
+ * `<body class="x">` or `<html lang="x">` inside a paragraph merges its attributes onto the real
+ * body/html element, and writing over the tag would silently drop them (round-2 review). Rather than
+ * enumerate which ignored start tags have side effects, any start-tag bytes inside the text refuse
+ * the element — except in RCDATA/raw-text elements, where `<b>` is literally the text.
+ *
+ * ## parse5's location of the first text node after a dropped newline
+ *
+ * Two quirks make that node's `startOffset` disagree with the byte it begins at, and both are
+ * accepted because the node's *value* and *end* are right and the patcher writes `inner`, never the
+ * node's own span. (1) When the dropped newline was part of a longer whitespace run (`<pre>\n  x`),
+ * the node keeps the run's start — `inner.start`, before the dropped byte. (2) When the text begins
+ * with a character reference (`<pre>\n&amp;x`), the node is located at the reference's *last* byte
+ * (the `;`, or the last name character of an unterminated one), so the bytes between the cursor and
+ * `startOffset` must read as the head of one reference.
  */
 function textOnlyContent(
   source: string,
@@ -235,17 +272,30 @@ function textOnlyContent(
   inner: Span,
   children: readonly ChildNode[],
 ): string | null {
+  const dropsNewline = LEADING_NEWLINE_DROPPED.has(tagName)
+  const inertMarkup = CHARACTER_DATA_CONTENT.has(tagName)
   let cursor = inner.start
-  if (LEADING_NEWLINE_DROPPED.has(tagName)) {
+  if (dropsNewline) {
     if (source.startsWith('\r\n', cursor)) cursor += 2
-    else if (source[cursor] === '\n') cursor += 1
+    else if (source[cursor] === '\n' || source[cursor] === '\r') cursor += 1
   }
 
   let content = ''
-  for (const child of children) {
+  for (const [index, child] of children.entries()) {
     if (!isTextNode(child)) return null
     const location = child.sourceCodeLocation
-    if (!location || location.startOffset !== cursor) return null
+    if (!location) return null
+    const { startOffset } = location
+    if (startOffset !== cursor) {
+      const afterDroppedNewline = dropsNewline && index === 0 && cursor > inner.start
+      const keptRunStart = startOffset >= inner.start && startOffset < cursor
+      const atCharRefEnd =
+        source[cursor] === '&' &&
+        startOffset > cursor &&
+        CHAR_REF_HEAD.test(source.slice(cursor, startOffset))
+      if (!afterDroppedNewline || !(keptRunStart || atCharRefEnd)) return null
+    }
+    if (!inertMarkup && START_TAG_BYTES.test(source.slice(cursor, location.endOffset))) return null
     cursor = location.endOffset
     content += child.value
   }
