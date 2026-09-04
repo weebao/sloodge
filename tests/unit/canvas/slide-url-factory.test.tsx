@@ -11,6 +11,7 @@ import {
   type SlideProtocolBridge,
 } from '../../../src/renderer/src/features/canvas/slideUrlFactory'
 import type { SloodgeBridge } from '../../../src/renderer/src/host/bridge'
+import { slideDocumentUrl } from '../../../src/shared/slide-protocol'
 
 const ID = 'b'.repeat(32)
 
@@ -94,7 +95,7 @@ describe('the slide:// transport', () => {
     const bridge = fakeBridge()
     const urls = createProtocolSlideUrls(bridge)
 
-    await expect(urls.create('<html>doc</html>')).resolves.toBe(`slide://${ID}/`)
+    await expect(urls.create('<html>doc</html>')).resolves.toBe(slideDocumentUrl(ID))
     expect(bridge.published).toEqual(['<html>doc</html>'])
   })
 
@@ -102,9 +103,28 @@ describe('the slide:// transport', () => {
     const bridge = fakeBridge()
     const urls = createProtocolSlideUrls(bridge)
 
-    urls.revoke(`slide://${ID}/`)
+    urls.revoke(slideDocumentUrl(ID))
 
     expect(bridge.revoked).toEqual([ID])
+  })
+
+  // The host is the process group (M8.2): the thumbnail factory mints thumbnail-host urls from the
+  // same publish, and revokes by the same id — main never sees the surface.
+  it('mints urls for the requested surface and revokes them by id', async () => {
+    const bridge = fakeBridge()
+    const urls = createProtocolSlideUrls(bridge, 'thumbnails')
+
+    const url = await urls.create('<html>mini</html>')
+    expect(url).toBe(slideDocumentUrl(ID, 'thumbnails'))
+    expect(url).not.toBe(slideDocumentUrl(ID))
+
+    urls.revoke(url)
+    expect(bridge.revoked).toEqual([ID])
+  })
+
+  it('memoizes one default factory per surface', () => {
+    expect(defaultSlideUrls('thumbnails')).toBe(defaultSlideUrls('thumbnails'))
+    expect(defaultSlideUrls()).toBe(defaultSlideUrls())
   })
 
   // `revoke` is handed whatever is in the frame's `src`. Parsing it rather than slicing means a
@@ -145,7 +165,7 @@ describe('the slide:// transport', () => {
     }
 
     expect(() => {
-      createProtocolSlideUrls(bridge).revoke(`slide://${ID}/`)
+      createProtocolSlideUrls(bridge).revoke(slideDocumentUrl(ID))
     }).not.toThrow()
 
     // Let the rejected revoke settle and any unhandled-rejection microtask fire.

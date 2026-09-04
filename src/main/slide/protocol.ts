@@ -27,12 +27,16 @@ import { resolveSlideRequest } from './slideResponse'
  * after. That is why this is invoked at module scope in `src/main/index.ts` rather than inside the
  * ready handler.
  *
- * - `standard: true` — makes `slide://<id>/` parse as a hierarchical URL with a real host, so the
- *   document gets an origin (`slide://<id>`) instead of being opaque-by-scheme. Without it Chromium
- *   treats the URL as non-hierarchical, relative-URL resolution inside the document misbehaves and
- *   the security origin is unusable. Note this is *not* what escapes CSP inheritance — that follows
- *   from `slide` simply not being one of Fetch's three local schemes (`about`, `blob`, `data`), and
- *   holds for standard and non-standard custom schemes alike.
+ * - `standard: true` — makes `slide://<host>/<id>/` parse as a hierarchical URL with a real host,
+ *   so the document gets an origin (`slide://stage-<id>` or `slide://thumbnails`) instead of being
+ *   opaque-by-scheme. Without it Chromium treats the URL as non-hierarchical, relative-URL
+ *   resolution inside the document misbehaves and the security origin is unusable. Note this is
+ *   *not* what escapes CSP inheritance — that follows from `slide` simply not being one of Fetch's
+ *   three local schemes (`about`, `blob`, `data`), and holds for standard and non-standard custom
+ *   schemes alike. Since M8.2 the host names a process group, deliberately: Chromium groups
+ *   sandboxed frames into processes by site, so one host for every miniature is what turns a
+ *   hundred rail processes into one, and a host per stage document is what keeps a hung neighbour
+ *   out of the active slide's process (see `slideDocumentHost`).
  *
  * - `secure: true` — registers the scheme as *potentially trustworthy*, so slide documents are
  *   secure contexts. Two things need it. Chromium blocks a secure page from framing insecure

@@ -46,12 +46,21 @@ function stubUrls(): SlideUrlFactory & {
 }
 
 function Probe({ html, urls }: { html: string; urls: SlideUrlFactory }): JSX.Element {
-  const url = useSlideUrl(html, urls)
-  return <span data-testid="url">{url ?? ''}</span>
+  const slideUrl = useSlideUrl(html, urls)
+  return (
+    <span data-testid="url" data-html={slideUrl?.html}>
+      {slideUrl?.url ?? ''}
+    </span>
+  )
 }
 
 function urlOf(container: HTMLElement): string {
   return container.querySelector('[data-testid="url"]')?.textContent ?? ''
+}
+
+/** The html the current url was minted for, as the hook reports it. */
+function htmlOf(container: HTMLElement): string | null {
+  return container.querySelector('[data-testid="url"]')?.getAttribute('data-html') ?? null
 }
 
 describe('useSlideUrl', () => {
@@ -212,6 +221,28 @@ describe('useSlideUrl with an asynchronous transport', () => {
     await flush()
 
     expect(urls.revoked).toEqual(['slide://id0/'])
+  })
+
+  /**
+   * The pair is the point: while the new document is still publishing, the frame is showing — and
+   * may still fire `load` for — the *old* one. A consumer that read only the url would attribute
+   * that load to the new html. `SlideStage`'s pre-warm gate depends on this not happening.
+   */
+  it('keeps the url paired with the html it was minted for until the new one arrives', async () => {
+    const urls = asyncStubUrls()
+    const { container, rerender } = render(<Probe html="<html><head>a" urls={urls} />)
+    urls.settle(0)
+    await flush()
+    expect(htmlOf(container)).toBe('<html><head>a')
+
+    rerender(<Probe html="<html><head>b" urls={urls} />)
+    expect(urlOf(container)).toBe('slide://id0/')
+    expect(htmlOf(container)).toBe('<html><head>a')
+
+    urls.settle(1)
+    await flush()
+    expect(urlOf(container)).toBe('slide://id1/')
+    expect(htmlOf(container)).toBe('<html><head>b')
   })
 
   it('releases a url that arrives after the html already changed', async () => {

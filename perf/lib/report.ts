@@ -78,9 +78,23 @@ export type PerfMetrics = {
   readonly rendererHeapMb: Summary | null
 }
 
+/**
+ * The version of each budgeted metric's *definition*, as this harness computes it. A metric absent
+ * here is at version 1, and a report that carries no `metricDefinitions` at all predates the field
+ * and is version 1 throughout.
+ *
+ * `deckOpenMs` is at 2: through M8.1 it waited for a rail frame per slide; since M8.2 the rail mounts
+ * a frame only for the cards in its scroll window, so it waits for every *mounted* frame instead — a
+ * different quantity, not a faster one. `perf:diff` refuses to score a metric whose definition
+ * differs between the two reports, so a redefinition can never be read as an improvement.
+ */
+export const METRIC_DEFINITIONS: Readonly<Record<string, number>> = { deckOpenMs: 2 }
+
 export type PerfReport = {
   readonly schema: 1
   readonly commit: string
+  /** See `METRIC_DEFINITIONS`. Absent in reports written before M8.2 round 1: version 1 throughout. */
+  readonly metricDefinitions?: Readonly<Record<string, number>> | undefined
   readonly generatedAt: string
   readonly deck: {
     readonly slideCount: number
@@ -108,6 +122,13 @@ export type PerfReport = {
   readonly ramBases: Readonly<Record<string, Summary | null>>
   /** Electron process count over the session — the driver behind the memory numbers. */
   readonly processCount: Summary | null
+  /**
+   * The same count split by session phase, so the shape of the process claim — flat in the editor,
+   * one higher across a switch, highest in Present — is readable from the committed report instead
+   * of only from the gitignored trace. Reports written before this field existed parse with an
+   * empty record: no phase was measured, rather than a phase measured as nothing.
+   */
+  readonly processCountByPhase: Readonly<Record<string, Summary | null>>
   /**
    * Memory and process count by Chromium process type, on `metrics.ramBasis`, for the whole session
    * and for the idle window alone. This is how a reader tells "the app grew" from "the GPU process
@@ -166,6 +187,7 @@ const ProcessTypeBreakdownSchema = z.object({
 export const PerfReportSchema = z.object({
   schema: z.literal(1),
   commit: z.string(),
+  metricDefinitions: z.record(z.string(), z.number()).optional(),
   generatedAt: z.string(),
   deck: z.object({
     slideCount: z.number(),
@@ -200,6 +222,7 @@ export const PerfReportSchema = z.object({
   }),
   ramBases: z.record(z.string(), SummarySchema.nullable()),
   processCount: SummarySchema.nullable(),
+  processCountByPhase: z.record(z.string(), SummarySchema.nullable()).default({}),
   processTypes: z.object({
     session: z.record(z.string(), ProcessTypeBreakdownSchema),
     idle: z.record(z.string(), ProcessTypeBreakdownSchema),
@@ -388,6 +411,17 @@ export type MetricDiff = {
    * any switch unmeasured — a censored switch is a slow one, and a healthy run leaves none.
    */
   readonly regressed: boolean
+  /**
+   * Definition versions on each side. When they differ the two numbers measure different things,
+   * `regressed` is false, and the caller is expected to say so rather than print a delta.
+   */
+  readonly definition: { readonly baseline: number; readonly candidate: number }
+}
+
+/** The definition versions two reports carry, for `diffReports`. */
+export type DefinitionPair = {
+  readonly baseline: Readonly<Record<string, number>>
+  readonly candidate: Readonly<Record<string, number>>
 }
 
 /**
@@ -411,6 +445,7 @@ export function diffReports(
   candidate: PerfMetrics,
   tolerancePct = 10,
   budgets: readonly Budget[] = BUDGETS,
+  definitions: DefinitionPair = { baseline: {}, candidate: {} },
 ): MetricDiff[] {
   if (tolerancePct < 0) throw new RangeError('Tolerance must be non-negative')
   const before = budgetActuals(baseline)
@@ -423,6 +458,11 @@ export function diffReports(
     if (b === undefined || c === undefined) {
       throw new RangeError(`Budget "${budget.key}" has no matching metric in both reports`)
     }
+    const definition = {
+      baseline: definitions.baseline[budget.key] ?? 1,
+      candidate: definitions.candidate[budget.key] ?? 1,
+    }
+    const comparable = definition.baseline === definition.candidate
     const deltaPct = b === 0 ? 0 : ((c - b) / b) * 100
     return {
       key: budget.key,
@@ -432,9 +472,11 @@ export function diffReports(
       deltaPct,
       unit: budget.unit,
       regressed:
-        candidateCounts[budget.key] === 0 ||
-        deltaPct > tolerancePct ||
-        (unmeasuredAfter[budget.key] ?? 0) > 0,
+        comparable &&
+        (candidateCounts[budget.key] === 0 ||
+          deltaPct > tolerancePct ||
+          (unmeasuredAfter[budget.key] ?? 0) > 0),
+      definition,
     }
   })
 }

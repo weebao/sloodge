@@ -248,6 +248,45 @@ export function processTypeBreakdown(
   return out
 }
 
+export type PhaseWindow = {
+  readonly marks: readonly { readonly name: string; readonly t: number }[]
+  readonly samples: readonly Sample[]
+}
+
+/**
+ * Process count per named phase, pooled across runs.
+ *
+ * The aggregate `processCount` answers "how many processes does this app run", but not "when" — and
+ * on a lazily-mounted stage those are different questions with different answers: the editor sits at
+ * one number, a switch briefly holds the outgoing document's process alongside the incoming one, and
+ * Present mounts a second stage on top of the editor's. Reading that split used to mean recomputing
+ * it from the trace, which is gitignored, so the report's headline process claim was not checkable
+ * from the committed artifact. A phase is the samples between its `x:start` and `x:end` marks.
+ */
+export function processCountByPhase(
+  runs: readonly PhaseWindow[],
+): Readonly<Record<string, Summary | null>> {
+  const counts = new Map<string, number[]>()
+  for (const run of runs) {
+    for (const mark of run.marks) {
+      const [phase, edge] = mark.name.split(':')
+      if (phase === undefined || edge !== 'start') continue
+      const end = run.marks.find((m) => m.name === `${phase}:end`)
+      if (end === undefined) continue
+      const series = counts.get(phase) ?? []
+      for (const sample of run.samples) {
+        if (sample.t >= mark.t && sample.t <= end.t) series.push(sample.processes.length)
+      }
+      counts.set(phase, series)
+    }
+  }
+  return Object.fromEntries(
+    [...counts]
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([phase, series]) => [phase, series.length > 0 ? summarize(series) : null]),
+  )
+}
+
 /** A background sampling loop. Stops when `stop()` resolves; never throws into the session. */
 export class Sampler {
   readonly samples: Sample[] = []

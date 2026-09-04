@@ -1,6 +1,7 @@
 import { useMemo, useRef, type JSX } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { instrument } from '../../../../shared/design/instrument'
+import type { SlideId } from '../../../../shared/document/types'
 import type { SlideView } from '../../stores/deckStore'
 import { useDesignStore } from '../design/designStore'
 import { ArrangeBar } from '../design/ArrangeBar'
@@ -8,14 +9,29 @@ import { injectDesignBridge } from '../design/frameScript'
 import { PropertyPanel } from '../design/PropertyPanel'
 import { SelectionOverlay } from '../design/SelectionOverlay'
 import { useElementInspect } from '../design/useElementInspect'
-import { SlideFrame } from './SlideFrame'
+import { SlideStage } from './SlideStage'
 import { fitSlide } from './slideFit'
 import { useElementSize } from './useElementSize'
 
 export type SlideCanvasProps = {
-  /** The selected slide, or `null` for a deck with no slides. */
-  slide: SlideView | null
+  /** The deck in presentation order. */
+  slides: readonly SlideView[]
+  /** The selected slide's index, or `-1` for a deck with no selection. */
+  currentIndex: number
 }
+
+/**
+ * Design Mode's document for one slide: the source parsed and addressed (`instrument`), then given
+ * the in-frame agent bridge.
+ *
+ * At module scope so its identity is fixed for the process rather than merely memoized. The stage
+ * keys its per-frame memo and its pre-warm gate on `(documentFor, id, html)`, and the canvas
+ * re-renders on every `ResizeObserver` tick — so an instrumenter built in the render body re-parses
+ * all three mounted documents per animation frame while the panel splitter is dragged, with nothing
+ * visibly wrong. A constant cannot drift back into that; a memo can, by being deleted.
+ */
+const instrumentDocument = (id: SlideId, html: string): string =>
+  injectDesignBridge(instrument(buildSlideMap(id, html)))
 
 /**
  * Center stage: the current slide, live, in a sandboxed 1280x720 frame scaled to fit its mat.
@@ -24,24 +40,34 @@ export type SlideCanvasProps = {
  * is a 1280px layout, so upscaling it interpolates text that a presenter will read at native size
  * anyway, and it would make the editing canvas disagree with the exported pixels.
  *
+ * The frame itself is one of the `SlideStage`'s: the selected slide visible, its ±1 neighbours
+ * mounted but hidden so a step either way is instant, with Design Mode on or off (M8.2). The
+ * overlay, the bridge and the property panel all bind to the *active* frame through `frameRef`,
+ * which the stage re-points as the selection moves.
+ *
  * ## Design Mode delivery
  *
- * With Design Mode on, the frame receives the **instrumented** document — the same source with a
- * `data-sl-id` on every addressable element (`instrument`) plus the in-frame agent script
+ * With Design Mode on, every mounted frame receives the **instrumented** document — the same source
+ * with a `data-sl-id` on every addressable element (`instrument`) plus the in-frame agent script
  * (`injectDesignBridge`) — instead of the raw slide. Both are render artifacts that never reach disk
- * (§1.1). The selection overlay is laid over the frame and swallows pointer events so the slide's own
- * handlers stay frozen while selecting (§2.1). Turning Design Mode off swaps the raw document back
- * and unmounts the overlay, restoring full slide interactivity.
+ * (§1.1). The selection overlay is laid over the active frame and swallows pointer events so the
+ * slide's own handlers stay frozen while selecting (§2.1). Turning Design Mode off swaps the raw
+ * documents back and unmounts the overlay, restoring full slide interactivity.
  *
- * The instrumented HTML is memoized on `(id, html)` so toggling zoom never re-parses; a new URL only
- * mints when the bytes actually change (see `useSlideUrl`).
+ * Neighbours get the instrumented document too, so that a step swaps no documents and reloads no
+ * frame (see `SlideStage`). Their bridge scripts are dormant: the overlay talks only to the frame
+ * behind `frameRef` and drops any message whose `event.source` is another window, and a hidden,
+ * `inert` frame receives no input to hit-test. The instrumentation is memoized per frame on the
+ * slide's html inside the stage, so zooming never re-parses and a new URL only mints when the bytes
+ * actually change (see `useSlideUrl`).
  */
-export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
+export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Element {
   const [matRef, mat] = useElementSize<HTMLDivElement>()
   const fit = useMemo(() => fitSlide(mat, { maxScale: 1 }), [mat])
   const designEnabled = useDesignStore((state) => state.enabled)
   const frameRef = useRef<HTMLIFrameElement>(null)
 
+  const slide = slides[currentIndex] ?? null
   const designModeActive = designEnabled && slide !== null
 
   // The computed-styles bridge client, shared with the property panel's "Ask Claude about this
@@ -53,13 +79,8 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
     enabled: designModeActive,
   })
 
-  // Only pay for the parse + instrument + inject while Design Mode is on for this slide.
-  const html = useMemo(() => {
-    if (slide === null) return ''
-    if (!designEnabled) return slide.html
-    const map = buildSlideMap(slide.id, slide.html)
-    return injectDesignBridge(instrument(map))
-  }, [slide, designEnabled])
+  // Only pay for the parse + instrument + inject while Design Mode is on.
+  const documentFor = designEnabled ? instrumentDocument : undefined
 
   // Memoized so the relative wrapper's style is not a fresh object on every render (react-perf).
   const stageStyle = useMemo(
@@ -78,10 +99,12 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
       >
         {slide ? (
           <div className="relative" style={stageStyle}>
-            <SlideFrame
-              html={html}
+            <SlideStage
+              slides={slides}
+              activeIndex={currentIndex}
+              documentFor={documentFor}
               frameRef={frameRef}
-              title={`Slide: ${slide.title}`}
+              titlePrefix="Slide"
               scale={fit.scale}
               // The slide must not receive pointer events while Design Mode's overlay is capturing
               // them — otherwise a click would reach both the overlay and the slide's own handlers.
@@ -89,7 +112,7 @@ export function SlideCanvas({ slide }: SlideCanvasProps): JSX.Element {
               // `outline` rather than `border`: an outline is painted outside the box without
               // joining the layout, so the framed slide stays exactly the scaled 16:9 rectangle
               // `fitSlide` computed instead of being two pixels wider than it.
-              className="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
+              frameClassName="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
             />
             {designModeActive ? (
               <>

@@ -1,4 +1,4 @@
-import { SLIDE_CSP, SLIDE_DOCUMENT_PATH, SLIDE_SCHEME } from '../../shared/slide-protocol'
+import { SLIDE_CSP, slideDocumentIdFromParsedUrl } from '../../shared/slide-protocol'
 import type { SlideRegistry } from './registry'
 
 /**
@@ -71,9 +71,10 @@ export type SlideRequest = {
  * Resolve a `slide://` request against the registry.
  *
  * The accepted surface is as narrow as it can be made: `GET` only, the exact scheme, a host that is
- * a well-formed document id, and the single path `/`. Everything else is a 404 with no detail —
- * distinguishing "no such id" from "bad path" in the response would hand a slide a probe for its
- * siblings' ids, and there is no debugging value in it that a main-process log cannot serve better.
+ * either `thumbnails` or the stage host for the id in the path, and a path that is exactly
+ * `/<well-formed id>/`. Everything else is a 404 with no detail — distinguishing "no such id" from
+ * "bad path" in the response would hand a slide a probe for its siblings' ids, and there is no
+ * debugging value in it that a main-process log cannot serve better.
  */
 export function resolveSlideRequest(
   registry: SlideRegistry,
@@ -91,18 +92,8 @@ export function resolveSlideRequest(
     return refusal(400, 'bad request')
   }
 
-  // An empty pathname is accepted alongside `/` because the two URL parsers involved disagree:
-  // Chromium canonicalizes a `standard:` scheme URL to carry the trailing slash before
-  // `protocol.handle` sees it, but Node's WHATWG `URL` treats `slide:` as non-special and leaves
-  // `new URL('slide://<id>').pathname` empty. Unreachable in production, where `slideDocumentUrl`
-  // always emits the slash — but a caller or test that writes the host-only form would otherwise
-  // get a 404 that looks exactly like a registry miss.
-  const path = url.pathname === '' ? SLIDE_DOCUMENT_PATH : url.pathname
-  if (url.protocol !== `${SLIDE_SCHEME}:` || path !== SLIDE_DOCUMENT_PATH) {
-    return refusal(404, 'not found')
-  }
-
-  const html = registry.get(url.hostname)
+  const id = slideDocumentIdFromParsedUrl(url)
+  const html = id === null ? undefined : registry.get(id)
   if (html === undefined) {
     return refusal(404, 'not found')
   }

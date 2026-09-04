@@ -1,0 +1,576 @@
+{
+  "urlShapes": ["slide://thumbnails/<id>/", "slide://stage-<id>/<id>/"],
+  "mountedFrames": 5,
+  "distinctHosts": 3,
+  "processes": {
+    "total": 7,
+    "byType": {
+      "Browser": 1,
+      "GPU": 1,
+      "Utility": 1,
+      "Tab": 4
+    }
+  },
+  "pssMb": 457,
+  "checks": 110,
+  "failures": [],
+  "originsSeenBySlides": [
+    "{\"ok\":true,\"value\":\"slide://stage-315859b251c36d50e633c70a1a38f8d9\"}",
+    "{\"ok\":true,\"value\":\"slide://stage-0f8033e71dac7645aa09cf30313329fc\"}",
+    "{\"ok\":true,\"value\":\"slide://thumbnails\"}"
+  ],
+  "hungNeighbour": {
+    "hangAfterMs": 2500,
+    "observeMs": 6000,
+    "stallLimitMs": 2000,
+    "activeSlideOnStage": {
+      "beats": 120,
+      "maxGapMs": 51
+    },
+    "activeSlideInRail": {
+      "beats": 0,
+      "maxGapMs": 6000
+    },
+    "hungSlideOnStage": {
+      "beats": 0,
+      "maxGapMs": 6000
+    },
+    "railStalled": true,
+    "mountedFrames": 5,
+    "distinctHosts": 3,
+    "processes": 7,
+    "failures": []
+  },
+  "reports": [
+    {
+      "origin": "null",
+      "sourceFrame": 3,
+      "report": {
+        "probe": 0,
+        "origin": {
+          "ok": true,
+          "value": "slide://stage-315859b251c36d50e633c70a1a38f8d9"
+        },
+        "parentDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "topDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "parentBridge": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "localStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "sessionStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "indexedDB": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "cookie": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "fetchSelf": {
+          "ok": false,
+          "error": "TypeError"
+        },
+        "frameCount": 5,
+        "siblings": [
+          {
+            "index": 1,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 2,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 3,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 4,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "origin": "null",
+      "sourceFrame": 4,
+      "report": {
+        "probe": 1,
+        "origin": {
+          "ok": true,
+          "value": "slide://stage-0f8033e71dac7645aa09cf30313329fc"
+        },
+        "parentDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "topDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "parentBridge": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "localStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "sessionStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "indexedDB": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "cookie": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "fetchSelf": {
+          "ok": false,
+          "error": "TypeError"
+        },
+        "frameCount": 5,
+        "siblings": [
+          {
+            "index": 0,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 2,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 3,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 4,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "origin": "null",
+      "sourceFrame": 0,
+      "report": {
+        "probe": 0,
+        "origin": {
+          "ok": true,
+          "value": "slide://thumbnails"
+        },
+        "parentDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "topDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "parentBridge": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "localStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "sessionStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "indexedDB": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "cookie": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "fetchSelf": {
+          "ok": false,
+          "error": "TypeError"
+        },
+        "frameCount": 5,
+        "siblings": [
+          {
+            "index": 0,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 1,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 3,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 4,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "origin": "null",
+      "sourceFrame": 1,
+      "report": {
+        "probe": 1,
+        "origin": {
+          "ok": true,
+          "value": "slide://thumbnails"
+        },
+        "parentDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "topDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "parentBridge": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "localStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "sessionStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "indexedDB": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "cookie": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "fetchSelf": {
+          "ok": false,
+          "error": "TypeError"
+        },
+        "frameCount": 5,
+        "siblings": [
+          {
+            "index": 0,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 1,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 2,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 4,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "origin": "null",
+      "sourceFrame": 2,
+      "report": {
+        "probe": 2,
+        "origin": {
+          "ok": true,
+          "value": "slide://thumbnails"
+        },
+        "parentDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "topDocument": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "parentBridge": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "localStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "sessionStorage": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "indexedDB": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "cookie": {
+          "ok": false,
+          "error": "SecurityError"
+        },
+        "fetchSelf": {
+          "ok": false,
+          "error": "TypeError"
+        },
+        "frameCount": 5,
+        "siblings": [
+          {
+            "index": 0,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 1,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 2,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          },
+          {
+            "index": 3,
+            "document": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "localStorage": {
+              "ok": false,
+              "error": "SecurityError"
+            },
+            "navigate": {
+              "ok": false,
+              "error": "SecurityError"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

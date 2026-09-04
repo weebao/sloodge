@@ -53,7 +53,6 @@ export function AppShell(): JSX.Element {
 
   const slides = useMemo(() => selectSlideViews(deck, slideHtml), [deck, slideHtml])
   const currentIndex = selectCurrentIndex(deck, currentSlideId)
-  const currentSlide = currentIndex === -1 ? null : (slides[currentIndex] ?? null)
 
   // PDF export (M4.2): File ▸ Export ▸ PDF arrives as an `app:menu` action; this trigger gathers the
   // wrapped slide HTML and asks main to run the save dialog + offscreen print. See useExportPdf.ts.
@@ -148,7 +147,7 @@ export function AppShell(): JSX.Element {
           onDeleteSlide={deleteSlide}
           onMoveSlide={moveSlide}
         />
-        <SlideCanvas slide={currentSlide} />
+        <SlideCanvas slides={slides} currentIndex={currentIndex} />
         <ChatPanel onOpenAuthSettings={openSettings} />
       </div>
       <StatusBar

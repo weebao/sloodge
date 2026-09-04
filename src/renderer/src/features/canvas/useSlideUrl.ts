@@ -62,14 +62,30 @@ export type SlideUrlFactory = {
 }
 
 /**
+ * A minted URL together with the html it was minted for.
+ *
+ * The pair is what lets a frame say *which* document a `load` event belongs to. When the html
+ * changes, the old URL stays in the iframe until the new one has been published (see the cleanup
+ * note below), and a `load` that fires in that window — an in-flight load, or the 404 the revoked
+ * URL now answers with — is the old document's, not the new one's. Nothing outside the frame can
+ * tell those apart from the event; the frame can, because it knows what its current `src` was
+ * minted for. `SlideStage` relies on that to hold its pre-warm gate closed until the document it is
+ * actually waiting for has loaded.
+ */
+export type SlideUrl = {
+  readonly url: string
+  readonly html: string
+}
+
+/**
  * The URL for `html`, or `null` on the very first render before the effect has run — and, on the
  * `slide://` path, until the publish round trip resolves.
  */
 export function useSlideUrl(
   html: string,
   urls: SlideUrlFactory = defaultSlideUrls(),
-): string | null {
-  const [url, setUrl] = useState<string | null>(null)
+): SlideUrl | null {
+  const [url, setUrl] = useState<SlideUrl | null>(null)
 
   useEffect(() => {
     // `live` and `created` together cover all three orderings a URL and its cleanup can arrive in.
@@ -83,7 +99,7 @@ export function useSlideUrl(
 
     const settle = (value: string): void => {
       created = value
-      if (live) setUrl(value)
+      if (live) setUrl({ url: value, html })
       else urls.revoke(value)
     }
 

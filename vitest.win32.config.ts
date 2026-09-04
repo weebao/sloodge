@@ -70,6 +70,7 @@ export const REAL_FILESYSTEM_TESTS = [
   'tests/unit/packaging/build-config.test.ts',
   'tests/unit/packaging/release-workflow.test.ts',
   'tests/unit/packaging/win32-path-simulation.test.ts',
+  'tests/unit/perf/bundle.test.ts',
   'tests/unit/perf/diff.test.ts',
   'tests/unit/perf/run.test.ts',
 ]

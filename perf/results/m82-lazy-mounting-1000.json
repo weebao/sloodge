@@ -1,0 +1,471 @@
+{
+  "schema": 1,
+  "commit": "edf5bade59b1e74f31c39033ab8a745734bb7ad8",
+  "metricDefinitions": {
+    "deckOpenMs": 2
+  },
+  "generatedAt": "2026-09-04T07:53:38.874Z",
+  "deck": {
+    "slideCount": 1000,
+    "seed": 20260801,
+    "totalSlideBytes": 17945434,
+    "archetypeCounts": {
+      "svg-animation": 250,
+      "interactive-graph": 250,
+      "image-laden": 250,
+      "component-dense": 250
+    }
+  },
+  "environment": {
+    "platform": "linux",
+    "release": "5.15.167.4-microsoft-standard-WSL2",
+    "cpuModel": "AMD Ryzen 7 5800H with Radeon Graphics",
+    "cpuCount": 16,
+    "totalMemMb": 6862,
+    "electron": "43.2.0",
+    "node": "v24.18.1",
+    "display": ":0"
+  },
+  "runs": 3,
+  "metrics": {
+    "coldStartMs": 686,
+    "deckOpenMs": 481,
+    "slideSwitchMs": {
+      "count": 60,
+      "min": 36.299999999813735,
+      "p25": 38.400000000256114,
+      "median": 39.85000000032596,
+      "p75": 42.675000000046566,
+      "p95": 55.169999999902195,
+      "max": 149,
+      "mean": 43.20666666664183,
+      "stdDev": 15.00390912024869
+    },
+    "unmeasuredSwitches": 0,
+    "ramMb": {
+      "count": 199,
+      "min": 216.8662109375,
+      "p25": 571.1591796875,
+      "median": 636.1875,
+      "p75": 696.2197265625,
+      "p95": 819.4349609375,
+      "max": 879.6611328125,
+      "mean": 618.3504926978643,
+      "stdDev": 127.35175572329028
+    },
+    "ramBasis": "proc-pss-sum",
+    "frameIntervalMs": {
+      "count": 292,
+      "min": 9.5,
+      "p25": 16.600000000002183,
+      "median": 16.700000000000728,
+      "p75": 16.800000000001546,
+      "p95": 83.24500000000008,
+      "max": 1607.4000000000015,
+      "mean": 37.76369863013699,
+      "stdDev": 100.30260986247697
+    },
+    "droppedFrames": 244,
+    "frameRateFps": 11.202240448089618,
+    "longFrameIntervals": 71,
+    "idleRamMb": 443.6962890625,
+    "rendererHeapMb": {
+      "count": 224,
+      "min": 4.4453125,
+      "p25": 26.375,
+      "median": 31.55810546875,
+      "p75": 38.5009765625,
+      "p95": 40.1513671875,
+      "max": 45.810546875,
+      "mean": 29.054347446986608,
+      "stdDev": 11.758848658077037
+    }
+  },
+  "ramBases": {
+    "app-metrics-working-set-sum": {
+      "count": 224,
+      "min": 363.8984375,
+      "p25": 956.650390625,
+      "median": 1104.02734375,
+      "p75": 1179.01953125,
+      "p95": 1524.2912109375,
+      "max": 1603.99609375,
+      "mean": 1085.206263950893,
+      "stdDev": 200.08266933246875
+    },
+    "proc-pss-sum": {
+      "count": 199,
+      "min": 216.8662109375,
+      "p25": 571.1591796875,
+      "median": 636.1875,
+      "p75": 696.2197265625,
+      "p95": 819.4349609375,
+      "max": 879.6611328125,
+      "mean": 618.3504926978643,
+      "stdDev": 127.35175572329028
+    },
+    "proc-rss-sum": {
+      "count": 199,
+      "min": 375.9765625,
+      "p25": 967.4921875,
+      "median": 1114.80859375,
+      "p75": 1177.515625,
+      "p95": 1542.530078125,
+      "max": 1608.53515625,
+      "mean": 1099.0868797110552,
+      "stdDev": 203.6649228379633
+    }
+  },
+  "processCount": {
+    "count": 224,
+    "min": 3,
+    "p25": 7,
+    "median": 7,
+    "p75": 8,
+    "p95": 10,
+    "max": 10,
+    "mean": 7.214285714285714,
+    "stdDev": 1.0809104250301098
+  },
+  "processCountByPhase": {
+    "animation": {
+      "count": 65,
+      "min": 6,
+      "p25": 7,
+      "median": 7,
+      "p75": 7,
+      "p95": 7,
+      "max": 7,
+      "mean": 6.969230769230769,
+      "stdDev": 0.17269187938956648
+    },
+    "export": {
+      "count": 1,
+      "min": 7,
+      "p25": 7,
+      "median": 7,
+      "p75": 7,
+      "p95": 7,
+      "max": 7,
+      "mean": 7,
+      "stdDev": 0
+    },
+    "idle": {
+      "count": 35,
+      "min": 4,
+      "p25": 7,
+      "median": 7,
+      "p75": 7,
+      "p95": 7,
+      "max": 7,
+      "mean": 6.742857142857143,
+      "stdDev": 0.7306692487168238
+    },
+    "open": {
+      "count": 4,
+      "min": 6,
+      "p25": 6,
+      "median": 6.5,
+      "p75": 7,
+      "p95": 7,
+      "max": 7,
+      "mean": 6.5,
+      "stdDev": 0.5
+    },
+    "present": {
+      "count": 21,
+      "min": 7,
+      "p25": 9,
+      "median": 10,
+      "p75": 10,
+      "p95": 10,
+      "max": 10,
+      "mean": 9.619047619047619,
+      "stdDev": 0.7221786137191955
+    },
+    "rail-scroll": {
+      "count": 34,
+      "min": 6,
+      "p25": 6,
+      "median": 7,
+      "p75": 7,
+      "p95": 7,
+      "max": 7,
+      "mean": 6.676470588235294,
+      "stdDev": 0.4678227564878491
+    },
+    "switch": {
+      "count": 61,
+      "min": 5,
+      "p25": 7,
+      "median": 8,
+      "p75": 8,
+      "p95": 8,
+      "max": 8,
+      "mean": 7.344262295081967,
+      "stdDev": 0.973168660961038
+    }
+  },
+  "processTypes": {
+    "session": {
+      "Browser": {
+        "processes": {
+          "count": 224,
+          "min": 1,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 1,
+          "stdDev": 0
+        },
+        "memoryMb": {
+          "count": 224,
+          "min": 117.6962890625,
+          "p25": 143.556640625,
+          "median": 150.53173828125,
+          "p75": 153.088134765625,
+          "p95": 156.261279296875,
+          "max": 218.0537109375,
+          "mean": 146.0609392438616,
+          "stdDev": 13.095284887679913
+        }
+      },
+      "GPU": {
+        "processes": {
+          "count": 224,
+          "min": 0,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 0.9508928571428571,
+          "stdDev": 0.21609171982644493
+        },
+        "memoryMb": {
+          "count": 223,
+          "min": 0,
+          "p25": 183.3173828125,
+          "median": 208.8232421875,
+          "p75": 221.27978515625,
+          "p95": 243.07832031249998,
+          "max": 268.4345703125,
+          "mean": 185.8009126261211,
+          "stdDev": 59.06652486640297
+        }
+      },
+      "Tab": {
+        "processes": {
+          "count": 224,
+          "min": 1,
+          "p25": 4,
+          "median": 4,
+          "p75": 5,
+          "p95": 7,
+          "max": 7,
+          "mean": 4.263392857142857,
+          "stdDev": 1.0208973237614374
+        },
+        "memoryMb": {
+          "count": 197,
+          "min": 61.142578125,
+          "p25": 207.630859375,
+          "median": 263.2236328125,
+          "p75": 312.298828125,
+          "p95": 464.34941406249965,
+          "max": 545.9833984375,
+          "mean": 260.0071383248731,
+          "stdDev": 100.84697327251578
+        }
+      },
+      "Utility": {
+        "processes": {
+          "count": 224,
+          "min": 1,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 1,
+          "stdDev": 0
+        },
+        "memoryMb": {
+          "count": 224,
+          "min": 24.181640625,
+          "p25": 24.917236328125,
+          "median": 25.3056640625,
+          "p75": 26.848876953125,
+          "p95": 27.612890625,
+          "max": 29.357421875,
+          "mean": 25.767735072544642,
+          "stdDev": 1.0971190902825991
+        }
+      }
+    },
+    "idle": {
+      "Browser": {
+        "processes": {
+          "count": 35,
+          "min": 1,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 1,
+          "stdDev": 0
+        },
+        "memoryMb": {
+          "count": 35,
+          "min": 117.6962890625,
+          "p25": 118.7666015625,
+          "median": 120.5498046875,
+          "p75": 122.36767578125,
+          "p95": 122.64228515625,
+          "max": 123.984375,
+          "mean": 120.56322544642858,
+          "stdDev": 1.822535581588746
+        }
+      },
+      "GPU": {
+        "processes": {
+          "count": 35,
+          "min": 0,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 0.8857142857142857,
+          "stdDev": 0.3181579635902872
+        },
+        "memoryMb": {
+          "count": 35,
+          "min": 0,
+          "p25": 183.1650390625,
+          "median": 183.37109375,
+          "p75": 184.515625,
+          "p95": 184.6669921875,
+          "max": 184.6669921875,
+          "mean": 161.32952008928572,
+          "stdDev": 58.160091057853265
+        }
+      },
+      "Tab": {
+        "processes": {
+          "count": 35,
+          "min": 2,
+          "p25": 4,
+          "median": 4,
+          "p75": 4,
+          "p95": 4,
+          "max": 4,
+          "mean": 3.857142857142857,
+          "stdDev": 0.42378277069118053
+        },
+        "memoryMb": {
+          "count": 35,
+          "min": 76.888671875,
+          "p25": 112.89404296875,
+          "median": 113.921875,
+          "p75": 115.4560546875,
+          "p95": 115.541796875,
+          "max": 115.564453125,
+          "mean": 111.16732700892857,
+          "stdDev": 8.214946689241543
+        }
+      },
+      "Utility": {
+        "processes": {
+          "count": 35,
+          "min": 1,
+          "p25": 1,
+          "median": 1,
+          "p75": 1,
+          "p95": 1,
+          "max": 1,
+          "mean": 1,
+          "stdDev": 0
+        },
+        "memoryMb": {
+          "count": 35,
+          "min": 24.8095703125,
+          "p25": 24.8349609375,
+          "median": 25.0791015625,
+          "p75": 26.84716796875,
+          "p95": 26.86953125,
+          "max": 27.3662109375,
+          "mean": 25.70390625,
+          "stdDev": 0.9259835393914473
+        }
+      }
+    }
+  },
+  "hostContention": {
+    "loadAvg1": {
+      "count": 224,
+      "min": 1.14,
+      "p25": 1.88,
+      "median": 2.13,
+      "p75": 2.43,
+      "p95": 3.36,
+      "max": 3.36,
+      "mean": 2.1516071428571424,
+      "stdDev": 0.5949242952610334
+    },
+    "memAvailableMb": {
+      "count": 224,
+      "min": 3731,
+      "p25": 3993.75,
+      "median": 4065.5,
+      "p75": 4148.5,
+      "p95": 4312,
+      "max": 4464,
+      "mean": 4072.6339285714284,
+      "stdDev": 140.73458400324463
+    },
+    "contended": false
+  },
+  "perRun": [
+    {
+      "coldStartMs": 1148,
+      "deckOpenMs": 545,
+      "medianRamMb": 613.42724609375,
+      "medianSlideSwitchMs": 39.35000000009313,
+      "unmeasuredSwitches": 0
+    },
+    {
+      "coldStartMs": 686,
+      "deckOpenMs": 474,
+      "medianRamMb": 695.0498046875,
+      "medianSlideSwitchMs": 40.35000000009313,
+      "unmeasuredSwitches": 0
+    },
+    {
+      "coldStartMs": 604,
+      "deckOpenMs": 481,
+      "medianRamMb": 640.9169921875,
+      "medianSlideSwitchMs": 39.5500000002794,
+      "unmeasuredSwitches": 0
+    }
+  ],
+  "notes": [
+    "RAM basis for the headline number: proc-pss-sum. See perf/README.md for what each basis means.",
+    "Switch series: 60 measured of 60 attempted; each click waited up to 2000 ms for its own canvas load, and the 0 that did not get one are censored at that bound, not dropped. No re-derivation was applied to any sample.",
+    "Cold start is a bracket; documentLoadedMs (lower bound, navigation loadEventEnd) per run: 1066, 573, 561.",
+    "deckReadMs (unzip only, shipped readDeck, per run): 951, 876, 984.",
+    "deckWriteMs (zip + fsync + rename, shipped writeDeck, per run): 546, 524, 555.",
+    "deckPublishMs (deck:updated -> every mounted rail frame has a slide:// src): 543, 473, 480.",
+    "HTML export ms: 755, 756, 756.",
+    "Present phase ms: 2122, 2075, 2133.",
+    "Rail scroll ms (summed round-trip of 25 scrollTop steps, settle sleeps excluded): 285, 250, 225.",
+    "Long-task total ms during the dwell: 0, 0, 0.",
+    "Peak Electron process count: 10, 10, 10.",
+    "Long tasks during the animation dwell: 0, 0, 0.",
+    "Shell frame rate during the dwell (fps, per run): 11.2, 42.8, 5.0.",
+    "Idle RAM (starter deck, before the stress deck): 444 MB on the proc-pss-sum basis."
+  ]
+}
