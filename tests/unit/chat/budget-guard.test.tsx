@@ -118,7 +118,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
     // The turn ends having spent past the cap. It is not interrupted — it already ran.
-    fake.emit({ type: 'turn-end', costUsd: 0.15, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0.15, generation: 0, subtype: 'success' })
 
     send('second')
     await screen.findByText(/budget reached for this session/i)
@@ -134,7 +134,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 0.2, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0.2, generation: 0, subtype: 'success' })
 
     fireEvent.change(composer(), { target: { value: 'a message worth keeping' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
@@ -151,7 +151,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 0.15, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0.15, generation: 0, subtype: 'success' })
 
     send('blocked')
     await screen.findByText(/budget reached for this session/i)
@@ -172,7 +172,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 99, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 99, generation: 0, subtype: 'success' })
 
     send('second')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(2))
@@ -205,7 +205,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     await screen.findByText(/budget reached for this session/i)
 
     // A stray result now must not fold: no turn is open.
-    fake.emit({ type: 'turn-end', costUsd: 5, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 5, generation: 0, subtype: 'success' })
     await waitFor(() => expect(useSessionMeterStore.getState().costUsd).toBe(0))
   })
 
@@ -255,7 +255,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 0.15, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0.15, generation: 0, subtype: 'success' })
 
     send('blocked')
     expect((await screen.findByText(/budget reached for this session/i)).textContent).toContain(
@@ -275,7 +275,12 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('expensive')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 2.4, subtype: 'error_max_budget_usd' })
+    fake.emit({
+      type: 'turn-end',
+      snapshotUsd: 2.4,
+      generation: 0,
+      subtype: 'error_max_budget_usd',
+    })
     fake.emit({ type: 'error', kind: 'budget', message: '', recoverable: true })
 
     await screen.findByText(/budget reached for this session/i)
@@ -305,7 +310,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
     // The pair is gone, the draft is back, and no phantom turn is open: a stray result folds nothing.
     expect(screen.queryByText('hello there', { selector: 'p' })).toBeNull()
     expect(composer().value).toBe('hello there')
-    fake.emit({ type: 'turn-end', costUsd: 5, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 5, generation: 0, subtype: 'success' })
     await waitFor(() => expect(useSessionMeterStore.getState().costUsd).toBe(0))
     expect(composer().disabled).toBe(false)
   })
@@ -344,7 +349,7 @@ describe('budget guard — the composer refuses a turn past the cap', () => {
 
     send('first')
     await waitFor(() => expect(fake.sendMessage).toHaveBeenCalledTimes(1))
-    fake.emit({ type: 'turn-end', costUsd: 0.42, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0.42, generation: 0, subtype: 'success' })
 
     await waitFor(() => expect(useSessionMeterStore.getState().costUsd).toBeCloseTo(0.42))
   })

@@ -7,8 +7,8 @@
  *
  * **The meter is per *session*, not rolling.** A session is one `query()` — one deck window from
  * the moment the agent first answers until the app quits. That is the only scope we can measure
- * honestly: the SDK gives us `total_cost_usd` per `result` and offers **no session-level or
- * lifetime total** (§10), and Sloodge has no durable spend ledger. A "rolling" or per-deck meter
+ * honestly: the SDK's `total_cost_usd` is one subprocess's running total and nothing outlives the
+ * subprocess (§10), and Sloodge has no durable spend ledger. A "rolling" or per-deck meter
  * would have to persist spend across runs and re-attribute it on resume (§12), and until that
  * exists a per-deck *budget* would silently never bind — every relaunch would reset the spend it is
  * supposed to cap. The wireframe agrees: the bar reads "$0.42 session".
@@ -169,11 +169,17 @@ export function parseBudgetCap(input: string): number | undefined {
   return value
 }
 
-/** Shape gate for a cap arriving over IPC or read back from disk. */
+/**
+ * Shape gate for a cap arriving over IPC or read back from disk. Whole cents only, by round-tripping
+ * through the form's own parser: a cap the Settings field could never produce (`0.001`, `2.0000001`)
+ * is a bug upstream, and persisting it would show as "$0.00" in the field and "< $0.01" in the meter.
+ */
 export function isBudgetCap(value: unknown): value is BudgetCap {
   if (value === null) return true
   return (
-    typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_BUDGET_CAP_USD
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    parseBudgetCap(value.toFixed(2)) === value
   )
 }
 

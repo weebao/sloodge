@@ -228,7 +228,7 @@ describe('ChatPanel — streaming transcript', () => {
   })
 
   it('renders "(no response)" for a turn that produced no text or tools', () => {
-    fake.emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
+    fake.emit({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' })
     const log = screen.getByRole('log', { name: 'Conversation' })
     expect(within(log).getByText('(no response)')).toBeTruthy()
   })

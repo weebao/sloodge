@@ -91,10 +91,13 @@ function costedQueryFn(
     ceilings.push(params.options.maxBudgetUsd)
     const query = starts
     let turn = 0
+    // One subprocess, one running total: `total_cost_usd` is cumulative per query (§10).
+    let spent = 0
     const gen = (async function* (): AsyncGenerator<unknown, void, unknown> {
       for await (const message of params.prompt) {
         prompts.push(message.message.content)
         turn += 1
+        spent += costUsd
         if (opts.streaming === true) {
           streaming += 1
           // eslint-disable-next-line no-await-in-loop
@@ -107,7 +110,7 @@ function costedQueryFn(
           type: 'result',
           uuid: `q${String(query)}-r${String(turn)}`,
           subtype: 'success',
-          total_cost_usd: costUsd,
+          total_cost_usd: spent,
         }
       }
     })()

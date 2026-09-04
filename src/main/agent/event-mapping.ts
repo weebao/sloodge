@@ -187,10 +187,12 @@ export function toolChipLabel(toolName: string): string {
 
 /**
  * Translate one SDK message into zero or more `AgentEvent`s. `seen` carries the assistant-id dedup
- * set across a turn — pass the same Set for the whole `for await` loop. Unrecognised messages map to
- * `[]`, which is how the ~30 SDK message types M2.1 ignores are handled.
+ * set across a turn — pass the same Set for the whole `for await` loop. `generation` is the query
+ * this message came from (`AgentSession.generation`), stamped on `turn-end` so the cost fold knows
+ * which subprocess's running total it is reading. Unrecognised messages map to `[]`, which is how
+ * the ~30 SDK message types M2.1 ignores are handled.
  */
-export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
+export function mapSdkMessage(raw: unknown, seen: Set<string>, generation: number): AgentEvent[] {
   const message = asRecord(raw)
   if (!message) return []
   const type = message['type']
@@ -227,8 +229,12 @@ export function mapSdkMessage(raw: unknown, seen: Set<string>): AgentEvent[] {
       seen.add(resultId)
     }
     const subtype = asString(message['subtype']) ?? 'unknown'
-    const costUsd = asFiniteNumber(message['total_cost_usd'])
-    const events: AgentEvent[] = [{ type: 'turn-end', costUsd, subtype }]
+    // `total_cost_usd` is the subprocess's CUMULATIVE total, not this turn's price. Read from the
+    // bundled CLI 2.1.220: `Ot.totalCostUSD += e` per API call, `vS()` reads it, every result builder
+    // writes `total_cost_usd: vS()`, and no per-turn reset is ever called. It is passed through as a
+    // snapshot for `shared/agent/cost.ts` to take the maximum of — never for anyone to add up.
+    const snapshotUsd = asFiniteNumber(message['total_cost_usd'])
+    const events: AgentEvent[] = [{ type: 'turn-end', snapshotUsd, generation, subtype }]
     const kind = classifyResultSubtype(subtype)
     if (kind !== null) {
       events.push({

@@ -66,8 +66,9 @@ export type AgentQueryOptions = {
   readonly skillFallbackPrompt?: string
   /**
    * The SDK's per-query spend ceiling (§10): the user's absolute cap, set once when the query opens.
-   * The query stops when the client-side estimate crosses it and ends with
-   * `result.subtype === 'error_max_budget_usd'`.
+   * The CLI compares its own running total against it (`vS() >= maxBudgetUsd` in 2.1.220 — the same
+   * total every `result` reports as `total_cost_usd`) and ends the query with
+   * `result.subtype === 'error_max_budget_usd'` when it is reached.
    *
    * A backstop against one runaway query, not the enforcement mechanism: the cap is enforced by
    * `AgentService.send` (admission) and `AgentSession.setBudgetCap` (stopping an open turn once the

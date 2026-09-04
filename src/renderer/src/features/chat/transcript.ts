@@ -298,8 +298,9 @@ function applyAgentEvent(state: Transcript, event: AgentEvent): Transcript {
       //  - streaming -> interrupt -> turn-end: folds the interrupted turn's cost, keeps interrupted;
       //  - a duplicate turn-end (no turn left open) is a reference-preserving no-op;
       //  - Stop -> resend -> both results: two open turns, two folds, neither lost.
+      // The money itself is a running total per query generation, folded as a maximum (cost.ts).
       // Only a still-`streaming` turn transitions to `idle`; a settled turn keeps its end-state.
-      const cost = foldTurnCost(state.cost, event.costUsd)
+      const cost = foldTurnCost(state.cost, event)
       if (cost === state.cost) return state
       return {
         ...state,

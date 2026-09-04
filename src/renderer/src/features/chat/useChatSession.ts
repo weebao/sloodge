@@ -173,7 +173,9 @@ export function useChatSession(): ChatSession {
         // `composeAgentMessage`). Composed first so a throw here opens nothing to roll back.
         const outbound = composeAgentMessage(trimmed, attachment ?? null)
         // Opened optimistically so the assistant bubble appears the instant Send is pressed; if main
-        // does not open a matching turn, `turn-refused` takes all of it back.
+        // does not open a matching turn, `turn-refused` takes all of it back. Until main's own
+        // `beginTurn` runs, this side is one open turn ahead of main — a drift window that can only
+        // make the local guard stricter, never looser (50-agent-integration.md §10).
         dispatch({ type: 'user-send', text: trimmed, turnId })
         const result = await bridge.sendMessage(outbound)
         if (result.accepted) return true

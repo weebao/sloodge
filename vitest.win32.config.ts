@@ -57,6 +57,7 @@ const shim = fileURLToPath(new URL('./tests/support/path-win32.ts', import.meta.
  * guard doing its job, not a regression: classify the new test by the criterion above and list it.
  */
 export const REAL_FILESYSTEM_TESTS = [
+  'tests/unit/agent/sdk-cost-contract.test.ts',
   'tests/unit/agent/skills-contract.test.ts',
   'tests/unit/canvas/host-csp.test.ts',
   'tests/unit/canvas/sandbox-invariant.test.ts',

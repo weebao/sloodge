@@ -203,7 +203,7 @@ export function BudgetTab(): JSX.Element {
             className="text-[12px] text-amber-600 dark:text-amber-500"
           >
             {probeFailed
-              ? 'Your saved limit could not be read, so nothing is being enforced right now. Setting one below will store it.'
+              ? 'Your saved limit could not be read here. Sloodge is still enforcing it; setting one below will store it.'
               : 'Reading your saved limit…'}
           </p>
         ) : null}
@@ -300,7 +300,10 @@ export function BudgetTab(): JSX.Element {
         <p className="pl-5 text-[12px] text-chrome-muted dark:text-ink-muted">
           When the limit is reached Sloodge stops accepting new messages. A message already being
           answered is allowed to finish — unless you lower the limit below what this session has
-          already spent, in which case it is stopped.
+          already spent, in which case it is stopped. Sloodge learns what a message cost only once
+          it ends, so one long message can carry the total past the limit before anything stops it,
+          and that spend is counted. After a stop, raising the limit lets the next message spend up
+          to the new limit on its own, on top of what the session had already spent.
         </p>
       </section>
     </div>

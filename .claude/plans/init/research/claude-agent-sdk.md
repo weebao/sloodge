@@ -494,7 +494,7 @@ Source: https://code.claude.com/docs/en/agent-sdk/subagents
 
 - **Per query:** the final `result` message carries `total_cost_usd` (client-side **estimate** from a bundled price table — not billing truth; don't bill users off it), cumulative `usage` (top-level loop only), and `modelUsage` — per-model `{ inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD }` including subagents.
 - **Per step:** each assistant message has `message.message.id` + `message.message.usage`. **Parallel tool calls emit multiple assistant messages sharing one id with identical usage — deduplicate by id** or you'll double-count.
-- **Across calls:** no session-level total; accumulate `total_cost_usd` per `query()` yourself. Error results also carry cost.
+- **Across calls:** no session-level total. **Corrected in M2.5 r4:** `total_cost_usd` is the CLI subprocess's *cumulative* total at the moment of that `result` (`Ot.totalCostUSD += e` per API call, `vS()` getter, every result builder writes `total_cost_usd: vS()`, no per-turn reset — bundled CLI 2.1.220), so within one `query()` take the **maximum**, and sum only *across* `query()` calls. Adding successive results together double-counts from the second turn on. Error results also carry (the same running) cost.
 - **Budget guard:** `maxBudgetUsd` stops the query at a spend ceiling (result subtype `error_max_budget_usd`).
 - **Caching:** prompt caching is automatic (no config). Track `cache_creation_input_tokens` / `cache_read_input_tokens`. Default TTL 5 min with API-key auth; set `ENABLE_PROMPT_CACHING_1H=1` (via `options.env`) for 1-hour TTL if sessions are spaced out.
 - Authoritative billing: the platform Usage & Cost API / Console.
@@ -508,7 +508,8 @@ for await (const m of q) {
     inTok += m.message.usage.input_tokens;
     outTok += m.message.usage.output_tokens;
   }
-  if (m.type === "result") sessionSpend += m.total_cost_usd ?? 0;
+  // Cumulative per subprocess: max within a query(), never +=. See 50-agent-integration.md §10.
+  if (m.type === "result") querySpend = Math.max(querySpend, m.total_cost_usd ?? 0);
 }
 ```
 

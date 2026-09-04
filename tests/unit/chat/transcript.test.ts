@@ -112,7 +112,10 @@ describe('reduceTranscript — user-send', () => {
   })
 
   it('mints unique ids across turns from the in-state counter', () => {
-    const state = run([sendTurn('one'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const state = run([
+      sendTurn('one'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const next = run([sendTurn('two')], state)
     const ids = next.messages.map((m) => m.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -186,24 +189,38 @@ describe('reduceTranscript — turn-end', () => {
     const state = run([
       sendTurn('hi'),
       ev({ type: 'assistant-delta', text: 'ok' }),
-      ev({ type: 'turn-end', costUsd: 0.0123, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.0123, generation: 0, subtype: 'success' }),
     ])
     expect(state.turnState).toBe('idle')
     expect(assistant(state).streaming).toBe(false)
     expect(state.cost.totalUsd).toBeCloseTo(0.0123)
   })
 
-  it('accumulates cost across turns', () => {
-    let state = run([sendTurn('a'), ev({ type: 'turn-end', costUsd: 0.1, subtype: 'success' })])
-    state = run([sendTurn('b'), ev({ type: 'turn-end', costUsd: 0.25, subtype: 'success' })], state)
+  it('reads the running total the runtime reports, not a sum of the results', () => {
+    // `total_cost_usd` is the subprocess's cumulative total: a $0.10 turn then a $0.25 turn arrive
+    // as 0.10 and 0.35, and the session spent $0.35 — not $0.45 (shared/agent/cost.ts).
+    let state = run([
+      sendTurn('a'),
+      ev({ type: 'turn-end', snapshotUsd: 0.1, generation: 0, subtype: 'success' }),
+    ])
+    state = run(
+      [
+        sendTurn('b'),
+        ev({ type: 'turn-end', snapshotUsd: 0.35, generation: 0, subtype: 'success' }),
+      ],
+      state,
+    )
     expect(state.cost.totalUsd).toBeCloseTo(0.35)
   })
 
   it('a second turn-end for a settled turn is a no-op and never re-folds cost', () => {
-    const once = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' })])
+    const once = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
+    ])
     const twice = reduceTranscript(
       once,
-      ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
     )
     expect(twice).toBe(once)
     expect(twice.cost.totalUsd).toBeCloseTo(0.05)
@@ -212,7 +229,10 @@ describe('reduceTranscript — turn-end', () => {
 
 describe('reduceTranscript — cost folds exactly once per turn (order-independent)', () => {
   it('streaming -> turn-end -> idle folds the cost once', () => {
-    const state = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0.05, subtype: 'success' })])
+    const state = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0.05, generation: 0, subtype: 'success' }),
+    ])
     expect(state.turnState).toBe('idle')
     expect(state.cost.totalUsd).toBeCloseTo(0.05)
   })
@@ -222,7 +242,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
     const state = run([
       sendTurn('hi'),
       ev({ type: 'error', kind: 'network', message: 'ECONNREFUSED', recoverable: true }),
-      ev({ type: 'turn-end', costUsd: 0.03, subtype: 'error_during_execution' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.03, generation: 0, subtype: 'error_during_execution' }),
     ])
     expect(state.turnState).toBe('error')
     expect(state.cost.totalUsd).toBeCloseTo(0.03)
@@ -234,7 +254,7 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
     const state = run([
       sendTurn('hi'),
       { type: 'interrupt-requested' },
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
     ])
     expect(state.turnState).toBe('interrupted')
     expect(state.cost.totalUsd).toBeCloseTo(0.04)
@@ -244,8 +264,8 @@ describe('reduceTranscript — cost folds exactly once per turn (order-independe
     const state = run([
       sendTurn('hi'),
       { type: 'interrupt-requested' },
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
-      ev({ type: 'turn-end', costUsd: 0.04, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.04, generation: 0, subtype: 'success' }),
     ])
     expect(state.cost.totalUsd).toBeCloseTo(0.04)
   })
@@ -279,7 +299,7 @@ describe('reduceTranscript — errors', () => {
   it('a failed turn (turn-end then error) reads error, and still folds the error result cost', () => {
     const state = run([
       sendTurn('hi'),
-      ev({ type: 'turn-end', costUsd: 0.02, subtype: 'error_max_turns' }),
+      ev({ type: 'turn-end', snapshotUsd: 0.02, generation: 0, subtype: 'error_max_turns' }),
       ev({ type: 'error', kind: 'max-turns', message: 'Turn ended', recoverable: true }),
     ])
     expect(state.turnState).toBe('error')
@@ -300,7 +320,10 @@ describe('reduceTranscript — interrupt', () => {
   })
 
   it('interrupt-requested while idle is a no-op', () => {
-    const before = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const before = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const after = reduceTranscript(before, { type: 'interrupt-requested' })
     expect(after).toBe(before)
   })
@@ -313,7 +336,10 @@ describe('reduceTranscript — out-of-turn events are inert', () => {
   })
 
   it('a delta after the bubble settled does not reopen it', () => {
-    const settled = run([sendTurn('hi'), ev({ type: 'turn-end', costUsd: 0, subtype: 'success' })])
+    const settled = run([
+      sendTurn('hi'),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
+    ])
     const after = reduceTranscript(settled, ev({ type: 'assistant-delta', text: 'late' }))
     expect(assistant(after).text).toBe('')
   })
@@ -347,7 +373,7 @@ describe('reduceTranscript — a second turn targets its own bubble', () => {
     let state = run([
       sendTurn('first'),
       ev({ type: 'assistant-delta', text: 'one' }),
-      ev({ type: 'turn-end', costUsd: 0, subtype: 'success' }),
+      ev({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' }),
     ])
     state = run([sendTurn('second'), ev({ type: 'assistant-delta', text: 'two' })], state)
 

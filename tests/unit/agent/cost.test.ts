@@ -1,65 +1,107 @@
 /**
  * The shared cost-fold rule (M2.5, 50-agent-integration.md §10) — the arithmetic both main and the
  * renderer run. See `cost-agreement.test.ts` for the proof that they actually run *this* and land on
- * the same number.
+ * the same number, and `sdk-cost-contract.test.ts` for the pin on the CLI whose semantics this models.
  */
 
 import { describe, expect, it } from 'vitest'
 import {
+  abandonTurn,
   beginTurn,
   foldTurnCost,
   formatCostUsd,
   INITIAL_COST_STATE,
+  type CostState,
 } from '../../../src/shared/agent/cost'
 
-describe('cost accumulation', () => {
+const at = (generation: number, snapshotUsd: number) => ({ generation, snapshotUsd })
+
+/** Open `n` turns then fold each snapshot in order, all on one generation. */
+function fold(snapshots: readonly number[], generation = 0, from = INITIAL_COST_STATE): CostState {
+  let state = from
+  for (let i = 0; i < snapshots.length; i += 1) state = beginTurn(state)
+  for (const snapshot of snapshots) state = foldTurnCost(state, at(generation, snapshot))
+  return state
+}
+
+describe('cost accumulation — total_cost_usd is a running total, folded as a maximum', () => {
+  it('reads 0.10 / 0.35 / 1.35 as a $1.35 session, not $1.80', () => {
+    // The round-4 blocker. Real turns costing 0.10, 0.25 and 1.00 arrive as the subprocess's
+    // cumulative total; adding the snapshots over-counted from the second turn of every session.
+    let state = fold([0.1])
+    state = fold([0.35], 0, state)
+    state = fold([1.35], 0, state)
+    expect(state.totalUsd).toBeCloseTo(1.35, 10)
+    expect(state.openTurns).toBe(0)
+  })
+
   it('folds one turn-end per opened turn', () => {
-    let state = beginTurn(INITIAL_COST_STATE)
-    state = foldTurnCost(state, 0.02)
+    const state = fold([0.02])
     expect(state.totalUsd).toBeCloseTo(0.02)
     expect(state.openTurns).toBe(0)
   })
 
-  it('counts overlapping turns separately — neither cost is lost', () => {
-    // The defect a boolean `folded` flag had: Stop -> retype -> Send opens a second turn while the
-    // first is still unfolded (the SDK's post-interrupt `result` has not landed yet). With a
-    // boolean, `beginTurn` was a no-op and the second result contributed NOTHING.
-    let state = beginTurn(INITIAL_COST_STATE)
-    state = beginTurn(state)
+  it('counts overlapping turns separately — the second result carries the larger total', () => {
+    // Stop -> retype -> Send opens a second turn while the first is still unfolded. The two results
+    // are the process total at each moment, in emission order; the maximum is the session's spend.
+    let state = beginTurn(beginTurn(INITIAL_COST_STATE))
     expect(state.openTurns).toBe(2)
-    state = foldTurnCost(state, 0.5)
-    state = foldTurnCost(state, 0.3)
+    state = foldTurnCost(state, at(0, 0.5))
+    state = foldTurnCost(state, at(0, 0.8))
     expect(state.totalUsd).toBeCloseTo(0.8)
     expect(state.openTurns).toBe(0)
   })
 
+  it('is order-independent for overlapping results: the maximum wins either way', () => {
+    expect(fold([0.5, 0.8]).totalUsd).toBeCloseTo(fold([0.8, 0.5]).totalUsd)
+  })
+
   it('folds no more results than turns were opened', () => {
-    let state = beginTurn(beginTurn(INITIAL_COST_STATE))
-    state = foldTurnCost(foldTurnCost(state, 0.5), 0.3)
-    // A third result belongs to no open turn.
-    const settled = foldTurnCost(state, 9.99)
+    const state = fold([0.5, 0.8])
+    // A third result belongs to no open turn — not even one reporting a larger total.
+    const settled = foldTurnCost(state, at(0, 9.99))
     expect(settled).toBe(state)
     expect(settled.totalUsd).toBeCloseTo(0.8)
   })
 
-  it('accumulates across turns', () => {
-    let state = foldTurnCost(beginTurn(INITIAL_COST_STATE), 0.1)
-    state = foldTurnCost(beginTurn(state), 0.25)
-    expect(state.totalUsd).toBeCloseTo(0.35)
+  it('a duplicated snapshot cannot move the number, only consume a turn', () => {
+    // `max` is idempotent, so a repeated `result` is harmless to the money. It still consumes an
+    // open turn, which is why `event-mapping.ts` dedups by uuid: the turn count settles the composer.
+    const once = fold([0.05])
+    const twice = foldTurnCost(once, at(0, 0.05))
+    expect(twice).toBe(once)
+    expect(twice.totalUsd).toBeCloseTo(0.05)
   })
 
-  it('refuses a second turn-end for the same turn (a duplicate `result` must not double-count)', () => {
-    const once = foldTurnCost(beginTurn(INITIAL_COST_STATE), 0.05)
-    const twice = foldTurnCost(once, 0.05)
-    expect(twice.totalUsd).toBeCloseTo(0.05)
-    // Reference-preserving, so a reducer can use identity to skip a state update.
-    expect(twice).toBe(once)
+  it('banks a finished generation when the next one reports: totals add across queries', () => {
+    // A re-armed query is a new subprocess with a fresh tracker (the CLI's resume restore never
+    // fires on the SDK path — cost.ts). Its first snapshot is what tells the fold the old
+    // generation's last total is final.
+    let state = fold([0.1, 0.35])
+    state = fold([0.5], 1, state)
+    expect(state.closedUsd).toBeCloseTo(0.35)
+    expect(state.liveUsd).toBeCloseTo(0.5)
+    expect(state.totalUsd).toBeCloseTo(0.85)
+    expect(state.generation).toBe(1)
+  })
+
+  it('a zero-cost close from the dead generation does not disturb its banked total', () => {
+    // `closeOpenTurns` folds `0` for the dead query's turns before the replacement opens; `max`
+    // ignores it and the generation stays put until the replacement actually reports.
+    let state = fold([0.35])
+    state = beginTurn(state)
+    state = foldTurnCost(state, at(0, 0))
+    expect(state.totalUsd).toBeCloseTo(0.35)
+    expect(state.generation).toBe(0)
+  })
+
+  it('a stray turn-end never advances the generation', () => {
+    const state = fold([0.35])
+    expect(foldTurnCost(state, at(3, 1))).toBe(state)
   })
 
   it('ignores a turn-end that no turn opened', () => {
-    // The initial state is "no turn open". A stray `result` before anything was sent is not ours to
-    // attribute, so it contributes nothing rather than opening the total.
-    expect(foldTurnCost(INITIAL_COST_STATE, 5).totalUsd).toBe(0)
+    expect(foldTurnCost(INITIAL_COST_STATE, at(0, 5)).totalUsd).toBe(0)
   })
 
   it('beginTurn opens an additional turn every time it is called', () => {
@@ -70,19 +112,25 @@ describe('cost accumulation', () => {
   })
 
   it('an error turn still costs — the fold is not gated on success', () => {
-    // §10: "a `result` message is emitted on failure too, so the accumulator must not be gated on
-    // subtype === 'success'". Nothing here inspects a subtype, which is the point.
-    const state = foldTurnCost(beginTurn(INITIAL_COST_STATE), 0.03)
-    expect(state.totalUsd).toBeCloseTo(0.03)
+    // §10: a `result` is emitted on failure too, carrying the same running total. Nothing here
+    // inspects a subtype, which is the point.
+    expect(fold([0.03]).totalUsd).toBeCloseTo(0.03)
   })
 
-  it('treats a malformed cost as zero rather than poisoning the total', () => {
+  it('treats a malformed snapshot as zero rather than poisoning the total', () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
-      const state = foldTurnCost(beginTurn(INITIAL_COST_STATE), bad)
+      const state = fold([bad])
       expect(state.totalUsd).toBe(0)
       // The turn is still consumed: it did end, so the next stray result must not fold in its place.
       expect(state.openTurns).toBe(0)
     }
+  })
+
+  it('abandonTurn releases a turn main never opened without touching the money', () => {
+    const state = abandonTurn(beginTurn(fold([0.35])))
+    expect(state.openTurns).toBe(0)
+    expect(state.totalUsd).toBeCloseTo(0.35)
+    expect(abandonTurn(INITIAL_COST_STATE)).toBe(INITIAL_COST_STATE)
   })
 })
 

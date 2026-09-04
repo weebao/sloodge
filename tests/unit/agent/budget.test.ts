@@ -118,6 +118,13 @@ describe('isBudgetCap / isBudgetSetRequest — the wire gates', () => {
     }
   })
 
+  it('accepts whole cents only — a cap the form could never produce is refused, not stored', () => {
+    // Sub-cent caps render as "$0.00" in the field and "< $0.01" in the meter; the form rounds to
+    // cents, so the boundary must too or main persists a number the UI cannot show back.
+    for (const value of [0.29, 0.01, 2, 999.99]) expect(isBudgetCap(value)).toBe(true)
+    for (const value of [0.001, 2.0000001, 1.005]) expect(isBudgetCap(value)).toBe(false)
+  })
+
   it('gates the IPC payload on the same rule', () => {
     expect(isBudgetSetRequest({ capUsd: 2 })).toBe(true)
     expect(isBudgetSetRequest({ capUsd: null })).toBe(true)

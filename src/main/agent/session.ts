@@ -94,7 +94,8 @@ export class AgentSession {
   /**
    * Client-side estimate, folded by the shared rule in `shared/agent/cost.ts` — the same function
    * the renderer's transcript uses, so the status bar cannot drift from what main recorded (§10).
-   * Never billed off.
+   * Each `result`'s `total_cost_usd` is the reporting query's running total, folded as a maximum per
+   * `generation` and banked when the next generation starts. Never billed off.
    */
   private cost: CostState = INITIAL_COST_STATE
   /**
@@ -144,12 +145,26 @@ export class AgentSession {
   private capUsd: BudgetCap
   /**
    * A cap-triggered interrupt is in flight and its `result` has not folded yet. Stops a second cap
-   * edit, or the fold that follows, from interrupting the same turn twice and telling the user twice.
+   * edit, or the fold that follows, from interrupting the same turn twice. Cleared by that fold — and
+   * by `closeOpenTurns`, because a query that dies before answering the interrupted turn never folds
+   * it, and round 4 found the flag then outliving the query: the replacement's first cap-stop was
+   * silently skipped.
    */
   private budgetInterruptPending = false
   /**
-   * The most recent `session_id` the runtime reported. Used to `resume` when we have to reopen a
-   * query mid-session, so replacing it for budget reasons does not also wipe the conversation.
+   * The current cap crossing has already produced a "Budget reached" bubble. With three turns open
+   * (Stop → send → Stop → send) every fold that leaves the total at the cap interrupts one more open
+   * turn — correct, the CLI starts the next queued turn immediately — but the user is told once per
+   * crossing, not once per turn. Cleared whenever the total is seen under the cap again.
+   */
+  private capCrossingAnnounced = false
+  /**
+   * The most recent `session_id` the runtime reported. Used to `resume` when a query is re-armed
+   * after ending, so a budget stop does not also wipe the conversation. Resume carries the
+   * *conversation*, not the CLI's cost tracker: the CLI restores `totalCostUSD` on resume only when
+   * its per-cwd project config's `lastSessionId` matches, and the SDK's stream-json path never
+   * writes that key (see `shared/agent/cost.ts`), so a re-armed query's snapshots start at $0 and
+   * the fold banks the dead generation's total rather than trusting the new one's first snapshot.
    */
   private lastSessionId: string | null = null
   /**
@@ -233,8 +248,15 @@ export class AgentSession {
    *
    * What this bounds: the session cannot *start* a turn past the cap, and a turn already running is
    * stopped as soon as main can see that the folded total has reached the cap. What it does not
-   * bound is the spend of the turn currently streaming — cost only reaches us on its `result` — which
-   * is what the per-query SDK ceiling is for.
+   * bound is the spend of the turn currently streaming — cost only reaches us on its `result`. The
+   * SDK ceiling bounds that: the CLI compares its running total against `maxBudgetUsd` (`vS() >=
+   * maxBudgetUsd`), and that total starts at $0 for every query Sloodge opens (the resume restore
+   * never fires on the SDK path — `lastSessionId`), so a query re-armed after a stop is bounded by
+   * the cap *on its own*, on top of what the session had already spent. Passing the absolute cap is
+   * still right: a remainder would let a single re-armed turn run only to the leftover, and if a
+   * future CLI ever did restore the tracker on resume, a remainder would be checked as (prior + new)
+   * ≥ remainder and stop "raise the limit and carry on" after its first API call. The Budget tab
+   * states the prior-plus-cap bound in plain words.
    */
   setBudgetCap(capUsd: BudgetCap): void {
     this.capUsd = capUsd
@@ -249,11 +271,16 @@ export class AgentSession {
    * §10 forbids. Skipped for a query that has already ended — its turns close via `closeOpenTurns`.
    */
   private enforceCap(): void {
-    if (this.capUsd === null || this.handle === null || this.queryFinished || this.closed) return
-    if (this.cost.openTurns === 0 || this.cost.totalUsd < this.capUsd) return
-    if (this.budgetInterruptPending) return
+    if (this.capUsd === null || this.cost.totalUsd < this.capUsd) {
+      this.capCrossingAnnounced = false
+      return
+    }
+    if (this.handle === null || this.queryFinished || this.closed) return
+    if (this.cost.openTurns === 0 || this.budgetInterruptPending) return
     this.budgetInterruptPending = true
     void this.interrupt()
+    if (this.capCrossingAnnounced) return
+    this.capCrossingAnnounced = true
     // Empty message on purpose: the renderer's copy table owns the budget sentence (transcript.ts).
     this.deps.emit({ type: 'error', kind: 'budget', message: '', recoverable: true })
   }
@@ -277,7 +304,9 @@ export class AgentSession {
       // dead query and nothing will drain it again, so the replacement gets a fresh one — the same
       // repair `restartWithFallback` performs, for the same reason.
       // Only reachable with turns open inside the terminal-result-to-drain window, where the
-      // terminal result's own error has already explained the stop.
+      // terminal result's own error has already explained the stop. Closed *before* the bump so the
+      // zero-cost closes carry the dead generation, and the replacement's first snapshot is what
+      // banks that generation's total (cost.ts).
       this.closeOpenTurns(true)
       this.generation += 1
       const dead = this.handle
@@ -311,9 +340,9 @@ export class AgentSession {
         // describe a session the user is no longer in, so they are dropped. Safe only because a query
         // is never superseded while it has a billable turn outstanding — see `generation`.
         if (generation !== this.generation) return
-        for (const event of mapSdkMessage(raw, this.seenAssistantIds)) {
+        for (const event of mapSdkMessage(raw, this.seenAssistantIds, generation)) {
           if (event.type === 'turn-end') {
-            this.cost = foldTurnCost(this.cost, event.costUsd)
+            this.cost = foldTurnCost(this.cost, event)
             this.pendingTexts.shift()
             this.budgetInterruptPending = false
             // Mark the query dead the moment its *terminating* result is seen, rather than waiting
@@ -395,12 +424,22 @@ export class AgentSession {
    *
    * `explained` is true when the chat already shows why the query ended (a budget stop, a transport
    * error); then the close is silent rather than stacking a second bubble on the first.
+   *
+   * Any cap-stop still waiting on one of these turns is over too: its `result` is the thing that will
+   * never come, so the flag is released here or the next query inherits a stop that never fires.
    */
   private closeOpenTurns(explained: boolean): void {
+    this.budgetInterruptPending = false
     if (this.cost.openTurns === 0) return
+    const close = {
+      type: 'turn-end',
+      snapshotUsd: 0,
+      generation: this.generation,
+      subtype: QUERY_ENDED_SUBTYPE,
+    } as const
     while (this.cost.openTurns > 0) {
-      this.cost = foldTurnCost(this.cost, 0)
-      this.deps.emit({ type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE })
+      this.cost = foldTurnCost(this.cost, close)
+      this.deps.emit(close)
     }
     this.pendingTexts = []
     if (explained) return

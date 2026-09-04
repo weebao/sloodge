@@ -119,10 +119,11 @@ describe('installAgentIpc', () => {
 
     // The emit callback pushes on the agent event channel.
     const emit = service.send.mock.calls[0]?.[2] as (e: unknown) => void
-    emit({ type: 'turn-end', costUsd: 0, subtype: 'success' })
+    emit({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' })
     expect(sender.send).toHaveBeenCalledWith(contract.AGENT_EVENT_CHANNEL, {
       type: 'turn-end',
-      costUsd: 0,
+      snapshotUsd: 0,
+      generation: 0,
       subtype: 'success',
     })
 

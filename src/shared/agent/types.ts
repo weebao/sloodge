@@ -125,7 +125,18 @@ export type AgentEvent =
   | { readonly type: 'assistant-delta'; readonly text: string }
   | { readonly type: 'assistant-message'; readonly text: string; readonly usage: AgentUsage }
   | { readonly type: 'tool-use'; readonly toolUseId: string; readonly label: string }
-  | { readonly type: 'turn-end'; readonly costUsd: number; readonly subtype: string }
+  /**
+   * A `result` arrived (or main closed a turn its query never answered). `snapshotUsd` is the SDK's
+   * `total_cost_usd` — the reporting subprocess's **running total**, not this turn's price — and
+   * `generation` names that subprocess, so the shared fold (`shared/agent/cost.ts`) can take the
+   * maximum within a generation and bank the total when a new one starts.
+   */
+  | {
+      readonly type: 'turn-end'
+      readonly snapshotUsd: number
+      readonly generation: number
+      readonly subtype: string
+    }
   | {
       readonly type: 'error'
       readonly kind: AgentErrorKind

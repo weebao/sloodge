@@ -2,72 +2,93 @@
  * The **one** cost-accumulation rule, shared by main and the renderer (M2.5,
  * 50-agent-integration.md §10).
  *
- * ## Why this is a shared module rather than two accumulators
+ * ## What `total_cost_usd` actually is
  *
- * Before M2.5 the session cost was summed twice: `AgentSession.spendUsd` folded every `turn-end`
- * unconditionally, and the renderer's transcript folded once per turn behind its own flag. In the
- * happy path (one send, one `result`) the two agree by coincidence. They disagree the moment the
- * stream is not the happy path — a duplicated `result`, or a `result` arriving outside any turn —
- * and the disagreement is invisible: main logs one number and the status bar shows another.
- *
- * A meter that drifts from what was actually spent is worse than no meter, and *the guard reads the
- * same number* — a budget cap enforced against a number that is not main's number is not a guard.
- * So the fold rule lives here and both sides call it.
+ * Every SDK `result` carries `total_cost_usd`, and it is **not the price of the turn that just
+ * ended**. In the bundled CLI (2.1.220, `@anthropic-ai/claude-agent-sdk` 0.3.220) it is the
+ * subprocess's running total: `Jbi()` does `Ot.totalCostUSD += e` after every API call, `vS()` reads
+ * that global, every `result` builder writes `total_cost_usd: vS()`, and the only per-turn reset
+ * (`j2m()`) has no callers. Real turns costing 0.10 / 0.25 / 1.00 therefore arrive as snapshots
+ * 0.10 / 0.35 / 1.35. Round 4 of review found both ledgers summing those to $1.80 for a $1.35
+ * session — over-counting from the second turn of every session, growing with every turn, and
+ * making the cap bind at money the user never spent. `sdk-cost-contract.test.ts` pins the CLI
+ * version this was read from, so a runtime bump forces someone to re-verify these symbols.
  *
  * ## The rule
  *
- * Cost folds **once per opened turn**, tracked by a count of turns that have been opened by
- * `beginTurn` and not yet folded:
+ * A snapshot is folded as a **monotone maximum for the query generation it came from**, never added:
  *
- *   beginTurn (user sends) ──▶ openTurns + 1
- *   turn-end ──▶ openTurns > 0 ? (total += cost, openTurns - 1) : no-op
+ *   beginTurn (user sends)        ──▶ openTurns + 1
+ *   turn-end {generation, snapshot} ──▶ openTurns > 0 ? fold : no-op, where fold is
+ *       same generation  : liveUsd = max(liveUsd, snapshot)
+ *       later generation : closedUsd += liveUsd; liveUsd = snapshot
+ *   totalUsd = closedUsd + liveUsd
  *
- * Counting rather than gating on the turn's *display* state is deliberate: the SDK's post-interrupt
- * `result` lands after the turn has already settled to `interrupted`, and a failed turn's `result`
- * arrives paired with an `error`. Both still carry real cost and must be counted — an error result
- * is billed (§10) — while a duplicate `result` must not be.
+ * `generation` is `AgentSession`'s query counter — each `query()` is one CLI subprocess with its own
+ * tracker, so each is its own running total. A later generation's first snapshot is the moment the
+ * previous one is known to be finished: its last reported total is banked into `closedUsd` and the
+ * new process starts from zero. That baseline is **deliberately additive** — see below.
  *
- * ## Why a counter and not a boolean
+ * `max` makes a repeated or out-of-order `result` harmless to the money: the same snapshot twice is
+ * the same maximum, and two overlapping turns' results carry the totals in the order the process
+ * emitted them, so whichever lands second is the larger. The uuid dedup in `event-mapping.ts` is
+ * still load-bearing, but for the **turn count**: `openTurns` is what settles the composer and lets
+ * `AgentSession.closeOpenTurns` know how many turns a dead query owes, and a duplicated `result` would
+ * consume a live turn's slot.
  *
- * This was a `folded: boolean` and that was **wrong**, in a way the agreement test could not see.
- * Turns can overlap: `interrupt-requested` moves the transcript to `interrupted` immediately, while
- * the SDK's `result` for that turn is still in flight, and the composer's only send guard is
- * `turnState === 'streaming'`. So Stop → retype → Send inside the interrupt round-trip opens a
- * second turn while the first is still unfolded. With a boolean, `beginTurn` was a no-op, the late
- * result folded turn A, and turn B's result hit "already folded" and contributed **nothing** — a
- * whole turn's money vanished from the meter *and* from the guard the meter feeds.
+ * ## Why a re-armed query is banked, not trusted
  *
- * Both accumulators shared the flaw, so they stayed in perfect agreement while both under-reported.
- * That is the lesson worth keeping: **agreement is not correctness**, which is why
- * `cost-agreement.test.ts` now also checks both totals against an independent model of the script
- * rather than only against each other.
+ * When `AgentSession` re-arms after a query ends it passes `resume`, and the CLI *can* restore its
+ * tracker on resume: `xws(id)` returns `{ totalCostUSD: lastCost }` when the per-cwd project config's
+ * `lastSessionId` equals the resumed id. If that happened, the new generation's first snapshot would
+ * already include the old spend and banking would double-count it. It does not happen on the SDK
+ * path: the only writer of `lastSessionId`/`lastCost` is `nZu()`, whose callers are the `/clear`
+ * conversation reset (`PSi()`) and the interactive REPL's exit hook (`Vzf`, a React effect that also
+ * prints "Cost:" to stdout). A stream-json session never runs either, so the resumed process's total
+ * starts at $0 and the additive baseline is exact. Were a future CLI to restore it, this rule reads
+ * **high** by the banked amount — the safe direction for a spend control — never low; the contract
+ * test is what turns that "were" into a deliberate decision.
  *
- * ## What this module deliberately cannot do
+ * ## Why a counter for turns
  *
- * A counter knows *how many* turns are open, never *which* result belongs to which. So it cannot
- * tell a duplicated `result` from a second turn's `result` — and if it tries, it gets one of them
- * wrong. That is exactly how the first counter was still broken: with two turns open, a duplicate
- * consumed the second turn's fold and a whole turn's money disappeared, in the same direction on
- * both sides, so the cross-check stayed green again.
+ * Turns overlap: `interrupt-requested` moves the transcript to `interrupted` while the SDK's `result`
+ * is still in flight, so Stop → retype → Send opens a second turn before the first has ended. A
+ * boolean "folded" flag collapsed the two and lost a turn from both ledgers at once (round 1); a
+ * counter without result identity let a duplicate consume the second turn's slot (round 2). Both
+ * sides run this file on the same events, so they agree — and `cost-agreement.test.ts` checks both
+ * against a model of the script as well, because agreement alone cannot catch a shared error.
  *
- * **Result identity is therefore established upstream**, in `event-mapping.ts`, which drops a
- * repeated `result` by its `uuid` before it ever reaches this arithmetic. The two mechanisms are not
- * redundant: dedup handles *repetition*, the counter handles *overlap*, and neither can substitute
- * for the other. Removing either one reds `cost-agreement.test.ts`.
- *
- * `openTurns: 0` is "no turn is open": a stray `turn-end` before anything was sent contributes
- * nothing rather than opening the total on an event we cannot attribute.
+ * `openTurns: 0` is "no turn is open": a `turn-end` nothing sent contributes nothing.
  */
 
-/** The accumulator's whole state: a running total and how many opened turns have yet to fold. */
+/** One `result`'s money, as the fold consumes it. */
+export type CostSnapshot = {
+  /** The `query()` generation that reported it — its subprocess, hence its running total. */
+  readonly generation: number
+  /** `result.total_cost_usd`: that subprocess's total so far, not this turn's price. */
+  readonly snapshotUsd: number
+}
+
 export type CostState = {
-  /** Client-side estimate in USD. Displayed with a leading "≈"; never billing truth (§10). */
+  /** `closedUsd + liveUsd`. Client-side estimate; displayed with a leading "≈", never billing truth. */
   readonly totalUsd: number
+  /** The last total each finished query generation reported, summed. */
+  readonly closedUsd: number
+  /** The highest total the live generation has reported. */
+  readonly liveUsd: number
+  /** Which generation `liveUsd` belongs to. */
+  readonly generation: number
   /** Turns opened by `beginTurn` whose `turn-end` has not yet been folded. Never negative. */
   readonly openTurns: number
 }
 
-export const INITIAL_COST_STATE: CostState = { totalUsd: 0, openTurns: 0 }
+export const INITIAL_COST_STATE: CostState = {
+  totalUsd: 0,
+  closedUsd: 0,
+  liveUsd: 0,
+  generation: 0,
+  openTurns: 0,
+}
 
 /**
  * Open a turn: one more `turn-end` will fold. Called when the user sends — `AgentSession.send` in
@@ -82,22 +103,30 @@ export function beginTurn(state: CostState): CostState {
 }
 
 /**
- * Fold one `turn-end`'s cost into the total, consuming one open turn.
+ * Fold one `turn-end`, consuming one open turn. See the module docstring for the rule.
  *
- * Non-finite and negative costs contribute zero rather than poisoning the total with `NaN` or
- * walking it backwards: `total_cost_usd` is a number we receive, not one we compute, and a meter
- * that reads `$NaN` after one malformed message is a worse failure than an undercount. The turn is
- * still consumed, because the turn *did* end — the alternative would let the next stray `turn-end`
- * fold in its place.
+ * A non-finite or negative snapshot reads as zero: `total_cost_usd` is a number we receive, not one
+ * we compute, and a meter that reads `$NaN` after one malformed message is a worse failure than a
+ * missed fold. The turn is still consumed, because the turn *did* end.
  */
-export function foldTurnCost(state: CostState, costUsd: number): CostState {
+export function foldTurnCost(state: CostState, snapshot: CostSnapshot): CostState {
   if (state.openTurns === 0) return state
-  const delta = Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0
-  return { totalUsd: state.totalUsd + delta, openTurns: state.openTurns - 1 }
+  const reported =
+    Number.isFinite(snapshot.snapshotUsd) && snapshot.snapshotUsd > 0 ? snapshot.snapshotUsd : 0
+  const advanced = snapshot.generation > state.generation
+  const closedUsd = advanced ? state.closedUsd + state.liveUsd : state.closedUsd
+  const liveUsd = Math.max(advanced ? 0 : state.liveUsd, reported)
+  return {
+    totalUsd: closedUsd + liveUsd,
+    closedUsd,
+    liveUsd,
+    generation: advanced ? snapshot.generation : state.generation,
+    openTurns: state.openTurns - 1,
+  }
 }
 
 /**
- * Close an opened turn that main never opened, without adding cost.
+ * Close an opened turn that main never opened, without touching the money.
  *
  * The renderer opens its turn optimistically, before main has accepted the send — that is what makes
  * the assistant bubble appear the instant you hit Send. When main then *refuses* (its own budget

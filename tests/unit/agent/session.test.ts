@@ -124,7 +124,12 @@ describe('AgentSession', () => {
     // The throw ended the query with the turn open: main closes that turn at $0 — once, silently,
     // because the network error above already said why.
     await vi.waitFor(() => expect(emitted.filter((e) => e.type === 'turn-end')).toHaveLength(1))
-    expect(emitted.at(-1)).toEqual({ type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE })
+    expect(emitted.at(-1)).toEqual({
+      type: 'turn-end',
+      snapshotUsd: 0,
+      generation: 0,
+      subtype: QUERY_ENDED_SUBTYPE,
+    })
     expect(session.openTurns).toBe(0)
   })
 
@@ -171,7 +176,7 @@ describe('AgentSession', () => {
 
     await vi.waitFor(() => expect(emitted.some((e) => e.type === 'error')).toBe(true))
     expect(emitted.filter((e) => e.type === 'turn-end')).toEqual([
-      { type: 'turn-end', costUsd: 0, subtype: QUERY_ENDED_SUBTYPE },
+      { type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: QUERY_ENDED_SUBTYPE },
     ])
     expect(emitted.at(-1)).toMatchObject({ type: 'error', kind: 'unknown', recoverable: true })
     expect(session.openTurns).toBe(0)
@@ -286,5 +291,246 @@ describe('AgentSession', () => {
       const session = new AgentSession({ queryFn, options: OPTIONS, emit: () => {} })
       expect(session.skillStatus).toEqual({ known: false })
     })
+  })
+})
+
+/**
+ * A runtime the test feeds by hand: `deliver` queues messages, `end` closes the stream, `fail` makes
+ * the generator throw (a transport failure). `interrupt()` is counted and answered with whatever
+ * `onInterrupt` returns.
+ */
+function liveRuntime(onInterrupt: () => readonly unknown[] = () => []): {
+  handle: AgentQueryHandle
+  deliver: (...messages: readonly unknown[]) => void
+  fail: (error: unknown) => void
+  interrupts: () => number
+} {
+  const queue: unknown[] = []
+  let wake: (() => void) | null = null
+  let ended = false
+  let failure: unknown
+  let interrupts = 0
+  const nudge = (): void => {
+    const resume = wake
+    wake = null
+    resume?.()
+  }
+  async function* gen(): AsyncGenerator<unknown, void, unknown> {
+    for (;;) {
+      while (queue.length > 0) yield queue.shift()
+      if (failure !== undefined) throw failure
+      if (ended) return
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+    }
+  }
+  const handle = gen() as AgentQueryHandle
+  const deliver = (...messages: readonly unknown[]): void => {
+    queue.push(...messages)
+    nudge()
+  }
+  handle.interrupt = async () => {
+    interrupts += 1
+    deliver(...onInterrupt())
+  }
+  handle.setModel = async () => undefined
+  const originalReturn = handle.return.bind(handle)
+  handle.return = ((value?: void) => {
+    ended = true
+    nudge()
+    return originalReturn(value)
+  }) as AgentQueryHandle['return']
+  return {
+    handle,
+    deliver,
+    fail: (error) => {
+      failure = error
+      nudge()
+    },
+    interrupts: () => interrupts,
+  }
+}
+
+const result = (uuid: string, totalCostUsd: number, subtype = 'success'): unknown => ({
+  type: 'result',
+  uuid,
+  subtype,
+  total_cost_usd: totalCostUsd,
+})
+
+const turnEnds = (emitted: readonly AgentEvent[]): number =>
+  emitted.filter((e) => e.type === 'turn-end').length
+const budgetErrors = (emitted: readonly AgentEvent[]): number =>
+  emitted.filter((e) => e.type === 'error' && e.kind === 'budget').length
+
+describe('AgentSession — total_cost_usd is the query’s running total (M2.5 round 4)', () => {
+  it('folds snapshots 0.10 / 0.35 / 1.35 to a $1.35 session, not $1.80', async () => {
+    const emitted: AgentEvent[] = []
+    const rt = liveRuntime()
+    const session = new AgentSession({
+      queryFn: () => rt.handle,
+      options: OPTIONS,
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    for (const [i, snapshot] of [0.1, 0.35, 1.35].entries()) {
+      session.send(`turn ${String(i)}`)
+      rt.deliver(result(`r${String(i)}`, snapshot))
+      // eslint-disable-next-line no-await-in-loop
+      await vi.waitFor(() => expect(turnEnds(emitted)).toBe(i + 1))
+    }
+    expect(session.estimatedSpendUsd).toBeCloseTo(1.35, 10)
+    await session.close()
+  })
+
+  it('a re-armed query starts a fresh tracker: its snapshots add to the dead query’s final total', async () => {
+    // The CLI restores its cost tracker on `resume` only when its per-cwd project config's
+    // `lastSessionId` matches, and the SDK's stream-json path never writes that key (cost.ts). So the
+    // replacement's `total_cost_usd` restarts at $0 and the old generation's last total is banked.
+    const emitted: AgentEvent[] = []
+    const runtimes: ReturnType<typeof liveRuntime>[] = []
+    const resumes: (string | undefined)[] = []
+    const queryFn: AgentQueryFn = ({ options }) => {
+      resumes.push(options.resumeSessionId)
+      const rt = liveRuntime()
+      runtimes.push(rt)
+      return rt.handle
+    }
+    const session = new AgentSession({
+      queryFn,
+      options: { ...OPTIONS, maxBudgetUsd: 2 },
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('one')
+    runtimes[0]?.deliver(initWith([]), result('r1', 0.1))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(1))
+    session.send('two')
+    // The SDK's ceiling ends the query; the snapshot is that subprocess's final total.
+    runtimes[0]?.deliver(result('r2', 2.4, 'error_max_budget_usd'))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(2))
+    expect(session.estimatedSpendUsd).toBeCloseTo(2.4, 10)
+
+    session.setBudgetCap(10)
+    session.send('three')
+    expect(runtimes).toHaveLength(2)
+    expect(resumes).toEqual([undefined, 's1'])
+    runtimes[1]?.deliver(result('r3', 0.1))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(3))
+    expect(session.estimatedSpendUsd).toBeCloseTo(2.5, 10)
+    await session.close()
+  })
+
+  it('if a future CLI restored the tracker on resume, the ledger would read high — never low', async () => {
+    // Pinned deliberately. A resumed query whose first snapshot already carried the old spend
+    // (2.4 + 0.1) is folded as a fresh generation, so the session reads 2.4 + 2.5 = 4.9 for a real
+    // 2.5. That is the over-counting direction, which a spend control can live with; the alternative
+    // rule ("a resumed snapshot IS the session total") reads 2.5 when the restore does not fire —
+    // which is every Sloodge session on the bundled CLI (sdk-cost-contract.test.ts) — and that is an
+    // undercount of the entire prior spend. Change this only with the contract test.
+    const emitted: AgentEvent[] = []
+    const runtimes: ReturnType<typeof liveRuntime>[] = []
+    const session = new AgentSession({
+      queryFn: () => {
+        const rt = liveRuntime()
+        runtimes.push(rt)
+        return rt.handle
+      },
+      options: { ...OPTIONS, maxBudgetUsd: 2 },
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('one')
+    runtimes[0]?.deliver(initWith([]), result('r1', 2.4, 'error_max_budget_usd'))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(1))
+    session.setBudgetCap(10)
+    session.send('two')
+    runtimes[1]?.deliver(result('r2', 2.5))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(2))
+    expect(session.estimatedSpendUsd).toBeCloseTo(4.9, 10)
+    await session.close()
+  })
+
+  it('a cap-stop whose query dies before answering does not disarm the replacement’s cap-stop', async () => {
+    // Round 4's major: `budgetInterruptPending` was cleared only by the fold of the interrupted
+    // turn's result. A query that crashed before delivering it left the flag set, so the next
+    // lower-below-spend on the re-armed query produced no interrupt and no budget error.
+    const emitted: AgentEvent[] = []
+    const runtimes: ReturnType<typeof liveRuntime>[] = []
+    const session = new AgentSession({
+      queryFn: () => {
+        // The cap-stop's interrupt is answered with the stopped turn's result — on the second query.
+        // The first query dies instead (see `fail` below).
+        const rt = liveRuntime(() => (runtimes.length === 2 ? [result('r3', 0.5)] : []))
+        runtimes.push(rt)
+        return rt.handle
+      },
+      options: { ...OPTIONS, maxBudgetUsd: 1 },
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('one')
+    runtimes[0]?.deliver(initWith([]), result('r1', 0.5))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(1))
+    session.send('two')
+    session.setBudgetCap(0.4)
+    await vi.waitFor(() => expect(runtimes[0]?.interrupts()).toBe(1))
+    expect(budgetErrors(emitted)).toBe(1)
+    // The runtime dies before the interrupted turn's result.
+    runtimes[0]?.fail(new Error('read ECONNRESET'))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(2))
+    expect(emitted.at(-1)).toEqual({
+      type: 'turn-end',
+      snapshotUsd: 0,
+      generation: 0,
+      subtype: QUERY_ENDED_SUBTYPE,
+    })
+
+    session.setBudgetCap(10)
+    session.send('three')
+    expect(runtimes).toHaveLength(2)
+    session.setBudgetCap(0.4)
+    await vi.waitFor(() => expect(runtimes[1]?.interrupts()).toBe(1))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(3))
+    expect(budgetErrors(emitted)).toBe(2)
+    // 0.5 from the first query, 0.5 from the second; the crashed turn billed nothing.
+    expect(session.estimatedSpendUsd).toBeCloseTo(1.0, 10)
+    await session.close()
+  })
+
+  it('three open turns at the cap: every open turn is interrupted, the user is told once', async () => {
+    const emitted: AgentEvent[] = []
+    const rt = liveRuntime()
+    const session = new AgentSession({
+      queryFn: () => rt.handle,
+      options: { ...OPTIONS, maxBudgetUsd: 1 },
+      emit: (e) => emitted.push(e),
+      log: () => {},
+    })
+    session.send('one')
+    session.send('two')
+    session.send('three')
+    expect(session.openTurns).toBe(3)
+    // The first result carries the total over the cap while two turns are still open.
+    rt.deliver(result('r1', 1.2))
+    await vi.waitFor(() => expect(rt.interrupts()).toBe(1))
+    rt.deliver(result('r2', 1.25))
+    await vi.waitFor(() => expect(rt.interrupts()).toBe(2))
+    rt.deliver(result('r3', 1.3))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(3))
+    expect(budgetErrors(emitted)).toBe(1)
+    expect(session.estimatedSpendUsd).toBeCloseTo(1.3, 10)
+    // Back under the cap, the next crossing is a new event and is announced again.
+    session.setBudgetCap(5)
+    session.send('four')
+    rt.deliver(result('r4', 5.5))
+    await vi.waitFor(() => expect(turnEnds(emitted)).toBe(4))
+    session.send('five')
+    session.setBudgetCap(2)
+    await vi.waitFor(() => expect(rt.interrupts()).toBe(3))
+    expect(budgetErrors(emitted)).toBe(2)
+    await session.close()
   })
 })

@@ -95,6 +95,10 @@ describe('BudgetTab — what the session has spent', () => {
     loaded(2, 0.4)
     render(<BudgetTab />)
     expect(document.body.textContent).toMatch(/allowed to finish — unless you lower the limit/i)
+    // The two facts the guard cannot hide from the user: cost is learned only when a message ends,
+    // and a query re-armed after a stop is bounded by the cap on its own (§10).
+    expect(document.body.textContent).toMatch(/past the limit before anything stops it/i)
+    expect(document.body.textContent).toMatch(/on top of what the session had already spent/i)
   })
 })
 
