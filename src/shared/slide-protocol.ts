@@ -250,7 +250,9 @@ const SLIDE_STAGE_HOST_PREFIX = 'stage-'
  *
  * `location.origin` inside a stage slide reads `slide://stage-<its own id>` — a value the slide
  * already knows from `location.href`, and one nothing in the app trusts: the bridge authenticates
- * by `event.source`, never by origin (`frameScript.ts`, `useDesignBridge.ts`).
+ * by `event.source`, never by origin (`frameScript.ts`, `useDesignBridge.ts`). Next to it,
+ * `location.ancestorOrigins` reads `["file://"]` (measured): it tells a slide that its embedder is a
+ * file:// document and nothing else — no id, no sibling, and again nothing the app trusts.
  */
 export function slideDocumentHost(id: string, surface: SlideSurface): string {
   return surface === 'stage' ? `${SLIDE_STAGE_HOST_PREFIX}${id}` : SLIDE_THUMBNAIL_HOST

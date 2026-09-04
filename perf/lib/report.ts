@@ -123,6 +123,13 @@ export type PerfReport = {
   /** Electron process count over the session — the driver behind the memory numbers. */
   readonly processCount: Summary | null
   /**
+   * The same count split by session phase, so the shape of the process claim — flat in the editor,
+   * one higher across a switch, highest in Present — is readable from the committed report instead
+   * of only from the gitignored trace. Reports written before this field existed parse with an
+   * empty record: no phase was measured, rather than a phase measured as nothing.
+   */
+  readonly processCountByPhase: Readonly<Record<string, Summary | null>>
+  /**
    * Memory and process count by Chromium process type, on `metrics.ramBasis`, for the whole session
    * and for the idle window alone. This is how a reader tells "the app grew" from "the GPU process
    * happened to be alive this time" without opening the trace.
@@ -215,6 +222,7 @@ export const PerfReportSchema = z.object({
   }),
   ramBases: z.record(z.string(), SummarySchema.nullable()),
   processCount: SummarySchema.nullable(),
+  processCountByPhase: z.record(z.string(), SummarySchema.nullable()).default({}),
   processTypes: z.object({
     session: z.record(z.string(), ProcessTypeBreakdownSchema),
     idle: z.record(z.string(), ProcessTypeBreakdownSchema),

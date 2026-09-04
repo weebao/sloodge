@@ -246,3 +246,59 @@ describe('SlideStage mounting policy', () => {
     expect(titlesOf()).toEqual(['Slide: C', 'Preloading: D', 'Preloading: E'])
   })
 })
+
+/**
+ * `documentFor` is Design Mode's instrumenter: it parses the document, rewrites it and returns a new
+ * string, so calling it is never free (0.5-3.2 ms and tens of KB on a real slide). Every call site
+ * is therefore memoized on `(id, html)` — the frame's own copy and the pre-warm gate's expected
+ * document — and these tests pin the resulting counts, because the cost of getting this wrong is
+ * invisible: the canvas re-renders on every ResizeObserver tick, so a parse in a render body is a
+ * parse per animation frame while the user drags the panel splitter, and everything still *works*.
+ */
+function counting(): { documentFor: (id: SlideId, html: string) => string; calls: () => number } {
+  let calls = 0
+  return {
+    documentFor: (_id, html) => {
+      calls += 1
+      return html.replace('<body>', '<body data-instrumented>')
+    },
+    calls: () => calls,
+  }
+}
+
+describe('SlideStage instruments each document once', () => {
+  it('re-renders that change only `scale` cost no instrumentation', () => {
+    const { documentFor: docs, calls } = counting()
+    const { rerender } = render(stage(2, { documentFor: docs }))
+    fireEvent.load(screen.getByTitle('Slide: C'))
+    for (const frame of frames()) fireEvent.load(frame)
+    const settled = calls()
+
+    for (const scale of [0.51, 0.52, 0.53, 0.54, 0.55]) {
+      rerender(stage(2, { documentFor: docs, scale }))
+    }
+
+    expect(calls()).toBe(settled)
+    // Guards the guard: five renders that really did reach the DOM, so a zero delta is memoization
+    // and not a stage that stopped rendering.
+    expect(screen.getByTitle('Slide: C').style.transform).toContain('0.55')
+  })
+
+  /**
+   * Settling on C costs four: the gate and C's own frame each parse C (the two are separate memos —
+   * the gate has to know the document before any frame exists to report it), then the gate opens and
+   * B and D parse once each. Stepping C → D costs exactly two more: E's frame, which is the one
+   * document entering the window, and the gate re-reading the newly active D. The three surviving
+   * frames — C, D and the box B vacates — re-parse nothing.
+   */
+  it('costs one parse per document, plus the gate re-reading the active one', () => {
+    const { documentFor: docs, calls } = counting()
+    const { rerender } = render(stage(2, { documentFor: docs }))
+    fireEvent.load(screen.getByTitle('Slide: C'))
+    for (const frame of frames()) fireEvent.load(frame)
+    expect(calls()).toBe(4)
+
+    rerender(stage(3, { documentFor: docs }))
+    expect(calls()).toBe(6)
+  })
+})

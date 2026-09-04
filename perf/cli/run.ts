@@ -21,7 +21,13 @@ import {
   type SessionResult,
   type SwitchRecord,
 } from '../harness/session'
-import { Sampler, kbToMb, processTypeBreakdown, type Sample } from '../harness/sampler'
+import {
+  Sampler,
+  kbToMb,
+  processCountByPhase,
+  processTypeBreakdown,
+  type Sample,
+} from '../harness/sampler'
 import {
   countDroppedFrames,
   frameRateFps,
@@ -384,6 +390,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     processCount: summarizeOrNull(
       collected.flatMap((r) => r.samples.map((s) => s.processes.length)),
     ),
+    processCountByPhase: processCountByPhase(collected),
     processTypes: {
       session: processTypeBreakdown(
         collected.flatMap((r) => r.samples),
@@ -405,6 +412,14 @@ export async function main(argv: readonly string[]): Promise<void> {
     }),
     notes: [
       `RAM basis for the headline number: ${options.ramBasis}. See perf/README.md for what each basis means.`,
+      // Positive provenance, in the artifact rather than only in prose: how the switch series was
+      // built is the thing that has changed most often between generations of this harness, and a
+      // reader holding only the JSON has no other way to tell which one produced it.
+      `Switch series: ${String(metrics.slideSwitchMs.count)} measured of ` +
+        `${String(metrics.slideSwitchMs.count + metrics.unmeasuredSwitches)} attempted; each click ` +
+        `waited up to ${String(SWITCH_LOAD_WAIT_MS)} ms for its own canvas load, and the ` +
+        `${String(metrics.unmeasuredSwitches)} that did not get one are censored at that bound, not ` +
+        `dropped. No re-derivation was applied to any sample.`,
       `Cold start is a bracket; documentLoadedMs (lower bound, navigation loadEventEnd) per run: ${collected.map((r) => r.session.documentLoadedMs.toFixed(0)).join(', ')}.`,
       `deckReadMs (unzip only, shipped readDeck, per run): ${collected.map((r) => String(r.deckReadMs)).join(', ')}.`,
       `deckWriteMs (zip + fsync + rename, shipped writeDeck, per run): ${collected.map((r) => String(r.deckWriteMs)).join(', ')}.`,

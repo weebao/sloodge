@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  processCountByPhase,
   processTypeBreakdown,
   type ProcessMetric,
   type Sample,
@@ -83,5 +84,72 @@ describe('processTypeBreakdown', () => {
 
   it('is empty for an empty window', () => {
     expect(processTypeBreakdown([], 'proc-pss-sum')).toStrictEqual({})
+  })
+})
+
+/**
+ * The per-phase process count exists so the milestone's headline claim — flat in the editor, one
+ * higher across a switch, highest in Present — is checkable from the committed report rather than
+ * from the trace, which is gitignored.
+ */
+describe('processCountByPhase', () => {
+  const tab = (n: number): ProcessMetric[] =>
+    Array.from({ length: n }, (_, i) => proc('Tab', i + 1, MB))
+
+  it('buckets samples between each phase\u2019s start and end mark, pooling runs', () => {
+    const out = processCountByPhase([
+      {
+        marks: [
+          { name: 'switch:start', t: 100 },
+          { name: 'switch:end', t: 300 },
+          { name: 'present:start', t: 400 },
+          { name: 'present:end', t: 600 },
+        ],
+        samples: [
+          sample(0, tab(4)),
+          sample(150, tab(7)),
+          sample(250, tab(8)),
+          sample(350, tab(4)),
+          sample(500, tab(10)),
+        ],
+      },
+      {
+        marks: [
+          { name: 'switch:start', t: 100 },
+          { name: 'switch:end', t: 300 },
+        ],
+        samples: [sample(200, tab(7))],
+      },
+    ])
+    expect(out['switch']).toMatchObject({ count: 3, min: 7, max: 8 })
+    expect(out['present']).toMatchObject({ count: 1, min: 10, max: 10 })
+    // The sample at t=350 falls in no phase and is in neither series.
+    expect(Object.keys(out)).toStrictEqual(['present', 'switch'])
+  })
+
+  it('reports a phase whose window caught no sample as null rather than dropping it', () => {
+    const out = processCountByPhase([
+      {
+        marks: [
+          { name: 'idle:start', t: 100 },
+          { name: 'idle:end', t: 110 },
+        ],
+        samples: [sample(0, tab(4)), sample(250, tab(4))],
+      },
+    ])
+    expect(out['idle']).toBeNull()
+  })
+
+  it('ignores a start with no matching end, and bare marks with no phase edge', () => {
+    const out = processCountByPhase([
+      {
+        marks: [
+          { name: 'shell-ready', t: 0 },
+          { name: 'export:start', t: 100 },
+        ],
+        samples: [sample(150, tab(9))],
+      },
+    ])
+    expect(out).toStrictEqual({})
   })
 })

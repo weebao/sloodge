@@ -27,9 +27,12 @@ import { SlideFrame } from './SlideFrame'
  * the incoming frame (raw → instrumented) and the outgoing one (instrumented → raw), which is two
  * reloads and three publishes per step where a step with Design Mode off is none, and the incoming
  * frame's reload is invisible to the pre-warm gate. Instrumenting a neighbour is one parse in the
- * app renderer when it enters the window; it is memoized per frame, so a step costs one parse — the
- * new neighbour's — and zero reloads, exactly as with Design Mode off. Toggling Design Mode swaps
- * all mounted documents at once, which is the one moment three frames reload together.
+ * app renderer when it enters the window, and every call is memoized on `(id, html)` — the frame's
+ * own copy and the pre-warm gate's expected document each have their own memo — so a step costs two
+ * parses (the new neighbour's frame, and the gate re-reading the newly active document) and a render
+ * that changes neither costs none. Zero reloads either way, exactly as with Design Mode off.
+ * Toggling Design Mode swaps all mounted documents at once, which is the one moment three frames
+ * reload together.
  *
  * ## Neighbours warm *after* the active slide has loaded
  *
@@ -102,10 +105,23 @@ export function SlideStage({
   }, [])
 
   const active = frames.find((frame) => frame.role === 'active')?.slide
-  const warmReady =
-    active !== undefined &&
-    loaded.get(active.id) ===
-      (documentFor === undefined ? active.html : documentFor(active.id, active.html))
+  // Memoized on the same key as the frame's own copy, and for the same reason: `documentFor` is a
+  // full parse of the document, and the gate is read on *every* render — including the
+  // ResizeObserver ticks that `useElementSize` turns into renders while a splitter is dragged. In
+  // the render body this was a parse per render; here it is one per document.
+  // Keyed on the id and the source html rather than on `active` itself, for the same reason the
+  // frame's memo below is: a deck update rebuilds the `SlideView` objects, and keying on the object
+  // would re-instrument on every agent token even though the document is unchanged.
+  const activeId = active?.id
+  const activeSource = active?.html
+  const activeHtml = useMemo(
+    () =>
+      activeId === undefined || activeSource === undefined || documentFor === undefined
+        ? activeSource
+        : documentFor(activeId, activeSource),
+    [documentFor, activeId, activeSource],
+  )
+  const warmReady = active !== undefined && loaded.get(active.id) === activeHtml
 
   return (
     <div className="relative">
