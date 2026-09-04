@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { slideTextForNotes, walkSlide } from '../../../../src/shared/export/pptx/walker'
 import type { ShapeSpec } from '../../../../src/shared/export/pptx/types'
-import { makeMeasure, makeNode } from './_fixtures'
+import { makeMeasure, makeNode, uniformBorder } from './_fixtures'
 
 const textShapes = (shapes: ShapeSpec[]): Extract<ShapeSpec, { kind: 'text' }>[] =>
   shapes.filter((s): s is Extract<ShapeSpec, { kind: 'text' }> => s.kind === 'text')
@@ -99,9 +99,7 @@ describe('walkSlide shape mapping', () => {
       isLeaf: false,
       style: {
         backgroundColor: 'rgb(255, 255, 255)',
-        borderTopWidth: '2px',
-        borderTopStyle: 'dashed',
-        borderTopColor: 'rgb(0, 0, 0)',
+        ...uniformBorder('2px', 'rgb(0, 0, 0)', 'dashed'),
       },
     })
     const shape = walkSlide(makeMeasure([node])).shapes[0]
@@ -207,9 +205,7 @@ describe('walkSlide text-box decoration (M4.8a)', () => {
       w: 120,
       h: 40,
       style: {
-        borderTopWidth: '6px',
-        borderTopStyle: 'solid',
-        borderTopColor: 'rgb(185, 28, 28)',
+        ...uniformBorder('6px', 'rgb(185, 28, 28)'),
         borderRadius: '8px',
       },
     })

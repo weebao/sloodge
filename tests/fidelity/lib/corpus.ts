@@ -1,8 +1,13 @@
 /**
- * The 8-slide fixture corpus from research/pptx-export-fidelity.md §0, with the load-bearing
- * constructs each slide is *declared* to carry. Text nodes are not declared here — the ground-truth
- * script (`truth.ts`) discovers them — but rotations and a painted body background are, because
- * "did the exporter keep it" is only checkable against a statement of what was there.
+ * The fixture corpus, with the load-bearing constructs each slide is *declared* to carry. Text nodes,
+ * painted boxes and pseudo-elements are not declared here — the ground-truth script (`truth.ts`)
+ * discovers them — but rotations and a painted body background are, because "did the exporter keep
+ * it" is only checkable against a statement of what was there.
+ *
+ * Slides `01`–`08` are research/pptx-export-fidelity.md §0. Slides `x1`–`x6` were written by the r1
+ * reviewer *against* the finished exporter, not alongside it: each one reproduced a construct that
+ * scored 90+ while vanishing from the `.pptx`. They are in the corpus so the next tuning pass cannot
+ * quietly fit the scorer to the eight slides it was born with.
  */
 
 import type { MeasureResult } from '../../../src/shared/export/pptx/node'
@@ -39,6 +44,25 @@ export const CORPUS: readonly CorpusSlide[] = [
     bodyImage: false,
   },
   { file: '08-webfont.html', rotations: [], bodyImage: false },
+  // Out-of-corpus probes from review r1, promoted to fixtures.
+  { file: 'x1-ghost-opacity.html', rotations: [], bodyImage: false },
+  { file: 'x2-gradient-panel.html', rotations: [], bodyImage: false },
+  {
+    file: 'x3-rotations.html',
+    rotations: [
+      { text: 'Tilted card holding a badge', deg: -6 },
+      // Inside the −6° card, so the composed angle is what PowerPoint must carry.
+      { text: 'NESTED', deg: 14 },
+      { text: 'TWENTY EIGHT', deg: 28 },
+      { text: 'Rotated about top-left', deg: 10 },
+      { text: 'FORTY FIVE', deg: 45 },
+      { text: 'SIXTY TWO', deg: 62 },
+    ],
+    bodyImage: false,
+  },
+  { file: 'x4-shadows.html', rotations: [], bodyImage: false },
+  { file: 'x5-scale-skew-flip.html', rotations: [], bodyImage: false },
+  { file: 'x6-vertical-br.html', rotations: [], bodyImage: false },
 ]
 
 /**

@@ -309,12 +309,12 @@ Z-order for emission is `(z, domIndex)` ascending, approximating paint order. Fu
 | `<ul>/<ol>` + `<li>` leaves | one `addText` with `bullet: true` runs | `<ol>` → `bullet: { type: 'number' }` |
 | `<a href>` | run `hyperlink: { url }` | |
 | Div/section with bg or border | `addShape(rect \| roundRect, { fill, line, rectRadius })` | uniform radius only |
-| Uniform 1-color `border` | `line: { color, width, dashType }` | non-uniform borders → penalty |
+| Uniform 1-color `border` | `line: { color, width, dashType }` | non-uniform borders → a filled rect per painted side (M4.8a) |
 | `<img>` | `addImage({ data \| path, x,y,w,h })` | re-encoded through the temp dir; `object-fit: cover` → pre-crop with sharp |
 | `<table>` | `addTable(rows, { colW, border })` | only for simple grid tables; any `colspan`/`rowspan` → penalty |
 | `<svg>` | rasterize subtree → `addImage` | never mapped to autoshapes; see below |
 | `<canvas>` | `toDataURL()` → `addImage` | |
-| `border-radius` on a text box | `shape: 'roundRect'` behind the text | text boxes can't be rounded directly |
+| `border-radius` on a text box | `shape: 'roundRect', rectRadius` on the text shape itself | a `p:sp` may carry any `prstGeom`, text box included — no shape behind it (M4.8a) |
 | Slide `<body>` background | `slide.background = { color } \| { data }` | gradient/image body backgrounds are rasterized to a full-bleed background image |
 
 **SVG is always rasterized, never converted.** `addShape` exposes only PowerPoint's built-in autoshape gallery — there is no arbitrary-path primitive — so a generic SVG→autoshape mapping is impossible. Attempting it would produce silently wrong geometry, which is worse than an image. The one concession: an SVG that is a *single* `<rect>`, `<circle>`, `<ellipse>`, or `<line>` with a flat fill maps to the corresponding autoshape, because that case is exact and common in generated slides (divider rules, dots, badges).

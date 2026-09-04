@@ -17,6 +17,8 @@ export type ReadbackRun = {
   /** 6-digit uppercase hex, or null when the run inherits. */
   color: string | null
   sizePt: number | null
+  /** Alpha the run paints at, 0–1, from `<a:alpha>`; 1 when the fill is fully opaque. */
+  opacity: number
 }
 
 export type ReadbackShape = {
@@ -34,7 +36,11 @@ export type ReadbackShape = {
   /** All run text joined, whitespace-normalized. */
   text: string
   fill: string | null
+  /** Alpha of the shape fill, 0–1. */
+  fillOpacity: number
   line: string | null
+  /** True when the shape carries an outer shadow (`<a:outerShdw>`). */
+  hasOuterShadow: boolean
 }
 
 export type ReadbackSlide = {
@@ -76,6 +82,15 @@ function firstSrgb(xml: string): string | null {
   return m?.[1]?.toUpperCase() ?? null
 }
 
+/**
+ * The alpha of the first colour in `xml`, 0–1. pptxgenjs writes `transparency: t` as
+ * `<a:alpha val="(100 − t) × 1000"/>` and omits the element entirely when opaque.
+ */
+function firstAlpha(xml: string): number {
+  const m = /<a:alpha val="(\d+)"\s*\/>/.exec(xml)
+  return m?.[1] === undefined ? 1 : parseInt(m[1], 10) / 100000
+}
+
 function parseRuns(txBody: string): ReadbackRun[] {
   const runs: ReadbackRun[] = []
   for (const m of txBody.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)) {
@@ -88,6 +103,7 @@ function parseRuns(txBody: string): ReadbackRun[] {
       text: unescapeXml(text),
       color: firstSrgb(rPrBlock),
       sizePt: sz === null ? null : parseInt(sz, 10) / 100,
+      opacity: firstAlpha(rPrBlock),
     })
   }
   return runs
@@ -117,7 +133,9 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
     runs,
     text: normalizeWhitespace(runs.map((r) => r.text).join('')),
     fill: firstSrgb(spPrNoLine),
+    fillOpacity: firstAlpha(spPrNoLine.replace(/<a:effectLst>[\s\S]*?<\/a:effectLst>/, '')),
     line: ln === '' ? null : firstSrgb(ln),
+    hasOuterShadow: /<a:outerShdw\b/.test(spPr),
   }
 }
 

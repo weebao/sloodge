@@ -10,6 +10,21 @@
  * from the measurement pass alone — no rendering comparison at decision time. Separately, a small set
  * of **hard blockers** force raster regardless of score (§3.4): a construct the structured walk cannot
  * even approximate without producing silently-wrong output, which is worse than an honest picture.
+ *
+ * ## Two floors for un-modelled constructs (M4.8a; research §5.1 item 4)
+ *
+ * A confidence of 100 with a construct missing is the failure this module exists to prevent, so a
+ * weight is not a taste judgement — it has a floor set by what the construct's absence does:
+ *
+ * - **Dropped** (`DROPPED_CONSTRUCT_FLOOR`): the paint is simply absent and the rest of the slide is
+ *   intact (an inset shadow, a text-shadow). One occurrence must take the slide out of the
+ *   high-confidence band the fidelity harness trusts (`PPTX_HIGH_CONFIDENCE`).
+ * - **Wrong** (`WRONG_CONSTRUCT_FLOOR`): the output would be misleading, not just plainer — text on
+ *   the wrong colour because a panel's gradient vanished, a clipped blob spilling out of its card, a
+ *   skewed ribbon drawn upright, a `li::before` bullet gone. One occurrence must cross the raster
+ *   threshold on its own so `auto` ships an honest picture.
+ *
+ * `confidence.test.ts` asserts every weight against its floor; softening one reds a test.
  */
 
 import type { MeasureResult, SlideNode } from './node'
@@ -18,17 +33,32 @@ import type { SlideTier } from './types'
 /** At or above this score, an `auto` slide is converted structurally; below it, rasterized. */
 export const PPTX_TIER_THRESHOLD = 70
 
+/** At or above this score the output is trusted as-is; a lost construct here is a silent lie (§5.2). */
+export const PPTX_HIGH_CONFIDENCE = 90
+
+/** Smallest deduction that takes a 100 out of the high-confidence band. */
+export const DROPPED_CONSTRUCT_FLOOR = 100 - PPTX_HIGH_CONFIDENCE + 1
+/** Smallest deduction that routes a 100 to raster in `auto` by itself. */
+export const WRONG_CONSTRUCT_FLOOR = 100 - PPTX_TIER_THRESHOLD + 1
+
 /** Per-signal deduction caps and weights, kept beside the threshold rather than as scattered magic. */
 export const SCORE_WEIGHTS = {
-  gradientEach: 12,
-  gradientCap: 25,
-  insetShadowEach: 8,
-  insetShadowCap: 20,
+  /**
+   * A gradient/`url()` background on an element (not the body): the pure walk has no pixels for it
+   * and emits no shape, so text that sat on the panel lands on the slide colour. Wrong, not plainer —
+   * until M4.8c captures the region.
+   */
+  elementImageBackground: 35,
+  insetShadowEach: 12,
+  insetShadowCap: 24,
+  textShadow: 12,
   filter: 25,
   mixBlend: 20,
   clipPath: 20,
-  transformRotate: 5,
-  transformOther: 15,
+  /** Rotation and uniform scale are modelled (`rot`, scaled box and font size); still a reflow risk. */
+  transformSimilarity: 5,
+  /** Skew, flip, non-uniform scale, 3D: flattened to an upright axis-aligned box. Wrong. */
+  transformOther: 35,
   svgEach: 18,
   svgCap: 40,
   imageEach: 18,
@@ -43,12 +73,36 @@ export const SCORE_WEIGHTS = {
   bodyImageBackground: 5,
   /**
    * Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) is dropped by the leaf-text
-   * rule. Sized so a single occurrence lands below `PPTX_TIER_THRESHOLD` in `auto`: missing text is
-   * unreadable output, and a high score would suppress the raster fallback that fixes it (M4.8a).
-   * M4.8b's run-level walk removes the loss and this deduction with it.
+   * rule. Missing words are unreadable output, and a high score would suppress the raster fallback
+   * that fixes it (M4.8a). M4.8b's run-level walk removes the loss and this deduction with it.
    */
   bareText: 35,
+  /** `::before`/`::after` that paint: no rect can be measured for them, so nothing is emitted. */
+  pseudoElement: 35,
+  /** `overflow: hidden|clip` with a descendant outside the box: PowerPoint cannot clip it. */
+  clippedOverflow: 35,
 } as const
+
+/** Weights whose construct is merely absent from the output. Each must be ≥ `DROPPED_CONSTRUCT_FLOOR`. */
+export const DROPPED_CONSTRUCT_WEIGHTS = [
+  'insetShadowEach',
+  'textShadow',
+  'filter',
+  'mixBlend',
+  'clipPath',
+  'svgEach',
+  'imageEach',
+  'canvas',
+] as const satisfies readonly (keyof typeof SCORE_WEIGHTS)[]
+
+/** Weights whose construct would render wrong. Each must be ≥ `WRONG_CONSTRUCT_FLOOR`. */
+export const WRONG_CONSTRUCT_WEIGHTS = [
+  'elementImageBackground',
+  'transformOther',
+  'bareText',
+  'pseudoElement',
+  'clippedOverflow',
+] as const satisfies readonly (keyof typeof SCORE_WEIGHTS)[]
 
 /** The result of scoring one slide. `hardBlocker` non-null forces raster whatever the score. */
 export type SlideScore = { score: number; reasons: string[]; hardBlocker: string | null }
@@ -99,46 +153,44 @@ export function isSystemFont(fontFamily: string): boolean {
 }
 
 /**
- * Classify a computed `transform` (a `matrix(...)`/`matrix3d(...)` or a keyword). `translate` and
- * `none` are free (pure position, already captured by the measured box); a pure rotation maps to a
- * shape's `rotate` cheaply; skew/3D/scale is `other` — unrepresentable, the heavier penalty.
+ * A computed `transform`, decomposed. `identity` covers `none` and pure translation (position is
+ * already in the measured box). `similarity` is a rotation times a uniform scale — both modelled: the
+ * angle becomes `rot`, the scale multiplies the layout box and the font size. `other` is skew, flip,
+ * non-uniform scale or 3D: no single angle/size describes it, so it is scored as wrong.
  */
-export function classifyTransform(transform: string): 'none' | 'translate' | 'rotate' | 'other' {
-  const t = transform.trim().toLowerCase()
-  if (t === '' || t === 'none') return 'none'
-  if (t.startsWith('matrix3d')) return 'other'
-  const m = /^matrix\(([^)]+)\)$/.exec(t)
-  if (m) {
-    const parts = (m[1] ?? '').split(',').map((p) => parseFloat(p.trim()))
-    if (parts.length !== 6 || parts.some((n) => !Number.isFinite(n))) return 'other'
-    const [a, b, c, d] = parts as [number, number, number, number, number, number]
-    // Identity linear part → pure translate.
-    if (a === 1 && b === 0 && c === 0 && d === 1) return 'translate'
-    // Pure rotation: columns orthonormal and det ≈ 1 (a=d, b=-c, a²+b²≈1).
-    const det = a * d - b * c
-    const nearlyRotation =
-      Math.abs(a - d) < 1e-6 &&
-      Math.abs(b + c) < 1e-6 &&
-      Math.abs(a * a + b * b - 1) < 1e-6 &&
-      Math.abs(det - 1) < 1e-6
-    return nearlyRotation ? 'rotate' : 'other'
-  }
-  return 'other'
-}
+export type TransformDecomposition =
+  { kind: 'identity' } | { kind: 'similarity'; deg: number; scale: number } | { kind: 'other' }
 
 /**
- * The rotation angle a computed `transform` encodes, in degrees clockwise (CSS and OOXML agree on
- * the sign). `none`/`translate` are 0; a pure rotation is `atan2(b, a)` of `matrix(a, b, c, d, …)`;
- * anything `classifyTransform` calls `other` (skew, scale, 3D) has no single angle → `null`.
+ * Chromium serializes matrices to six decimals, so a real `rotate(28deg)` arrives as
+ * `matrix(0.882948, 0.469472, -0.469472, 0.882948, 0, 0)` with a² + b² = 1.0000011. A 1e-6 tolerance
+ * called that `other` and shipped the element upright in an axis-aligned box (review r1). 1e-4 admits
+ * the rounding with two orders of margin and still rejects any authored skew or non-uniform scale.
  */
-export function rotationDegrees(transform: string): number | null {
-  const kind = classifyTransform(transform)
-  if (kind === 'none' || kind === 'translate') return 0
-  if (kind === 'other') return null
-  const m = /^matrix\(([^)]+)\)$/.exec(transform.trim().toLowerCase())
-  const parts = (m?.[1] ?? '').split(',').map((p) => parseFloat(p.trim()))
-  const [a, b] = parts as [number, number]
-  return (Math.atan2(b, a) * 180) / Math.PI
+export const MATRIX_TOLERANCE = 1e-4
+/** Below this, a decomposed angle is layout noise, not a rotation. */
+export const ROTATION_EPSILON_DEG = 0.01
+
+const IDENTITY: TransformDecomposition = { kind: 'identity' }
+const OTHER: TransformDecomposition = { kind: 'other' }
+
+export function decomposeTransform(transform: string): TransformDecomposition {
+  const t = transform.trim().toLowerCase()
+  if (t === '' || t === 'none') return IDENTITY
+  const m = /^matrix\(([^)]+)\)$/.exec(t)
+  if (m === null) return OTHER
+  const parts = (m[1] ?? '').split(',').map((p) => parseFloat(p.trim()))
+  if (parts.length !== 6 || parts.some((n) => !Number.isFinite(n))) return OTHER
+  const [a, b, c, d] = parts as [number, number, number, number, number, number]
+  // `matrix(a, b, c, d)` is the column-major [[a, c], [b, d]]; a = d and b = −c makes it exactly
+  // k·[[cos, −sin], [sin, cos]] with k = √(a² + b²) — a rotation by atan2(b, a) scaled by k.
+  if (Math.abs(a - d) > MATRIX_TOLERANCE || Math.abs(b + c) > MATRIX_TOLERANCE) return OTHER
+  const scale = Math.hypot(a, b)
+  if (scale < MATRIX_TOLERANCE) return OTHER
+  const deg = (Math.atan2(b, a) * 180) / Math.PI
+  if (Math.abs(deg) < ROTATION_EPSILON_DEG && Math.abs(scale - 1) < MATRIX_TOLERANCE)
+    return IDENTITY
+  return { kind: 'similarity', deg, scale }
 }
 
 /** True when a `background-image` is a gradient or `url()` — paint the pure walker has no pixels for. */
@@ -156,9 +208,10 @@ function iou(a: SlideNode, b: SlideNode): number {
   return union > 0 ? inter / union : 0
 }
 
-const isGradient = (bgImage: string): boolean => /gradient\(/i.test(bgImage)
-const isComplexShadow = (shadow: string): boolean => shadow !== 'none' && /inset/i.test(shadow)
+const isInsetShadow = (shadow: string): boolean => shadow !== 'none' && /inset/i.test(shadow)
 const isPresent = (v: string): boolean => v !== '' && v !== 'none'
+const sum = (nodes: readonly SlideNode[], f: (n: SlideNode) => number): number =>
+  nodes.reduce((acc, n) => acc + f(n), 0)
 
 /**
  * Score a slide from its measurement pass — the nodes *and* the body. Deductions are grouped by signal
@@ -184,19 +237,24 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
     else if (n.style.position === 'sticky') hardBlocker = 'position: sticky'
   }
 
-  // --- Gradients (painting backgrounds) ---
-  const gradients = nodes.filter((n) => isGradient(n.style.backgroundImage)).length
-  deduct(
-    Math.min(gradients * SCORE_WEIGHTS.gradientEach, SCORE_WEIGHTS.gradientCap),
-    `${String(gradients)} gradient background(s)`,
-  )
+  // --- Element gradient/image backgrounds: no shape is emitted for them ---
+  const imageBackgrounds = nodes.filter((n) => paintsImage(n.style.backgroundImage)).length
+  if (imageBackgrounds > 0)
+    deduct(
+      SCORE_WEIGHTS.elementImageBackground,
+      `${String(imageBackgrounds)} element gradient/image background(s) — no shape emitted`,
+    )
 
-  // --- Inset / complex shadows ---
-  const shadows = nodes.filter((n) => isComplexShadow(n.style.boxShadow)).length
+  // --- Inset shadows (outer ones are emitted as PowerPoint shadows) ---
+  const shadows = nodes.filter((n) => isInsetShadow(n.style.boxShadow)).length
   deduct(
     Math.min(shadows * SCORE_WEIGHTS.insetShadowEach, SCORE_WEIGHTS.insetShadowCap),
-    `${String(shadows)} complex shadow(s)`,
+    `${String(shadows)} inset shadow(s)`,
   )
+
+  // --- Text shadows: no run-level equivalent emitted ---
+  if (nodes.some((n) => n.isLeaf && n.text !== '' && isPresent(n.style.textShadow)))
+    deduct(SCORE_WEIGHTS.textShadow, 'text-shadow')
 
   // --- Filters (no OOXML equivalent at all) ---
   if (nodes.some((n) => isPresent(n.style.filter) || isPresent(n.style.backdropFilter)))
@@ -209,14 +267,14 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   // --- Clip paths ---
   if (nodes.some((n) => isPresent(n.style.clipPath))) deduct(SCORE_WEIGHTS.clipPath, 'clip-path')
 
-  // --- Transforms, own and inherited: rotation is cheap (emitted as `rot`), skew/3D/scale is not ---
+  // --- Transforms, own and inherited: rotation/uniform scale are modelled, the rest flatten ---
   const transforms = nodes
     .flatMap((n) => [n.style.transform, ...n.ancestorTransforms])
-    .map(classifyTransform)
-  if (transforms.some((t) => t === 'other'))
-    deduct(SCORE_WEIGHTS.transformOther, 'skew/scale/3D transform')
-  else if (transforms.some((t) => t === 'rotate'))
-    deduct(SCORE_WEIGHTS.transformRotate, 'rotation transform')
+    .map(decomposeTransform)
+  if (transforms.some((t) => t.kind === 'other'))
+    deduct(SCORE_WEIGHTS.transformOther, 'skew/flip/3D transform — flattened to an upright box')
+  else if (transforms.some((t) => t.kind === 'similarity'))
+    deduct(SCORE_WEIGHTS.transformSimilarity, 'rotation/scale transform')
 
   // --- SVG with more than one primitive → forced rasterization ---
   const svgHits = nodes.filter((n) => n.tag === 'svg' && n.svgPrimitiveCount > 1).length
@@ -264,11 +322,24 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
     deduct(SCORE_WEIGHTS.bodyImageBackground, 'body gradient/image background (full-bleed picture)')
 
   // --- Text no leaf owns: dropped by the leaf-text rule, so the slide would lose words ---
-  const bare = nodes.reduce((acc, n) => acc + n.bareTextCount, 0)
+  const bare = sum(nodes, (n) => n.bareTextCount)
   if (bare > 0)
     deduct(
       SCORE_WEIGHTS.bareText,
       `${String(bare)} text fragment(s) beside inline elements dropped`,
+    )
+
+  // --- Painting pseudo-elements: unmeasurable, so nothing is emitted for them ---
+  const pseudos = sum(nodes, (n) => n.paintedPseudoCount)
+  if (pseudos > 0)
+    deduct(SCORE_WEIGHTS.pseudoElement, `${String(pseudos)} painting ::before/::after dropped`)
+
+  // --- Clipped overflow: PowerPoint cannot clip, so the escaping descendants would spill out ---
+  const escaping = sum(nodes, (n) => n.escapingDescendants)
+  if (escaping > 0)
+    deduct(
+      SCORE_WEIGHTS.clippedOverflow,
+      `${String(escaping)} element(s) clipped by overflow would spill out`,
     )
 
   return { score: Math.max(0, Math.min(100, score)), reasons, hardBlocker }

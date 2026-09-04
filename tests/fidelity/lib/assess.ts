@@ -3,15 +3,39 @@
  * the exporter's measurement pass, and the `.pptx` read back from disk. Every number the milestone
  * reports comes from here — the same function feeds the local harness's table and the vitest corpus
  * assertions, so "the harness measured X" and "the test asserts X" cannot drift apart.
+ *
+ * ## What "a construct" means (M4.8a, review r1)
+ *
+ * The first cut of `constructsLost` covered three *classes* — text nodes, corpus-declared rotations,
+ * and a body gradient — so "0/8 silent lies" was a claim about three constructs rather than about
+ * constructs. A slide could drop three painted boxes, ship an 8 % watermark fully opaque, and lose a
+ * `::before` accent bar while this file printed "no silent lie". The corpus and the metric had been
+ * tuned to each other.
+ *
+ * A construct is now anything the oracle can see a reader seeing, paired against the emitted file:
+ *
+ * - every **text node** (`truth.texts`), verbatim;
+ * - every **painted box** (`truth.boxes`) — background or border, at a matching position *and* a
+ *   matching colour, which is what catches an element the walker never emitted;
+ * - the **alpha** every paint ships at, so a ghosted watermark cannot arrive opaque;
+ * - every painting **`::before`/`::after`** (`truth.pseudos`), which nothing can emit — so its
+ *   presence must push the slide out of the structured tier rather than pass silently;
+ * - every **transform the exporter cannot decompose** (skew, flip, non-uniform scale, 3D), which is
+ *   emitted as an upright axis-aligned box — the element is present but drawn wrong;
+ * - the corpus-declared **rotations** and the **body gradient/image**.
+ *
+ * Text size is compared against *rendered* glyph size (`fontSizePx × scale`), not the authored
+ * `font-size`, so a `scale(1.4)` stat cannot read "exact" while shipping 1.4× too small.
  */
 
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../src/shared/export/types'
 import { pxToPoints } from '../../../src/shared/export/pptx/geometry'
+import { decomposeTransform } from '../../../src/shared/export/pptx/confidence'
 import type { MeasureResult, SlideNode } from '../../../src/shared/export/pptx/node'
 import type { SlideTier } from '../../../src/shared/export/pptx/types'
 import type { CorpusSlide } from './corpus'
 import { normalizeWhitespace, type ReadbackShape, type ReadbackSlide } from './readback'
-import type { GroundTruth, TruthText } from './truth'
+import type { GroundTruth, TruthBox, TruthText } from './truth'
 
 /** A slide at or above this confidence is trusted to be structured; losing a construct here is the lie. */
 export const HIGH_CONFIDENCE = 90
@@ -21,6 +45,12 @@ export const ROTATION_TOLERANCE_DEG = 0.1
 export const BOX_TOLERANCE_PCT = 0.5
 /** Font size must match to this many points (`px * 0.75`). */
 export const SIZE_TOLERANCE_PT = 0.02
+/** Below this effective alpha, a paint is ghosted and the emitted shape must say so. */
+export const OPACITY_SIGNIFICANT = 0.95
+/** How far the emitted alpha may sit from the rendered one. */
+export const OPACITY_TOLERANCE = 0.05
+/** Below this effective alpha a paint is invisible to a reader, so nothing need be emitted for it. */
+const INVISIBLE_ALPHA = 0.03
 
 export type SlideAssessment = {
   file: string
@@ -38,6 +68,14 @@ export type SlideAssessment = {
   /** Emitted shapes paired to a DOM box, and the worst deviation among them (% of slide dimension). */
   boxChecks: number
   boxWorstPct: number
+  /** Painted boxes in the source (background or border), and how many an emitted shape matches. */
+  paintedTotal: number
+  paintedKept: number
+  paintedLost: string[]
+  /** Paints whose emitted alpha does not match what the reader sees. */
+  opacityWrong: string[]
+  /** Painting `::before`/`::after` in the source. Nothing can be emitted for them. */
+  pseudoTotal: number
   rotationsExpected: number
   rotationsOk: number
   rotationDetails: string[]
@@ -96,6 +134,56 @@ function boxDeviationPct(
   )
 }
 
+/** The alpha a truth box's background actually paints at: its own alpha times inherited opacity. */
+function boxAlpha(b: TruthBox): number {
+  return b.bgAlpha * b.opacity
+}
+
+/** An emitted shape's axis-aligned bounds, after its own rotation. */
+function shapeBounds(s: ReadbackShape): { x: number; y: number; w: number; h: number } {
+  return s.rot === 0 ? s : rotatedBounds(s)
+}
+
+function samePlace(shape: ReadbackShape, box: TruthBox): boolean {
+  return boxDeviationPct(shapeBounds(shape), box) <= BOX_TOLERANCE_PCT
+}
+
+/** True when `shape` lies inside `box` — how a non-uniform border arrives, as a rect per painted side. */
+function insideBox(shape: ReadbackShape, box: TruthBox): boolean {
+  const b = shapeBounds(shape)
+  const padX = (BOX_TOLERANCE_PCT / 100) * SLIDE_WIDTH_PX
+  const padY = (BOX_TOLERANCE_PCT / 100) * SLIDE_HEIGHT_PX
+  return (
+    b.x >= box.x - padX &&
+    b.y >= box.y - padY &&
+    b.x + b.w <= box.x + box.w + padX &&
+    b.y + b.h <= box.y + box.h + padY
+  )
+}
+
+/**
+ * The emitted shape that carries a painted box, or `null` when nothing does. A background must be
+ * matched by a shape of the same size *and* the same fill hex — position alone would pass a shape
+ * that happens to sit there in another colour. A border-only box is carried either by an outline at
+ * the same place or, when the border is not uniform on all four sides, by edge rects inside it.
+ */
+function carrierOf(
+  shapes: readonly ReadbackShape[],
+  box: TruthBox,
+  bgVisible: boolean,
+): ReadbackShape | null {
+  if (bgVisible)
+    return shapes.find((s) => s.kind === 'sp' && s.fill === box.bg && samePlace(s, box)) ?? null
+  return (
+    shapes.find(
+      (s) =>
+        s.kind === 'sp' &&
+        ((s.line === box.borderColor && samePlace(s, box)) ||
+          (s.fill === box.borderColor && insideBox(s, box))),
+    ) ?? null
+  )
+}
+
 function leafText(node: SlideNode): string {
   const text = node.style.textTransform === 'uppercase' ? node.text.toUpperCase() : node.text
   return normalizeWhitespace(text)
@@ -110,6 +198,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   const lostText: string[] = []
   const colorWrong: string[] = []
   const sizeWrong: string[] = []
+  const opacityWrong: string[] = []
   let textKept = 0
   let colorExact = 0
   let sizeExact = 0
@@ -130,7 +219,17 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
     if (run?.color === t.color) colorExact += 1
     else colorWrong.push(`${expected}: ${String(run?.color)} ≠ ${t.color}`)
-    const wantPt = pxToPoints(t.fontSizePx)
+    const wantAlpha = t.opacity * t.colorAlpha
+    if (
+      wantAlpha < OPACITY_SIGNIFICANT &&
+      Math.abs((run?.opacity ?? 1) - wantAlpha) > OPACITY_TOLERANCE
+    )
+      opacityWrong.push(
+        `text "${expected}": alpha ${(run?.opacity ?? 1).toFixed(2)} ≠ ${wantAlpha.toFixed(2)}`,
+      )
+    // Glyphs render at `font-size × scale`; comparing against the authored size would call a
+    // `scale(1.4)` stat exact while it ships 1.4× too small.
+    const wantPt = pxToPoints(t.fontSizePx * t.scale)
     if (
       run?.sizePt !== null &&
       run?.sizePt !== undefined &&
@@ -155,6 +254,40 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     boxWorstPct = Math.max(boxWorstPct, boxDeviationPct(emitted, node))
   }
 
+  // --- Painted boxes: every background/border a reader sees must be an emitted shape (M4.8a) ---
+  const paintedLost: string[] = []
+  let paintedTotal = 0
+  let paintedKept = 0
+  for (const b of truth.boxes) {
+    const bgVisible = b.bg !== null && boxAlpha(b) > INVISIBLE_ALPHA
+    const borderVisible = b.borderPx > 0 && b.borderColor !== null && b.opacity > INVISIBLE_ALPHA
+    if (!bgVisible && !borderVisible) {
+      // A gradient with no solid colour under it: there is no fill hex the pure walk could emit.
+      if (b.hasGradient && b.opacity > INVISIBLE_ALPHA) {
+        paintedTotal += 1
+        paintedLost.push(`box: ${b.tag} gradient ${b.w.toFixed(0)}×${b.h.toFixed(0)}`)
+      }
+      continue
+    }
+    paintedTotal += 1
+    const carrier = carrierOf(readback.shapes, b, bgVisible)
+    if (carrier === null) {
+      paintedLost.push(
+        `box: ${b.tag} ${bgVisible ? `#${String(b.bg)}` : `border #${String(b.borderColor)}`} ${b.w.toFixed(0)}×${b.h.toFixed(0)}`,
+      )
+      continue
+    }
+    paintedKept += 1
+    const wantAlpha = bgVisible ? boxAlpha(b) : b.opacity
+    if (
+      wantAlpha < OPACITY_SIGNIFICANT &&
+      Math.abs(carrier.fillOpacity - wantAlpha) > OPACITY_TOLERANCE
+    )
+      opacityWrong.push(
+        `box ${b.tag}: alpha ${carrier.fillOpacity.toFixed(2)} ≠ ${wantAlpha.toFixed(2)}`,
+      )
+  }
+
   // --- Rotations ---
   const rotationDetails: string[] = []
   let rotationsOk = 0
@@ -177,9 +310,22 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   const bodyImagePreserved =
     !bodyImageExpected || readback.background === 'picture' || readback.fullBleedPictures > 0
 
+  // --- Transforms no `rot` can express: the element ships upright, which is wrong, not plainer ---
+  const flattened = new Set<string>()
+  for (const t of texts)
+    if (decomposeTransform(t.transform).kind === 'other') flattened.add(`text "${expectedText(t)}"`)
+  for (const b of truth.boxes)
+    if (decomposeTransform(b.transform).kind === 'other') flattened.add(`box ${b.tag}`)
+
   const constructsLost: string[] = []
   if (structured) {
     for (const t of lostText) constructsLost.push(`text: ${t}`)
+    constructsLost.push(...paintedLost)
+    constructsLost.push(...opacityWrong.map((o) => `opacity: ${o}`))
+    // Nothing can be emitted for a painting pseudo-element: it has no rect to measure. Its presence
+    // must therefore keep the slide out of the structured tier, not pass as a clean 100.
+    for (const ps of truth.pseudos) constructsLost.push(`pseudo: ${ps.hostTag}${ps.which}`)
+    for (const f of flattened) constructsLost.push(`transform flattened: ${f}`)
     if (rotationsOk < corpus.rotations.length)
       constructsLost.push(
         `rotation: ${String(corpus.rotations.length - rotationsOk)} of ${String(corpus.rotations.length)} dropped`,
@@ -201,6 +347,11 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     sizeWrong,
     boxChecks,
     boxWorstPct,
+    paintedTotal,
+    paintedKept,
+    paintedLost,
+    opacityWrong,
+    pseudoTotal: truth.pseudos.length,
     rotationsExpected: corpus.rotations.length,
     rotationsOk,
     rotationDetails,
@@ -222,6 +373,11 @@ export type CorpusSummary = {
   sizeExact: number
   boxChecks: number
   boxWorstPct: number
+  /** Over structured slides only, like the text row. */
+  paintedTotal: number
+  paintedKept: number
+  /** Painting pseudo-elements in the corpus, over structured slides — each one is unrepresentable. */
+  pseudoTotal: number
   rotationsExpected: number
   rotationsOk: number
   bodyImageSlides: number
@@ -244,6 +400,9 @@ export function summarize(assessments: readonly SlideAssessment[]): CorpusSummar
     sizeExact: sum(structured, (a) => a.sizeExact),
     boxChecks: sum(assessments, (a) => a.boxChecks),
     boxWorstPct: Math.max(0, ...assessments.map((a) => a.boxWorstPct)),
+    paintedTotal: sum(structured, (a) => a.paintedTotal),
+    paintedKept: sum(structured, (a) => a.paintedKept),
+    pseudoTotal: sum(structured, (a) => a.pseudoTotal),
     rotationsExpected: sum(assessments, (a) => a.rotationsExpected),
     rotationsOk: sum(assessments, (a) => a.rotationsOk),
     bodyImageSlides: assessments.filter((a) => a.bodyImageExpected).length,
@@ -266,6 +425,8 @@ export function formatSummary(label: string, s: CorpusSummary): string {
     `| Exact hex colour on preserved runs | ${pct(s.colorExact, s.colorTotal)} |`,
     `| Exact font size (±${String(SIZE_TOLERANCE_PT)} pt) on preserved runs | ${pct(s.sizeExact, s.colorTotal)} |`,
     `| Emitted box vs DOM box, worst (% of slide dimension, ${String(s.boxChecks)} boxes) | ${s.boxWorstPct.toFixed(4)}% |`,
+    `| Painted boxes (background/border) carried by an emitted shape | ${pct(s.paintedKept, s.paintedTotal)} |`,
+    `| Painting \`::before\`/\`::after\` in structured slides (unrepresentable) | ${String(s.pseudoTotal)} |`,
     `| Rotated elements carrying a correct \`rot\` (±${String(ROTATION_TOLERANCE_DEG)}°) | ${String(s.rotationsOk)}/${String(s.rotationsExpected)} |`,
     `| Gradient/image body backgrounds preserved | ${String(s.bodyImagePreserved)}/${String(s.bodyImageSlides)} |`,
     `| Slides scoring ≥ ${String(HIGH_CONFIDENCE)} that drop a construct | ${String(s.silentLies.length)}/${String(s.slides)}${s.silentLies.length > 0 ? ` (${s.silentLies.join(', ')})` : ''} |`,
@@ -276,11 +437,11 @@ export function formatSummary(label: string, s: CorpusSummary): string {
 export function formatSlides(assessments: readonly SlideAssessment[]): string {
   const rows = assessments.map((a) => {
     const lost = a.constructsLost.length === 0 ? '' : a.constructsLost.join('; ')
-    return `| ${a.file} | ${a.tier} | ${String(a.score)} | ${a.tier === 'structured' ? `${String(a.textKept)}/${String(a.textTotal)}` : `raster (${String(a.textTotal)} in source)`} | ${String(a.rotationsOk)}/${String(a.rotationsExpected)} | ${a.bodyImageExpected ? (a.bodyImagePreserved ? 'kept' : 'LOST') : '—'} | ${a.boxWorstPct.toFixed(3)}% | ${a.silentLie ? '**YES**' : 'no'} | ${lost} |`
+    return `| ${a.file} | ${a.tier} | ${String(a.score)} | ${a.tier === 'structured' ? `${String(a.textKept)}/${String(a.textTotal)}` : `raster (${String(a.textTotal)} in source)`} | ${a.tier === 'structured' ? `${String(a.paintedKept)}/${String(a.paintedTotal)}` : `raster (${String(a.paintedTotal)} in source)`} | ${String(a.rotationsOk)}/${String(a.rotationsExpected)} | ${a.bodyImageExpected ? (a.bodyImagePreserved ? 'kept' : 'LOST') : '—'} | ${a.boxWorstPct.toFixed(3)}% | ${a.silentLie ? '**YES**' : 'no'} | ${lost} |`
   })
   return [
-    '| Slide | Tier | Score | Text kept | Rot | Body bg | Box worst | Silent lie | Lost |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Slide | Tier | Score | Text kept | Boxes | Rot | Body bg | Box worst | Silent lie | Lost |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...rows,
   ].join('\n')
 }

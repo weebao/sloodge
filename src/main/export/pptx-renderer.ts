@@ -23,7 +23,8 @@ import { createExportWindow, loadAndSettleSlide } from './electron-renderer'
 import { slideDocumentUrl } from '../../shared/slide-protocol'
 import { slideMeasurementScript } from '../../shared/export/pptx/node'
 import { paintsImage } from '../../shared/export/pptx/confidence'
-import type { BrowserWindow } from 'electron'
+import { EXPORT_READINESS_TIMEOUT_MS } from '../../shared/export/readiness'
+import type { BrowserWindow, WebContents } from 'electron'
 import type { MeasureResult } from '../../shared/export/pptx/node'
 import type { SlideRegistry } from '../slide/registry'
 
@@ -62,6 +63,28 @@ function pngDataUrl(image: Electron.NativeImage): string {
   return `data:image/png;base64,${image.toPNG().toString('base64')}`
 }
 
+const TIMED_OUT = Symbol('timed out')
+
+/**
+ * Run a script in the (untrusted) slide, bounded by the same budget as the settle barrier. Both
+ * scripts here await the slide's cooperation — the measurement pass walks its DOM, the hide step
+ * resolves from its `requestAnimationFrame` — so a slide that stubs `requestAnimationFrame` or loops
+ * must degrade the slide, not hang the export. A throw or timeout resolves to `TIMED_OUT`.
+ */
+async function runInSlide(contents: WebContents, script: string): Promise<unknown> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      contents.executeJavaScript(script, true).catch(() => TIMED_OUT),
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(TIMED_OUT), EXPORT_READINESS_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle)
+  }
+}
+
 const EMPTY_MEASURE: MeasureResult = {
   nodes: [],
   body: { backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none' },
@@ -95,18 +118,15 @@ export function createOffscreenPptxRenderer(registry: SlideRegistry): SlidePptxR
       try {
         await loadAndSettleSlide(contents, slideDocumentUrl(id))
 
-        let measure: MeasureResult
-        try {
-          measure = (await contents.executeJavaScript(
-            slideMeasurementScript(),
-            true,
-          )) as MeasureResult
-          if (measure === null || typeof measure !== 'object' || !Array.isArray(measure.nodes)) {
-            measure = EMPTY_MEASURE
-          }
-        } catch {
-          measure = EMPTY_MEASURE
-        }
+        const measured = (await runInSlide(contents, slideMeasurementScript())) as
+          MeasureResult | typeof TIMED_OUT | null
+        const measure =
+          measured !== TIMED_OUT &&
+          measured !== null &&
+          typeof measured === 'object' &&
+          Array.isArray(measured.nodes)
+            ? measured
+            : EMPTY_MEASURE
 
         let rasterDataUrl: string | null = null
         try {
@@ -115,10 +135,14 @@ export function createOffscreenPptxRenderer(registry: SlideRegistry): SlidePptxR
           rasterDataUrl = null
         }
 
+        // Only when the hide step reports it painted: capturing after a timeout could bake the
+        // still-visible text into the background beneath its own editable copy.
         let backgroundDataUrl: string | null = null
-        if (paintsImage(measure.body.backgroundImage)) {
+        if (
+          paintsImage(measure.body.backgroundImage) &&
+          (await runInSlide(contents, HIDE_DESCENDANTS_SCRIPT)) === true
+        ) {
           try {
-            await contents.executeJavaScript(HIDE_DESCENDANTS_SCRIPT, true)
             backgroundDataUrl = pngDataUrl(await contents.capturePage())
           } catch {
             backgroundDataUrl = null

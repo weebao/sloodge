@@ -27,6 +27,8 @@ import { MAX_IMAGE_DATA_URL_BYTES, isImageDataUrl } from '../../shared/export/pp
 import { createSafePptxDeck, type SafePptxSlide } from './safe-pptx'
 import type {
   DeckPptxPlan,
+  LineSpec,
+  ShadowSpec,
   ShapeSpec,
   SlidePlan,
   TextRunSpec,
@@ -57,6 +59,7 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
     ...(run.underline === true ? { underline: true } : {}),
     ...(run.strike === true ? { strike: true } : {}),
     ...(run.color !== undefined ? { color: run.color } : {}),
+    ...(run.transparency !== undefined ? { transparency: run.transparency } : {}),
     ...(run.fontFace !== undefined ? { fontFace: run.fontFace } : {}),
     ...(run.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
     ...(run.bullet !== undefined ? { bullet: run.bullet } : {}),
@@ -78,12 +81,31 @@ function checkedImage(dataUrl: string, what: string): string {
   return dataUrl
 }
 
-function lineProps(line: {
-  color: string
-  width: number
-  dashType?: 'solid' | 'dash'
-}): Record<string, unknown> {
-  return { color: line.color, width: line.width, dashType: line.dashType ?? 'solid' }
+function lineProps(line: LineSpec): Record<string, unknown> {
+  return {
+    color: line.color,
+    width: line.width,
+    dashType: line.dashType ?? 'solid',
+    ...(line.transparency !== undefined ? { transparency: line.transparency } : {}),
+  }
+}
+
+/**
+ * pptxgenjs substitutes its own defaults for any falsy shadow field (`angle || 270`, `blur || 8`,
+ * `offset || 4`), so a shadow cast straight right (angle 0) or a sharp one (blur 0) would silently
+ * change direction or soften. A hair above zero keeps the value ours; it rounds to a few EMU.
+ */
+const nonZero = (v: number): number => (v === 0 ? 1e-3 : v)
+
+function shadowProps(shadow: ShadowSpec): Record<string, unknown> {
+  return {
+    type: 'outer',
+    color: shadow.color,
+    blur: nonZero(shadow.blurPt),
+    offset: nonZero(shadow.offsetPt),
+    angle: nonZero(shadow.angleDeg),
+    opacity: nonZero(shadow.opacity),
+  }
 }
 
 function addShape(slide: PptxSlide, shape: ShapeSpec): void {
@@ -101,6 +123,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       shrinkText: false,
       ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
       ...(shape.line !== undefined ? { line: lineProps(shape.line) } : {}),
+      ...(shape.shadow !== undefined ? { shadow: shadowProps(shape.shadow) } : {}),
       ...(shape.rotate !== undefined ? { rotate: shape.rotate } : {}),
       // A text box is itself a shape in pptxgenjs: give it roundRect geometry for a CSS radius.
       ...(shape.rectRadius !== undefined
@@ -143,6 +166,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
     h: box.h,
     ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
     ...(shape.line !== undefined ? { line: lineProps(shape.line) } : {}),
+    ...(shape.shadow !== undefined ? { shadow: shadowProps(shape.shadow) } : {}),
     ...(shape.rotate !== undefined ? { rotate: shape.rotate } : {}),
     ...(shape.kind === 'roundRect' && shape.rectRadius !== undefined
       ? { rectRadius: shape.rectRadius * Math.min(box.w, box.h) }

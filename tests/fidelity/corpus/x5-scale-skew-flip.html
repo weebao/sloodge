@@ -1,0 +1,87 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }</style
+><style>
+  body {
+    background: #fff;
+    padding: 72px;
+    position: relative;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+    color: #111827;
+  }
+  .stat {
+    position: absolute;
+    left: 100px;
+    top: 240px;
+    transform: scale(1.4);
+    transform-origin: top left;
+    color: #1d4ed8;
+  }
+  .stat .n {
+    font-size: 64px;
+    font-weight: 900;
+  }
+  .stat .l {
+    font-size: 18px;
+    color: #374151;
+  }
+  .ribbon {
+    position: absolute;
+    left: 520px;
+    top: 260px;
+    background: #f43f5e;
+    color: #fff;
+    font-size: 26px;
+    font-weight: 800;
+    padding: 14px 40px;
+    transform: skewX(-14deg);
+  }
+  .ribbon span {
+    display: inline-block;
+    transform: skewX(14deg);
+  }
+  .flip {
+    position: absolute;
+    left: 520px;
+    top: 400px;
+    font-size: 64px;
+    color: #0f766e;
+    transform: scaleX(-1);
+  }
+  .threed {
+    position: absolute;
+    left: 820px;
+    top: 240px;
+    width: 320px;
+    height: 200px;
+    background: #fef3c7;
+    border: 2px solid #d97706;
+    padding: 24px;
+    font-size: 22px;
+    color: #78350f;
+    transform: perspective(600px) rotateY(28deg);
+  }
+</style>
+<h1>Scale, skew, flip, 3D</h1>
+<div class="stat">
+  <div class="n">42%</div>
+  <div class="l">scaled 1.4x</div>
+</div>
+<div class="ribbon"><span>SKEWED RIBBON</span></div>
+<div class="flip">➜ flipped</div>
+<div class="threed">Card in 3D perspective</div>

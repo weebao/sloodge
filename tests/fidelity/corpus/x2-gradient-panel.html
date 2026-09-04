@@ -1,0 +1,64 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }</style
+><style>
+  body {
+    background: #ffffff;
+  }
+  .panel {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, #312e81 0%, #0f766e 100%);
+    padding: 80px;
+  }
+  h1 {
+    font-size: 54px;
+    font-weight: 800;
+    color: #fef3c7;
+    width: 700px;
+  }
+  p {
+    font-size: 24px;
+    color: #e0f2fe;
+    width: 620px;
+    margin-top: 24px;
+    line-height: 1.5;
+  }
+  .pill {
+    display: inline-block;
+    margin-top: 36px;
+    padding: 10px 26px;
+    border-radius: 999px;
+    background: #fde68a;
+    color: #78350f;
+    border: 3px solid #b45309;
+    font-weight: 700;
+    font-size: 20px;
+  }
+  .bar {
+    width: 160px;
+    height: 6px;
+    background: #fbbf24;
+    margin-top: 32px;
+  }
+</style>
+<div class="panel">
+  <h1>Gradient on a wrapper, not on body</h1>
+  <p>
+    Every generated slide does this: a full-bleed div carries the gradient and pale text sits on it.
+  </p>
+  <span class="pill">Shipped</span>
+  <div class="bar"></div>
+</div>

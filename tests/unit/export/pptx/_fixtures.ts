@@ -1,4 +1,26 @@
-import type { MeasureResult, NodeStyle, SlideNode } from '../../../../src/shared/export/pptx/node'
+import type {
+  BorderSide,
+  MeasureResult,
+  NodeStyle,
+  SlideNode,
+} from '../../../../src/shared/export/pptx/node'
+
+const NO_BORDER: BorderSide = { width: '0px', style: 'none', color: 'rgb(0, 0, 0)' }
+
+/** A visible border side, for the tests that exercise outlines and edge rects. */
+export function border(width: string, color: string, style = 'solid'): BorderSide {
+  return { width, style, color }
+}
+
+/** All four sides the same — what `border: Npx solid C` computes to. */
+export function uniformBorder(
+  width: string,
+  color: string,
+  style = 'solid',
+): Pick<NodeStyle, 'borderTop' | 'borderRight' | 'borderBottom' | 'borderLeft'> {
+  const side = border(width, color, style)
+  return { borderTop: side, borderRight: side, borderBottom: side, borderLeft: side }
+}
 
 /** A neutral computed-style baseline — everything "off" so a test only sets what it exercises. */
 export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
@@ -13,12 +35,14 @@ export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
     lineHeight: 'normal',
     letterSpacing: 'normal',
     textTransform: 'none',
+    textShadow: 'none',
     backgroundColor: 'rgba(0, 0, 0, 0)',
     backgroundImage: 'none',
     borderRadius: '0px',
-    borderTopWidth: '0px',
-    borderTopStyle: 'none',
-    borderTopColor: 'rgb(0, 0, 0)',
+    borderTop: NO_BORDER,
+    borderRight: NO_BORDER,
+    borderBottom: NO_BORDER,
+    borderLeft: NO_BORDER,
     boxShadow: 'none',
     filter: 'none',
     backdropFilter: 'none',
@@ -28,7 +52,6 @@ export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
     writingMode: 'horizontal-tb',
     overflow: 'visible',
     position: 'static',
-    opacity: '1',
     ...overrides,
   }
 }
@@ -59,6 +82,9 @@ export function makeNode(
     layoutH: 50,
     ancestorTransforms: [],
     bareTextCount: 0,
+    effectiveOpacity: 1,
+    paintedPseudoCount: 0,
+    escapingDescendants: 0,
     style: makeStyle(style),
     ...rest,
   }

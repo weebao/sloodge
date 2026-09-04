@@ -9,9 +9,12 @@
  * with no browser and no Electron.
  *
  * The script is kept here as a source string — like `slideReadinessScript` — so the one thing a unit
- * test *can* pin about it (that it applies the leaf-text rule, the container-paint rule, and rejects
- * invisible nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
+ * test *can* pin about it (that it applies the leaf-text rule, the paint rule, and rejects invisible
+ * nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
  */
+
+/** One side of a CSS border, as `getComputedStyle` reports it. */
+export type BorderSide = { width: string; style: string; color: string }
 
 /** The computed-style subset the walker and scorer read. All strings are `getComputedStyle` values. */
 export type NodeStyle = {
@@ -26,12 +29,18 @@ export type NodeStyle = {
   lineHeight: string
   letterSpacing: string
   textTransform: string
+  textShadow: string
   backgroundColor: string
   backgroundImage: string
   borderRadius: string
-  borderTopWidth: string
-  borderTopStyle: string
-  borderTopColor: string
+  /**
+   * All four sides (M4.8a). A uniform border maps to the shape outline; a partial one (`border-left`
+   * accent, `border-top` rule) has no outline equivalent and becomes filled edge rects instead.
+   */
+  borderTop: BorderSide
+  borderRight: BorderSide
+  borderBottom: BorderSide
+  borderLeft: BorderSide
   boxShadow: string
   filter: string
   backdropFilter: string
@@ -41,7 +50,6 @@ export type NodeStyle = {
   writingMode: string
   overflow: string
   position: string
-  opacity: string
 }
 
 /** One visible element from the measurement pass. Boxes are in CSS px, relative to the viewport. */
@@ -70,7 +78,7 @@ export type SlideNode = {
   src: string | null
   /**
    * Untransformed border-box size (`offsetWidth`/`offsetHeight`). Equals `w`/`h` unless the element
-   * is transformed, in which case `w`/`h` are the axis-aligned bounds of the rotated box and these
+   * is transformed, in which case `w`/`h` are the axis-aligned bounds of the transformed box and these
    * are the box PowerPoint must be handed together with `rot` (M4.8a).
    */
   layoutW: number
@@ -83,6 +91,22 @@ export type SlideNode = {
    * M4.8b's run-level walk emits it.
    */
   bareTextCount: number
+  /**
+   * Own `opacity` times every ancestor's — the alpha the element actually paints at (M4.8a). Folded
+   * into fill/line/run transparency by the walker; an 8 % watermark used to ship fully opaque.
+   */
+  effectiveOpacity: number
+  /**
+   * `::before`/`::after` pseudo-elements that paint (text content, background, or border). They have
+   * no measurable rect, so nothing can be emitted for them; the scorer treats each as an un-modelled
+   * construct.
+   */
+  paintedPseudoCount: number
+  /**
+   * Visible descendants that extend past this element's box while it clips overflow. PowerPoint has
+   * no clipping, so each would spill out of the box; scored as an un-modelled construct.
+   */
+  escapingDescendants: number
   style: NodeStyle
 }
 
@@ -102,15 +126,41 @@ export type MeasureResult = {
  */
 export function slideMeasurementScript(): string {
   return `(() => {
-  const px = (v) => v;
-  const cssNum = (el, cs, r) => ({
-    slId: el.getAttribute('data-sl-id') || null,
-    tag: el.tagName.toLowerCase(),
-    x: px(r.x), y: px(r.y), w: px(r.width), h: px(r.height),
-  });
+  const alphaOf = (c) => {
+    const m = /^rgba?\\(([^)]+)\\)$/.exec(c.trim());
+    if (!m) return c === 'transparent' ? 0 : 1;
+    const p = m[1].split(/[,/\\s]+/).filter(Boolean).map(parseFloat);
+    return p.length > 3 ? p[3] : 1;
+  };
+  const effectiveOpacity = (el) => {
+    let o = 1;
+    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+      const v = parseFloat(getComputedStyle(p).opacity);
+      if (Number.isFinite(v)) o *= v;
+    }
+    return o;
+  };
   const visible = (el, cs, r) =>
-    cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.01 &&
+    cs.display !== 'none' && cs.visibility !== 'hidden' && effectiveOpacity(el) > 0.01 &&
     r.width > 0.5 && r.height > 0.5;
+  const side = (cs, s) => ({ width: cs['border' + s + 'Width'], style: cs['border' + s + 'Style'], color: cs['border' + s + 'Color'] });
+  const pseudoPaints = (el, which) => {
+    const ps = getComputedStyle(el, which);
+    if (ps.display === 'none' || ps.content === 'none' || ps.content === 'normal') return false;
+    return ps.content !== '""' || alphaOf(ps.backgroundColor) > 0.03 ||
+      /gradient\\(|url\\(/.test(ps.backgroundImage) || (parseFloat(ps.borderTopWidth) || 0) > 0;
+  };
+  const clips = (v) => v === 'hidden' || v === 'clip' || v === 'scroll' || v === 'auto';
+  const escapingDescendants = (el, cs, r) => {
+    if (!clips(cs.overflowX) && !clips(cs.overflowY)) return 0;
+    let n = 0;
+    for (const d of el.querySelectorAll('*')) {
+      const dr = d.getBoundingClientRect();
+      if (!visible(d, getComputedStyle(d), dr)) continue;
+      if (dr.left < r.left - 0.5 || dr.top < r.top - 0.5 || dr.right > r.right + 0.5 || dr.bottom > r.bottom + 0.5) n++;
+    }
+    return n;
+  };
   const SVG_PRIMS = 'rect,circle,ellipse,line,path,polygon,polyline';
   const nodes = [];
   const all = document.body ? document.body.querySelectorAll('*') : [];
@@ -132,7 +182,9 @@ export function slideMeasurementScript(): string {
     const li = el.closest('li');
     if (li) { const list = li.parentElement; listType = list && list.tagName.toLowerCase() === 'ol' ? 'ol' : 'ul'; }
     nodes.push({
-      ...cssNum(el, cs, r),
+      slId: el.getAttribute('data-sl-id') || null,
+      tag,
+      x: r.x, y: r.y, w: r.width, h: r.height,
       z: cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0),
       domIndex: domIndex++,
       isLeaf,
@@ -145,17 +197,20 @@ export function slideMeasurementScript(): string {
       layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
       ancestorTransforms,
       bareTextCount,
+      effectiveOpacity: effectiveOpacity(el),
+      paintedPseudoCount: (pseudoPaints(el, '::before') ? 1 : 0) + (pseudoPaints(el, '::after') ? 1 : 0),
+      escapingDescendants: escapingDescendants(el, cs, r),
       style: {
         fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',
         color: cs.color, textAlign: cs.textAlign, lineHeight: cs.lineHeight,
-        letterSpacing: cs.letterSpacing, textTransform: cs.textTransform,
+        letterSpacing: cs.letterSpacing, textTransform: cs.textTransform, textShadow: cs.textShadow,
         backgroundColor: cs.backgroundColor, backgroundImage: cs.backgroundImage,
         borderRadius: cs.borderRadius,
-        borderTopWidth: cs.borderTopWidth, borderTopStyle: cs.borderTopStyle, borderTopColor: cs.borderTopColor,
+        borderTop: side(cs, 'Top'), borderRight: side(cs, 'Right'), borderBottom: side(cs, 'Bottom'), borderLeft: side(cs, 'Left'),
         boxShadow: cs.boxShadow, filter: cs.filter, backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
         mixBlendMode: cs.mixBlendMode, transform: cs.transform, clipPath: cs.clipPath || 'none',
-        writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position, opacity: cs.opacity,
+        writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position,
       },
     });
   }
