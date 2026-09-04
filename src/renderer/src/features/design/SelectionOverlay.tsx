@@ -27,6 +27,23 @@
  * element (or the group) is dragged, `snapRectToGuides` snaps its edges/centre to the other elements
  * and the slide centre, drawing PowerPoint-style guide lines — all re-derived from parent-held state,
  * never a bridge payload (§2.2).
+ *
+ * ## A selection box is never a dead zone (M3.11 round-3)
+ *
+ * The selection box is drawn *over* the element it selects, so it intercepts the next click on that
+ * element. For a full-bleed selection — one click on empty canvas selects the slide root, whose box
+ * is the entire 1280×720 stage — swallowing that click made every later click inert: no element could
+ * be selected, no caret could be opened, and with Design Mode now on by default a user reached that
+ * state with their first gesture (round-3 blocker, reproduced in the built app).
+ *
+ * So the box swallows exactly one thing: the synthetic `click` the browser fires on the `pointerup`
+ * that ended a real drag, where the pointer has moved and re-hit-testing would select whatever now
+ * sits under it. A **stationary** click falls through to the root's hit-test, which asks the frame
+ * for the innermost grabbable element under the pointer. The click landed on the box, so the box
+ * contains the point, so that hit-test can only answer with the selected element itself (idempotent)
+ * or with something inside it — a container's box can never block selecting its children. `Esc`
+ * (§4.2, `useDeselectKey`) and a visible **Clear selection** button are the two escapes that do not
+ * depend on the pointer at all.
  */
 
 import {
@@ -70,6 +87,7 @@ import { useMarqueeGesture } from './useMarqueeGesture'
 import { useRotateGesture } from './useRotateGesture'
 import { useElementActions } from './useElementActions'
 import { useDuplicateKey } from './useDuplicateKey'
+import { useDeselectKey } from './useDeselectKey'
 import { useTextEditing } from './useTextEditing'
 import { useTextEditKey } from './useTextEditKey'
 
@@ -128,6 +146,13 @@ const ROTATE_HANDLE: CSSProperties = {
 }
 
 const SLIDE_SIZE = { width: CANVAS_WIDTH, height: CANVAS_HEIGHT }
+
+/**
+ * How far the pointer may travel between `pointerdown` and `click` on the selection body and still
+ * count as a stationary click rather than a drag — small enough that a deliberate nudge is a drag,
+ * large enough that hand tremor on a click is not.
+ */
+const DRAG_SLOP_PX = 3
 
 function label(hit: Pick<SlCrumb, 'tag' | 'id' | 'classes'>): string {
   const id = hit.id ? `#${hit.id}` : ''
@@ -237,6 +262,9 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   // Cache of every grabbable element (rects) for smart-guide snapping, refreshed on each drag start.
   const elementsRef = useRef<readonly SlHit[]>([])
+
+  // Where the current selection-body gesture started, so its `click` can be told from a drag's.
+  const bodyDownRef = useRef<Point | null>(null)
 
   // Commit a completed single-element drag as one undoable command (M3.5).
   const onCommitGeometry = useCallback(
@@ -371,6 +399,28 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
 
   const angle = isRotating && previewAngle !== null ? previewAngle : sourceAngle
 
+  // §4.2's first escape stage. Disarmed while a caret is open — that keystroke is the frame's, and
+  // deselecting out from under it would strand the `contenteditable` — and while a gesture is live,
+  // because `useDragGesture`/`useRotateGesture` already bind `Escape` to cancel the gesture and one
+  // press must not also drop the selection.
+  useDeselectKey(
+    clearTransient,
+    selections.length > 0 && editing === null && !isDragging && !isRotating && !isMarqueeing,
+  )
+
+  // A selection belongs to the slide it was made on: its `slId` indexes *that* slide's map and its
+  // rect is that slide's geometry. Nothing cleared it on a switch, so the box stayed painted over the
+  // next slide at the previous one's coordinates while the panel read "Selection is no longer
+  // available" — and where it happened to land over the new slide's own text it swallowed the clicks
+  // meant for it (round-3 major). `useTextEditing`'s slide effect already abandons any open session;
+  // this drops the hover and the selection, and it is declared after that hook so it runs after it.
+  const clearedSlideRef = useRef(slideId)
+  useEffect(() => {
+    if (clearedSlideRef.current === slideId) return
+    clearedSlideRef.current = slideId
+    clearTransient()
+  }, [slideId, clearTransient])
+
   // While the group is dragged, the per-element outlines follow the same delta as the group box.
   const previewDelta = useMemo<Point>(() => {
     if (previewRect === null || selectionBox === null) return { x: 0, y: 0 }
@@ -466,6 +516,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // element's geometry so smart guides have targets to snap against.
   const onBodyPointerDown = useCallback(
     (event: React.PointerEvent): void => {
+      bodyDownRef.current = { x: event.clientX, y: event.clientY }
       requestElements((hits) => {
         elementsRef.current = hits
       })
@@ -489,6 +540,30 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const stop = useCallback((event: React.MouseEvent): void => {
     event.stopPropagation()
   }, [])
+
+  // A click on the selection body falls through to the root's hit-test unless the gesture that
+  // produced it actually moved the pointer — see the header. `useDragGesture` has no distance
+  // threshold of its own (it goes active on `pointerdown` and commits a zero-distance gesture as a
+  // no-op), so the origin is recorded here and compared against the `click`'s own coordinates.
+  const onBodyClick = useCallback((event: React.MouseEvent): void => {
+    const down = bodyDownRef.current
+    bodyDownRef.current = null
+    if (down === null) return
+    const moved = Math.hypot(event.clientX - down.x, event.clientY - down.y) > DRAG_SLOP_PX
+    if (moved) event.stopPropagation()
+  }, [])
+
+  // Clearing from the canvas itself. This used to be an `sr-only` button, which meant a user who
+  // clicked into a full-bleed selection had no visible way out at all; it is the pointer twin of
+  // `Esc` and says so on its face. The click must not also reach the root's hit-test, or clearing
+  // would immediately re-select whatever is under the button.
+  const onClearClick = useCallback(
+    (event: React.MouseEvent): void => {
+      event.stopPropagation()
+      clearTransient()
+    },
+    [clearTransient],
+  )
 
   const hoverStyle = useMemo<CSSProperties | null>(() => {
     if (!hover) return null
@@ -647,7 +722,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           }
           style={selectionStyle}
           onPointerDown={onBodyPointerDown}
-          onClick={stop}
+          onClick={onBodyClick}
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
@@ -682,6 +757,8 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
                   style={handle.style}
                   onPointerDown={onHandlePointerDown}
+                  // A handle is a control, not a view of the element under it: never fall through.
+                  onClick={stop}
                 />
               ))}
           {isMulti || isEditing ? null : (
@@ -698,6 +775,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                 className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-white"
                 style={ROTATE_HANDLE}
                 onPointerDown={onRotatePointerDown}
+                onClick={stop}
               />
             </>
           )}
@@ -730,9 +808,17 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         </nav>
       ) : null}
 
-      <button type="button" className="sr-only" onClick={clearTransient}>
-        Clear selection
-      </button>
+      {selections.length > 0 ? (
+        <button
+          type="button"
+          data-testid="design-clear-selection"
+          className="absolute bottom-1 right-1 rounded bg-black/70 px-2 py-1 text-[11px] leading-4 text-white hover:bg-black/85"
+          style={CAPTURE_POINTER}
+          onClick={onClearClick}
+        >
+          Clear selection (Esc)
+        </button>
+      ) : null}
     </div>
   )
 }

@@ -8,7 +8,7 @@
  * element is selected, `Ctrl/⌘+D` duplicates that element; otherwise it still toggles Design Mode.**
  * That keeps the toggle-*on* path (mode off → the chord turns it on) and the toggle-*off* path when
  * nothing is selected, and matches the PowerPoint muscle memory that `Ctrl+D` duplicates the current
- * object. To toggle Design Mode off while an element is selected, deselect first (click empty space).
+ * object. To toggle Design Mode off while an element is selected, deselect first (`Esc`).
  *
  * The preemption is made order-independent by registering in the **capture** phase and calling
  * `stopImmediatePropagation`: a capture-phase `window` listener runs before every bubble-phase one

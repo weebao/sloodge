@@ -132,8 +132,10 @@ describe('sanitizeEditedText', () => {
     )
   })
 
-  it('caps the length so a paste bomb cannot wedge the editor', () => {
-    expect(sanitizeEditedText('x'.repeat(MAX_TEXT_LENGTH * 2))).toHaveLength(MAX_TEXT_LENGTH)
+  it('does not truncate — the cap is a refusal at commit, not a normalization', () => {
+    // Truncating here was the round-3 major: the same cut value went in on both sides of the
+    // "did it change?" comparison *and* into the source, deleting the tail of an over-cap element.
+    expect(sanitizeEditedText('x'.repeat(MAX_TEXT_LENGTH * 2))).toHaveLength(MAX_TEXT_LENGTH * 2)
   })
 
   it('leaves non-ASCII alone', () => {
@@ -412,6 +414,143 @@ describe('textOnly coverage rule — the shapes around the blocker', () => {
   })
 })
 
+/**
+ * Round-3 major 1: the parser's dropped `<pre>` newline and the writer's `inner` splice have to be
+ * inverses. Every case asserts the *rendered* text after a re-parse, not the bytes — the bytes are
+ * only interesting in that they must survive a round trip.
+ */
+describe('buildTextEditPatch — the <pre> leading newline round-trips (round-3 major)', () => {
+  it('keeps a blank first line that an unrelated edit did not touch', () => {
+    const source = '<div><pre>\n\nHello</pre></div>'
+    const map = mapOf(source)
+    const pre = map.byId.get(idOf(map, 'pre'))!
+    expect(pre.textContent).toBe('\nHello')
+
+    const patched = buildTextEditPatch(map, pre.slId, '\nHello!')!
+    expect(patched).not.toBeNull()
+    // The blank line is still there after the edit — this is the assertion that reds without the
+    // compensating newline (it read back 'Hello!', one line short).
+    expect(renderedText(patched, 'pre')).toBe('\nHello!')
+    expect(mapOf(patched).byId.get(idOf(mapOf(patched), 'pre'))!.textContent).toBe('\nHello!')
+  })
+
+  it('a committed leading newline is a real change, not a byte-identical no-op', () => {
+    // Source reads as 'Hello' (its one newline is the dropped one); committing '\nHello' must add a
+    // blank line, and must not return `map.source` unchanged while claiming an edit happened.
+    const source = '<div><pre>\nHello</pre></div>'
+    const map = mapOf(source)
+    const pre = map.byId.get(idOf(map, 'pre'))!
+    const patched = buildTextEditPatch(map, pre.slId, '\nHello')!
+    expect(patched).not.toBe(source)
+    expect(mapOf(patched).byId.get(idOf(mapOf(patched), 'pre'))!.textContent).toBe('\nHello')
+  })
+
+  it('adds no newline when the committed text does not start with one', () => {
+    const map = mapOf('<div><pre>\nHello</pre></div>')
+    expect(buildTextEditPatch(map, idOf(map, 'pre'), 'Bye')).toBe('<div><pre>Bye</pre></div>')
+  })
+
+  it('does not compensate a tag that keeps its leading newline', () => {
+    const map = mapOf('<div><p>Hello</p></div>')
+    expect(buildTextEditPatch(map, idOf(map, 'p'), '\nHello')).toBe('<div><p>\nHello</p></div>')
+  })
+
+  it('the element stays editable after the compensated write', () => {
+    const map = mapOf('<div><pre>\n\nHello</pre></div>')
+    const patched = buildTextEditPatch(map, idOf(map, 'pre'), '\nHello!')!
+    const next = mapOf(patched)
+    // A `&#10;` "fix" would land here as textOnly:false — the element it just edited, uneditable.
+    expect(isTextEditable(next.byId.get(idOf(next, 'pre'))!)).toBe(true)
+  })
+
+  it('a <listing> is compensated the same way', () => {
+    const map = mapOf('<div><listing>\n\nx</listing></div>')
+    const patched = buildTextEditPatch(map, idOf(map, 'listing'), '\nxy')!
+    expect(mapOf(patched).byId.get(idOf(mapOf(patched), 'listing'))!.textContent).toBe('\nxy')
+  })
+})
+
+describe('buildTextEditPatch — a patch that changes no byte is not an edit (round-3 major)', () => {
+  it('returns null when the write lands identical to the source', () => {
+    // The only shape that reaches this guard: a map whose `textContent` disagrees with what `inner`
+    // actually spells, so the decoded-text comparison says "changed" and the byte comparison says
+    // "did not". Hand-built for the same reason as the SL-S04 pin below — a real parse never yields
+    // it, and `useTextEditing` would turn the identical bytes into an undo entry that undoes nothing.
+    const source = 'X'
+    const element: ElementSpan = {
+      slId: 's:0',
+      tagName: 'p',
+      outer: { start: 0, end: 1 },
+      inner: { start: 0, end: 1 },
+      attrs: {},
+      attrInsert: 0,
+      parentSlId: null,
+      childSlIds: [],
+      path: [0],
+      textOnly: true,
+      textContent: 'Y',
+      ns: 'html',
+      authoredSlId: null,
+      minDomNodeCount: 1,
+    }
+    const map: SlideMap = {
+      slideId: 's',
+      sourceHash: 'test',
+      source,
+      byId: new Map([[element.slId, element]]),
+      order: [element.slId],
+    }
+    expect(buildTextEditPatch(map, 's:0', 'X')).toBeNull()
+    expect(buildTextEditPatch(map, 's:0', 'Z')).toBe('Z')
+  })
+})
+
+/** A one-paragraph slide holding `text`. */
+function bodyOf(text: string): string {
+  return `<div class="slide"><p>${text}</p></div>`
+}
+
+/**
+ * Round-3 major 2: the 64 KiB cap refuses, it never truncates. The old behaviour deleted 4 465
+ * authored characters from a 70 000-character element on an edit made before the cap.
+ */
+describe('MAX_TEXT_LENGTH refuses rather than truncating (round-3 major)', () => {
+  it('an element whose text is exactly at the cap is editable', () => {
+    const map = mapOf(bodyOf('x'.repeat(MAX_TEXT_LENGTH)))
+    const p = map.byId.get(idOf(map, 'p'))!
+    expect(isTextEditable(p)).toBe(true)
+    expect(buildTextEditPatch(map, p.slId, 'short')).toBe(bodyOf('short'))
+  })
+
+  it('an element one character past the cap is not editable at all', () => {
+    const map = mapOf(bodyOf('x'.repeat(MAX_TEXT_LENGTH + 1)))
+    const p = map.byId.get(idOf(map, 'p'))!
+    expect(isTextEditable(p)).toBe(false)
+    // The tail is not deleted: the source is returned untouched, whatever the commit said.
+    expect(buildTextEditPatch(map, p.slId, 'x'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
+    expect(buildTextEditPatch(map, p.slId, 'short')).toBeNull()
+  })
+
+  it('an over-cap value committed into a small element is refused, not trimmed', () => {
+    const map = mapOf(bodyOf('small'))
+    const p = map.byId.get(idOf(map, 'p'))!
+    expect(buildTextEditPatch(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH + 1))).toBeNull()
+    // Exactly at the cap still lands.
+    const atCap = buildTextEditPatch(map, p.slId, 'y'.repeat(MAX_TEXT_LENGTH))!
+    expect(renderedText(atCap, 'p')).toHaveLength(MAX_TEXT_LENGTH)
+  })
+
+  it('control characters cannot walk an over-cap payload past the guard', () => {
+    const map = mapOf(bodyOf('small'))
+    const p = map.byId.get(idOf(map, 'p'))!
+    // Sanitizing would strip the NULs and bring this back under the cap; the guard reads the raw
+    // length, so it refuses.
+    expect(
+      buildTextEditPatch(map, p.slId, `${'y'.repeat(10)}${'\u0000'.repeat(MAX_TEXT_LENGTH)}`),
+    ).toBeNull()
+  })
+})
+
 describe('buildTextEditPatch — entity-bearing text (review major)', () => {
   const ENTITY_SOURCE =
     '<div class="slide"><h1>a&nbsp;b &mdash; &quot;c&quot; &lt;d&gt; e&amp;f</h1></div>'
@@ -534,9 +673,9 @@ describe('sanitizeEditedText — lone surrogates (review minor)', () => {
     expect(sanitizeEditedText('a\u{1F600}b')).toBe('a\u{1F600}b')
   })
 
-  it('repairs a pair the length cap cut in half', () => {
-    const out = sanitizeEditedText(`${'x'.repeat(MAX_TEXT_LENGTH - 1)}\u{1F600}`)
-    expect(out).toHaveLength(MAX_TEXT_LENGTH)
+  it('repairs a pair a caller cut in half', () => {
+    const out = sanitizeEditedText(`${'x'.repeat(4)}\u{1F600}`.slice(0, 5))
+    expect(out).toHaveLength(5)
     expect(out.endsWith('�')).toBe(true)
   })
 

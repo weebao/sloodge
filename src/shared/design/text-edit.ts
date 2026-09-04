@@ -61,6 +61,7 @@ import {
 } from '../document/slide-contract'
 import { applyOps } from './patch'
 import { resolveElement } from './property-model'
+import { LEADING_NEWLINE_DROPPED } from './slide-map'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -127,6 +128,13 @@ export const LOCK_ATTR = 'data-sl-lock'
  * The hard cap on a committed text value. A `contenteditable` accepts an unbounded paste, and the
  * slide source is re-parsed and re-instrumented on every commit, so an unbounded value is a cheap way
  * to wedge the editor. 64 KiB is far past any real slide's text and far short of a problem.
+ *
+ * The cap **refuses**, it never truncates. Truncating made the guard itself the data loss it was
+ * meant to prevent: an element holding 70 000 characters, edited anywhere, had its whole text
+ * replaced by the first 65 536 — 4 465 authored characters deleted with no warning (round-3 review,
+ * measured). So an element whose text is already over the cap is not editable at all
+ * (`isTextEditable`), and an over-cap value arriving from the frame is refused at the commit
+ * (`buildTextEditPatch`), leaving the source exactly as it was.
  */
 export const MAX_TEXT_LENGTH = 65_536
 
@@ -155,6 +163,9 @@ export function isTextEditable(element: ElementSpan): boolean {
   if (!element.textOnly || element.inner === null) return false
   if (element.minDomNodeCount !== 1) return false
   if (NON_EDITABLE_TAGS.has(element.tagName)) return false
+  // Text already past the cap is read-only rather than lossy: no caret opens, the overlay says why,
+  // and the property panel keeps its own (unbounded) text field. See `MAX_TEXT_LENGTH`.
+  if ((element.textContent?.length ?? 0) > MAX_TEXT_LENGTH) return false
   return element.attrs[LOCK_ATTR] === undefined
 }
 
@@ -182,17 +193,17 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
  * Normalize a raw string that arrived from the frame into the text we are willing to write.
  *
  * Line endings are normalized to `\n` (a Windows paste carries `\r\n`, and a stray `\r` in source is
- * a diff hazard), control characters are stripped, the result is capped, and lone surrogates become
- * U+FFFD — *after* the cap, so a pair the cap cut in half is repaired too. Nothing else is
+ * a diff hazard), control characters are stripped, and lone surrogates become U+FFFD. Nothing else is
  * "cleaned": the user's spaces, punctuation and non-ASCII are theirs, and `escapeText` deliberately
  * leaves non-ASCII alone so "Café" stays "Café" in source.
+ *
+ * Length is **not** touched here. This function runs on both sides of the "did the text change?"
+ * comparison, so a truncating sanitizer compared a cut value against a cut value and then wrote the
+ * cut value into the source — see `MAX_TEXT_LENGTH`. The cap is a refusal in `buildTextEditPatch`,
+ * not a normalization.
  */
 export function sanitizeEditedText(raw: string): string {
-  return raw
-    .replace(/\r\n?/g, '\n')
-    .replace(CONTROL_CHARS, '')
-    .slice(0, MAX_TEXT_LENGTH)
-    .replace(LONE_SURROGATE, '\uFFFD')
+  return raw.replace(/\r\n?/g, '\n').replace(CONTROL_CHARS, '').replace(LONE_SURROGATE, '\uFFFD')
 }
 
 /** Escape the regex metacharacters in a literal token so it can be spliced into a pattern. */
@@ -320,9 +331,10 @@ export function escapeAndNeutralizeText(text: string): string {
  * Turn a committed text value into patched slide source, or `null` when the edit must not land.
  *
  * `null` is returned — and the caller commits nothing, leaving the document and the undo stack
- * untouched — when the sl-id is unknown to the map, the element is not editable, the text is
- * unchanged (a no-op edit must never consume a Ctrl+Z), or the patched source would gain an SL-S04
- * forbidden token the original did not have.
+ * untouched — when the sl-id is unknown to the map, the element is not editable, the value is over
+ * `MAX_TEXT_LENGTH`, the text is unchanged (a no-op edit must never consume a Ctrl+Z), the patch
+ * would change no bytes, or the patched source would gain an SL-S04 forbidden token the original did
+ * not have.
  *
  * `slId` is the **parent-tracked** selection id and `source` is the parent's current bytes: per §2.2
  * neither may come from a bridge payload. The only payload-derived input is `rawText`.
@@ -331,6 +343,10 @@ export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string)
   const element = resolveElement(map, slId)
   if (element === null || element.inner === null || element.textContent === null) return null
   if (!isTextEditable(element)) return null
+  // Refuse an over-cap value rather than trimming it to fit — see `MAX_TEXT_LENGTH`. Measured on the
+  // raw string, before sanitizing, so the guard cannot be walked past with control characters that
+  // the sanitizer would strip back under the cap.
+  if (rawText.length > MAX_TEXT_LENGTH) return null
 
   const text = sanitizeEditedText(rawText)
   // "Unchanged" is judged on what the user saw, never on bytes: the frame returns decoded text, so
@@ -341,8 +357,28 @@ export function buildTextEditPatch(map: SlideMap, slId: string, rawText: string)
   if (text === sanitizeEditedText(element.textContent)) return null
 
   const source = map.source
-  const written = escapeAndNeutralizeText(text)
+  // `<pre>` and `<listing>` lose a leading newline when parsed, so `element.textContent` — and the
+  // value the frame hands back for the same element — is already one `\n` short of what `inner`
+  // spells. Writing the committed string raw makes the read and the write non-inverse: source
+  // `<pre>\n\nHello</pre>` reads as "\nHello", and committing "\nHello!" wrote `<pre>\nHello!</pre>`,
+  // which reads back as "Hello!" — the blank first line silently deleted by an unrelated edit
+  // (round-3 review, verified by execution). One extra literal newline compensates the drop.
+  //
+  // It has to be a *literal* newline. The parser drops `&#10;` at the same position, but
+  // `slide-map.ts`'s cursor does not advance over a character reference, so the text nodes would
+  // stop tiling `inner` and the element would come back `textOnly: false` — this edit would make its
+  // own target uneditable.
+  const compensateDroppedNewline =
+    LEADING_NEWLINE_DROPPED.has(element.tagName) && text.startsWith('\n')
+  const written = (compensateDroppedNewline ? '\n' : '') + escapeAndNeutralizeText(text)
   const patched = applyOps(source, [{ kind: 'replaceSpan', span: element.inner, text: written }])
+
+  // A patch that changes no byte is not an edit. `useTextEditing` only checks for `null`, so
+  // returning identical bytes would push an undo entry that undoes nothing, dirty the document, bump
+  // the revision and reload the frame — the exact opposite of the "a no-op edit must never consume a
+  // Ctrl+Z" contract above. Reachable when the decoded-text comparison says "changed" but the written
+  // bytes land identical, which is what the uncompensated `<pre>` newline used to do.
+  if (patched === source) return null
 
   // The guarantee (see the file header). Neutralization is best-effort UX; this is the invariant.
   // A *subset* check, not "is empty": a slide that already violated SL-S04 elsewhere is still

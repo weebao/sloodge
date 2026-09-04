@@ -211,8 +211,19 @@ function isContentless(
  * tags: "if the next token is a U+000A LINE FEED character token, then ignore that token"). It is
  * the one place character bytes inside `inner` are not represented by any text node. The input
  * stream preprocessor has already turned a lone CR into LF, so `\n`, `\r\n` and `\r` are all dropped.
+ *
+ * Exported because the drop is only half of a round trip: a writer that puts text back into `inner`
+ * has to *compensate* it (`text-edit.ts`), and two independent lists of which tags drop the newline
+ * would be a way for the read and the write to disagree about a `<pre>`'s first line.
+ *
+ * Only a literal newline is recognised here, deliberately. A character reference that decodes to LF
+ * (`<pre>&#10;x</pre>`) is dropped by the tree builder just the same, but the cursor does not advance
+ * over it, so the text nodes no longer tile `inner` and the element comes out `textOnly: false` —
+ * uneditable rather than mis-edited. That is the fail-closed side of the ambiguity, and it is also
+ * why the compensation in `text-edit.ts` must write a literal `\n` and never a reference: a written
+ * `&#10;` would make the element it just edited uneditable.
  */
-const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea'])
+export const LEADING_NEWLINE_DROPPED: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea'])
 
 /**
  * Elements whose content the tokenizer reads as character data (RCDATA and raw text): a `<` in
