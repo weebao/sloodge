@@ -435,6 +435,8 @@ interface ModuleBindings {
   readonly mentioned: ReadonlySet<string>
   /** The specifiers it re-exports wholesale with `export * from`, which mention no names at all. */
   readonly reExportsAll: ReadonlySet<string>
+  /** How often each identifier is named outside the `import`/`export … from` statements. */
+  readonly used: ReadonlyMap<string, number>
 }
 
 /** Where each name in `source` comes from, read off the AST for the reason argued above. */
@@ -444,6 +446,7 @@ async function moduleBindings(file: string, source: string): Promise<ModuleBindi
   const mentioned = new Set<string>()
   const fromModule = new Map<string, Set<string>>()
   const reExportsAll = new Set<string>()
+  const used = new Map<string, number>()
 
   // `id` only, never `params` or `body`: a parameter shadowing a name does not redeclare it.
   const declarationsIn = (node: unknown): void => {
@@ -471,7 +474,10 @@ async function moduleBindings(file: string, source: string): Promise<ModuleBindi
     declarationsIn(node)
     const record = node as Record<string, unknown>
     const spec = specifierOf(record['source'])
-    if (spec === null) continue
+    if (spec === null) {
+      identifierOccurrences(node, used)
+      continue
+    }
     if (record['type'] === 'ExportAllDeclaration') reExportsAll.add(spec)
     const names = fromModule.get(spec) ?? new Set<string>()
     fromModule.set(spec, names)
@@ -479,7 +485,23 @@ async function moduleBindings(file: string, source: string): Promise<ModuleBindi
   }
   identifiersIn(ast, mentioned)
 
-  return { declared, mentioned, fromModule, reExportsAll }
+  return { declared, mentioned, fromModule, reExportsAll, used }
+}
+
+/** `identifiersIn`, counting: the same walk, one tally per occurrence rather than a set. */
+function identifierOccurrences(node: unknown, into: Map<string, number>): void {
+  if (Array.isArray(node)) {
+    for (const child of node) identifierOccurrences(child, into)
+    return
+  }
+  if (typeof node !== 'object' || node === null) return
+  const record = node as Record<string, unknown> & { type?: string; name?: unknown }
+  if (record.type === 'Identifier' && typeof record.name === 'string') {
+    into.set(record.name, (into.get(record.name) ?? 0) + 1)
+    return
+  }
+  for (const key of Object.keys(record))
+    if (key !== 'type') identifierOccurrences(record[key], into)
 }
 
 /**
@@ -526,7 +548,7 @@ const SCAN_NAMES = ['FORBIDDEN_API_TOKENS', 'packForApiScan', 'findForbiddenApiT
 describe('the SL-S04 scan', () => {
   it('is imported into slide-contract.ts from the leaf, never redeclared there', async () => {
     const file = join(ROOT, 'src/shared/document/slide-contract.ts')
-    const { declared, fromModule, mentioned, reExportsAll } = await moduleBindings(
+    const { declared, fromModule, mentioned, reExportsAll, used } = await moduleBindings(
       file,
       DISK.read(file),
     )
@@ -538,6 +560,16 @@ describe('the SL-S04 scan', () => {
     // second copy would satisfy them by saying nothing. No such re-export exists anywhere in `src`;
     // this keeps the pair total over what the module puts its name to.
     expect([...reExportsAll].filter((spec) => spec !== './forbidden-apis')).toEqual([])
+    // `declared` reads module scope only, so a faithful copy nested inside the validator body, or
+    // hung off an object as a method, is invisible to it — both reproduced with tsc silent (round
+    // 7). Neither is invisible to a count: outside the import and re-export lines, slide-contract.ts
+    // names `findForbiddenApiTokens` exactly once — the SL-S04 call — and the other two never. A
+    // second legitimate call site would move this pin, deliberately.
+    expect(Object.fromEntries(SCAN_NAMES.map((name) => [name, used.get(name) ?? 0]))).toEqual({
+      FORBIDDEN_API_TOKENS: 0,
+      packForApiScan: 0,
+      findForbiddenApiTokens: 1,
+    })
   })
 
   // Without this, renaming a function in the leaf would empty the guard above rather than fail it.

@@ -102,6 +102,47 @@ const ESCAPE_SYNTHESISED_NAMES = ((): string[] => {
   return names
 })()
 
+/**
+ * Families on the project's Windows host with an *inner* word that starts with a digit or a lone
+ * `-`: 14 of its 515 allow-listed names, found by review round 7 by running the real enumerator.
+ * `Wingdings 2`, `Wingdings 3` and `Bookshelf Symbol 7` ship with every Office install. A
+ * `<family-name>` is `<custom-ident>+`, so each word has to be an identifier on its own — the
+ * composer used to escape a leading digit of the *name* only, and Chromium dropped every one of
+ * these declarations whole. No earlier fixture had such a word, which is how six rounds missed it.
+ */
+const DIGIT_LED_WORD_NAMES = [
+  'Bauhaus 93',
+  'Bookshelf Symbol 7',
+  'FSP DEMO - Bank Gothic BT Light',
+  'FSP DEMO - Bnk Gthc BT Mdm',
+  'Modern No. 20',
+  'Playfair 12pt',
+  'Playfair 12pt Black',
+  'Playfair 12pt ExtraBold',
+  'Playfair 12pt Light',
+  'Playfair 12pt Medium',
+  'Playfair 12pt SemiBold',
+  'Wingdings 2',
+  'Wingdings 3',
+  '000 Orange Fizz 2.0 TB',
+]
+
+/**
+ * What Chromium enforces per word, stated as a regex because happy-dom cannot parse CSS: after
+ * hex escapes are folded to a marker (their terminating space is not a word separator), every
+ * word starts with a name-start code point, a `-` that is followed by one (or by `-`/an escape),
+ * or an escape.
+ */
+function everyWordIsAnIdentifier(family: string): boolean {
+  const folded = family.replace(/\\[0-9a-fA-F]{1,6} ?/g, '\\E')
+  return folded
+    .split(' ')
+    .filter((word) => word !== '')
+    .every((word) =>
+      /^(?:[\p{L}_\u{0080}-\u{10FFFF}]|-(?:[\p{L}_\u{0080}-\u{10FFFF}-]|\\)|\\)/u.test(word),
+    )
+}
+
 describe('font family name validation (M3.10)', () => {
   it('accepts the plain Latin names a stock machine actually has', () => {
     for (const name of ['Arial', 'Segoe UI', 'Gill Sans MT Ext Condensed Bold', 'Bodoni MT']) {
@@ -321,6 +362,46 @@ describe('cssIdentFontFamily', () => {
     expect(cssIdentFontFamily('1979 Sans')).toBe('\\31 979 Sans')
   })
 
+  it('escapes a digit that starts any WORD, because each word is an identifier of its own', () => {
+    expect(cssIdentFontFamily('Wingdings 2')).toBe('Wingdings \\32 ')
+    expect(cssIdentFontFamily('Bookshelf Symbol 7')).toBe('Bookshelf Symbol \\37 ')
+    expect(cssIdentFontFamily('Playfair 12pt')).toBe('Playfair \\31 2pt')
+    expect(cssIdentFontFamily('Modern No. 20')).toBe('Modern No\\. \\32 0')
+    expect(cssIdentFontFamily('Foo 1.5')).toBe('Foo \\31 \\.5')
+    // The spec's own example: `5-0` is a <number> followed by `-0`, not an identifier.
+    expect(cssIdentFontFamily('Hawaii 5-0')).toBe('Hawaii \\35 -0')
+  })
+
+  it('escapes a word that is a lone `-` or a `-` before a digit, and leaves `-Bold` alone', () => {
+    expect(cssIdentFontFamily('FSP DEMO - Bank Gothic BT Light')).toBe(
+      'FSP DEMO \\- Bank Gothic BT Light',
+    )
+    expect(cssIdentFontFamily('Sans -')).toBe('Sans \\-')
+    expect(cssIdentFontFamily('Sans -1')).toBe('Sans \\-1')
+    // `-` + name-start, `--`, and `-` + non-ASCII are identifier starts already.
+    expect(cssIdentFontFamily('Sans -Bold')).toBe('Sans -Bold')
+    expect(cssIdentFontFamily('Sans --x')).toBe('Sans --x')
+    expect(cssIdentFontFamily('Sans -\u0663')).toBe('Sans -\u0663')
+  })
+
+  it('composes every word of the Windows host corpus into an identifier', () => {
+    for (const name of [
+      ...DIGIT_LED_WORD_NAMES,
+      'Hawaii 5-0',
+      '1979 Sans',
+      'Segoe UI',
+      'Foo.Bar',
+    ]) {
+      expect(isValidFontFamilyName(name), name).toBe(true)
+      const value = buildFontFamilyValue(name)
+      expect(value, name).not.toBeNull()
+      expect(everyWordIsAnIdentifier(value!.split(',')[0]!), value!).toBe(true)
+    }
+    // …and the predicate can say no: this is the exact string the composer used to write.
+    expect(everyWordIsAnIdentifier('Wingdings 2')).toBe(false)
+    expect(everyWordIsAnIdentifier('FSP DEMO - Bank')).toBe(false)
+  })
+
   it('escapes a leading NON-ASCII digit with its own code point, not a hardcoded \\3', () => {
     // `\\3` is the escape for U+0033, i.e. the character `3` — correct only for ASCII `0`-`9`.
     // `\\3` + `\u0663` decodes as U+0003 followed by a stray `\u0663`: a font that cannot exist.
@@ -480,8 +561,16 @@ describe('buildFontFamilyValue', () => {
 
 describe('readPickedFontFamily', () => {
   it('reads back exactly what buildFontFamilyValue wrote', () => {
-    for (const name of ['Papyrus', 'Georgia', 'ＭＳ Ｐゴシック', 'system-ui']) {
-      expect(readPickedFontFamily(buildFontFamilyValue(name))).toBe(name)
+    for (const name of [
+      'Papyrus',
+      'Georgia',
+      'ＭＳ Ｐゴシック',
+      'system-ui',
+      'Hawaii 5-0',
+      'Foo 1.5',
+      ...DIGIT_LED_WORD_NAMES,
+    ]) {
+      expect(readPickedFontFamily(buildFontFamilyValue(name)), name).toBe(name)
     }
   })
 

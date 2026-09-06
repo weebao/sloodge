@@ -240,19 +240,54 @@ export function isSystemGroupFamily(name: string): boolean {
  */
 export function cssIdentFontFamily(name: string): string {
   let out = ''
-  for (const character of name) {
+  // `<family-name>` is `<custom-ident>+`: every space-separated word is an identifier of its own, so
+  // the start-of-identifier rules below apply at the start of *each* word, not once for the name.
+  // Round 7 found this by running the real enumerator against the project's Windows host: 14 of
+  // its 515 allow-listed families — `Wingdings 2`, `Bookshelf Symbol 7`, `Playfair 12pt`,
+  // `Modern No. 20`, `FSP DEMO - Bank Gothic BT Light` — have an inner word that starts with a
+  // digit or a lone `-`. Unescaped, that word is a <number> or a <delim> token, and Chromium drops
+  // the whole declaration: `CSS.supports('font-family', 'Wingdings 2, Segoe UI, …')` is false. The
+  // pick then wrote a dead declaration, the row previewed in the inherited face, and the trigger
+  // read it back as applied. Escaped per word, the same values are accepted and parse to the face.
+  let wordStart = true
+  const codePoints = [...name]
+  for (const [index, character] of codePoints.entries()) {
     // A plain space is the separator between the identifiers of one family name; it is the only
     // whitespace that stays literal.
     if (character === ' ') {
       out += character
+      wordStart = true
       continue
     }
+    const atWordStart = wordStart
+    wordStart = false
     // The hex-escape test runs *before* the identifier test. CSS calls every code point at or above
     // U+0080 an identifier code point, which would wave through U+2028/U+2029 and the exotic spaces
     // — separators a parser may still treat as a line break.
     if (NEEDS_HEX_ESCAPE.test(character)) {
-      out += `\\${character.codePointAt(0)!.toString(16)} `
+      out += hexEscape(character)
       continue
+    }
+    // An identifier may not begin with a digit, so a face called `1979 Sans` has to escape its first
+    // character to stay a name rather than a parse error. The escape carries the character's *own*
+    // code point: `\p{Nd}` is not just `0`-`9`, and a hardcoded `\\3` prefix would turn a leading
+    // `\u0663` into `\\3\u0663`, i.e. U+0003 — a font that cannot exist and a name the panel could not
+    // read back. Walked by code point, so a non-BMP digit (`\u{1D7CE} Sans`) cannot leave a lone
+    // surrogate in slide source.
+    if (atWordStart && /\p{Nd}/u.test(character)) {
+      out += hexEscape(character)
+      continue
+    }
+    // `-` starts an identifier only when what follows can continue one — `-Bold`, `--x`, `-_`, a
+    // non-ASCII code point, or an escape. Followed by an ASCII digit it starts a <number> (`-0`),
+    // and alone it is a <delim>; either way the declaration is invalid. `\\-` is the same
+    // identifier, spelled so the tokenizer cannot read it as anything else.
+    if (atWordStart && character === '-') {
+      const next = codePoints[index + 1]
+      if (next === undefined || next === ' ' || /[0-9]/.test(next)) {
+        out += '\\-'
+        continue
+      }
     }
     if (IDENT_CODE_POINT.test(character)) {
       out += character
@@ -260,19 +295,14 @@ export function cssIdentFontFamily(name: string): string {
     }
     // A bare `\x` escape is only unambiguous when `x` is not a hex digit, which would otherwise be
     // absorbed into the escape sequence.
-    out += HEX_DIGIT.test(character)
-      ? `\\${character.codePointAt(0)!.toString(16)} `
-      : `\\${character}`
+    out += HEX_DIGIT.test(character) ? hexEscape(character) : `\\${character}`
   }
-  // An identifier may not begin with a digit, so a face called `1979 Sans` has to escape its first
-  // character to stay a name rather than a parse error. The escape carries the character's *own*
-  // code point: `\p{Nd}` is not just `0`-`9`, and a hardcoded `\\3` prefix would turn a leading
-  // `\u0663` into `\\3\u0663`, i.e. U+0003 — a font that cannot exist and a name the panel could not
-  // read back. Sliced by code point too, so a non-BMP digit (`\u{1D7CE} Sans`) cannot leave a lone
-  // surrogate in slide source.
-  if (!/^\p{Nd}/u.test(out)) return out
-  const first = String.fromCodePoint(out.codePointAt(0)!)
-  return `\\${first.codePointAt(0)!.toString(16)} ${out.slice(first.length)}`
+  return out
+}
+
+/** The hex escape for one code point, with the terminating space CSS Syntax §4.3.7 allows. */
+function hexEscape(character: string): string {
+  return `\\${character.codePointAt(0)!.toString(16)} `
 }
 
 /** Letters, marks, digits, `_`, `-`, and everything from U+0080 up (CSS Syntax §4.2). */

@@ -360,8 +360,14 @@ three skills already enforce; the rules below are its normative form, each with 
 - No network at runtime: `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource`/`navigator.sendBeacon` are
   forbidden and blocked by CSP anyway.
 - No storage APIs (`localStorage`, `indexedDB`, cookies) — slides must be stateless across reloads.
-- Fonts: the system stack `-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif` only. Rationale:
-  PPTX embeds font *references* by name (research §2.1), so system fonts survive export; web fonts don't.
+- Fonts: no web fonts — no `@font-face`, no remote `font-src`. A model-authored slide uses the system
+  stack `-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif`; the property panel (M3.10) may
+  additionally name one *installed local* face, always followed by a system-fallback tail
+  (`<face>, Segoe UI, system-ui, sans-serif`), and surfaces the export caveat when that face is not
+  a system font. Rationale: PPTX embeds font *references* by name (research §2.1), so system fonts
+  survive export and a local face falls back on a machine without it; web fonts don't travel at all.
+  The face is written as an escaped CSS identifier sequence, never a quoted string — see the header
+  of `src/shared/fonts/family.ts` for why, and for the allow-list a name must pass first.
 
 **Sandbox posture (SL-S05)** — the host renders slides with
 `<iframe sandbox="allow-scripts" csp="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'none'; connect-src 'none'">` and **never** `allow-same-origin`,
@@ -649,7 +655,7 @@ Three tiers, all runnable headlessly (in the app, in `sloodge lint`, and in CI v
 |---|---|---|
 | `SL-S01` | error | No off-document subresource, checked on the parse5 tree: `<link>` (any rel, incl. `imagesrcset`), `<script src>`, `<iframe src>`, `<video src\|poster>`, `<audio src>`, `<source src>`, `<object data>`, `<embed src>`, `<track src>`, `<input src>` (type=image), any `srcset` candidate (parsed per srcset grammar), SVG `<use href\|xlink:href>` off-document, `background=`, plus CSS `@import` and `url(http(s)://` / `//`). Allowed: `data:`/`blob:`/`sloodge-asset:` and `#` fragments |
 | `SL-S02` | error | No `<img src>`/`<image href>` outside `data:` or `sloodge-asset:` |
-| `SL-S03` | error | No `@font-face`; font-family resolves to the system stack |
+| `SL-S03` | error | No `@font-face` (what the validator checks; `font-family` itself is unconstrained beyond SL-S04, and the panel's own writes always carry a system-fallback tail — see the Fonts bullet above) |
 | `SL-S04` | error | Source contains none of `fetch(`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `localStorage`, `indexedDB`, `document.cookie`, `alert(`, `eval(`, `new Function(` |
 | `SL-G01` | error | Exactly one `.slide` root with `width:1280px;height:720px` (computed from the inline stylesheet) |
 | `SL-G02` | error | `overflow:hidden` and `position:relative` on `.slide` |
