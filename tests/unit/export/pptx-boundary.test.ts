@@ -134,6 +134,10 @@ describe('pptxgenjs boundary', () => {
       domain: 'Design Mode byte-span patching — HTML source text',
       xml: false,
     },
+    'src/shared/design/text-edit.ts': {
+      domain: 'Design Mode caret edits — escapeAndNeutralizeText writes HTML text nodes (M3.11)',
+      xml: false,
+    },
     'src/shared/document/slide-text.ts': {
       domain: 'escapeHtml + slideText for generated slide HTML — HTML domain',
       xml: false,
