@@ -671,6 +671,7 @@ export async function readArchiveBytes(
   // (minus their trailing slash) and only *then* skipped: an entry literally named `../../evil/`
   // must not slip through the gate just because it ends in a slash.
   const wanted: CentralEntry[] = []
+  const seen = new Set<string>()
   let totalInflated = 0
   let totalCompressed = 0
   for (const entry of central) {
@@ -682,6 +683,22 @@ export async function readArchiveBytes(
     if (entry.isSymlink) {
       return fail('unsafe-entry', `archive entry is a symlink: ${entry.name}`)
     }
+    // A name the central directory lists twice, refused before a byte is inflated — including
+    // directory markers, so the answer to "what does this archive contain" is the archive's own.
+    //
+    // The zip format permits it and readers disagree about what it means: .NET's `ZipPackage`
+    // refuses the package, Python's `zipfile` warns and takes the last, fflate silently takes the
+    // last. That is the same parser-differential shape this reader already refuses for aliased
+    // local headers, ZIP64 divergence and prototype-polluting keys, and the disagreement is worse
+    // here because every downstream check is keyed by *name*: `verifyPassthrough` and M4.6's
+    // identity test compare part-name sets, so a package that arrived with 44 entries and left with
+    // 43 was reported `ok` with an empty `missing` list (M4.5 review round 8). Nothing legitimate
+    // is refused — OPC requires part names to be unique, so a duplicate is a malformed package to
+    // every reader that has an opinion.
+    if (seen.has(entry.name)) {
+      return fail('not-a-zip', `${label} names ${entry.name} more than once`)
+    }
+    seen.add(entry.name)
     if (isDirectory) continue
 
     // What fflate will actually allocate for this member. STORED (method 0) ignores the declared

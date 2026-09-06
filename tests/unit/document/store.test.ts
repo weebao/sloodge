@@ -12,6 +12,7 @@ import {
 import { createStarterSlideHtml } from '../../../src/shared/document/starter-slide'
 import {
   DEFAULT_THEME_PATH,
+  MANIFEST_ENTRY,
   MAX_FORMAT_VERSION,
   type Theme,
 } from '../../../src/shared/document/types'
@@ -22,6 +23,7 @@ import {
   hasStaleTmp,
   type DeckBundle,
 } from '../../../src/main/document/store'
+import { handRolledZip, type HandRolledEntry } from '../../support/hand-rolled-zip'
 
 const T0 = 1_770_000_000_000
 const THEME_ID = 't_01H8XQZ4P7K2M9NB3VYRTC6FDA'
@@ -928,6 +930,81 @@ describe('archive resource caps — STORED members and aliased local headers (B2
     if (result.ok) return
     expect(result.error.code).toBe('too-large')
     expect(result.error.message).toContain('declares 10000000 entries')
+  })
+})
+
+/** A packed deck's entries, in the order the archive lists them, ready to re-emit by hand. */
+function deckEntriesInOrder(bytes: Uint8Array): HandRolledEntry[] {
+  return Object.entries(unzipSync(bytes)).map(([name, data]) => ({ name, bytes: data }))
+}
+
+describe('archive entry names are unique (r8)', () => {
+  /**
+   * The zip format lets a central directory list one name twice; OPC forbids it, and readers
+   * disagree about a violation — .NET's `ZipPackage` refuses the package, Python's `zipfile` warns
+   * and takes the last, fflate silently takes the last. Round 8 reproduced the consequence through
+   * the real import path: a 44-entry `.pptx` with `ppt/slides/slide1.xml` listed twice imported
+   * with zero warnings, rendered the *second* copy, and a patched export then emitted 43 entries
+   * while `verifyPassthrough` and M4.6's identity test both answered `ok` — because both compare
+   * part-name *sets*, which cannot see a shadowed duplicate.
+   *
+   * So the reader refuses the archive, and these tests are keyed to the property that made the
+   * differential invisible: the duplicate carries *different bytes* from the entry it shadows, and
+   * the control below is the same archive with the same part count and unique names.
+   */
+  async function craftHandRolled(name: string, entries: readonly HandRolledEntry[]) {
+    const path = join(dir, name)
+    await writeFile(path, handRolledZip(entries))
+    return path
+  }
+
+  it('refuses a deck whose central directory names one part twice', async () => {
+    const entries = deckEntriesInOrder(await packDeck(fixtureBundle()))
+    expect(entries.map((entry) => entry.name)).toContain(MANIFEST_ENTRY)
+    // A second copy under the same name, carrying bytes the first does not: last-wins would hand
+    // the reader a manifest the deck never had, and every name-keyed check would call it identical.
+    const path = await craftHandRolled('duplicate-name.sloodge', [
+      ...entries,
+      { name: MANIFEST_ENTRY, bytes: '{"formatVersion":1,"title":"shadow"}' },
+    ])
+
+    const result = await readDeck(path)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('not-a-zip')
+    expect(result.error.message).toContain('more than once')
+    expect(result.error.message).toContain(MANIFEST_ENTRY)
+  })
+
+  it('refuses a duplicated directory marker too', async () => {
+    // The check runs before the `isDirectory` skip on purpose: a marker is a declared name like any
+    // other, and refusing only the names we go on to keep would leave the reader's answer to "what
+    // does this archive contain" different from the archive's own.
+    const entries = deckEntriesInOrder(await packDeck(fixtureBundle()))
+    const path = await craftHandRolled('duplicate-dir-marker.sloodge', [
+      { name: 'assets/', bytes: new Uint8Array(0) },
+      ...entries,
+      { name: 'assets/', bytes: new Uint8Array(0) },
+    ])
+
+    const result = await readDeck(path)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('not-a-zip')
+    expect(result.error.message).toContain('assets/')
+  })
+
+  it('still reads the same hand-rolled archive when every name is unique', async () => {
+    // The control: same writer, same STORED members, same entry count as the duplicate case — so
+    // the rejections above are about the repeated name and not about a hand-rolled zip.
+    const entries = deckEntriesInOrder(await packDeck(fixtureBundle()))
+    const path = await craftHandRolled('unique-names.sloodge', [
+      ...entries,
+      { name: 'assets/extra-note.txt', bytes: '{"formatVersion":1,"title":"shadow"}' },
+    ])
+
+    const result = await readDeck(path)
+    expect(result.ok).toBe(true)
   })
 })
 

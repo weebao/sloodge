@@ -54,8 +54,21 @@ function sourceFiles(dir: string): string[] {
   return out
 }
 
-/** Source files (repo-relative, `/`-separated) containing a `function <name>(` declaration. */
-function definers(pattern: RegExp): string[] {
+/**
+ * Source files (repo-relative, `/`-separated) that *declare* any of `names`.
+ *
+ * A declaration is `function`, `const`, `let` or `class` immediately followed by the name, so a
+ * second copy written as a const arrow is caught as well as one written as a `function` — round 8
+ * showed `const foldForScan = (t: string): string => t` left the `function`-only spelling green.
+ * An `import { name }` is not a declaration and does not match, which is the point: the one file
+ * that defines each name is named below, and every other file may only import it.
+ *
+ * Residual, stated: a copy written as a class method or an object property (`{ foldForScan() {} }`)
+ * has no declaration keyword and is invisible here. #58's `preload-bundle-deps` guard reads esbuild
+ * bindings and does not share that blind spot; the behavioural tests are the net until it lands.
+ */
+function definers(names: readonly string[]): string[] {
+  const pattern = new RegExp(`(?:function|const|let|class)\\s+(?:${names.join('|')})\\b`)
   return sourceFiles(SRC_ROOT)
     .filter((file) => pattern.test(readFileSync(file, 'utf8')))
     .map((file) => relative(process.cwd(), file).split(sep).join('/'))
@@ -109,17 +122,21 @@ describe('text into slide HTML goes through slideText', () => {
   })
 
   it('escapeHtml and the defuser are defined once, in slide-text.ts', () => {
-    expect(definers(/function (?:escapeHtml|defuseForbiddenTokens|slideText)\(/)).toEqual([
+    expect(definers(['escapeHtml', 'defuseForbiddenTokens', 'slideText'])).toEqual([
       'src/shared/document/slide-text.ts',
     ])
   })
 
   it('the SL-S04 matcher is defined once, in slide-contract.ts', () => {
-    // Round 5 lifted `foldForScan`/`forbiddenBreakPoints`/`tokenPattern` out of Design Mode's
-    // text editor so the importer and the editor share one matcher. Until M3.11's branch is
-    // rebased onto that, it carries byte-identical private copies in `text-edit.ts`; this pin
-    // reds the moment both land in one tree, so the dedupe is enforced rather than remembered.
-    expect(definers(/function (?:foldForScan|forbiddenBreakPoints|tokenPattern)\(/)).toEqual([
+    // Round 5 lifted `foldForScan`/`forbiddenBreakPoints`/`tokenPattern` out of Design Mode's text
+    // editor so the importer and the editor share one matcher; the rebase onto M3.11 completed that
+    // dedupe, and `text-edit.ts` now imports all three rather than declaring them. Both writers of
+    // slide text therefore agree with the validator on Unicode case folds by construction, and this
+    // pin reds if either grows a copy again — the rule is enforced rather than remembered.
+    //
+    // When #58's `forbidden-apis.ts` leaf lands, the matcher moves there with the token list and
+    // the expected path below changes with it. That is a deliberate edit, which is the point.
+    expect(definers(['foldForScan', 'forbiddenBreakPoints', 'tokenPattern'])).toEqual([
       'src/shared/document/slide-contract.ts',
     ])
   })

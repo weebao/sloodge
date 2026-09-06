@@ -46,7 +46,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { strFromU8, strToU8, zipSync, type Zippable } from 'fflate'
+import { strFromU8, strToU8, zipSync } from 'fflate'
 import { readArchiveBytes, type ReadArchiveOptions } from '../document/archive'
 import type { DeckBundle } from '../document/store'
 import {
@@ -210,12 +210,18 @@ export async function exportPptxRoundTrip(
   }
 
   // --- patched ---------------------------------------------------------------------------------
-  const zippable = emptyMap<Uint8Array | [Uint8Array, { level: 0 }]>()
+  const zippable = emptyMap<Uint8Array>()
   const rewritten: string[] = []
 
-  // `[Content_Types].xml` first and STORED, matching what OOXML writers emit. Part order inside a
-  // zip is not semantically meaningful, but keeping the conventional order means a diff against a
+  // `[Content_Types].xml` first, matching what OOXML writers emit. Part order inside a zip is not
+  // semantically meaningful, but keeping the conventional order means a diff against a
   // PowerPoint-written file is about content rather than layout.
+  //
+  // Compression is *not* matched: every part is deflated at level 6, including the ones PowerPoint
+  // stores. M4.6's guarantee is over each part's inflated bytes — which is what `verifyPassthrough`
+  // and the identity test compare — so the container's own encoding is deliberately outside it. A
+  // `patched` export is therefore not byte-identical to the input as a file; only `identity` mode
+  // is, and it re-emits the retained buffer rather than building one.
   const orderedNames = [
     ...Object.keys(archive.entries).filter((name) => name === '[Content_Types].xml'),
     ...Object.keys(archive.entries).filter((name) => name !== '[Content_Types].xml'),
@@ -263,7 +269,7 @@ export async function exportPptxRoundTrip(
     }
   }
 
-  const bytes = zipSync(zippable as Zippable, { level: 6 })
+  const bytes = zipSync(zippable, { level: 6 })
   return {
     mode: 'patched',
     bytes,
@@ -294,6 +300,12 @@ export type PassthroughVerification = {
  * read back out of both packages through the hardened reader, rather than on the writer's own
  * record of what it did. A writer that re-serialized an untouched part would report success and
  * fail here — which is precisely the mutation the milestone requires to go red.
+ *
+ * The comparison is keyed by part *name*, so it can only see one part per name. That is sound
+ * because the hardened reader refuses an archive whose central directory lists a name twice
+ * (`archive.ts`): without that refusal a package could arrive with two copies of a part, leave with
+ * one, and be reported `ok` with an empty `missing` list — the verifier structurally unable to see
+ * its own subject (M4.5 review round 8).
  */
 export async function verifyPassthrough(
   exportedBytes: Uint8Array,

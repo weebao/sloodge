@@ -10,7 +10,7 @@
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { strToU8, unzipSync, zipSync } from 'fflate'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { importPptx, SlideGate } from '../../../src/main/import/pptx-import'
@@ -20,6 +20,7 @@ import { createStarterSlideHtml } from '../../../src/shared/document/starter-sli
 import { parseManifest } from '../../../src/shared/document/types'
 import { LEDGER_ENTRY, ORIGINAL_ARCHIVE_ENTRY } from '../../../src/shared/import/pptx/ledger'
 import { fixturePath, PPTX_FIXTURES, readFixture } from './fixtures'
+import { handRolledZip } from '../../support/hand-rolled-zip'
 
 const NOW = 1_770_000_000_000
 
@@ -351,6 +352,53 @@ describe('rejections — a .pptx is an untrusted zip', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error.code).toBe('not-found')
+  })
+
+  it('rejects a package whose central directory names a slide part twice', async () => {
+    // Round 8's differential, through the real import path. Before the reader refused it, this
+    // 44-entry archive imported with zero warnings and `partCount` 43, rendered the *second* copy
+    // of slide 1, and a patched export then emitted 43 entries while `verifyPassthrough` and
+    // M4.6's identity test both answered `ok` with an empty `missing` list — because both compare
+    // part-name sets, which cannot see a shadowed duplicate. The retained-archive guarantee is over
+    // bytes, so a reader that silently drops a part while every check says "identical" is the one
+    // failure retention exists to prevent.
+    //
+    // `zipSync` takes an object, so duplicate keys collapse before it runs; the archive has to be
+    // written by hand.
+    const parts = await fixtureParts()
+    const entries = Object.entries(parts).map(([name, bytes]) => ({ name, bytes }))
+    const slide = entries.find((entry) => entry.name === 'ppt/slides/slide1.xml')
+    if (slide === undefined) throw new Error('fixture has no ppt/slides/slide1.xml')
+
+    const shadow = strFromU8(slide.bytes).replace(
+      /Quarterly Business Review/g,
+      'DUPLICATE SECOND ENTRY',
+    )
+    expect(shadow).not.toBe(strFromU8(slide.bytes)) // the duplicate must differ, or it proves nothing
+
+    const path = join(dir, 'duplicate-part.pptx')
+    await writeFile(path, handRolledZip([...entries, { name: slide.name, bytes: strToU8(shadow) }]))
+
+    const result = await importPptx(path, { now: NOW })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('not-a-zip')
+    expect(result.error.message).toContain('ppt/slides/slide1.xml')
+    expect(result.error.message).toContain('more than once')
+  })
+
+  it('imports the same hand-rolled package when every part name is unique', async () => {
+    // The control: same writer, same STORED members, same part count as the duplicate case, so the
+    // refusal above is about the repeated name rather than about a hand-rolled zip.
+    const parts = await fixtureParts()
+    const entries = Object.entries(parts).map(([name, bytes]) => ({ name, bytes }))
+    const path = join(dir, 'hand-rolled-unique.pptx')
+    await writeFile(path, handRolledZip(entries))
+
+    const result = await importPptx(path, { now: NOW })
+    if (!result.ok) throw new Error(result.error.message)
+    expect(result.report.slideCount).toBe(3)
+    expect(result.report.partCount).toBe(entries.length)
   })
 
   it('rejects a zip that is not an OPC presentation', async () => {
