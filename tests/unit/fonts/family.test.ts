@@ -13,7 +13,7 @@ import {
   readPickedFontFamily,
 } from '../../../src/shared/fonts/family'
 import { validateSlideContract } from '../../../src/shared/document/slide-contract'
-import { findForbiddenApiTokens } from '../../../src/shared/document/forbidden-apis'
+import { findForbiddenApiTokens, packForApiScan } from '../../../src/shared/document/forbidden-apis'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { applyOps } from '../../../src/shared/design/patch'
 import {
@@ -226,10 +226,11 @@ describe('font names the CSS escape layer would turn into a forbidden token', ()
   })
 
   it('composes into one, which is the string the guard has to read', () => {
+    // Asked of the real escaper: the hex escape it writes for the leading digit ends in `e`, and the
+    // terminating space that follows it is exactly what the SL-S04 packing removes.
     for (const name of ESCAPE_SYNTHESISED_NAMES) {
-      const hex = name.codePointAt(0)!.toString(16)
       expect(
-        `\\${hex} ventsource, Segoe UI, system-ui, sans-serif`.replace(/\s+/g, ''),
+        packForApiScan(`${cssIdentFontFamily(name)}, Segoe UI, system-ui, sans-serif`),
         name,
       ).toContain('eventsource')
     }

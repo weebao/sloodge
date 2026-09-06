@@ -56,8 +56,11 @@ export interface EnumeratedFonts {
   readonly source: FontSource
 }
 
-/** Enumeration is a cold-start cost, not a hang: past this the list is simply empty for the session. */
-const ENUMERATE_TIMEOUT_MS = 10_000
+/**
+ * Enumeration is a cold-start cost, not a hang: past this the list is simply empty for the session.
+ * Exported for the test that really runs the enumerator, whose own timeout has to outlast this one.
+ */
+export const ENUMERATE_TIMEOUT_MS = 10_000
 
 /** ~341 names on a stock Windows host; 4 MB is far more than any real machine produces. */
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
