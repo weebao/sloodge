@@ -50,9 +50,62 @@ const short = (file) => relative(RENDERER, file)
 // Utility classification
 // ---------------------------------------------------------------------------------------------
 
-const TOKEN_NS = '(?:shell|chrome|accent|canvas|ink)(?:-[a-z]+)*'
+const THEME_CSS = readFileSync(THEME, 'utf8')
+
+/**
+ * Names declared under one `@theme` namespace in theme.css: `--text-ui` → `ui`. The
+ * `--text-ui--line-height` companion collapses onto `ui`; `--radius-*: initial` resets are skipped.
+ * The classifier is built from these at start-up so it follows the theme: a role colour or a named
+ * radius is counted from the day it is declared, not from the day someone edits this file.
+ */
+function themeNames(prefix) {
+  const names = new Set()
+  for (const m of THEME_CSS.matchAll(
+    new RegExp(`--${prefix}-([a-z0-9-]+?)(?:--[a-z-]+)?\\s*:`, 'g'),
+  )) {
+    names.add(m[1])
+  }
+  return [...names]
+}
+
+/** Utilities theme.css defines with `@utility` — durations and z-index are not v4 namespaces. */
+const UTILITY_NAMES = [...THEME_CSS.matchAll(/@utility\s+([a-z0-9-]+)/g)].map((m) => m[1])
+
+/**
+ * The 12 mode-bound tokens M8b.3 retires (audit §5.4). Their namespaces stay in the classifier
+ * after the declarations are deleted, so a `bg-chrome` that outlives `--color-chrome` is still
+ * counted and still shows in the `legacy` column — the blindness `theme-tokens.test.ts` has by
+ * design (it derives its namespaces from what is declared) must not be repeated here.
+ */
+const RETIRED_TOKENS = [
+  'shell-bg',
+  'shell-fg',
+  'chrome',
+  'chrome-alt',
+  'chrome-line',
+  'chrome-muted',
+  'canvas-mat',
+  'ink',
+  'ink-alt',
+  'ink-line',
+  'ink-fg',
+  'ink-muted',
+]
+const RETIRED = new RegExp(`-(?:${RETIRED_TOKENS.join('|')})(?:/\\d+)?$`)
+
+const alt = (names) => names.map((n) => `|${n}`).join('')
+
+const COLOUR_NAMESPACES = [
+  ...new Set([
+    ...themeNames('color').map((n) => n.split('-')[0]),
+    ...RETIRED_TOKENS.map((n) => n.split('-')[0]),
+  ]),
+]
+const TOKEN_NS = `(?:${COLOUR_NAMESPACES.join('|')})(?:-[a-z]+)*`
 const PALETTE = '(?:white|black|transparent|current|inherit|[a-z]+-\\d{2,3})'
 const COLOUR_VALUE = `(?:${TOKEN_NS}|${PALETTE})(?:/\\d+)?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
+const SPACING_NAMES = alt(themeNames('spacing'))
+const ARBITRARY = '\\[[^\\]]+\\]'
 
 /** Ordered: the first matching category wins, so colour outranks the width/style fallbacks. */
 const CATEGORIES = [
@@ -65,21 +118,50 @@ const CATEGORIES = [
   ['border-style', /^(?:border|outline)-(?:solid|dashed|dotted|double|none|hidden)$/],
   [
     'spacing',
-    /^-?(?:p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap|gap-x|gap-y|space-x|space-y|inset|inset-x|inset-y|top|right|bottom|left)-(?:\d+(?:\.\d+)?|px|auto|\[[^\]]+\])$/,
+    new RegExp(
+      `^-?(?:p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap|gap-x|gap-y|space-x|space-y|inset|inset-x|inset-y|top|right|bottom|left)-(?:\\d+(?:\\.\\d+)?|px|auto|${ARBITRARY}${SPACING_NAMES})$`,
+    ),
   ],
   [
     'size',
-    /^(?:w|h|min-w|max-w|min-h|max-h|size)-(?:\d+(?:\.\d+)?|px|auto|full|screen|fit|\d+\/\d+|\[[^\]]+\])$/,
+    new RegExp(
+      `^(?:w|h|min-w|max-w|min-h|max-h|size)-(?:\\d+(?:\\.\\d+)?|px|auto|full|screen|fit|\\d+/\\d+|${ARBITRARY}${SPACING_NAMES})$`,
+    ),
   ],
   [
     'radius',
-    /^rounded(?:-(?:t|b|l|r|tl|tr|bl|br|s|e|ss|se|es|ee))?(?:-(?:none|xs|sm|md|lg|xl|2xl|3xl|full|\[[^\]]+\]))?$/,
+    new RegExp(
+      `^rounded(?:-(?:t|b|l|r|tl|tr|bl|br|s|e|ss|se|es|ee))?(?:-(?:none|xs|sm|md|lg|xl|2xl|3xl|full|${ARBITRARY}${alt(themeNames('radius'))}))?$`,
+    ),
   ],
-  ['shadow', /^shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|none|inner|\[[^\]]+\]))?$/],
-  ['font-size', /^text-(?:xs|sm|base|lg|xl|\dxl|\[[^\]]+\])$/],
-  ['font-weight', /^font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/],
-  ['leading', /^leading-(?:none|tight|snug|normal|relaxed|loose|\d+|\[[^\]]+\])$/],
-  ['tracking', /^tracking-(?:tighter|tight|normal|wide|wider|widest|\[[^\]]+\])$/],
+  [
+    'shadow',
+    new RegExp(
+      `^shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|none|inner|${ARBITRARY}${alt(themeNames('shadow'))}))?$`,
+    ),
+  ],
+  [
+    'font-size',
+    new RegExp(`^text-(?:xs|sm|base|lg|xl|\\dxl|${ARBITRARY}${alt(themeNames('text'))})$`),
+  ],
+  [
+    'font-weight',
+    new RegExp(
+      `^font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black${alt(themeNames('font-weight'))})$`,
+    ),
+  ],
+  [
+    'leading',
+    new RegExp(
+      `^leading-(?:none|tight|snug|normal|relaxed|loose|\\d+|${ARBITRARY}${alt(themeNames('leading'))})$`,
+    ),
+  ],
+  [
+    'tracking',
+    new RegExp(
+      `^tracking-(?:tighter|tight|normal|wide|wider|widest|${ARBITRARY}${alt(themeNames('tracking'))})$`,
+    ),
+  ],
   [
     'type-style',
     /^(?:uppercase|lowercase|capitalize|normal-case|italic|not-italic|tabular-nums|font-mono|font-serif|font-sans|underline|line-through|truncate|whitespace-[a-z-]+|text-(?:left|center|right))$/,
@@ -90,15 +172,28 @@ const CATEGORIES = [
   ],
   [
     'motion',
-    /^(?:transition(?:-(?:all|colors|opacity|shadow|transform|none))?|duration-\d+|ease-(?:in|out|in-out|linear)|delay-\d+|animate-[a-z-]+)$/,
+    new RegExp(
+      `^(?:transition(?:-(?:all|colors|opacity|shadow|transform|none))?|duration-\\d+|ease-(?:in|out|in-out|linear${alt(themeNames('ease'))})|delay-\\d+|animate-[a-z-]+${alt(UTILITY_NAMES.filter((n) => n.startsWith('duration-')))})$`,
+    ),
   ],
   ['opacity', /^opacity-\d+$/],
-  ['z-index', /^z-(?:\d+|auto|\[[^\]]+\])$/],
+  [
+    'z-index',
+    new RegExp(
+      `^z-(?:\\d+|auto|${ARBITRARY}${alt(UTILITY_NAMES.filter((n) => n.startsWith('z-')).map((n) => n.slice(2)))})$`,
+    ),
+  ],
   ['effect', /^(?:backdrop-blur(?:-[a-z0-9]+)?|blur-[a-z0-9]+)$/],
   ['cursor', /^cursor-[a-z-]+$/],
 ]
 
-const VARIANT_PREFIX = /^((?:[a-z-]+:)+)/
+/**
+ * A chain of Tailwind variants (`dark:hover:`) in front of a utility. A fixed list, not `[a-z-]+:`,
+ * so a CSS selector in a string (`button:not(…)`) is not mistaken for a variant.
+ */
+const VARIANT_NAMES =
+  'dark|hover|focus|focus-visible|focus-within|active|disabled|enabled|placeholder|group-hover|group-focus|peer-checked|first|last|odd|even|checked|open|motion-reduce|motion-safe|print|before|after|sm|md|lg|xl|2xl'
+const VARIANT_PREFIX = new RegExp(`^((?:(?:${VARIANT_NAMES}):)+)(?=[a-z[-])`)
 
 function classify(raw) {
   const variants = VARIANT_PREFIX.exec(raw)?.[1] ?? ''
@@ -146,6 +241,15 @@ function inventory() {
       // on `:`, which joins a variant to its utility.
       for (const token of text.split(/[\s'"`{}$;=<>?]+/)) {
         if (token === '') continue
+        const variants = VARIANT_PREFIX.exec(token)?.[1] ?? ''
+        const f = perFile.get(file) ?? { colour: 0, legacy: 0, arbitrary: 0, dark: 0, total: 0 }
+        perFile.set(file, f)
+        // Variants are counted on every utility-shaped token, classified or not: a `dark:` on a
+        // token this classifier does not know yet still moves the column the M8b.3 gate reads.
+        for (const v of variants.split(':').filter(Boolean)) {
+          variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
+        }
+        if (variants.includes('dark:')) f.dark += 1
         const hit = classify(token)
         if (hit === null) continue
         const bucket = byCategory.get(hit.category) ?? new Map()
@@ -153,15 +257,12 @@ function inventory() {
         const sites = bucket.get(hit.bare) ?? []
         sites.push({ file, line, variants: hit.variants })
         bucket.set(hit.bare, sites)
-        for (const v of hit.variants.split(':').filter(Boolean)) {
-          variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
-        }
-        const f = perFile.get(file) ?? { colour: 0, arbitrary: 0, dark: 0, total: 0 }
         f.total += 1
-        if (hit.category === 'colour') f.colour += 1
+        if (hit.category === 'colour') {
+          f.colour += 1
+          if (RETIRED.test(hit.bare)) f.legacy += 1
+        }
         if (hit.bare.includes('[')) f.arbitrary += 1
-        if (hit.variants.includes('dark:')) f.dark += 1
-        perFile.set(file, f)
       }
     })
   }
@@ -228,13 +329,23 @@ function inventory() {
 
   print('## per file')
   print()
-  print('| file | utilities | colour | `dark:` | arbitrary |')
-  print('| --- | --- | --- | --- | --- |')
+  print(
+    'The `legacy` column counts colour utilities on the 12 retired tokens; `dark:` counts every `dark:` variant in the file, whether or not the utility is classified.',
+  )
+  print()
+  print('| file | utilities | colour | legacy | `dark:` | arbitrary |')
+  print('| --- | --- | --- | --- | --- | --- |')
+  const totals = { colour: 0, legacy: 0, arbitrary: 0, dark: 0 }
   for (const [file, f] of [...perFile.entries()].toSorted((a, b) => b[1].total - a[1].total)) {
     print(
-      `| ${short(file)} | ${String(f.total)} | ${String(f.colour)} | ${String(f.dark)} | ${String(f.arbitrary)} |`,
+      `| ${short(file)} | ${String(f.total)} | ${String(f.colour)} | ${String(f.legacy)} | ${String(f.dark)} | ${String(f.arbitrary)} |`,
     )
+    for (const k of Object.keys(totals)) totals[k] += f[k]
   }
+  print()
+  print(
+    `Totals: colour ${String(totals.colour)}, legacy ${String(totals.legacy)}, \`dark:\` ${String(totals.dark)}, arbitrary ${String(totals.arbitrary)}.`,
+  )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -906,25 +1017,30 @@ const PROPOSED_PAIRS = [
   q('decor', 'line', 'canvas', 'slide outline on the mat'),
 ]
 
-function proposedPalettes() {
+/** `--color-<name>: <value>` as written, for the declared-vs-rendered table. */
+const declaredColourText = (css) =>
+  new Map([...css.matchAll(/--color-([a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]))
+
+function proposedReport() {
   const light = readColourVars(PROPOSED_LIGHT)
   const dark = new Map(light)
   for (const [k, v] of readColourVars(PROPOSED_DARK)) dark.set(k, v)
-  return { light, dark }
-}
-
-function proposedReport() {
-  const { light, dark } = proposedPalettes()
-  print('# Canonical token set — values and measured contrast')
+  const lightText = declaredColourText(PROPOSED_LIGHT)
+  const darkText = declaredColourText(PROPOSED_DARK)
+  print('# Canonical token set — declared values, rendered sRGB, measured contrast')
   print()
-  print('| token | light | dark |')
-  print('| --- | --- | --- |')
-  const cell = (c) => (c.a < 1 ? `${fmtOklch(c)} / ${String(c.a)}` : `${fmtOklch(c)} ${toHex(c)}`)
+  print(
+    'The declared column is the string theme.css must carry (M8b.2 compares against it byte for byte). The hex column is what the browser paints — a few Tailwind-derived semantic steps sit just outside sRGB and are clipped, so a hex round-tripped back to OKLCH will not equal the declaration at three decimals.',
+  )
+  print()
+  print('| token | light (declared) | hex | dark (declared) | hex |')
+  print('| --- | --- | --- | --- | --- |')
+  const hex = (c) => (c.a < 1 ? '—' : toHex(c))
   for (const name of light.keys()) {
-    const l = light.get(name)
-    const d = dark.get(name)
-    const same = toHex(l) === toHex(d) && l.a === d.a
-    print(`| \`${name}\` | ${cell(l)} | ${same ? '(same)' : cell(d)} |`)
+    const d = darkText.get(name)
+    print(
+      `| \`${name}\` | \`${lightText.get(name)}\` | ${hex(light.get(name))} | ${d === undefined ? '(same)' : `\`${d}\``} | ${d === undefined ? '' : hex(dark.get(name))} |`,
+    )
   }
   print()
   contrastTable(

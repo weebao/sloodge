@@ -504,8 +504,10 @@ Work list:
 
 ### 5.1 Principles (decisions, each traceable to M8b.0)
 
-1. **Extend, don't rename.** The 14 existing tokens keep their names and values. New **role**
-   tokens are added beside them; components migrate surface by surface in M8b.3; the legacy tokens
+1. **Extend, don't rename.** Of the 14 existing tokens, the 12 mode-bound ones (`shell-*`,
+   `chrome-*`, `ink-*`, `canvas-mat`) keep their names and values until they are retired; `accent`
+   keeps its name and light value and gains a dark one; `accent-soft` keeps its name and is re-valued
+   (it has no consumers). New **role** tokens are added beside the 12; components migrate surface by surface in M8b.3; the legacy tokens
    are deleted in the last M8b.3 PR behind the two survivor checks in §5.4 — **not** behind
    `theme-tokens.test.ts` as shipped, which derives the namespaces it polices from the tokens still
    declared (by design, see its header) and therefore goes blind to a deleted namespace: deleting the
@@ -571,7 +573,7 @@ failures has a measured proposed counterpart: T1 → `warning` on `surface`; T2 
 | `field` | `oklch(1 0 0)` `#ffffff` | `oklch(0.215 0.006 286)` `#19191c` | every input's `bg-white`/`bg-chrome` + `dark:bg-ink`/`ink-alt` |
 | `hover` | `oklch(0.945 0.003 286)` `#ececef` | `oklch(0.332 0.012 286)` `#35353c` | `hover:bg-chrome-alt`, `chrome-line/40`, `neutral-50/100` |
 | `pressed` | `oklch(0.905 0.004 286)` `#dfdfe2` | `oklch(0.390 0.013 286)` `#44444c` | `active:bg-chrome-line` |
-| `canvas` | `oklch(0.885 0 0)` `#dbdbdb` | `oklch(0.170 0 0)` `#0f0f0f` | `canvas-mat/25` over `shell-bg`; `dark:bg-black/40` |
+| `canvas` | `oklch(0.885 0 0)` `#d9d9d9` | `oklch(0.170 0 0)` `#0f0f0f` | `canvas-mat/25` over `shell-bg`; `dark:bg-black/40` |
 | `line` | `oklch(0.905 0.004 286)` `#dfdfe2` | `oklch(0.332 0.012 286)` `#35353c` | `chrome-line` + `dark:ink-line` on dividers and decorative borders |
 | `line-strong` | `oklch(0.600 0.008 286)` `#808085` | `oklch(0.560 0.014 286)` `#73737d` | new — control borders, ≥ 3.22:1 on every ground |
 | `text` | `oklch(0.222 0.004 286)` `#1b1b1d` | `oklch(0.926 0.005 286)` `#e6e6ea` | `shell-fg` + `dark:ink-fg`; `neutral-900` |
@@ -596,7 +598,11 @@ failures has a measured proposed counterpart: T1 → `warning` on `surface`; T2 
 Semantic values are Tailwind v4's own `red-700/400`, `amber-800/500`, `green-800/400`, `blue-600/400`,
 `teal-600/400` steps and their `50/950` softs, restated in OKLCH so the theme has one notation. The
 dark neutrals are the shipped hexes to three decimals — dark mode does not change colour, it gains
-roles. Light neutrals shift by less than 1 ΔE (a `C` of 0.002–0.006 at these lightnesses is
+roles. Seven of the 50 declared role values (the saturated semantic steps) sit just outside sRGB;
+the browser clips them, so the hex column is the painted colour and a hex round-tripped back to
+OKLCH does not equal the declaration at three decimals — which is why M8b.2's acceptance test
+compares the declared strings (`PROPOSED_LIGHT` / `PROPOSED_DARK` in the script, echoed by
+`--proposed`), never round-tripped numbers. Light neutrals shift by less than 1 ΔE (a `C` of 0.002–0.006 at these lightnesses is
 imperceptible side by side; the point is that it is chosen and shared with dark).
 
 **Rules the pairs table assumes** (M8b.4 can lint R1–R3; R4–R6 are review items):
@@ -724,7 +730,7 @@ Mechanical where marked ⚙ (a regex can do it); judgement where marked ✎ (the
 | `w-[188px]`, `w-[320px]`, `h-64`, `h-7 w-7` | `w-rail`, `w-chat`, `h-inspector`, `h-control w-control` | ⚙ |
 | `min-w-[140px]`, `h-[3px]` | `min-w-35`, `h-0.5` (2px) or `h-1` | ✎ |
 | `backdrop-blur` | `backdrop-blur-hud` | ⚙ |
-| the 14 legacy tokens | deleted in the last M8b.3 PR behind two checks that work today: (a) `node scripts/design-inventory.mjs`'s colour table has zero rows matching `(shell\|chrome\|ink\|canvas-mat\|accent-soft)`; (b) the retired-token clause M8b.2 adds to `theme-tokens.test.ts` — the policed namespace set becomes *declared ∪ {shell, chrome, ink, canvas}* while the accepted token set stays *declared only*, so a `bg-chrome` that outlives its declaration is reported. Mutation for (b): delete the 12 legacy declarations, leave the renderer untouched → must red at 324 sites (the shipped test passes). M8b.4's check (5) is the permanent form of (b). | — |
+| the 12 retired tokens — `shell-bg`, `shell-fg`, `chrome`, `chrome-alt`, `chrome-line`, `chrome-muted`, `canvas-mat`, `ink`, `ink-alt`, `ink-line`, `ink-fg`, `ink-muted` (`accent` and `accent-soft` are canonical and stay) | deleted in the last M8b.3 PR behind two checks that work today: (a) `node scripts/design-inventory.mjs`'s per-file table reads `legacy` 0 for every file and its `Totals` line reads `legacy 0` — the classifier keeps the four retired namespaces after the declarations go, so a `bg-chrome` that outlives `--color-chrome` is still counted (today the total is 324; mutation, runnable now: migrate one `bg-chrome` → the total drops by one); (b) the retired-token clause M8b.2 adds to `theme-tokens.test.ts` — the policed namespace set becomes *declared ∪ {shell, chrome, ink, canvas}* while the accepted token set stays *declared only*, so a `bg-chrome` that outlives its declaration is reported. Mutation for (b): delete the 12 declarations, leave the renderer untouched → must red at 324 sites (the shipped test passes). M8b.4's check (5) is the permanent form of (b). | — |
 
 ### 5.5 Compatibility with the `.sloodge` deck theme (30-slide-format.md §4)
 
@@ -781,10 +787,12 @@ Compiled through `node_modules/tailwindcss` (`compile()` + `build(candidates)`),
 | `--z-dialog` in `@theme` | `z-dialog` | **no** | same → `@utility z-dialog` (emits) |
 
 **One more 4.3.3 behaviour M8b.2 must plan for: only the theme variables some compiled utility uses
-are emitted.** A role token with no consumer at compile time is absent from the CSS, and the dark
-`:root` override then sets a variable nothing reads. M8b.2 lands the tokens before any surface adopts
-them, so the role block must be declared `@theme static { … }` (or every token given a consumer) —
-otherwise the first M8b.3 PR to use `bg-hover` finds it undefined in dark mode.
+are emitted.** A role token with no consumer at compile time is absent from that build's CSS, so the
+dark `:root` override temporarily sets a variable nothing reads. Correctness is not at stake — a plain
+`@theme` resolves properly at the first build that uses the token (verified) — but M8b.2 lands the
+tokens before any surface adopts them, so declare the role block `@theme static { … }`: M8b.2's own
+emitted CSS then carries the full role block, the PR is reviewable and diffable, and the dark
+overrides have something to override in the build that introduces them.
 
 ---
 
@@ -823,7 +831,9 @@ one agent and one PR; the work list is the numbered list in §4.
 Rows 1–4 can start the moment M8b.2 merges; 5–9 have no dependency on each other either — the order
 is priority, not sequencing. Every PR: before/after PNG + GIF in the body, presentation-only diff,
 tests unchanged and green except where §4 names a class-coupled assertion (`slide-canvas-dock`,
-`thumbnail-rail`, `status-bar-meter`), and no `dark:` variant or palette colour left in its files.
+`thumbnail-rail`, `status-bar-meter`), and the script's per-file `legacy`, `dark:` and arbitrary
+columns at 0 for the files touched — `dark:` is counted on every utility-shaped token, classified or
+not, so a `dark:bg-surface-raised` is seen the moment it is written (§10).
 
 ---
 
@@ -841,6 +851,10 @@ One-line palette swaps that should not wait for M8b.2, grouped as **M8b.1a** in 
 | `PropertyPanel.tsx:170` | `text-chrome-muted/80` | 3.70 / 4.31 | drop `/80` | 5.68 / 5.88 |
 
 Each is one token in one class string; the `status-bar-meter` test matches `/amber/` and stays green.
+`--contrast` is a calculator over the pair specs written in the script, not a source scanner, so it
+cannot confirm the fix on its own: the M8b.1a PR updates the six affected `CURRENT_PAIRS` specs so
+the table records the new state (25 → 21 failing — the two hover rows are `state` kind and are
+never counted).
 Not one-liners, already owned: the `PresentSurface` remount (M8b.0 F2 → §7 row 9), the modal focus
 trap (M8b.0 H3 → `Dialog` primitive in M8b.2), Settings arrow keys (M8b.0 #10 → §7 row 4).
 
@@ -850,11 +864,39 @@ trap (M8b.0 H3 → `Dialog` primitive in M8b.2), Settings arrow keys (M8b.0 #10 
 `--color-*` token that `theme.css` does not declare, across every declared namespace, through variants
 and alpha suffixes. It does **not** see: palette colours (`bg-red-500` is a valid Tailwind colour),
 raw literals (`rgba(…)`, `#hex`) in class strings or `style` props, arbitrary values (`text-[13px]`,
-`w-[188px]`), `dark:` variants on role tokens, or the legacy tokens once they are meant to be gone.
-M8b.4's guard adds those five checks plus a sixth — the spellings the `--*: initial` resets cannot
-remove: numeric `leading-N`, `duration-N`, `z-N`, `ease-linear` — over `src/renderer/src/**/*.tsx`,
-with an explicit allow-list (`-mb-px`; `max-w-[90vw]`-style viewport clamps on dialogs; the `slide://`
-URL strings that contain `#`), and must red under each of six mutations: reintroduce `text-[13px]`,
-`bg-red-500`, a raw `rgba()` shadow, `dark:bg-ink-alt` on a migrated file, `bg-chrome` after the
-legacy block is deleted, and `leading-4`. `scripts/design-inventory.mjs`'s classifier is the starting point — it already separates
+`w-[188px]`) and alpha suffixes on role tokens (`bg-accent/10` — rule R3 permits only `hud-fg/70`),
+`dark:` variants on role tokens, or the 12 retired tokens once they are meant to be gone (never
+`accent` / `accent-soft`, which are canonical). M8b.4's guard adds those five checks plus a sixth —
+the spellings the `--*: initial` resets cannot remove: numeric `leading-N`, `duration-N`, `z-N`,
+`ease-linear` — over `src/renderer/src/**/*.tsx`, with an explicit allow-list (`-mb-px`;
+`max-w-[90vw]`-style viewport clamps on dialogs; the `slide://` URL strings that contain `#`), and
+must red under each of seven mutations: reintroduce `text-[13px]`, `bg-red-500`, a raw `rgba()`
+shadow, `dark:bg-ink-alt` on a migrated file, `bg-chrome` after the retired block is deleted,
+`leading-4`, and `bg-accent/10`. `scripts/design-inventory.mjs`'s classifier is the starting point — it already separates
 colour, arbitrary and palette spellings with citations.
+
+## 10. Every gate this document prescribes, and the mutation that reds it
+
+Round 2 found two gates that could not see their subject. This table is the sweep that follows: each
+check the document or the roadmap asks someone to run, what it is run with, the mutation that must
+make it fail, and whether that can be done today on `main`.
+
+| Gate | Who runs it | Runs with | Mutation that must red it | Runnable today |
+| --- | --- | --- | --- | --- |
+| Declared-token guard (a colour utility names an undeclared `--color-*`) | every PR | `tests/unit/design/theme-tokens.test.ts` | `bg-ink` → `bg-ink-bg` | yes (PR #47's mutation) |
+| Retired-token clause (a reference outlives its declaration) | M8b.2 adds; every later PR | same test, policed namespaces = declared ∪ `{shell, chrome, ink, canvas}` | delete the 12 declarations, renderer untouched → reds at 324 sites | yes — built and run in review round 2 |
+| Namespace assertion (a typo in a new token name) | M8b.2 | `theme-tokens.test.ts:76` | declare `--color-surfce` | yes |
+| Per-PR presentation gate: `legacy` 0, `dark:` 0, arbitrary 0 for touched files | each of the nine M8b.3 PRs | `node scripts/design-inventory.mjs`, per-file table | append `dark:bg-surface-raised` to a class string → that file's `dark:` +1 and the global `dark:` 180 → 181, **before** `surface` is declared (variants are counted raw); declare `--color-surface-raised` → the same utility also appears in the colour table (namespaces are read from `theme.css`) | yes — both halves run in this PR's verification (DesignNotice.tsx: `dark:` 0 → 3, global 180 → 183) |
+| Last-PR survivor gate (a): `Totals: … legacy 0` | last M8b.3 PR | same script | migrate one `bg-chrome` → total 324 → 323 (so a survivor is one row, not zero) | yes |
+| Last-PR survivor gate (b) | last M8b.3 PR | retired-token clause | as above | after M8b.2 |
+| Contrast census, 63 pairs at 0 failures | M8b.2 definition of done | `--proposed` | set `--color-text-muted` light to `oklch(0.700 0.006 286)` → rows 9–14 `**fail light**`; set `hud-strong` alpha to 0.10 → row 33 fails | yes (both run in round 2) |
+| Declared values land verbatim | M8b.2 | byte-compare `theme.css` role block to `PROPOSED_LIGHT` / `PROPOSED_DARK` | change one digit | yes |
+| Reachability (every token names a utility) | M8b.2 | `compile().build()` probe (§5.7) | remove `@utility z-dialog` → `z-dialog` MISSING | yes |
+| M8b.1a one-liners | M8b.1a | not the script — `--contrast` computes pair specs, not source; the PR updates the six specs (25 → 21 failing) and the existing `status-bar-meter` test covers the class substring | revert one swap and the spec → the row fails again | yes |
+| M8b.4 six checks | M8b.4 onward | the new test | seven mutations listed in §9 | after M8b.4 |
+| Focus ring on every primitive | M8b.2 | RTL test per primitive: `:focus-visible` computed `outline-color` equals `--color-focus` | remove the class from one primitive | after M8b.2 |
+| No behaviour change in a surface PR | each M8b.3 PR | existing suite, unchanged | — (the suite is the guard; a PR that must edit a test names the mutation) | yes |
+
+What the sweep does **not** claim: the script cannot tell a role token from a typo it has never seen
+(`bg-surfce` is unclassified, not flagged) — that is the declared-token guard's job, which is why the
+per-PR gate is the script **and** the test together.
