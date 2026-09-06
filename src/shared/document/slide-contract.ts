@@ -428,7 +428,13 @@ export function validateSlideContract(
 
   // --- SL-S03: no web fonts -------------------------------------------------------------------
   if (cssPacked.includes('@font-face')) {
-    issues.push(issue('SL-S03', 'error', '@font-face is forbidden; use the system font stack only'))
+    issues.push(
+      issue(
+        'SL-S03',
+        'error',
+        '@font-face is forbidden; name an installed face or use the system font stack',
+      ),
+    )
   }
 
   // --- SL-S04/S05: no network / storage / eval APIs -------------------------------------------

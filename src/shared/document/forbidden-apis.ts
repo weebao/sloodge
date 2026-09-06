@@ -32,8 +32,9 @@
  * by a merge. Nothing noticed. Measured in that state: `pnpm typecheck` exits 0, 188 test files
  * pass, `PRELOAD_BUNDLE_REQUIRED=1` gives 20/20. So the invariant is checked, not kept by review:
  * the `SL-S04 scan` block in `tests/unit/preload/preload-bundle-deps.test.ts` fails if
- * `slide-contract.ts` declares any of the three names under any spelling, takes one from anywhere
- * but here, or `export *`s from anywhere but here.
+ * `slide-contract.ts` declares any of the three names at module scope under any spelling, names
+ * one anywhere else but its single SL-S04 call, takes one from anywhere but here, or `export *`s
+ * from anywhere but here.
  *
  * The shape it holds `slide-contract.ts` to: import from `'./forbidden-apis'` every name it calls
  * itself — `export … from` binds nothing — and re-export all three, so importers written against
