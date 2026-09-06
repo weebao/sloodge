@@ -295,6 +295,14 @@ export function escapeAndNeutralizeText(text: string): string {
  * committing it unchanged returns `null` and no byte moves. That, not "escape what you are given", is
  * the invariant a reader of the field can rely on.
  *
+ * It holds through a real control, not only in the model, because `sanitizeEditedText` runs on
+ * **both** sides of the comparison. A `contenteditable` and a `<textarea>` both hand back an API
+ * value the browser has already normalized — CR and CRLF folded to LF, and the same fate for
+ * controls and lone surrogates — so `a\r\nb` in source reads back `a\nb`; comparing that against
+ * the raw `textContent` would call every CRLF element edited on an untouched commit. Folding the
+ * source side identically is what makes the normalization invisible (round-2 review, verified in
+ * Chromium).
+ *
  * `null` also for an element that is not `textOnly` — there is no text-node span to write into.
  */
 export function textContentOp(element: ElementSpan, rawText: string): SourceOp | null {

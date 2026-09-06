@@ -287,7 +287,9 @@ function PropertyFields({
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<FieldElement>): void => {
       // Enter commits in every field; Shift+Enter is the Content textarea's newline (see `field`).
-      if (event.key !== 'Enter' || event.shiftKey) return
+      // Enter during IME composition accepts the candidate and must never commit — the same gate
+      // as the chat composer's, the only other Enter-commits textarea in the app (round-2 review).
+      if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
       event.preventDefault()
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
       event.currentTarget.blur()
@@ -318,7 +320,21 @@ function PropertyFields({
     const disabledHint = disabled
       ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
       : undefined
-    const className = `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`
+    // One prop set for both controls, so the disabled state and its hint cannot drift between
+    // the textarea and the inputs; only the control-specific props differ below.
+    const common = {
+      name,
+      'aria-label': FIELD_LABELS[name],
+      'data-testid': `prop-${name}`,
+      value: draft[name],
+      disabled,
+      placeholder: disabled ? 'mixed content' : '',
+      title: disabledHint,
+      onChange: handleChange,
+      onBlur: handleBlur,
+      onKeyDown: handleKeyDown,
+      className: `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`,
+    }
     return (
       <label
         className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
@@ -333,31 +349,12 @@ function PropertyFields({
           // through the control the user touches, not only in the model. One row tall for the
           // single-line case, growing with the content to a few lines.
           <textarea
-            name={name}
-            aria-label={FIELD_LABELS[name]}
-            data-testid={`prop-${name}`}
-            value={draft[name]}
-            disabled={disabled}
-            placeholder={disabled ? 'mixed content' : ''}
-            title={disabledHint}
+            {...common}
             rows={1}
-            onChange={handleChange}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            className={`${className} field-sizing-content max-h-20 resize-none`}
+            className={`${common.className} field-sizing-content max-h-20 resize-none`}
           />
         ) : (
-          <input
-            name={name}
-            aria-label={FIELD_LABELS[name]}
-            data-testid={`prop-${name}`}
-            value={draft[name]}
-            inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
-            onChange={handleChange}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            className={className}
-          />
+          <input {...common} inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined} />
         )}
       </label>
     )
