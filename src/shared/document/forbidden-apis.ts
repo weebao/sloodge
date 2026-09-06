@@ -79,14 +79,19 @@
  *
  * ## Re-execute this against the real head; do not trust the run below
  *
- * Last executed 2026-09-04 against M3.11 `0a64c87`. `git rebase --onto 0a64c87 4d06206` over
- * M3.10's **seven** commits gave **four** conflicts — `slide-contract.ts` on commits 1 and 3, the
- * roadmap on commits 6 and 7 — and applying the end state afterwards gave typecheck 0, 4,511 passed
- * / 1 todo, build 0, a preload requiring exactly `electron`, and 22/22 unskipped.
+ * Last executed 2026-09-06 against `main` at `6c24af3`, with M3.11 merged. `git rebase --onto
+ * 6c24af3 4d06206` over M3.10's **eight** commits gave **four** conflicts — `slide-contract.ts` on
+ * commits 1 and 3, the roadmap on commits 6 and 7 — and that is the merge this file now sits on.
+ * One detail the earlier run under-described: the roadmap conflict on commit 7 is not purely a
+ * number collision, because round 5 also *rewrote* the SL-S04 row it collides on, so the incoming
+ * row's text wins there rather than the one already renumbered by commit 6.
  *
- * That same run is where the paragraph above gets its numbers. Stopping at "every conflict
- * resolved" left both of M3.11's copies standing in `slide-contract.ts`, and the `SL-S04 scan`
- * block failed there naming both — including in the variant where `tsc` reports nothing at all.
+ * The same run measured "every conflict resolved" once more. It was the loud variant this time —
+ * the import line auto-merged to name `findForbiddenApiTokens` beside M3.11's local one, TS2440 —
+ * and the `SL-S04 scan` block failed there naming both copies. The 2026-09-04 run against `0a64c87`
+ * met the silent variant of the same state, where `tsc` reports nothing at all and the block was
+ * the only red in 4,512 tests; which variant a rebase lands in depends on how the third conflict
+ * resolves, and the block reds in both.
  *
  * **The conflict list is the one thing here with no shelf life.** The same rebase one head earlier,
  * against `9c6db42`, produced a *third* `slide-contract.ts` conflict, on a commit that applied clean

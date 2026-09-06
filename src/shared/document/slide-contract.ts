@@ -63,7 +63,7 @@
  * keeps a slipped-through slide from reaching the network.
  */
 
-import { FORBIDDEN_API_TOKENS, findForbiddenApiTokens } from './forbidden-apis'
+import { FORBIDDEN_API_TOKENS, findForbiddenApiTokens, packForApiScan } from './forbidden-apis'
 import { parse } from 'parse5'
 import type { DefaultTreeAdapterTypes } from 'parse5'
 import {
@@ -92,57 +92,12 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
 
 /**
  * APIs forbidden by SL-S04 / SL-S05: the ones that open a socket, touch storage, or run string
- * code — none of which a self-contained, stateless, sandboxed slide may use. The list lives in its
- * own dependency-free module so a writer can consult it without pulling in parse5; see the note
- * there.
- *
- * **Re-exported because it is the single definition of the rule.** SL-S04 is a substring scan over
- * the whole slide source, so any *writer* of slide bytes — not just this validator — has to know the
- * token set to avoid emitting source the validator will then reject. `text-edit.ts` builds its
- * neutralization corpus from this array rather than restating it, so a token added here is
- * automatically covered there (and its tests fail if it is not).
- *
- * **Re-exported, together with the scan below, because a second module has to satisfy this rule and
- * must not restate it.** PPTX import (M4.5) rewrites imported *prose* so it cannot trip this scan —
- * a deck about JavaScript legitimately contains the words `fetch(` and `localStorage` — and its
- * first implementation re-derived both the list and the normalisation by hand. It got the
- * normalisation subtly wrong for the one multi-word token (`new Function(`), so `newFunction(`
- * matched here and was missed there, and the whole import died. Same failure mode `sanitize.ts`
- * documents for `hasXmlIllegalChars`: a duplicated predicate drifts narrower than the rule it
- * mirrors, and the drift is invisible until someone types the spelling nobody tested.
+ * code — none of which a self-contained, stateless, sandboxed slide may use. The list, the packing
+ * it is matched under and the scan itself live in a dependency-free module so a writer can consult
+ * them without pulling in parse5; see the note there. Re-exported so this file stays the place a
+ * validator's caller looks for its rule.
  */
-export { FORBIDDEN_API_TOKENS }
-
-/**
- * The normalization SL-S04 scans under: whitespace removed, lowercased.
- *
- * Both halves matter and both are deliberately aggressive. Lowercasing means `LOCALSTORAGE` is
- * caught; removing **all** whitespace means `fetch (url)` and even `f e t c h (` are caught, because
- * JS does not care about the spaces. That aggression is why a *writer* of slide source cannot simply
- * check `source.includes(token)` — it has to pack first, which is why this is exported rather than
- * inlined at its one original call site.
- *
- * This is the single definition of "the same token" for the rule. It is applied to both sides —
- * the slide source and the token — which is what makes `new Function(`, `newFunction(`,
- * `new\tFunction(` and `N E W F U N C T I O N (` one and the same match. Any consumer that has to
- * agree with this scan must call this function rather than reimplement it.
- */
-export function packForApiScan(text: string): string {
-  return text.replace(/\s+/g, '').toLowerCase()
-}
-
-/**
- * Every SL-S04 forbidden token present in `source`, in `FORBIDDEN_API_TOKENS` order. Empty means the
- * source passes the forbidden-API half of the rule.
- *
- * This is the whole of SL-S04's decision procedure, factored out so the validator and the Design Mode
- * text-edit writer run **literally the same code** over the same token list. A writer that wants to
- * prove it did not introduce a violation compares this function's result before and after its patch.
- */
-export function findForbiddenApiTokens(source: string): readonly string[] {
-  const packed = packForApiScan(source)
-  return FORBIDDEN_API_TOKENS.filter((token) => packed.includes(packForApiScan(token)))
-}
+export { FORBIDDEN_API_TOKENS, packForApiScan, findForbiddenApiTokens } from './forbidden-apis'
 
 /**
  * A whitespace-tolerant matcher for one forbidden token, built from the token's **packed** form.
