@@ -509,6 +509,22 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     expect(html).toContain('rotate(90deg)')
   })
 
+  it('refreshes the selection box after a rotated resize, so the next gesture starts from it', () => {
+    seed(ROTATED)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    drag(screen.getByTestId('design-handle-e'), { x: 300, y: 150 }, { x: 300, y: 190 })
+    const selection = useDesignStore.getState().selection!
+    // The unrotated box is what the gesture produced (drag.test.ts); the rendered rect is that box
+    // turned 90° about its centre (200, 170): width and height swap. Mutation guard: writing only
+    // `rect` (the M3.5 path) leaves `box` at the pre-resize {100, 100, 200, 100}.
+    expect(selection.box).toEqual({ x: 80, y: 120, width: 240, height: 100 })
+    expect(selection.rect.x).toBeCloseTo(150)
+    expect(selection.rect.y).toBeCloseTo(50)
+    expect(selection.rect.width).toBeCloseTo(100)
+    expect(selection.rect.height).toBeCloseTo(240)
+    expect(screen.getByTestId('design-selection').textContent).toContain('240 × 100')
+  })
+
   it('a rotated resize is one undo step that restores the source byte-exact', () => {
     seed(ROTATED)
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)

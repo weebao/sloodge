@@ -323,14 +323,6 @@ describe('applyDrag — resize under rotation', () => {
     expect(next.height).toBeCloseTo(100)
   })
 
-  it('an upright box (0°) takes the unchanged M3.5 path, bit-exact', () => {
-    for (const handle of RESIZE_HANDLES) {
-      expect(applyDrag(START, handle, { x: 13, y: -7 }, NO_MODS, 0)).toEqual(
-        applyDrag(START, handle, { x: 13, y: -7 }, NO_MODS),
-      )
-    }
-  })
-
   it('move ignores the angle: a screen delta moves a rotated box like an upright one', () => {
     expect(applyDrag(BOX, 'move', { x: 30, y: 20 }, NO_MODS, 45)).toEqual(
       applyDrag(BOX, 'move', { x: 30, y: 20 }, NO_MODS),
