@@ -443,6 +443,8 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     '<div style="position:absolute;left:100px;top:100px;width:200px;height:100px;transform: rotate(90deg)">A</div>'
   const LOCKED =
     '<div style="position:absolute;left:100px;top:100px;width:200px;height:100px;transform: matrix(1, 0, 0, 1, 0, 0)">A</div>'
+  const LOCKED_IN_FLOW =
+    '<div style="width:200px;height:100px;transform: matrix(1, 0, 0, 1, 0, 0)">A</div>'
   let slideId: string
 
   /** Install `html` as the deck's only slide with a clean (empty) undo stack, and select its div. */
@@ -534,22 +536,54 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(ROTATED)
   })
 
-  it('an opaque transform locks every handle and says why', () => {
+  it('an opaque transform hides the grips and the rotation handle and says why', () => {
     seed(LOCKED)
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
     const lock = screen.getByTestId('design-transform-lock')
     expect(lock.textContent).toContain('matrix(1, 0, 0, 1, 0, 0)')
     expect(screen.queryByTestId('design-handle-e')).toBeNull()
     expect(screen.queryByTestId('design-handle-rotate')).toBeNull()
-    expect(screen.getByTestId('design-selection').style.cursor).toBe('default')
   })
 
-  it('a locked element cannot be moved by dragging its body: no command, source unchanged', () => {
+  it('…but a left/top-positioned element still moves: one command, transform byte-identical', () => {
+    // Round-1 major 1: a move on such an element writes `left`/`top` and never touches the transform,
+    // so locking it was a regression against main. Mutation guard: locking move whenever the
+    // transform is opaque reds here (undo depth 0).
     seed(LOCKED)
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.getByTestId('design-selection').style.cursor).toBe('move')
+    drag(screen.getByTestId('design-selection'), { x: 150, y: 150 }, { x: 200, y: 180 })
+    expect(undoDepth()).toBe(1)
+    const html = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(html).toContain('left: 150px')
+    expect(html).toContain('top: 130px')
+    expect(html).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+  })
+
+  it('an in-flow locked element cannot be moved: a move there goes through the transform', () => {
+    seed(LOCKED_IN_FLOW)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.getByTestId('design-selection').style.cursor).toBe('default')
     drag(screen.getByTestId('design-selection'), { x: 150, y: 150 }, { x: 200, y: 180 })
     expect(undoDepth()).toBe(0)
-    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED_IN_FLOW)
+  })
+
+  it('a MOVE of a rotated element refreshes rect as the rotated bounds of the moved box', () => {
+    // Round-1 major 3: the move path captured the angle too, but nothing pinned it. Box moves by
+    // (+50, +30) to {150, 130, 200, 100}; its 90° bounds are 100×200 about the new centre (250, 180),
+    // i.e. {200, 80, 100, 200}. Mutation guard: `dragAngleRef.current = 0` in `onBodyPointerDown`
+    // leaves rect === box.
+    seed(ROTATED)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    drag(screen.getByTestId('design-selection'), { x: 200, y: 150 }, { x: 250, y: 180 })
+    expect(undoDepth()).toBe(1)
+    const selection = useDesignStore.getState().selection!
+    expect(selection.box).toEqual({ x: 150, y: 130, width: 200, height: 100 })
+    expect(selection.rect.x).toBeCloseTo(200)
+    expect(selection.rect.y).toBeCloseTo(80)
+    expect(selection.rect.width).toBeCloseTo(100)
+    expect(selection.rect.height).toBeCloseTo(200)
   })
 
   it('an editable element shows no lock', () => {

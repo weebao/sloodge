@@ -102,6 +102,16 @@ describe('inspectTransform — editable shapes', () => {
     expect(parts('rotate(45)').rotate).toBe(45)
     expect(parts('rotate(22.5deg)').rotate).toBe(22.5)
   })
+
+  it('legal CSS number and unit spellings are editable: sign, exponent, uppercase unit, NONE', () => {
+    // Round-1 minor: each of these used to be opaque, which cost the element every handle.
+    expect(parts('rotate(45DEG)').rotate).toBe(45)
+    expect(parts('rotate(+45deg)').rotate).toBe(45)
+    expect(parts('rotate(1e2deg)').rotate).toBe(100)
+    expect(parts('scale(+2)').scale).toEqual({ sx: 2, sy: 2 })
+    expect(parts('scale(1e2)').scale).toEqual({ sx: 100, sy: 100 })
+    expect(parts('NONE')).toEqual({ translate: null, rotate: 0, scale: { sx: 1, sy: 1 } })
+  })
 })
 
 describe('inspectTransform — opaque shapes are refused with a reason, never reordered', () => {
@@ -147,6 +157,14 @@ describe('inspectTransform — opaque shapes are refused with a reason, never re
 
   it('a translate with more than two lengths is opaque', () => {
     expect(inspectTransform('translate(1px, 2px, 3px)').editable).toBe(false)
+  })
+
+  it('a function name that is an Object.prototype key is opaque, not silently deleted', () => {
+    // Round-1 minor: `constructor(1)` resolved through the prototype, read as editable identity, and
+    // `composeTransform` then removed the declaration. Mutation guard: a plain object literal for
+    // `FAMILY_OF` reds here.
+    expect(inspectTransform('constructor(1)').editable).toBe(false)
+    expect(inspectTransform('toString(1)').editable).toBe(false)
   })
 })
 
@@ -268,6 +286,12 @@ describe('withTranslateOffset', () => {
     )
     expect(composeTransform(withTranslateOffset(parts('translate(0, 0)'), 1, 2)!)).toBe(
       'translate(1px, 2px)',
+    )
+  })
+
+  it('an uppercase px unit is px', () => {
+    expect(composeTransform(withTranslateOffset(parts('translate(10PX, 0)'), 16, 16)!)).toBe(
+      'translate(26px, 16px)',
     )
   })
 

@@ -152,6 +152,21 @@ describe('rotatedBounds', () => {
     expect(bounds.height).toBeCloseTo(200)
   })
 
+  it('an obtuse angle still yields positive bounds about the same centre (hand-computed)', () => {
+    // 200×100 at 120°: width = 200·|cos 120°| + 100·|sin 120°| = 100 + 86.603 = 186.603; height =
+    // 200·|sin 120°| + 100·|cos 120°| = 173.205 + 50 = 223.205. Mutation guard: without the absolute
+    // values the width comes out as 200·(−0.5) + 86.6 = −13.4 (round-1 major 3).
+    const bounds = rotatedBounds({ x: 100, y: 100, width: 200, height: 100 }, 120)
+    expect(bounds.width).toBeCloseTo(186.603, 3)
+    expect(bounds.height).toBeCloseTo(223.205, 3)
+    expect(bounds.x + bounds.width / 2).toBeCloseTo(200)
+    expect(bounds.y + bounds.height / 2).toBeCloseTo(150)
+    // Third quadrant, both cos and sin negative: 200·0.866 + 100·0.5 = 223.205 wide.
+    const third = rotatedBounds({ x: 0, y: 0, width: 200, height: 100 }, 210)
+    expect(third.width).toBeCloseTo(223.205, 3)
+    expect(third.height).toBeCloseTo(186.603, 3)
+  })
+
   it('a square at 45° grows by √2 on both axes, centre fixed', () => {
     const bounds = rotatedBounds({ x: 0, y: 0, width: 100, height: 100 }, 45)
     expect(bounds.width).toBeCloseTo(100 * Math.SQRT2)
