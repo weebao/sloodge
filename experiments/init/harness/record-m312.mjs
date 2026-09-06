@@ -2,7 +2,9 @@
  * M3.12 evidence recorder: drives the property panel's Content field against a built renderer and
  * films the entity round trip — type `Revenue & Growth <2026>`, commit, read the field back, commit
  * again unchanged. On the unfixed build the field reads back `Revenue &amp; Growth &lt;2026&gt;` and
- * the second commit puts the entities on the slide; on the fixed build both are no-ops.
+ * the second commit puts the entities on the slide; on the fixed build both are no-ops. A last step
+ * adds a second line with Shift+Enter (the round-2 textarea; on the unfixed build's `<input>` the
+ * chord is inert and the still shows one line).
  *
  * Usage: node record-m312.mjs <rendererDir> <label> <outBase>
  *   rendererDir  an `out/renderer` directory (main's for "before", the branch's for "after")
@@ -119,6 +121,17 @@ const slideText = await page.frames().find((f) => f.url().startsWith('blob:') &&
 log.push(`slide h1 textContent = ${JSON.stringify(slideText)}`)
 const undo = await page.evaluate(() => document.querySelector('[data-testid="prop-text"]') !== null)
 log.push(`panel present = ${String(undo)}`)
+
+// 4. The field is a textarea (round 2): Shift+Enter breaks a line, Enter commits, and the field grows
+//    with its content — so the still shows the shipped control holding two lines.
+await page.getByTestId('prop-text').click()
+await page.keyboard.press('End')
+await page.keyboard.press('Shift+Enter')
+await page.keyboard.type('second line, kept', { delay: 40 })
+await sleep(500)
+await page.keyboard.press('Enter')
+await sleep(1200)
+await readField('after a two-line commit')
 
 await page.screenshot({ path: `${OUT_BASE}.png` })
 await sleep(500)
