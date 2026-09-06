@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * Design inventory for the renderer (M8b.1). Prints Markdown to stdout.
+ * Design inventory and gates for the renderer (M8b.1). Prints Markdown to stdout.
  *
- * Three sections, each reproducible from source so every number in
- * `.claude/plans/init/research/ui-design-audit.md` can be checked:
+ * Every number in `.claude/plans/init/research/ui-design-audit.md` is reproducible from source:
  *
- *   node scripts/design-inventory.mjs            # utility + literal inventory, with file:line
- *   node scripts/design-inventory.mjs --contrast # WCAG ratios for every fg/bg pair the app renders
- *   node scripts/design-inventory.mjs --proposed # the same check over the canonical token set
+ *   node scripts/design-inventory.mjs               # utility + literal inventory, with file:line
+ *   node scripts/design-inventory.mjs --contrast    # WCAG ratios for every fg/bg pair the app renders
+ *   node scripts/design-inventory.mjs --proposed    # the same check over the canonical token set (exit 1 on a failing pair)
+ *   node scripts/design-inventory.mjs --emit-theme  # the canonical @theme block M8b.2 pastes into theme.css
+ *   node scripts/design-inventory.mjs --check [--final] [file …]
+ *       # the gates (audit §10): no unknown colour utility or var(--color-*) consumer anywhere; the
+ *       # named files at 0 legacy / dark: / arbitrary / palette / alpha / unknown; once the role
+ *       # block has landed, theme.css byte-equal to the canonical values, the 63-pair census over
+ *       # the values theme.css actually declares, and a Tailwind compile in which every prescribed
+ *       # utility emits and every reset-killed spelling does not. --final also requires legacy 0.
+ *       # Exit 1 on any failure, 2 on an unknown flag.
  *
  * Utilities are read from `.tsx` string literals only: the `.ts` files hold no chrome, and their
  * strings (`'transition'`, `'border-color'`) would otherwise read as classes. Raw colour and px
@@ -15,7 +22,7 @@
  * a class (`w-[188px]` in ThumbnailPreview's header) is not counted as a use.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { dirname, join, relative, resolve as resolvePath } from 'node:path'
 
 const ROOT = process.cwd()
 const RENDERER = join(ROOT, 'src', 'renderer', 'src')
@@ -95,26 +102,33 @@ const RETIRED = new RegExp(`-(?:${RETIRED_TOKENS.join('|')})(?:/\\d+)?$`)
 
 const alt = (names) => names.map((n) => `|${n}`).join('')
 
-const COLOUR_NAMESPACES = [
-  ...new Set([
-    ...themeNames('color').map((n) => n.split('-')[0]),
-    ...RETIRED_TOKENS.map((n) => n.split('-')[0]),
-  ]),
-]
-const TOKEN_NS = `(?:${COLOUR_NAMESPACES.join('|')})(?:-[a-z]+)*`
-const PALETTE = '(?:white|black|transparent|current|inherit|[a-z]+-\\d{2,3})'
-const COLOUR_VALUE = `(?:${TOKEN_NS}|${PALETTE})(?:/\\d+)?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
+/**
+ * Colour token names the classifier accepts: what theme.css declares plus the 12 retired names.
+ * Matched exactly (longest first), not by namespace — so `bg-surface-rased` and `bg-surfce` are
+ * both *unknown*, never silently accepted as a colour.
+ */
+const TOKEN_NAMES = [...new Set([...themeNames('color'), ...RETIRED_TOKENS])].toSorted(
+  (a, b) => b.length - a.length,
+)
+const TOKEN_NAME = `(?:${TOKEN_NAMES.join('|')})`
+const PALETTE_NAME = '(?:white|black|[a-z]+-\\d{2,3})'
+const SPECIAL_NAME = '(?:transparent|current|inherit)'
+const COLOUR_PREFIX =
+  '(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|decoration|from|to|via|divide|shadow)'
+const COLOUR_VALUE = `(?:${TOKEN_NAME}|${PALETTE_NAME}|${SPECIAL_NAME})(?:/\\d+)?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
+/** Looks like a colour utility (a colour prefix, a dashed name, an optional alpha) — classified or not. */
+const COLOUR_SHAPED = new RegExp(`^${COLOUR_PREFIX}-[a-z][a-z0-9-]*(?:/\\d+)?$`)
+const PALETTE_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${PALETTE_NAME}(?:/\\d+)?$`)
+const ALPHA_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${TOKEN_NAME}/\\d+$`)
+/** Rule R3: the one alpha the canonical set permits. */
+const ALPHA_ALLOWED = /^text-hud-fg\/70$/
+const ARBITRARY_UTILITY = /^-?[a-z][a-z0-9-]*-\[[^\]]+\]$/
 const SPACING_NAMES = alt(themeNames('spacing'))
 const ARBITRARY = '\\[[^\\]]+\\]'
 
 /** Ordered: the first matching category wins, so colour outranks the width/style fallbacks. */
 const CATEGORIES = [
-  [
-    'colour',
-    new RegExp(
-      `^(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|decoration|from|to|via|divide|shadow)-(${COLOUR_VALUE})$`,
-    ),
-  ],
+  ['colour', new RegExp(`^${COLOUR_PREFIX}-(${COLOUR_VALUE})$`)],
   ['border-style', /^(?:border|outline)-(?:solid|dashed|dotted|double|none|hidden)$/],
   [
     'spacing',
@@ -168,7 +182,7 @@ const CATEGORIES = [
   ],
   [
     'border-width',
-    /^(?:border|outline|ring|ring-offset|divide-[xy])(?:-[tbrlxyse])?(?:-(?:0|1|2|4|8|px|\[[^\]]+\]))?$/,
+    /^(?:border|outline|ring|ring-offset|outline-offset|divide-[xy])(?:-[tbrlxyse])?(?:-(?:0|1|2|4|8|px|\[[^\]]+\]))?$/,
   ],
   [
     'motion',
@@ -208,7 +222,25 @@ function classify(raw) {
 // Inventory
 // ---------------------------------------------------------------------------------------------
 
-function inventory() {
+const emptyCounts = () => ({
+  total: 0,
+  colour: 0,
+  legacy: 0,
+  dark: 0,
+  arbitrary: 0,
+  palette: 0,
+  alpha: 0,
+  unknown: 0,
+})
+
+/**
+ * One pass over the renderer. Utilities come from `.tsx`; `var(--color-*)` consumers from every
+ * file including `theme.css` itself, because the `body` rule there is a consumer no utility scan
+ * can see. The six gate columns (`legacy`, `dark:`, `arbitrary`, `palette`, `alpha`, `unknown`) are
+ * counted on every utility-shaped token *before* classification, so a token the classifier does
+ * not know still moves the column — the classifier decides categories, never whether a gate sees.
+ */
+function scan() {
   const files = walk(RENDERER)
   /** category → bare utility → [{ file, line, variants }] */
   const byCategory = new Map()
@@ -217,6 +249,9 @@ function inventory() {
   const literals = [] // { file, line, text }
   const pxLiterals = []
   const perFile = new Map()
+  const unknownSites = [] // { file, line, token }
+  const varRefs = [] // { file, line, name, legacy, unknown }
+  const known = new Set(TOKEN_NAMES)
 
   for (const file of files) {
     const source = stripComments(readFileSync(file, 'utf8'))
@@ -236,22 +271,43 @@ function inventory() {
           pxLiterals.push({ file, line, text: m[1] })
         }
       }
+      for (const m of text.matchAll(/var\(--color-([a-z0-9-]+)/g)) {
+        const name = m[1]
+        const legacy = RETIRED_TOKENS.includes(name)
+        const unknown = !known.has(name)
+        varRefs.push({ file, line, name, legacy, unknown })
+        const f = perFile.get(file) ?? emptyCounts()
+        perFile.set(file, f)
+        if (legacy) f.legacy += 1
+        if (unknown) {
+          f.unknown += 1
+          unknownSites.push({ file, line, token: `var(--color-${name})` })
+        }
+      }
       if (!isTsx) return
       // Split on everything that delimits a class inside a string or template literal — but not
       // on `:`, which joins a variant to its utility.
       for (const token of text.split(/[\s'"`{}$;=<>?]+/)) {
         if (token === '') continue
         const variants = VARIANT_PREFIX.exec(token)?.[1] ?? ''
-        const f = perFile.get(file) ?? { colour: 0, legacy: 0, arbitrary: 0, dark: 0, total: 0 }
+        const bare = token.slice(variants.length)
+        const f = perFile.get(file) ?? emptyCounts()
         perFile.set(file, f)
-        // Variants are counted on every utility-shaped token, classified or not: a `dark:` on a
-        // token this classifier does not know yet still moves the column the M8b.3 gate reads.
         for (const v of variants.split(':').filter(Boolean)) {
           variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
         }
         if (variants.includes('dark:')) f.dark += 1
+        if (ARBITRARY_UTILITY.test(bare)) f.arbitrary += 1
+        if (PALETTE_UTILITY.test(bare)) f.palette += 1
+        if (ALPHA_UTILITY.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
         const hit = classify(token)
-        if (hit === null) continue
+        if (hit === null) {
+          if (COLOUR_SHAPED.test(bare)) {
+            f.unknown += 1
+            unknownSites.push({ file, line, token })
+          }
+          continue
+        }
         const bucket = byCategory.get(hit.category) ?? new Map()
         byCategory.set(hit.category, bucket)
         const sites = bucket.get(hit.bare) ?? []
@@ -262,10 +318,30 @@ function inventory() {
           f.colour += 1
           if (RETIRED.test(hit.bare)) f.legacy += 1
         }
-        if (hit.bare.includes('[')) f.arbitrary += 1
       }
     })
   }
+  return { files, byCategory, variantCounts, literals, pxLiterals, perFile, unknownSites, varRefs }
+}
+
+const COLUMNS = ['colour', 'legacy', 'dark', 'arbitrary', 'palette', 'alpha', 'unknown']
+const totalsLine = (perFile) => {
+  const totals = Object.fromEntries(COLUMNS.map((k) => [k, 0]))
+  for (const f of perFile.values()) for (const k of COLUMNS) totals[k] += f[k]
+  return totals
+}
+const perFileRow = (file, f) =>
+  `| ${short(file)} | ${String(f.total)} | ${COLUMNS.map((k) => String(f[k])).join(' | ')} |`
+const PER_FILE_HEADER = [
+  '| file | utilities | colour | legacy | `dark:` | arbitrary | palette | alpha | unknown |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+]
+const formatTotals = (t) =>
+  `Totals: colour ${String(t.colour)}, legacy ${String(t.legacy)}, \`dark:\` ${String(t.dark)}, arbitrary ${String(t.arbitrary)}, palette ${String(t.palette)}, alpha ${String(t.alpha)}, unknown ${String(t.unknown)}.`
+
+function inventory() {
+  const { files, byCategory, variantCounts, literals, pxLiterals, perFile, unknownSites, varRefs } =
+    scan()
 
   print('# Design inventory (generated by `scripts/design-inventory.mjs`)')
   print()
@@ -327,25 +403,34 @@ function inventory() {
   for (const l of pxLiterals) print(`- \`${l.text}\` — ${short(l.file)}:${String(l.line)}`)
   print()
 
+  print('## var(--color-*) consumers')
+  print()
+  for (const r of varRefs) {
+    print(
+      `- \`var(--color-${r.name})\` — ${short(r.file)}:${String(r.line)}${r.legacy ? ' (retired)' : ''}${r.unknown ? ' (**undeclared**)' : ''}`,
+    )
+  }
+  print()
+  print('## unknown colour utilities')
+  print()
+  print(
+    unknownSites.length === 0
+      ? 'none — every colour-shaped utility names a declared token, a retired token, or a palette colour.'
+      : unknownSites.map((u) => `- \`${u.token}\` — ${short(u.file)}:${String(u.line)}`).join('\n'),
+  )
+  print()
   print('## per file')
   print()
   print(
-    'The `legacy` column counts colour utilities on the 12 retired tokens; `dark:` counts every `dark:` variant in the file, whether or not the utility is classified.',
+    'Gate columns, each counted on every utility-shaped token whether or not it is classified: `legacy` = the 12 retired tokens (utilities and `var()` consumers); `dark:` = any `dark:` variant; `arbitrary` = any `-[…]` value; `palette` = a Tailwind palette colour or bare `white`/`black`; `alpha` = an `/N` suffix on a token other than `hud-fg/70`; `unknown` = a colour-shaped utility or `var(--color-*)` that names nothing declared or retired.',
   )
   print()
-  print('| file | utilities | colour | legacy | `dark:` | arbitrary |')
-  print('| --- | --- | --- | --- | --- | --- |')
-  const totals = { colour: 0, legacy: 0, arbitrary: 0, dark: 0 }
+  for (const h of PER_FILE_HEADER) print(h)
   for (const [file, f] of [...perFile.entries()].toSorted((a, b) => b[1].total - a[1].total)) {
-    print(
-      `| ${short(file)} | ${String(f.total)} | ${String(f.colour)} | ${String(f.legacy)} | ${String(f.dark)} | ${String(f.arbitrary)} |`,
-    )
-    for (const k of Object.keys(totals)) totals[k] += f[k]
+    print(perFileRow(file, f))
   }
   print()
-  print(
-    `Totals: colour ${String(totals.colour)}, legacy ${String(totals.legacy)}, \`dark:\` ${String(totals.dark)}, arbitrary ${String(totals.arbitrary)}.`,
-  )
+  print(formatTotals(totalsLine(perFile)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -524,6 +609,7 @@ function contrastTable(title, pairs, resolveLight, resolveDark, describePair, la
       (worst.n === undefined ? '' : ` Worst: #${String(worst.n)} at ${worst.ratio.toFixed(2)}:1.`),
   )
   print()
+  return failures
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -936,7 +1022,6 @@ const PROPOSED_DARK = `
   --color-success-soft: oklch(0.266 0.065 152.9);
   --color-edit: oklch(0.707 0.165 254.6);
   --color-guide: oklch(0.777 0.152 181.9);
-  --color-hud-fg: oklch(1 0 0);
 `
 
 const q = (kind, fg, bg, sites) => p(kind, [fg, bg], [fg, bg], sites)
@@ -1043,7 +1128,7 @@ function proposedReport() {
     )
   }
   print()
-  contrastTable(
+  return contrastTable(
     'Proposed pairs',
     PROPOSED_PAIRS,
     makeResolver(light, new Map()),
@@ -1051,6 +1136,338 @@ function proposedReport() {
     (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
     'role',
   )
+}
+
+// ---------------------------------------------------------------------------------------------
+// The canonical theme block (audit §5.3) — `--emit-theme` prints it, `--check` verifies it landed
+// ---------------------------------------------------------------------------------------------
+
+const SCALE_THEME = `
+  /* Spacing — Tailwind's 4px base is the unit; these name the dimensions that recur. */
+  --spacing-control: 1.75rem;
+  --spacing-rail: 11.75rem;
+  --spacing-chat: 20rem;
+  --spacing-inspector: 16rem;
+
+  /* Radius — ceiling 8px; concentric: outer = inner + padding. */
+  --radius-*: initial;
+  --radius-control: 0.25rem;
+  --radius-panel: 0.375rem;
+  --radius-overlay: 0.5rem;
+
+  /* Elevation — ring + key; colours live in :root so dark can raise them. */
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --shadow-raised: 0 0 0 1px var(--shadow-ring), 0 1px 2px var(--shadow-key);
+  --shadow-floating: 0 0 0 1px var(--shadow-ring), 0 4px 12px var(--shadow-key);
+  --shadow-overlay: 0 0 0 1px var(--shadow-ring), 0 16px 40px var(--shadow-key);
+
+  /* Type — four sizes, line-heights on the 4px grid. */
+  --text-*: initial;
+  --text-caption: 11px;
+  --text-caption--line-height: calc(16 / 11);
+  --text-ui-sm: 12px;
+  --text-ui-sm--line-height: calc(16 / 12);
+  --text-ui: 13px;
+  --text-ui--line-height: calc(20 / 13);
+  --text-title: 15px;
+  --text-title--line-height: calc(20 / 15);
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-*: initial;
+  --tracking-caps: 0.04em;
+  --leading-*: initial;
+  --leading-none: 1;
+
+  /* Motion — instant in, eased out; ease-in ceases to exist. */
+  --ease-*: initial;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: var(--ease-out);
+  --animate-*: initial;
+  --animate-working: working 900ms var(--ease-in-out) infinite;
+  @keyframes working {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  /* Blur — the two HUDs. */
+  --blur-*: initial;
+  --blur-hud: 8px;
+`
+
+const ROOT_VARS = `
+  --shadow-ring: oklch(0 0 0 / 0.05);
+  --shadow-key: oklch(0 0 0 / 0.1);
+  --duration-instant: 0ms;
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+  --z-panel: 10;
+  --z-menu: 40;
+  --z-dialog: 50;
+  --z-present: 60;
+`
+
+const DARK_ROOT_EXTRA = `
+  --shadow-ring: oklch(0 0 0 / 0.55);
+  --shadow-key: oklch(0 0 0 / 0.5);
+`
+
+const UTILITY_BLOCK = ['instant', 'fast', 'base', 'slow']
+  .map((d) => `@utility duration-${d} {\n  transition-duration: var(--duration-${d});\n}`)
+  .concat(
+    ['panel', 'menu', 'dialog', 'present'].map(
+      (z) => `@utility z-${z} {\n  z-index: var(--z-${z});\n}`,
+    ),
+  )
+  .join('\n')
+
+function emitTheme() {
+  print(
+    '/* Canonical design tokens — generated by `node scripts/design-inventory.mjs --emit-theme`.',
+  )
+  print(
+    '   Role colours are declared once with their light value; dark redefines only what changes.',
+  )
+  print(
+    '   `static` so the whole block is emitted before any surface consumes a token (audit §5.7). */',
+  )
+  print('@theme static {')
+  print('  /* Colour roles — light */')
+  print(PROPOSED_LIGHT.trim().replace(/^/gm, '  '))
+  print(SCALE_THEME.trimEnd())
+  print('}')
+  print()
+  print(':root {')
+  print(ROOT_VARS.trim().replace(/^/gm, '  '))
+  print('}')
+  print()
+  print('@media (prefers-color-scheme: dark) {')
+  print('  :root {')
+  print(PROPOSED_DARK.trim().replace(/^/gm, '    '))
+  print(DARK_ROOT_EXTRA.trim().replace(/^/gm, '    '))
+  print('  }')
+  print('}')
+  print()
+  print(UTILITY_BLOCK)
+}
+
+/** Utilities the audit prescribes; every one must emit once the block has landed. */
+const REQUIRED_UTILITIES = [
+  ...[...declaredColourText(PROPOSED_LIGHT).keys()].map((n) => `bg-${n}`),
+  'text-on-fill',
+  'outline-focus',
+  'w-rail',
+  'w-chat',
+  'h-inspector',
+  'h-control',
+  'w-control',
+  'rounded-control',
+  'rounded-panel',
+  'rounded-overlay',
+  'shadow-raised',
+  'shadow-floating',
+  'shadow-overlay',
+  'text-caption',
+  'text-ui-sm',
+  'text-ui',
+  'text-title',
+  'font-medium',
+  'font-semibold',
+  'tracking-caps',
+  'leading-none',
+  'ease-out',
+  'ease-in-out',
+  'animate-working',
+  'backdrop-blur-hud',
+  'duration-instant',
+  'duration-fast',
+  'duration-base',
+  'duration-slow',
+  'z-panel',
+  'z-menu',
+  'z-dialog',
+  'z-present',
+]
+
+/** Default-scale spellings the `--*: initial` resets must have killed (audit §5.1 principle 5). */
+const FORBIDDEN_UTILITIES = [
+  'rounded',
+  'rounded-md',
+  'rounded-lg',
+  'shadow-md',
+  'shadow-xl',
+  'text-sm',
+  'text-lg',
+  'font-bold',
+  'tracking-wide',
+  'leading-tight',
+  'ease-in',
+  'animate-pulse',
+  'backdrop-blur',
+]
+
+const loadStylesheet = (path) => ({
+  path,
+  base: dirname(path),
+  content: readFileSync(path, 'utf8'),
+})
+
+/** Compiles theme.css through the installed Tailwind and reports which candidates emit a rule. */
+async function compileTheme(candidates) {
+  const { compile } = await import('tailwindcss')
+  const twRoot = join(ROOT, 'node_modules', 'tailwindcss')
+  const compiled = await compile(readFileSync(THEME, 'utf8'), {
+    base: dirname(THEME),
+    loadStylesheet: async (id, base) => {
+      if (id === 'tailwindcss') return loadStylesheet(join(twRoot, 'index.css'))
+      if (id.startsWith('tailwindcss/')) {
+        return loadStylesheet(join(twRoot, id.slice('tailwindcss/'.length)))
+      }
+      return loadStylesheet(resolvePath(base, id))
+    },
+  })
+  const css = compiled.build(candidates)
+  const emits = (c) =>
+    new RegExp(`\\.${c.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(?![\\w-])`).test(css)
+  return new Set(candidates.filter(emits))
+}
+
+/** Light declarations are everything before the dark media block; dark are everything after. */
+function themeColourBlocks() {
+  const css = readFileSync(THEME, 'utf8')
+  const cut = css.indexOf('@media (prefers-color-scheme: dark)')
+  const light = declaredColourText(cut === -1 ? css : css.slice(0, cut))
+  const dark = declaredColourText(cut === -1 ? '' : css.slice(cut))
+  return { light, dark }
+}
+
+async function check(args) {
+  const final = args.includes('--final')
+  const wanted = args.filter((a) => a !== '--final').map((a) => resolvePath(ROOT, a))
+  const failures = []
+  const fail = (msg) => failures.push(msg)
+
+  const { perFile, unknownSites, varRefs } = scan()
+  const totals = totalsLine(perFile)
+  print('# Design check (`scripts/design-inventory.mjs --check`)')
+  print()
+  print(formatTotals(totals))
+  print()
+  for (const u of unknownSites) {
+    fail(`unknown colour reference \`${u.token}\` at ${short(u.file)}:${String(u.line)}`)
+  }
+  const legacyVars = varRefs.filter((r) => r.legacy)
+  print(
+    `\`var(--color-*)\` consumers: ${String(varRefs.length)} (retired ${String(legacyVars.length)}, undeclared ${String(varRefs.filter((r) => r.unknown).length)}).`,
+  )
+  if (final && totals.legacy > 0) {
+    fail(
+      `--final: ${String(totals.legacy)} references to retired tokens remain (utilities and var() consumers)`,
+    )
+  }
+  if (wanted.length > 0) {
+    print()
+    print('Requested files (every gate column must be 0):')
+    print()
+    for (const h of PER_FILE_HEADER) print(h)
+    for (const file of wanted) {
+      const f = perFile.get(file) ?? emptyCounts()
+      print(perFileRow(file, f))
+      for (const k of COLUMNS) {
+        if (k !== 'colour' && f[k] > 0) fail(`${short(file)}: ${k} = ${String(f[k])}`)
+      }
+    }
+  }
+
+  // The role block: absent (pre-M8b.2), partial (a failure), or landed and byte-checked.
+  const wantLight = declaredColourText(PROPOSED_LIGHT)
+  const wantDark = declaredColourText(PROPOSED_DARK)
+  const { light, dark } = themeColourBlocks()
+  // `accent` and `accent-soft` pre-date the role block, so "landed" is judged on the other 25.
+  const newRoles = [...wantLight.keys()].filter((n) => n !== 'accent' && n !== 'accent-soft')
+  const landedCount = newRoles.filter((n) => light.has(n)).length
+  print()
+  if (landedCount === 0) {
+    print(
+      `Role block: not landed (0/${String(newRoles.length)} new role colours declared) — the theme-value, census and Tailwind gates apply after M8b.2.`,
+    )
+  } else {
+    if (landedCount < newRoles.length) {
+      fail(
+        `role block partial: ${String(landedCount)}/${String(newRoles.length)} new role colours declared`,
+      )
+    }
+    let mismatches = 0
+    for (const [name, want] of wantLight) {
+      const got = light.get(name)
+      if (got !== want) {
+        mismatches += 1
+        fail(
+          `light \`--color-${name}\`: theme.css has \`${got ?? '(missing)'}\`, canonical is \`${want}\``,
+        )
+      }
+    }
+    for (const [name, want] of wantDark) {
+      const got = dark.get(name)
+      if (got !== want) {
+        mismatches += 1
+        fail(
+          `dark \`--color-${name}\`: theme.css has \`${got ?? '(missing)'}\`, canonical is \`${want}\``,
+        )
+      }
+    }
+    print(
+      `Role block: landed — ${String(wantLight.size + wantDark.size - mismatches)}/${String(wantLight.size + wantDark.size)} declarations byte-equal to the canonical values.`,
+    )
+    // Census over what theme.css actually declares, not over the script's constants.
+    const lightPalette = new Map(readColourVars(PROPOSED_LIGHT))
+    for (const [k, v] of readColourVars(
+      [...light].map(([n, t]) => `--color-${n}: ${t};`).join('\n'),
+    ))
+      lightPalette.set(k, v)
+    const darkPalette = new Map(lightPalette)
+    for (const [k, v] of readColourVars(PROPOSED_DARK)) darkPalette.set(k, v)
+    for (const [k, v] of readColourVars(
+      [...dark].map(([n, t]) => `--color-${n}: ${t};`).join('\n'),
+    ))
+      darkPalette.set(k, v)
+    print()
+    const failing = contrastTable(
+      'Census over the values theme.css declares',
+      PROPOSED_PAIRS,
+      makeResolver(lightPalette, new Map()),
+      makeResolver(darkPalette, new Map()),
+      (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
+      'role',
+    )
+    if (failing > 0)
+      fail(`${String(failing)} canonical pairs fail against the values theme.css declares`)
+
+    const emitted = await compileTheme([...REQUIRED_UTILITIES, ...FORBIDDEN_UTILITIES])
+    const missing = REQUIRED_UTILITIES.filter((c) => !emitted.has(c))
+    const alive = FORBIDDEN_UTILITIES.filter((c) => emitted.has(c))
+    print(
+      `Tailwind compile: ${String(REQUIRED_UTILITIES.length - missing.length)}/${String(REQUIRED_UTILITIES.length)} prescribed utilities emit; ${String(FORBIDDEN_UTILITIES.length - alive.length)}/${String(FORBIDDEN_UTILITIES.length)} reset-killed spellings stay dead.`,
+    )
+    for (const c of missing) fail(`prescribed utility \`${c}\` does not compile`)
+    for (const c of alive)
+      fail(`default-scale spelling \`${c}\` still compiles — a \`--*: initial\` reset is missing`)
+  }
+
+  print()
+  if (failures.length === 0) {
+    print('RESULT: pass')
+    return 0
+  }
+  print(`RESULT: FAIL (${String(failures.length)})`)
+  for (const f of failures) print(`- ${f}`)
+  return 1
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1085,9 +1502,18 @@ if (mode === '--contrast') {
     'sites',
   )
 } else if (mode === '--proposed') {
-  proposedReport()
-} else {
+  if (proposedReport() > 0) process.exitCode = 1
+} else if (mode === '--emit-theme') {
+  emitTheme()
+} else if (mode === '--check') {
+  process.exitCode = await check(process.argv.slice(3))
+} else if (mode === '--inventory') {
   inventory()
+} else {
+  process.stderr.write(
+    `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme or --check [--final] [file …]\n`,
+  )
+  process.exit(2)
 }
 
 process.stdout.write(out.join('\n') + '\n')
