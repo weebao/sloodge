@@ -127,6 +127,23 @@ const DIGIT_LED_WORD_NAMES = [
   '000 Orange Fizz 2.0 TB',
 ]
 
+/** css-fonts-4's `<generic-family>` keywords; a composed value may not begin with one. */
+const GENERIC_FAMILY_KEYWORDS: ReadonlySet<string> = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'math',
+  'emoji',
+  'fangsong',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+])
+
 /**
  * What Chromium enforces per word, stated as a regex because happy-dom cannot parse CSS: after
  * hex escapes are folded to a marker (their terminating space is not a word separator), every
@@ -395,7 +412,9 @@ describe('cssIdentFontFamily', () => {
       expect(isValidFontFamilyName(name), name).toBe(true)
       const value = buildFontFamilyValue(name)
       expect(value, name).not.toBeNull()
-      expect(everyWordIsAnIdentifier(value!.split(',')[0]!), value!).toBe(true)
+      const family = value!.split(',')[0]!
+      expect(everyWordIsAnIdentifier(family), value!).toBe(true)
+      expect(GENERIC_FAMILY_KEYWORDS.has(family.split(' ')[0]!.toLowerCase()), value!).toBe(false)
     }
     // …and the predicate can say no: this is the exact string the composer used to write.
     expect(everyWordIsAnIdentifier('Wingdings 2')).toBe(false)
@@ -528,12 +547,59 @@ describe('buildFontFamilyValue', () => {
     ])
   })
 
-  it('keeps a name that merely contains a keyword, and the system-ui keyword itself', () => {
-    expect(buildFontFamilyValue('Serif Pro')).toBe('Serif Pro, Segoe UI, system-ui, sans-serif')
-    expect(buildFontFamilyValue('Default Gothic')).toBe(
-      'Default Gothic, Segoe UI, system-ui, sans-serif',
-    )
+  it('refuses a name whose FIRST word is a generic family, which makes the whole value that generic', () => {
+    // `Serif Gothic, Segoe UI, …` is the generic `serif` followed by a stray ident: Chromium drops
+    // the declaration whole, the row previews in the inherited face and the trigger reads the source
+    // back as applied. Until round 8 this file asserted the opposite for `Serif Pro`.
+    for (const name of [
+      'Serif Pro',
+      'Serif Gothic',
+      'serif 2',
+      'SANS-SERIF Gothic',
+      'Monospace Two',
+      'Cursive Standard',
+      'Fantasy Land',
+      'Math Sans',
+      'system-ui Gothic',
+      'Emoji One',
+      'Fangsong Song',
+      'ui-serif Pro',
+      'ui-rounded Display',
+    ]) {
+      expect(isValidFontFamilyName(name), name).toBe(false)
+      expect(buildFontFamilyValue(name), name).toBeNull()
+    }
+    expect(normalizeFontFamilies(['Serif Gothic', 'Gothic Serif'])).toEqual(['Gothic Serif'])
+  })
+
+  it('keeps a name that merely contains a keyword later, and the system-ui keyword itself', () => {
+    // Real families from the Windows host, plus the CSS-wide keyword case, which only matters when
+    // it is the whole value: Chromium accepts `default Gothic` and parses it as a family.
+    for (const name of [
+      'Gothic Serif',
+      'Noto Serif JP',
+      'Microsoft Sans Serif',
+      'MS Reference Sans Serif',
+      'Sans Serif Collection',
+      'Cambria Math',
+      'Segoe UI Emoji',
+      'Default Gothic',
+    ]) {
+      expect(isValidFontFamilyName(name), name).toBe(true)
+      expect(buildFontFamilyValue(name), name).toBe(`${name}, Segoe UI, system-ui, sans-serif`)
+    }
     expect(isValidFontFamilyName('system-ui')).toBe(true)
+  })
+
+  it('refuses a name with two consecutive spaces, which no identifier sequence can address', () => {
+    // `Foo  Bar` as idents resolves to the family `Foo Bar` (Chromium serialises it back that way),
+    // so writing it would make the panel show one name while the renderer looked up another.
+    expect(isValidFontFamilyName('Foo  Bar')).toBe(false)
+    expect(isValidFontFamilyName('A  2')).toBe(false)
+    expect(buildFontFamilyValue('Foo  Bar')).toBeNull()
+    expect(normalizeFontFamilies(['Foo  Bar', 'Foo Bar'])).toEqual(['Foo Bar'])
+    // Trimming still happens before the check, so padded enumerator output is not refused for it.
+    expect(normalizeFontFamilies(['  Foo Bar  '])).toEqual(['Foo Bar'])
   })
 
   it('leaves the system-ui keyword unquoted', () => {
