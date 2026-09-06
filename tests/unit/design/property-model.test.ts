@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { applyOps } from '../../../src/shared/design/patch'
+import { CORPUS } from './corpus'
 import {
   buildFieldOps,
   readPropertyValues,
@@ -19,6 +20,12 @@ function at(html: string, n: number) {
 function edit(html: string, n: number, field: PropertyField, value: string): string {
   const { source, element } = at(html, n)
   return applyOps(source, buildFieldOps(source, element, field, value))
+}
+
+/** Every text-only element of `html`, with its map, for the M3.12 round-trip sweeps. */
+function textOnlyElements(html: string) {
+  const map = buildSlideMap('s', html)
+  return [...map.byId.values()].filter((el) => el.textOnly).map((element) => ({ map, element }))
 }
 
 /** Apply one field edit, reparse, and read the field back — the panel's round-trip. */
@@ -109,6 +116,103 @@ describe('buildFieldOps — text', () => {
   it('is a no-op for mixed content', () => {
     const { source, element } = at('<p>a <b>c</b></p>', 0)
     expect(buildFieldOps(source, element, 'text', 'x')).toEqual([])
+  })
+})
+
+/**
+ * M3.12. The Content field is the read half of a round trip whose write half escapes: the field
+ * must therefore hold *decoded* text, and reading a value then committing it unchanged must not
+ * touch a byte. Before the fix the field held raw source bytes, so every commit added a level of
+ * escaping — `X & Y` read back as `X &amp; Y`, and committing that wrote `X &amp;amp; Y`.
+ */
+describe('Content field round trip — read decoded, commit escaped, unchanged is a byte no-op (M3.12)', () => {
+  it('the field holds decoded text, not source bytes', () => {
+    const { source, element } = at(
+      '<h1>X &amp; Y &lt;b&gt; a&nbsp;b &quot;q&quot; &eacute;</h1>',
+      0,
+    )
+    expect(readPropertyValues(source, element).text).toBe('X & Y <b> a\u00A0b "q" é')
+  })
+
+  it('the roadmap repro: committing `X & Y` twice never double-escapes', () => {
+    const once = edit('<h1>Hi</h1>', 0, 'text', 'X & Y')
+    expect(once).toBe('<h1>X &amp; Y</h1>')
+    // Read it back through the panel: the user sees exactly what they typed...
+    const { source, element } = at(once, 0)
+    const shown = readPropertyValues(source, element).text
+    expect(shown).toBe('X & Y')
+    // ...and committing the field as shown is a no-op, not a second level of escaping.
+    expect(buildFieldOps(source, element, 'text', shown!)).toEqual([])
+    expect(edit(once, 0, 'text', `${shown!}!`)).toBe('<h1>X &amp; Y!</h1>')
+  })
+
+  const ENTITY_SHAPES = [
+    '<h1>a&nbsp;b</h1>',
+    '<h1>a&amp;b</h1>',
+    '<h1>a&lt;b&gt;c</h1>',
+    '<h1>&quot;q&quot; &#39;s&#39;</h1>',
+    '<h1>caf&eacute; &#x41; &#65;</h1>',
+    '<h1>call &#102;etch(x) here</h1>',
+    '<h1>]]&gt;</h1>',
+    '<h1>&copy; 2026 &mdash; &rarr;</h1>',
+    '<pre>\n\nkept blank line</pre>',
+    '<pre>\nfirst</pre>',
+    '<p>line one\r\nline two</p>',
+    '<p>😀 café</p>',
+    '<p>a\u0001b</p>',
+    '<h1></h1>',
+  ]
+
+  it.each(ENTITY_SHAPES)('read then commit unchanged is a byte-level no-op: %s', (html) => {
+    const targets = textOnlyElements(html)
+    expect(targets.length).toBeGreaterThan(0)
+    for (const { map, element } of targets) {
+      const shown = readPropertyValues(map.source, element).text
+      expect(shown).not.toBeNull()
+      const ops = buildFieldOps(map.source, element, 'text', shown!)
+      expect(ops).toEqual([])
+      expect(applyOps(map.source, ops)).toBe(map.source)
+    }
+  })
+
+  it('holds across every text-only element of the hostile corpus', () => {
+    let checked = 0
+    for (const { html } of CORPUS) {
+      for (const { map, element } of textOnlyElements(html)) {
+        const shown = readPropertyValues(map.source, element).text!
+        expect(applyOps(map.source, buildFieldOps(map.source, element, 'text', shown))).toBe(
+          map.source,
+        )
+        checked += 1
+      }
+    }
+    expect(checked).toBeGreaterThan(20)
+  })
+
+  it('a changed value is written through the same escape the caret uses', () => {
+    // `&` and `<` are escaped, a no-break space keeps its entity spelling, and an SL-S04 token is
+    // broken with a numeric reference — one write path for the panel and the caret.
+    expect(edit('<h1>x</h1>', 0, 'text', 'a & b <c> d\u00A0e fetch(f)')).toBe(
+      '<h1>a &amp; b &lt;c> d&nbsp;e &#102;etch(f)</h1>',
+    )
+  })
+
+  it('a <pre> keeps the leading newline the parser drops', () => {
+    const html = '<pre>\n\nHello</pre>'
+    const { source, element } = at(html, 0)
+    expect(readPropertyValues(source, element).text).toBe('\nHello')
+    expect(edit(html, 0, 'text', '\nHello!')).toBe('<pre>\n\nHello!</pre>')
+  })
+
+  it('reads null for an element whose inner is not pure text — the field stays disabled', () => {
+    // Mixed inline content, and a mis-nested original whose text nodes do not tile `inner`: neither
+    // has a decoded string that could round-trip, so the panel shows no text rather than a flattened
+    // preview that looks editable.
+    for (const html of ['<p>a <b>c</b></p>', '<b><p>x</b>y</p>', '<img src="x">']) {
+      const { source, element } = at(html, 0)
+      expect(readPropertyValues(source, element).text).toBeNull()
+      expect(buildFieldOps(source, element, 'text', 'z')).toEqual([])
+    }
   })
 })
 

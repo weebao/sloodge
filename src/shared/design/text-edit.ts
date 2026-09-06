@@ -56,8 +56,7 @@
  */
 
 import { findForbiddenApiTokens, forbiddenBreakPoints } from '../document/slide-contract'
-import { applyOps } from './patch'
-import { resolveElement } from './property-model'
+import { applyOps, type SourceOp } from './patch'
 import { LEADING_NEWLINE_DROPPED } from './slide-map'
 import type { ElementSpan, SlideMap } from './types'
 
@@ -285,6 +284,47 @@ export function escapeAndNeutralizeText(text: string): string {
 }
 
 /**
+ * The one op that writes user-visible text into a `textOnly` element, or `null` when `rawText` is
+ * what the element already says. Shared by the caret (`resolveTextEdit`) and the property panel's
+ * Content field (`buildFieldOps`), which is the point: the two are the same edit — "here is the
+ * decoded text this element should now hold" — and having them disagree about escaping is exactly
+ * how the panel came to double-escape (M3.12: it read raw bytes and re-escaped them on every commit).
+ *
+ * The contract is a round trip with `ElementSpan.textContent` as its read half. `textContent` is
+ * the decoded string the DOM reads and the frame hands back; this is its inverse, so reading it and
+ * committing it unchanged returns `null` and no byte moves. That, not "escape what you are given", is
+ * the invariant a reader of the field can rely on.
+ *
+ * `null` also for an element that is not `textOnly` — there is no text-node span to write into.
+ */
+export function textContentOp(element: ElementSpan, rawText: string): SourceOp | null {
+  if (element.inner === null || element.textContent === null) return null
+  const text = sanitizeEditedText(rawText)
+  // "Unchanged" is judged on what the user saw, never on bytes: the frame returns decoded text, so
+  // against the raw span `a&nbsp;b` would always look edited, and double-click + Esc on any element
+  // holding an entity would push a phantom undo entry, dirty the document and rewrite the author's
+  // entities. The same sanitizer runs on both sides so a stray control character in the source
+  // cannot make an untouched edit look like a change either.
+  if (text === sanitizeEditedText(element.textContent)) return null
+
+  // `<pre>` and `<listing>` lose a leading newline when parsed, so `element.textContent` — and the
+  // value the frame hands back for the same element — is already one `\n` short of what `inner`
+  // spells. Writing the committed string raw makes the read and the write non-inverse: source
+  // `<pre>\n\nHello</pre>` reads as "\nHello", and committing "\nHello!" wrote `<pre>\nHello!</pre>`,
+  // which reads back as "Hello!" — the blank first line silently deleted by an unrelated edit
+  // (round-3 review, verified by execution). One extra literal newline compensates the drop.
+  //
+  // It has to be a *literal* newline. The parser drops `&#10;` at the same position, but
+  // `slide-map.ts`'s cursor does not advance over a character reference, so the text nodes would
+  // stop tiling `inner` and the element would come back `textOnly: false` — this edit would make its
+  // own target uneditable.
+  const compensateDroppedNewline =
+    LEADING_NEWLINE_DROPPED.has(element.tagName) && text.startsWith('\n')
+  const written = (compensateDroppedNewline ? '\n' : '') + escapeAndNeutralizeText(text)
+  return { kind: 'replaceSpan', span: element.inner, text: written }
+}
+
+/**
  * Why an edit did not become bytes. Only the `refused` reasons are worth telling the user about;
  * `unchanged` is the overwhelmingly common outcome (double-click, look, leave) and saying anything
  * about it would be noise.
@@ -314,43 +354,23 @@ export type TextEditOutcome =
  * neither may come from a bridge payload. The only payload-derived input is `rawText`.
  */
 export function resolveTextEdit(map: SlideMap, slId: string, rawText: string): TextEditOutcome {
-  const element = resolveElement(map, slId)
+  // The parent-owned map keyed by the parent-tracked id, and nothing from the payload — the
+  // re-derivation rule `property-model.ts` states over `resolveElement`.
+  const element = map.byId.get(slId) ?? null
   // Two different answers, because the user is told which. An id the map has never had means the
   // slide moved under the edit; an element that *is* there but has no text-node span of its own —
   // mixed inline content, a void tag — was simply never editable.
   if (element === null) return { kind: 'refused', reason: 'unknown-element' }
-  if (element.inner === null || element.textContent === null || !isTextEditable(element)) {
-    return { kind: 'refused', reason: 'not-editable' }
-  }
+  if (!isTextEditable(element)) return { kind: 'refused', reason: 'not-editable' }
   // Refuse an over-cap value rather than trimming it to fit — see `MAX_TEXT_LENGTH`. Measured on the
   // raw string, before sanitizing, so the guard cannot be walked past with control characters that
   // the sanitizer would strip back under the cap.
   if (rawText.length > MAX_TEXT_LENGTH) return { kind: 'refused', reason: 'too-long' }
 
-  const text = sanitizeEditedText(rawText)
-  // "Unchanged" is judged on what the user saw, never on bytes: the frame returns decoded text, so
-  // against the raw span `a&nbsp;b` would always look edited, and double-click + Esc on any element
-  // holding an entity would push a phantom undo entry, dirty the document and rewrite the author's
-  // entities. The same sanitizer runs on both sides so a stray control character in the source
-  // cannot make an untouched edit look like a change either.
-  if (text === sanitizeEditedText(element.textContent)) return { kind: 'unchanged' }
-
+  const op = textContentOp(element, rawText)
+  if (op === null) return { kind: 'unchanged' }
   const source = map.source
-  // `<pre>` and `<listing>` lose a leading newline when parsed, so `element.textContent` — and the
-  // value the frame hands back for the same element — is already one `\n` short of what `inner`
-  // spells. Writing the committed string raw makes the read and the write non-inverse: source
-  // `<pre>\n\nHello</pre>` reads as "\nHello", and committing "\nHello!" wrote `<pre>\nHello!</pre>`,
-  // which reads back as "Hello!" — the blank first line silently deleted by an unrelated edit
-  // (round-3 review, verified by execution). One extra literal newline compensates the drop.
-  //
-  // It has to be a *literal* newline. The parser drops `&#10;` at the same position, but
-  // `slide-map.ts`'s cursor does not advance over a character reference, so the text nodes would
-  // stop tiling `inner` and the element would come back `textOnly: false` — this edit would make its
-  // own target uneditable.
-  const compensateDroppedNewline =
-    LEADING_NEWLINE_DROPPED.has(element.tagName) && text.startsWith('\n')
-  const written = (compensateDroppedNewline ? '\n' : '') + escapeAndNeutralizeText(text)
-  const patched = applyOps(source, [{ kind: 'replaceSpan', span: element.inner, text: written }])
+  const patched = applyOps(source, [op])
 
   // A patch that changes no byte is not an edit. `useTextEditing` only checks for `null`, so
   // returning identical bytes would push an undo entry that undoes nothing, dirty the document, bump

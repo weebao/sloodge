@@ -259,13 +259,3 @@ export function readAttr(source: string, element: ElementSpan, key: string): str
   if (value === null) return null
   return source.slice(value.start, value.end)
 }
-
-/**
- * Op to replace an element's text content. Valid only when `element.textOnly` and it has an `inner`
- * span (guaranteed together — a void element is never `textOnly`). Returns `null` when the element
- * cannot hold plain text, so a caller can disable the field rather than corrupt mixed content.
- */
-export function setTextContent(element: ElementSpan, text: string): SourceOp | null {
-  if (!element.textOnly || element.inner === null) return null
-  return { kind: 'replaceSpan', span: element.inner, text: escapeText(text) }
-}

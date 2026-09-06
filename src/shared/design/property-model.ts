@@ -39,10 +39,10 @@ import {
   setAttr,
   setStyleProp,
   setStyleProps,
-  setTextContent,
   type SourceOp,
 } from './patch'
 import { parseTransform } from './style'
+import { textContentOp } from './text-edit'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -54,7 +54,12 @@ export type PropertyField =
 
 /** Current source values for every field, `null` where the source declares nothing. */
 export interface PropertyValues {
-  /** Element text, only when it is `textOnly`; `null` for mixed/void content (field disabled). */
+  /**
+   * Element text **as the DOM reads it** — entities decoded — only when it is `textOnly`; `null` for
+   * mixed/void content (field disabled). Decoded because the field is the read half of a round trip
+   * whose write half (`textContentOp`) escapes: showing the source bytes `X &amp; Y` here made every
+   * commit add a level of escaping (M3.12).
+   */
   readonly text: string | null
   readonly fontSize: string | null
   readonly fontWeight: string | null
@@ -91,11 +96,6 @@ function readTranslate(transform: string | null): { tx: string; ty: string } {
 /** Read every field's current source value. Pure over `(map.source, element)`. */
 export function readPropertyValues(source: string, element: ElementSpan): PropertyValues {
   const svg = isSvg(element)
-  const text =
-    element.textOnly && element.inner !== null
-      ? source.slice(element.inner.start, element.inner.end)
-      : null
-
   const fill = svg
     ? (readAttr(source, element, 'fill') ?? readStyleProp(source, element, 'fill'))
     : readStyleProp(source, element, 'background-color')
@@ -135,7 +135,8 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
       : readStyleProp(source, element, 'height')
 
   return {
-    text,
+    // `textContent` is `null` exactly when the element is not `textOnly` (`slide-map.ts`).
+    text: element.textContent,
     fontSize: readStyleProp(source, element, 'font-size'),
     fontWeight: readStyleProp(source, element, 'font-weight'),
     color: readStyleProp(source, element, 'color'),
@@ -190,7 +191,8 @@ function replaceTranslate(transform: string, x: string, y: string): string {
 
 /**
  * Turn one field edit into the source ops that apply it. Returns `[]` when the edit is a no-op the
- * panel should not commit: an empty value, or a `text` edit on an element that is not `textOnly`.
+ * panel should not commit: an empty value, a `text` edit on an element that is not `textOnly`, or a
+ * `text` value that already reads as the element's text (see `textContentOp`).
  *
  * `element` must come from `resolveElement(map, parentSlId)` — see the file header. `source` is the
  * map's own source (`map.source`); passing a different string would misplace every span.
@@ -206,7 +208,7 @@ export function buildFieldOps(
 
   switch (field) {
     case 'text': {
-      const op = setTextContent(element, rawValue)
+      const op = textContentOp(element, rawValue)
       return op === null ? [] : [op]
     }
 

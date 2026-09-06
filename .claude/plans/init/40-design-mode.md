@@ -165,7 +165,7 @@ Derived helpers used by the property panel:
 | `setAttr(slId, name, value)` | If attr exists → `replaceSpan(attrs[name].value)`. If it exists but is valueless (`hidden`) → `replaceSpan(attrs[name].whole, 'name="v"')`. If absent → `insertAt(attrInsert, ' name="v"')`. |
 | `removeAttr(slId, name)` | `deleteSpan` over `whole` plus the single leading space. |
 | `setStyleProp(slId, prop, value)` | Read `attrs.style.value`, parse as a declaration list **preserving order and unknown props**, upsert `prop`, re-emit, `setAttr`. Never touches other declarations. |
-| `setTextContent(slId, text)` | Only valid when `textOnly`; `replaceSpan(inner, escapeText(text))`. |
+| `textContentOp(element, text)` (`text-edit.ts`) | Only valid when `textOnly`; `replaceSpan(inner, escapeAndNeutralizeText(text))`, or no op when the decoded text is unchanged. `text` is the **decoded** string (what `ElementSpan.textContent` reads), for the caret and the panel's Content field alike — shipped as `setTextContent(escapeText)` in M3.3, unified with the caret's write in M3.12 after the panel was found double-escaping. |
 | `replaceOuter(slId, html)` | `replaceSpan(outer, html)` — the AI path's primitive; forces reparse. |
 
 `escapeText` escapes `&` and `<` only (and `>` after `]]`), matching what a browser needs — we
@@ -495,14 +495,14 @@ a `…` menu.
 
 The whole point (v0's lesson): **parametric edits never call a model.** The panel binds to the
 `SL_INSPECT` computed-style whitelist, writes optimistically via `SL_PREVIEW`, and commits a
-source patch through `setStyleProp`/`setAttr`/`setTextContent`.
+source patch through `setStyleProp`/`setAttr`/`textContentOp`.
 
 ### 5.1 Sections
 
 ```
 ┌─ PROPERTIES ──────────── rect  (svg) ─┐
 │ CONTENT                               │   only when textOnly
-│  [ Q3 Revenue                      ]  │   → setTextContent
+│  [ Q3 Revenue                      ]  │   → textContentOp (decoded text in, escaped bytes out)
 │                                       │
 │ TEXT                                  │   only when the element renders text
 │  Font   [Inter          ▾]            │   font-family
@@ -844,7 +844,7 @@ that the preview isn't real yet.
 ```
 packages/design-core/          # pure, no React, no Electron — unit-testable
   map.ts                       # parse5 → SlideMap; instrument(); reparse()
-  patch.ts                     # SourceOp, applyOps, setAttr/setStyleProp/setTextContent
+  patch.ts                     # SourceOp, applyOps, setAttr/setStyleProp (text writes: text-edit.ts)
   style.ts                     # declaration-list parser, transform parser, unit handling
   grabbable.ts                 # selection climb rules (mirrored in the frame script)
   context.ts                   # buildContextBundle()
@@ -914,7 +914,7 @@ the renderer and the frame can never disagree about what is selectable.
 
 ### 9.3 Text spanning inline tags
 
-`setTextContent` is only offered when `textOnly` — every child is a text node. For
+`textContentOp` is only offered when `textOnly` — every child is a text node. For
 `<p>Revenue rose <b>18%</b> in Q3</p>`:
 
 - The **Content** field is replaced by a read-only preview plus an **"Edit text"** button that

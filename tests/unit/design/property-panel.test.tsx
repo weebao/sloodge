@@ -111,6 +111,28 @@ describe('PropertyPanel', () => {
     )
   })
 
+  it('the Content field shows decoded text and an unchanged blur commits nothing (M3.12)', () => {
+    // The roadmap repro, through the component: the field must show `X & Y`, not the source bytes
+    // `X &amp; Y`, and leaving it as shown must not write — before the fix every blur re-escaped.
+    useDeckStore.getState().setSlideHtml(slideId, '<h1>X &amp; Y</h1>', slideId, 'entities')
+    const before = useDeckStore.getState().history
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLInputElement
+    expect(input.value).toBe('X & Y')
+    fireEvent.blur(input)
+    expect(useDeckStore.getState().history).toBe(before)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>X &amp; Y</h1>')
+
+    fireEvent.change(input, { target: { value: 'X & Y!' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>X &amp; Y!</h1>')
+    // And after the commit the remounted field reads back what was typed, one level of escaping.
+    cleanup()
+    render(<PropertyPanel slide={currentSlide()} />)
+    expect((screen.getByTestId('prop-text') as HTMLInputElement).value).toBe('X & Y!')
+  })
+
   it('an edit is undoable, restoring the exact prior source', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} />)
