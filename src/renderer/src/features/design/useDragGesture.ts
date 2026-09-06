@@ -79,6 +79,8 @@ interface ActiveDrag {
   readonly startClientX: number
   readonly startClientY: number
   readonly startRect: SlRect
+  /** The element's rotation when the gesture began — a resize works in its axes (`drag.ts`). */
+  readonly angle: number
   lastClientX: number
   lastClientY: number
 }
@@ -88,6 +90,8 @@ export interface DragGestureOptions {
   readonly scale: number
   /** The selected element's current frame rect — the box a gesture starts from. */
   readonly selectionRect: SlRect | null
+  /** The selected element's own rotation in degrees (M3.6); `0` for an upright box or a group. */
+  readonly angle: number
   /** Called once per gesture on `pointerup`, with the start and committed frame rects. */
   readonly onCommit: (startRect: SlRect, nextRect: SlRect) => void
   /**
@@ -122,7 +126,7 @@ function modsOf(event: PointerEvent | React.PointerEvent): DragModifiers {
 }
 
 export function useDragGesture(options: DragGestureOptions): DragGestureApi {
-  const { scale, selectionRect, onCommit, resolveRect } = options
+  const { scale, selectionRect, angle, onCommit, resolveRect } = options
 
   const active = useRef<ActiveDrag | null>(null)
   // Set when a gesture ends having travelled at least `DRAG_SLOP_PX`, cleared by the click that
@@ -159,7 +163,7 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
         { x: clientX - drag.startClientX, y: clientY - drag.startClientY },
         scaleRef.current,
       )
-      const raw = applyDrag(drag.startRect, drag.handle, frameDelta, mods)
+      const raw = applyDrag(drag.startRect, drag.handle, frameDelta, mods, drag.angle)
       const resolver = resolveRectRef.current
       return resolver ? resolver(raw, drag.handle) : { rect: raw, guides: [] }
     }
@@ -275,12 +279,13 @@ export function useDragGesture(options: DragGestureOptions): DragGestureApi {
         startClientX: event.clientX,
         startClientY: event.clientY,
         startRect: selectionRect,
+        angle,
         lastClientX: event.clientX,
         lastClientY: event.clientY,
       }
       setDragging(true)
     },
-    [selectionRect],
+    [selectionRect, angle],
   )
 
   const consumeDragClick = useCallback((): boolean => {

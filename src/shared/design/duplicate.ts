@@ -46,7 +46,7 @@
 import { applyOps, readStyleProp, setStyleProp, type SourceOp } from './patch'
 import { buildSlideMap } from './slide-map'
 import { SL_ID_ATTR } from './slide-map'
-import { addTranslateOffset } from './transform'
+import { composeTransform, inspectTransform, withTranslateOffset } from './transform'
 import type { SlideMap } from './types'
 
 /** A visible offset for the clone, in frame px — PowerPoint nudges a paste down-and-right. */
@@ -65,6 +65,11 @@ export interface DuplicateResult {
    * find the clone's fresh `slId` (which cannot be known before re-parsing; see the header).
    */
   readonly cloneStart: number
+  /**
+   * Whether the clone was actually moved by `offset`. `false` when it sits exactly over the original
+   * — see `nudgeTransform` — so the caller can say so instead of reporting a shifted box it never got.
+   */
+  readonly nudged: boolean
 }
 
 /** Every author-written `id` and `data-sl-id` value anywhere in the slide — the collision set. */
@@ -182,7 +187,11 @@ function uniquify(base: string, taken: Set<string>): string {
  * root by `offset`. Parses the clone as its own fragment so the rewrites are anchored to real
  * attribute-value spans (never a blind text replace that could hit element content).
  */
-function freshenClone(cloneText: string, taken: Set<string>, offset: DuplicateOffset): string {
+function freshenClone(
+  cloneText: string,
+  taken: Set<string>,
+  offset: DuplicateOffset,
+): { text: string; nudged: boolean } {
   const idMap = buildSlideMap('dup', cloneText)
   const ops: SourceOp[] = []
   // Pass 1: freshen definition ids. Build the `id` remap (references target `id`, not `data-sl-id`)
@@ -224,13 +233,33 @@ function freshenClone(cloneText: string, taken: Set<string>, offset: DuplicateOf
   const offsetMap = buildSlideMap('dup', text)
   const rootId = offsetMap.order[0]
   const root = rootId === undefined ? undefined : offsetMap.byId.get(rootId)
-  if (root !== undefined) {
-    const transform = readStyleProp(text, root, 'transform')
-    const nudged = addTranslateOffset(transform, offset.dx, offset.dy)
-    const offsetOps = setStyleProp(text, root, 'transform', nudged)
-    if (offsetOps.length > 0) text = applyOps(text, offsetOps)
-  }
-  return text
+  if (root === undefined) return { text, nudged: false }
+  const nudged = nudgeTransform(readStyleProp(text, root, 'transform'), offset)
+  if (nudged === null) return { text, nudged: false }
+  const offsetOps = setStyleProp(text, root, 'transform', nudged)
+  return { text: offsetOps.length > 0 ? applyOps(text, offsetOps) : text, nudged: true }
+}
+
+/**
+ * The clone root's transform with `offset` applied, or `null` to leave the clone exactly over the
+ * original.
+ *
+ * Three cases, decided by `inspectTransform`. A transform the handles can decompose with a px (or
+ * absent) translate folds the offset into it — the common case. An **opaque** transform (`matrix`,
+ * a non-canonical order) gets a `translate(...)` **prepended**: the outermost function of a CSS
+ * transform list is applied last, so a leading translate is a parent-space shift that is correct
+ * whatever follows it, and the clone stays as opaque — and as loudly locked — as its original. An
+ * editable transform whose translate is *not* px (`translate(-50%, -50%)`, the centring idiom) is
+ * the one case with no safe nudge: adding px to a percentage needs a `calc()` the tokenizer refuses,
+ * and prepending a second translate would make the clone opaque and lock the handles on a copy of an
+ * element whose original had them. So the clone lands in place and the caller says so.
+ */
+function nudgeTransform(transform: string | null, offset: DuplicateOffset): string | null {
+  const shape = inspectTransform(transform)
+  const prefix = `translate(${String(offset.dx)}px, ${String(offset.dy)}px)`
+  if (!shape.editable) return transform === null ? prefix : `${prefix} ${transform}`
+  const parts = withTranslateOffset(shape.parts, offset.dx, offset.dy)
+  return parts === null ? null : composeTransform(parts)
 }
 
 /**
@@ -250,8 +279,8 @@ export function buildDuplicatePatch(
 
   const taken = collectAuthorIds(map)
   const cloneText = source.slice(element.outer.start, element.outer.end)
-  const freshened = freshenClone(cloneText, taken, offset)
+  const { text, nudged } = freshenClone(cloneText, taken, offset)
 
   const at = element.outer.end
-  return { source: source.slice(0, at) + freshened + source.slice(at), cloneStart: at }
+  return { source: source.slice(0, at) + text + source.slice(at), cloneStart: at, nudged }
 }

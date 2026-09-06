@@ -20,6 +20,7 @@
  */
 
 import type { SlRect } from './bridge-protocol'
+import type { ResizeHandle } from './drag'
 
 /** A point in either space; the space is whatever the caller's inputs are in. */
 export interface Point {
@@ -126,6 +127,32 @@ export function rotatedOverlayStyle(
     height: box.height,
     transform: angleDeg === 0 ? 'none' : `rotate(${String(angleDeg)}deg)`,
   }
+}
+
+/** The screen direction each handle points in on an upright box, in degrees clockwise from east. */
+const HANDLE_DIRECTION_DEG: Readonly<Record<ResizeHandle, number>> = {
+  e: 0,
+  se: 45,
+  s: 90,
+  sw: 135,
+  w: 180,
+  nw: 225,
+  n: 270,
+  ne: 315,
+}
+
+/** The four bidirectional resize cursors, indexed by direction octant modulo a half-turn. */
+const RESIZE_CURSORS = ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'] as const
+
+/**
+ * The resize cursor for `handle` on a box rotated `angleDeg` (M3.6). The handles turn with the box,
+ * so the east handle of a 90° element points straight down and wants `ns-resize`, not `ew-resize`;
+ * the handle's upright direction plus the rotation, rounded to the nearest 45°, picks the cursor. A
+ * cursor is bidirectional, so directions a half-turn apart share one.
+ */
+export function resizeCursor(handle: ResizeHandle, angleDeg: number): string {
+  const direction = (((HANDLE_DIRECTION_DEG[handle] + angleDeg) % 360) + 360) % 360
+  return RESIZE_CURSORS[Math.round(direction / 45) % 4]!
 }
 
 /**

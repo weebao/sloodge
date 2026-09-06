@@ -88,12 +88,13 @@ import type {
   SlHit,
   SlRect,
 } from '../../../../shared/design/bridge-protocol'
-import type { DragHandle } from '../../../../shared/design/drag'
+import type { DragHandle, ResizeHandle } from '../../../../shared/design/drag'
 import type { Point } from '../../../../shared/design/overlay-geometry'
 import {
   clientPointToFrame,
   frameRectCentreClient,
   frameRectToOverlay,
+  resizeCursor,
   rotatedOverlayStyle,
   unionRects,
 } from '../../../../shared/design/overlay-geometry'
@@ -109,8 +110,8 @@ import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smar
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
-import { readStyleProp } from '../../../../shared/design/patch'
-import { readRotation } from '../../../../shared/design/transform'
+import { readTransformShape } from '../../../../shared/design/transform-commit'
+import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore, type DesignSnapshot } from './designStore'
@@ -138,32 +139,21 @@ const NO_POINTER: CSSProperties = { pointerEvents: 'none' }
 /** The root swallows all pointer events in Design Mode, freezing the slide's own handlers (§2.1). */
 const CAPTURE_POINTER: CSSProperties = { pointerEvents: 'auto' }
 
-const HANDLE_CURSOR: Readonly<Record<string, string>> = {
-  nw: 'nwse-resize',
-  n: 'ns-resize',
-  ne: 'nesw-resize',
-  e: 'ew-resize',
-  se: 'nwse-resize',
-  s: 'ns-resize',
-  sw: 'nesw-resize',
-  w: 'ew-resize',
-}
-
-const HANDLES: readonly { readonly key: string; readonly style: CSSProperties }[] = (
-  [
-    ['nw', '0%', '0%'],
-    ['n', '50%', '0%'],
-    ['ne', '100%', '0%'],
-    ['e', '100%', '50%'],
-    ['se', '100%', '100%'],
-    ['s', '50%', '100%'],
-    ['sw', '0%', '100%'],
-    ['w', '0%', '50%'],
-  ] as const
-).map(([key, left, top]) => ({
-  key,
-  style: { left, top, pointerEvents: 'auto', cursor: HANDLE_CURSOR[key] } as CSSProperties,
-}))
+/** The eight grips and where each sits on the box; the cursor is per render, since it turns with it. */
+const HANDLES: readonly {
+  readonly key: ResizeHandle
+  readonly left: string
+  readonly top: string
+}[] = [
+  { key: 'nw', left: '0%', top: '0%' },
+  { key: 'n', left: '50%', top: '0%' },
+  { key: 'ne', left: '100%', top: '0%' },
+  { key: 'e', left: '100%', top: '50%' },
+  { key: 'se', left: '100%', top: '100%' },
+  { key: 's', left: '50%', top: '100%' },
+  { key: 'sw', left: '0%', top: '100%' },
+  { key: 'w', left: '0%', top: '50%' },
+]
 
 /** How far above the box's top edge the rotation handle floats, and the stalk that reaches it. */
 const ROTATE_OFFSET_PX = 24
@@ -372,6 +362,59 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   }, [isMulti, selections])
   const selectionBox = isMulti ? groupBox : (selection?.box ?? selection?.rect ?? null)
 
+  // What this overlay needs from the slide's *bytes* — a rotation and an element's shape — read from
+  // the source, never from a bridge payload (§2.2).
+  //
+  // `buildSlideMap` is a full pass over the slide, and `slideHtml` changes once per token while the
+  // agent streams, so the parse is both lazy and shared: nobody selected means nobody asks and it
+  // never runs, and every reader below goes through this one map rather than parsing again. Round-6
+  // major 1 measured the alternative — `canEditSelection` parsing on its own doubled the cost to two
+  // full parses per token for the ordinary case of watching the agent write with something selected.
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const source = getSlideHtml(slideHtml, slideId)
+  const { elementOf, shapeOf } = useMemo<{
+    elementOf: (slId: string) => ElementSpan | undefined
+    shapeOf: (slId: string) => TransformShape | null
+  }>(() => {
+    if (source === undefined) return { elementOf: () => undefined, shapeOf: () => null }
+    let map: SlideMap | null = null
+    const lookup = (slId: string): ElementSpan | undefined => {
+      map ??= buildSlideMap(slideId, source)
+      return map.byId.get(slId)
+    }
+    return {
+      elementOf: lookup,
+      shapeOf: (slId) => {
+        const element = lookup(slId)
+        return element === undefined ? null : readTransformShape(source, element)
+      },
+    }
+  }, [source, slideId])
+  const angleOf = useCallback(
+    (slId: string): number => {
+      const shape = shapeOf(slId)
+      return shape !== null && shape.editable ? shape.parts.rotate : 0
+    },
+    [shapeOf],
+  )
+
+  // The single element's transform as the handles see it (M3.6): its rotation, or the reason the
+  // handles are off. A group is not rotated as a unit and is never locked, so both are neutral while
+  // multi-selected.
+  const transformShape = useMemo<TransformShape | null>(
+    () => (isMulti || selection === null ? null : shapeOf(selection.slId)),
+    [shapeOf, selection, isMulti],
+  )
+  const sourceAngle =
+    transformShape !== null && transformShape.editable ? transformShape.parts.rotate : 0
+  // Loud, not lossy: an element whose transform `inspectTransform` cannot decompose — a `matrix()`,
+  // a `rotate()` written before its `translate()` — gets no handles at all, and a badge saying why.
+  // Every handle gesture assumes it can read the rotation and rewrite one function; on such an
+  // element a resize would slide off its anchor and a move would head along the wrong axis, so
+  // nothing is offered blind. The panel fields, the keyboard and the AI path still reach it.
+  const transformLock =
+    transformShape !== null && !transformShape.editable ? transformShape.reason : null
+
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
   // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
   const resolveRect = useCallback(
@@ -386,6 +429,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const { startDrag, previewRect, guides, isDragging, consumeDragClick } = useDragGesture({
     scale,
     selectionRect: selectionBox,
+    angle: sourceAngle,
     onCommit: onCommitGesture,
     resolveRect,
   })
@@ -396,43 +440,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     requestElements,
     onSelect: setSelections,
   })
-
-  // What this overlay needs from the slide's *bytes* — a rotation and an element's shape — read from
-  // the source, never from a bridge payload (§2.2).
-  //
-  // `buildSlideMap` is a full pass over the slide, and `slideHtml` changes once per token while the
-  // agent streams, so the parse is both lazy and shared: nobody selected means nobody asks and it
-  // never runs, and every reader below goes through this one map rather than parsing again. Round-6
-  // major 1 measured the alternative — `canEditSelection` parsing on its own doubled the cost to two
-  // full parses per token for the ordinary case of watching the agent write with something selected.
-  const slideHtml = useDeckStore((state) => state.slideHtml)
-  const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, angleOf } = useMemo<{
-    elementOf: (slId: string) => ElementSpan | undefined
-    angleOf: (slId: string) => number
-  }>(() => {
-    if (source === undefined) return { elementOf: () => undefined, angleOf: () => 0 }
-    let map: SlideMap | null = null
-    const lookup = (slId: string): ElementSpan | undefined => {
-      map ??= buildSlideMap(slideId, source)
-      return map.byId.get(slId)
-    }
-    return {
-      elementOf: lookup,
-      angleOf: (slId) => {
-        const element = lookup(slId)
-        if (element === undefined) return 0
-        return readRotation(readStyleProp(source, element, 'transform'))
-      },
-    }
-  }, [source, slideId])
-
-  // The single-element rotation (M3.6). Group selections are not rotated as a unit, so this is 0
-  // while multi-selected.
-  const sourceAngle = useMemo<number>(
-    () => (isMulti || selection === null ? 0 : angleOf(selection.slId)),
-    [angleOf, selection, isMulti],
-  )
 
   // What counts as "on a member" for the group-gap rule: each member's box turned by its own source
   // rotation, so the region tested is the one the user sees. See the header.
@@ -675,9 +682,21 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       transform: box.transform,
       transformOrigin: 'center',
       pointerEvents: 'auto',
-      cursor: 'move',
+      cursor: transformLock === null ? 'move' : 'default',
     }
-  }, [boxRect, scale, angle])
+  }, [boxRect, scale, angle, transformLock])
+
+  // The grips turn with the box, so each one's cursor follows its on-screen direction (M3.6).
+  const handleStyles = useMemo<readonly CSSProperties[]>(
+    () =>
+      HANDLES.map((handle) => ({
+        left: handle.left,
+        top: handle.top,
+        pointerEvents: 'auto',
+        cursor: resizeCursor(handle.key, angle),
+      })),
+    [angle],
+  )
 
   // The light per-element outlines shown while multi-selected, each following the live group delta.
   const memberStyles = useMemo<readonly CSSProperties[]>(() => {
@@ -814,7 +833,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                 `absolute border-2 ${isEditing ? 'border-dashed border-amber-500' : 'border-accent'}`
           }
           style={selectionStyle}
-          onPointerDown={onBodyPointerDown}
+          onPointerDown={transformLock === null ? onBodyPointerDown : undefined}
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
@@ -825,8 +844,19 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
               ? 'Editing — Enter or Esc to finish'
               : isMulti
                 ? `${String(selections.length)} selected`
-                : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
+                : isRotating
+                  ? `${String(Math.round(angle))}°`
+                  : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
+          {transformLock !== null && !isMulti && !isEditing ? (
+            <span
+              data-testid="design-transform-lock"
+              className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-600 px-1 text-[11px] leading-4 text-white"
+              title={transformLock}
+            >
+              Handles off — {transformLock}
+            </span>
+          ) : null}
           {/* Double-click is invisible until you try it, so say so while the element is selected. */}
           {canEditSelection && !isEditing ? (
             <span
@@ -837,23 +867,24 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
             </span>
           ) : null}
           {/* Resize + rotate handles only for a single element; a group only moves — and none while
-              editing, where the box is a caret frame rather than a transform target. */}
-          {isMulti || isEditing
+              editing, where the box is a caret frame rather than a transform target, nor on a
+              transform-locked element (see `transformLock`). */}
+          {isMulti || isEditing || transformLock !== null
             ? null
-            : HANDLES.map((handle) => (
+            : HANDLES.map((handle, index) => (
                 <span
                   key={handle.key}
                   data-testid={`design-handle-${handle.key}`}
                   data-handle={handle.key}
                   aria-hidden="true"
                   className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
-                  style={handle.style}
+                  style={handleStyles[index]}
                   onPointerDown={onHandlePointerDown}
                   // A handle is a control, not a view of the element under it: never fall through.
                   onClick={stop}
                 />
               ))}
-          {isMulti || isEditing ? null : (
+          {isMulti || isEditing || transformLock !== null ? null : (
             <>
               <span
                 aria-hidden="true"

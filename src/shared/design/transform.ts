@@ -3,143 +3,168 @@
  * `.claude/plans/init/40-design-mode.md`, the compose/parse half of M3.6's rotate + flip.
  *
  * The plan stores transform as a **canonical ordered string** — `translate(Xpx, Ypx) rotate(Rdeg)
- * scale(S)` — parsing the existing value, replacing only the function being edited, and re-emitting
- * in that order with any unrecognised function preserved and appended verbatim after ours. This
- * module is that rule, kept pure (a string in, a string out) so the merge math — the thing M3.6's
- * mutation tests guard against clobbering an existing `translate` — is exhaustively unit-testable
- * with no DOM, no source spans and no React.
+ * scale(S)`. This module reads a value into its three parts (`inspectTransform`), lets an edit
+ * replace exactly one part (`withRotation`, `withFlip`, `withTranslateOffset`), and re-emits the
+ * canonical string (`composeTransform`). Pure — a string in, a string out — so the merge math is
+ * exhaustively unit-testable with no DOM, no source spans and no React.
  *
- * It shares one parser with `style.ts` (`parseTransform`), so a value this module rewrites and a
- * value the M3.3 property panel reads are the same grammar; nothing here re-implements tokenizing.
+ * It shares one tokenizer with `style.ts` (`parseTransform`), so a value this module rewrites and a
+ * value the M3.3 property panel reads are the same grammar.
  *
- * ## Why rotate/flip live here and not in `style.ts::upsertTransform`
+ * ## Loud, not lossy: a transform the handles cannot decompose is refused, never reordered
  *
- * `upsertTransform` is a positional append-if-absent helper the M3.3 panel used for `translate`.
- * Rotation and flip need two things it does not give: identity **removal** (a rotation back to 0°,
- * or a double flip, must leave *no* junk function behind so the source round-trips clean) and
- * canonical **reordering** (so `translate rotate scale` is always emitted in that order regardless
- * of the order the author or a prior edit left them in). Those are M3.6 concerns, so they live in
- * the M3.6 module rather than widening the M3.3 one.
+ * Transform functions do not commute. `rotate(90deg) translate(100px, 0)` and
+ * `translate(100px, 0) rotate(90deg)` put the element in different places, and `matrix(...)`,
+ * `skew(...)`, a repeated `translate`, or a `rotate(0.5turn)` are shapes whose rotation and scale the
+ * handles cannot read at all. The first M3.6 cut normalized any author order to canonical order on the
+ * first edit and appended unknown functions after ours — which kept every byte but silently *moved*
+ * the element, the exact failure a source-preserving editor exists to avoid.
+ *
+ * So `inspectTransform` is the single gate: it returns `editable` with the decomposed parts only
+ * when the value is a subset of `translate rotate scale` (single-axis aliases included), each family
+ * at most once, in canonical relative order; anything else is `opaque` with a human-readable reason.
+ * The edit functions take `TransformParts`, so the type system makes it impossible to rotate or flip
+ * a value that was never decomposed. The overlay hides the handles and shows the reason; the panel,
+ * keyboard and AI paths remain, so nothing is lost — it is just not done blind.
+ *
+ * `translate` is carried **verbatim** (its raw arguments), not parsed: rotation and flip never touch
+ * it, and a percentage translate (`translate(-50%, -50%)`, the centring idiom) is perfectly rotatable.
+ * Only `withTranslateOffset` needs numbers, and it returns `null` rather than guessing when the
+ * arguments are not px.
  */
 
-import { parseTransform, type TransformFunction } from './style'
+import { parseTransform } from './style'
 
-/** The functions Sloodge owns, in the canonical emit order of §5.3. Unknowns sort after these. */
-const CANONICAL_ORDER: readonly string[] = ['translate', 'rotate', 'scale']
-
-/** Sort rank for a transform function: its canonical index, or past the end for unknowns. */
-function rankOf(name: string): number {
-  const index = CANONICAL_ORDER.indexOf(name)
-  return index === -1 ? CANONICAL_ORDER.length : index
-}
-
-/** Re-emit a function list as a transform value: `name(args)` joined by a single space. */
-function serialize(functions: readonly TransformFunction[]): string {
-  return functions.map((fn) => `${fn.name}(${fn.args})`).join(' ')
-}
-
-/**
- * Stable-sort a function list into canonical order. Known functions lead in `translate, rotate,
- * scale` order; every unrecognised function keeps its original relative position after them (a
- * stable sort keyed on `(rank, originalIndex)`), which is §5.3's "preserved and appended verbatim".
- *
- * ## One-time normalization of non-canonical author order (accepted per §5.3)
- *
- * 40-design-mode.md §5.3 makes Sloodge the owner of the transform and mandates this
- * `translate → rotate → scale` emit order. That means an author-supplied transform in a *different*
- * order — e.g. `rotate(90deg) translate(100px)`, which is not commutative — is normalized to canonical
- * order the first time any transform edit touches the element, which can shift a rotated-and-translated
- * element once. This is a deliberate, bounded cost of owning the transform (the plan's fidelity
- * guarantee is about not re-serializing the *document*, not about preserving a non-canonical function
- * order), and it only ever fires on the first edit; subsequent edits are already canonical.
- */
-function canonicalize(functions: readonly TransformFunction[]): TransformFunction[] {
-  return functions
-    .map((fn, index) => ({ fn, index }))
-    .toSorted((a, b) => rankOf(a.fn.name) - rankOf(b.fn.name) || a.index - b.index)
-    .map((entry) => entry.fn)
-}
-
-/**
- * Replace `name`'s args in place (or append it), then re-emit in canonical order.
- *
- * A transform may legally carry the *same* function more than once (`translate(10px) translate(5px)`
- * composes to a 15px net offset in CSS). Sloodge writes exactly one instance of each function it
- * owns, so on an upsert repeated same-named instances are **collapsed to one** — the first is
- * replaced with the new args and any further copies are dropped. This normalizes a multi-instance
- * author transform to a single composed instance (the edited value); it is the same "we own the
- * transform" stance as the canonical reorder, and reading via `readRotation`/`readScale` (which use
- * the first match) agrees with it.
- */
-function upsert(transform: string | null, name: string, args: string): string {
-  const functions = parseTransform(transform ?? '')
-  let replaced = false
-  const next: TransformFunction[] = []
-  for (const fn of functions) {
-    if (fn.name !== name) {
-      next.push(fn)
-      continue
-    }
-    if (replaced) continue // collapse a repeated same-named function to the single instance above
-    replaced = true
-    next.push({ name, args })
-  }
-  if (!replaced) next.push({ name, args })
-  return serialize(canonicalize(next))
-}
-
-/** Drop every occurrence of `name`, then re-emit the rest in canonical order. */
-function remove(transform: string | null, name: string): string {
-  const kept = parseTransform(transform ?? '').filter((fn) => fn.name !== name)
-  return serialize(canonicalize(kept))
-}
-
-/** Parse a `<angle>` argument (`"45deg"`, `"45"`, `"-90deg"`) to a number of degrees; NaN → 0. */
-function parseAngle(args: string): number {
-  const value = Number.parseFloat(args)
-  return Number.isFinite(value) ? value : 0
-}
-
-/**
- * The element's current rotation in degrees, read from `rotate(...)`; `0` when there is none.
- *
- * Only `deg` (and a bare number treated as degrees) is understood — the unit Sloodge itself writes.
- * A `turn`/`rad` an author hand-wrote would be misread, which is acceptable for the overlay's
- * orientation hint and is noted rather than silently trusted.
- */
-export function readRotation(transform: string | null): number {
-  if (transform === null) return 0
-  const fn = parseTransform(transform).find((f) => f.name === 'rotate')
-  return fn === undefined ? 0 : parseAngle(fn.args)
-}
-
-/**
- * A 2-axis scale, `1` where absent — the shape flip math operates on.
- */
+/** A 2-axis scale, `1` where absent — the shape flip math operates on. */
 export interface Scale {
   readonly sx: number
   readonly sy: number
 }
 
+/** The three functions Sloodge owns, decomposed. `composeTransform` is the inverse. */
+export interface TransformParts {
+  /** The `translate(...)` arguments verbatim (`"10px, 20px"`, `"-50%, -50%"`); `null` when absent. */
+  readonly translate: string | null
+  /** Rotation in degrees; `0` when absent. */
+  readonly rotate: number
+  /** Scale per axis; `{1, 1}` when absent. */
+  readonly scale: Scale
+}
+
+/** What `inspectTransform` decided: the parts, or why the handles must stay off. */
+export type TransformShape =
+  | { readonly editable: true; readonly parts: TransformParts }
+  | { readonly editable: false; readonly reason: string }
+
+const IDENTITY_SCALE: Scale = { sx: 1, sy: 1 }
+const IDENTITY: TransformParts = { translate: null, rotate: 0, scale: IDENTITY_SCALE }
+
+type Family = 'translate' | 'rotate' | 'scale'
+
+/** Function name (lowercased) → the family it belongs to. Anything absent here is opaque. */
+const FAMILY_OF: Readonly<Record<string, Family>> = {
+  translate: 'translate',
+  translatex: 'translate',
+  translatey: 'translate',
+  rotate: 'rotate',
+  rotatez: 'rotate',
+  scale: 'scale',
+  scalex: 'scale',
+  scaley: 'scale',
+}
+
+/** Canonical emit order of §5.3; an author value in any other relative order is opaque. */
+const RANK: Readonly<Record<Family, number>> = { translate: 0, rotate: 1, scale: 2 }
+
 /**
- * The element's current `scale(...)`, defaulting each axis to `1`. A one-argument `scale(S)` is
- * uniform (both axes `S`); a two-argument `scale(sx, sy)` sets them independently.
+ * A whole value made of `name(args)` terms with no nested parentheses. `parseTransform` is a lenient
+ * tokenizer that skips what it cannot read, so it would quietly reduce `translate(calc(50% - 8px), 0)`
+ * to garbage; this full-match check is what turns that into a refusal instead.
  */
-export function readScale(transform: string | null): Scale {
-  if (transform === null) return { sx: 1, sy: 1 }
-  const fn = parseTransform(transform).find((f) => f.name === 'scale')
-  if (fn === undefined) return { sx: 1, sy: 1 }
-  const parts = fn.args.split(',').map((part) => Number.parseFloat(part.trim()))
-  const sx = Number.isFinite(parts[0]) ? parts[0]! : 1
-  const sy = parts.length > 1 && Number.isFinite(parts[1]) ? parts[1]! : sx
-  return { sx, sy }
+const FUNCTION_LIST = /^\s*(?:[a-zA-Z][\w-]*\s*\([^()]*\)\s*)+$/
+
+const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)$/
+
+function opaque(reason: string): TransformShape {
+  return { editable: false, reason }
+}
+
+/** Degrees from a `<angle>`: `45deg`, or a bare number read as degrees. Other units → `null`. */
+function parseDegrees(args: string): number | null {
+  const match = /^(-?(?:\d+\.?\d*|\.\d+))(deg)?$/.exec(args.trim())
+  return match === null ? null : Number(match[1])
+}
+
+/** One or two comma-separated `<number>`s; anything else → `null`. */
+function parseNumbers(args: string): number[] | null {
+  const parts = args.split(',').map((part) => part.trim())
+  if (parts.length === 0 || parts.length > 2 || !parts.every((part) => NUMBER.test(part))) {
+    return null
+  }
+  return parts.map(Number)
 }
 
 /**
- * Format a scale pair as the shortest exact `scale(...)` — `''` for identity (so the caller drops
- * the function), `scale(S)` when both axes match, `scale(sx, sy)` otherwise. Emitting the uniform
- * short form when the axes are equal is what lets a flip-and-flip-back on `scale(2)` round-trip to
- * `scale(2)` rather than to `scale(2, 2)`.
+ * Decompose a `transform` value. See the header for the rule: `editable` iff every function is a
+ * translate/rotate/scale (or one of their single-axis aliases), each family appears at most once, and
+ * they are in canonical relative order. Aliases fold into the canonical form (`scaleX(-1)` reads as
+ * `scale(-1, 1)`, `translateY(8px)` as `translate(0, 8px)`); a later `composeTransform` emits the
+ * folded form, a one-time rewrite of a function we own rather than a reorder.
+ */
+export function inspectTransform(transform: string | null): TransformShape {
+  if (transform === null) return { editable: true, parts: IDENTITY }
+  const value = transform.trim()
+  if (value.length === 0 || value === 'none') return { editable: true, parts: IDENTITY }
+  if (!FUNCTION_LIST.test(value)) return opaque(`the transform value could not be parsed`)
+
+  let translate: string | null = null
+  let rotate = 0
+  let scale: Scale = IDENTITY_SCALE
+  let lastFamily: Family | null = null
+  const seen = new Set<Family>()
+
+  for (const fn of parseTransform(value)) {
+    const name = fn.name.toLowerCase()
+    const written = `${fn.name}(${fn.args})`
+    const family = FAMILY_OF[name]
+    if (family === undefined) return opaque(`${written} is not a transform the handles can edit`)
+    if (seen.has(family)) return opaque(`${family}() appears more than once`)
+    if (lastFamily !== null && RANK[family] < RANK[lastFamily]) {
+      return opaque(
+        `${fn.name}() comes after ${lastFamily}(); reordering them would move the element`,
+      )
+    }
+    seen.add(family)
+    lastFamily = family
+
+    if (family === 'translate') {
+      const parts = fn.args.split(',').map((part) => part.trim())
+      if (parts.length > 2 || parts.some((part) => part.length === 0)) {
+        return opaque(`${written} is not a one- or two-length translate`)
+      }
+      if (name === 'translatex') translate = `${parts[0]!}, 0`
+      else if (name === 'translatey') translate = `0, ${parts[0]!}`
+      else translate = parts.join(', ')
+    } else if (family === 'rotate') {
+      const degrees = parseDegrees(fn.args)
+      if (degrees === null) return opaque(`${written} is not in degrees`)
+      rotate = degrees
+    } else {
+      const numbers = parseNumbers(fn.args)
+      if (numbers === null) return opaque(`${written} is not a plain numeric scale`)
+      const [first, second] = numbers
+      if (name === 'scalex') scale = { sx: first!, sy: 1 }
+      else if (name === 'scaley') scale = { sx: 1, sy: first! }
+      else scale = { sx: first!, sy: second ?? first! }
+    }
+  }
+  return { editable: true, parts: { translate, rotate, scale } }
+}
+
+/**
+ * Format a scale pair as the shortest exact `scale(...)` arguments — `''` for identity (so the
+ * function is dropped), `S` when both axes match, `sx, sy` otherwise. Emitting the uniform short form
+ * when the axes are equal is what lets a flip-and-flip-back on `scale(2)` round-trip to `scale(2)`.
  */
 function formatScale(scale: Scale): string {
   if (scale.sx === 1 && scale.sy === 1) return ''
@@ -148,48 +173,66 @@ function formatScale(scale: Scale): string {
 }
 
 /**
- * Write `degrees` as the element's rotation, composing with (never clobbering) any existing
- * `translate`/`scale`/unknown function. A `degrees` of `0` **removes** the `rotate` function so a
- * rotation back to upright leaves the transform exactly as it would have been without one. Result is
- * canonically ordered.
+ * Re-emit parts as the canonical `translate(...) rotate(...deg) scale(...)` string, omitting every
+ * identity part — so a rotation back to 0° or a double flip leaves no junk function behind, and an
+ * all-identity value is `''` (the caller removes the declaration).
  */
-export function setRotation(transform: string | null, degrees: number): string {
-  if (degrees === 0) return remove(transform, 'rotate')
-  return upsert(transform, 'rotate', `${String(degrees)}deg`)
+export function composeTransform(parts: TransformParts): string {
+  const out: string[] = []
+  if (parts.translate !== null) out.push(`translate(${parts.translate})`)
+  if (parts.rotate !== 0) out.push(`rotate(${String(parts.rotate)}deg)`)
+  const scale = formatScale(parts.scale)
+  if (scale.length > 0) out.push(`scale(${scale})`)
+  return out.join(' ')
 }
 
-/**
- * Add `dx`/`dy` frame px to the element's `translate(...)`, composing with any existing translate
- * and every other transform function. Used by duplicate to nudge a clone off its original so it is
- * visible. Reads the existing translate numerically (px), so a non-px author translate is treated as
- * its bare number — acceptable for a cosmetic nudge and noted rather than silently trusted; every
- * translate Sloodge itself writes is px.
- */
-export function addTranslateOffset(transform: string | null, dx: number, dy: number): string {
-  const existing = parseTransform(transform ?? '').find((fn) => fn.name === 'translate')
-  let tx = 0
-  let ty = 0
-  if (existing !== undefined) {
-    const parts = existing.args.split(',').map((part) => Number.parseFloat(part.trim()))
-    tx = Number.isFinite(parts[0]) ? parts[0]! : 0
-    ty = parts.length > 1 && Number.isFinite(parts[1]) ? parts[1]! : 0
-  }
-  return upsert(transform, 'translate', `${String(tx + dx)}px, ${String(ty + dy)}px`)
+/** The parts with `degrees` as the rotation; translate and scale untouched. */
+export function withRotation(parts: TransformParts, degrees: number): TransformParts {
+  return { ...parts, rotate: degrees }
 }
 
 /** The two flip axes: `x` mirrors left↔right (negates `scaleX`), `y` top↔bottom (`scaleY`). */
 export type FlipAxis = 'x' | 'y'
 
 /**
- * Toggle a flip on one axis by negating that axis of `scale(...)`, composing with every other
- * transform function. Applying the same flip twice returns the transform to its exact starting
- * value (`scaleX` goes `1 → -1 → 1`, and an identity scale is removed), which is the property M3.6's
- * "flip then flip returns to original" test pins. Result is canonically ordered.
+ * Toggle a flip on one axis by negating that axis of the scale; translate and rotation untouched.
+ * Applying the same flip twice returns the parts to their exact starting value.
+ *
+ * Because the canonical order applies `scale` innermost, the flip mirrors the element **within its
+ * own rotated frame**: a box at 30° stays at 30° with its content mirrored, so the selection box and
+ * handles do not jump. This is DrawingML's model too (`flipH` is applied inside `rot`), so a flipped
+ * element exports to PPTX as a flipped element rather than as a negated rotation.
  */
-export function toggleFlip(transform: string | null, axis: FlipAxis): string {
-  const current = readScale(transform)
-  const flipped: Scale =
-    axis === 'x' ? { sx: -current.sx, sy: current.sy } : { sx: current.sx, sy: -current.sy }
-  const args = formatScale(flipped)
-  return args.length === 0 ? remove(transform, 'scale') : upsert(transform, 'scale', args)
+export function withFlip(parts: TransformParts, axis: FlipAxis): TransformParts {
+  const { sx, sy } = parts.scale
+  return { ...parts, scale: axis === 'x' ? { sx: -sx, sy } : { sx, sy: -sy } }
+}
+
+/** A px or unitless length (`"16px"`, `"0"`, `"-4.5px"`) as a number; anything else → `null`. */
+function parsePx(part: string): number | null {
+  const match = /^(-?(?:\d+\.?\d*|\.\d+))(px)?$/.exec(part.trim())
+  return match === null ? null : Number(match[1])
+}
+
+/**
+ * Add `dx`/`dy` frame px to the translate, or `null` when the existing translate is not in px (a
+ * `-50%` cannot have 16px added to it without a `calc()` the tokenizer would then refuse). Used by
+ * duplicate to nudge a clone off its original; the caller decides what to do with `null`.
+ */
+export function withTranslateOffset(
+  parts: TransformParts,
+  dx: number,
+  dy: number,
+): TransformParts | null {
+  let tx = 0
+  let ty = 0
+  if (parts.translate !== null) {
+    const [first, second] = parts.translate.split(',')
+    const x = parsePx(first ?? '')
+    const y = second === undefined ? 0 : parsePx(second)
+    if (x === null || y === null) return null
+    tx = x
+    ty = y
+  }
+  return { ...parts, translate: `${String(tx + dx)}px, ${String(ty + dy)}px` }
 }

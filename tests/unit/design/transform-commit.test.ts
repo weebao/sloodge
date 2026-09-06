@@ -5,7 +5,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { buildFlipPatch, buildRotatePatch } from '../../../src/shared/design/transform-commit'
+import {
+  buildFlipPatch,
+  buildRotatePatch,
+  readTransformShape,
+} from '../../../src/shared/design/transform-commit'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { readStyleProp } from '../../../src/shared/design/patch'
 import { SLIDE_ID } from './corpus'
@@ -79,5 +83,35 @@ describe('buildFlipPatch', () => {
     const id = firstId(source)
     const next = buildFlipPatch(SLIDE_ID, source, id, 'y')
     expect(transformOf(next, id)).toBe('translate(5px, 5px) rotate(30deg) scale(1, -1)')
+  })
+})
+
+describe('opaque transforms are refused, not rewritten (loud, not lossy)', () => {
+  it('rotating an element with a matrix() leaves the source unchanged by identity', () => {
+    const source = '<div style="transform: matrix(1, 0, 0, 1, 0, 0)">x</div>'
+    // Mutation guard: appending `rotate()` after the matrix (the first cut) reds here.
+    expect(buildRotatePatch(SLIDE_ID, source, firstId(source), 45)).toBe(source)
+  })
+
+  it('flipping an element whose translate follows its rotate leaves the source unchanged', () => {
+    const source = '<div style="transform: rotate(90deg) translate(100px, 0)">x</div>'
+    // Reordering to canonical `translate rotate scale` would move the element by (100, 0) → (0, 100).
+    expect(buildFlipPatch(SLIDE_ID, source, firstId(source), 'x')).toBe(source)
+  })
+
+  it('readTransformShape reports the reason the overlay shows', () => {
+    const source = '<div style="transform: skewX(10deg)">x</div>'
+    const map = buildSlideMap(SLIDE_ID, source)
+    const shape = readTransformShape(source, map.byId.get(firstId(source))!)
+    expect(shape.editable).toBe(false)
+    if (!shape.editable) expect(shape.reason).toContain('skewX(10deg)')
+  })
+
+  it('a percentage translate is still rotatable — only the translate is off-limits', () => {
+    const source = '<div style="transform: translate(-50%, -50%)">x</div>'
+    const id = firstId(source)
+    expect(transformOf(buildRotatePatch(SLIDE_ID, source, id, 30), id)).toBe(
+      'translate(-50%, -50%) rotate(30deg)',
+    )
   })
 })
