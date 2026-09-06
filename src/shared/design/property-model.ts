@@ -136,11 +136,9 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
     x = readAttr(source, element, 'x')
     y = readAttr(source, element, 'y')
   } else {
-    const left = readStyleProp(source, element, 'left')
-    const top = readStyleProp(source, element, 'top')
-    if (left !== null || top !== null) {
-      x = left
-      y = top
+    if (positionsByOffsets(source, element)) {
+      x = readStyleProp(source, element, 'left')
+      y = readStyleProp(source, element, 'top')
     } else {
       const transform = readStyleProp(source, element, 'transform')
       const translate = transform === null ? null : readTranslate(transform)

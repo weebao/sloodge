@@ -437,7 +437,24 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // never touches the transform (`buildDragPatch` → `positionsByOffsets`), so it stays available under
   // the lock — round-1 found `translateZ(0)`, the compositing idiom, had made such elements
   // unmovable. An in-flow element moves *through* the transform, so there the refusal stands.
-  const moveLocked = transformLock !== null && !(selection !== null && positionedOf(selection.slId))
+  //
+  // Decided over every member the gesture would move, not the anchor alone: a group drag commits
+  // one patch per member (`onCommitGroupMove`), and round 2 found an in-flow opaque member riding
+  // along inside a group whose anchor was fine — moved 40px down its tilt for a 40px drag right.
+  const memberMoveLock = useMemo<string | null>(() => {
+    for (const hit of selections) {
+      const shape = shapeOf(hit.slId)
+      if (shape !== null && !shape.editable && !positionedOf(hit.slId)) return shape.reason
+    }
+    return null
+  }, [selections, shapeOf, positionedOf])
+  const moveLocked = memberMoveLock !== null
+  const lockBadge =
+    transformLock !== null
+      ? `Handles off — ${transformLock}`
+      : memberMoveLock !== null
+        ? `Move off — ${memberMoveLock}`
+        : null
 
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
   // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
@@ -874,13 +891,13 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   ? `${String(Math.round(angle))}°`
                   : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
-          {transformLock !== null && !isEditing ? (
+          {lockBadge !== null && !isEditing ? (
             <span
               data-testid="design-transform-lock"
               className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-600 px-1 text-[11px] leading-4 text-white"
-              title={transformLock}
+              title={lockBadge}
             >
-              Handles off — {transformLock}
+              {lockBadge}
             </span>
           ) : null}
           {/* Double-click is invisible until you try it, so say so while the element is selected. */}

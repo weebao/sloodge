@@ -9,7 +9,7 @@
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { SlHit } from '../../../src/shared/design/bridge-protocol'
+import type { SlHit, SlRect } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { SelectionOverlay } from '../../../src/renderer/src/features/design/SelectionOverlay'
@@ -48,6 +48,11 @@ const frameRef = { current: null }
 /** The number of undoable commands on the deck's stack — one per committed gesture (§7.1). */
 function undoDepth(): number {
   return useDeckStore.getState().history.undoStack().length
+}
+
+/** A selection hit for a `<div>` whose rendered rect and unrotated box coincide. */
+function boxHit(slId: string, rect: SlRect): SlHit {
+  return { slId, tag: 'div', id: null, classes: [], rect, box: rect, ancestors: [] }
 }
 
 /** pointerdown on `target`, N window pointermoves, then a window pointerup — one gesture. */
@@ -567,6 +572,30 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     drag(screen.getByTestId('design-selection'), { x: 150, y: 150 }, { x: 200, y: 180 })
     expect(undoDepth()).toBe(0)
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED_IN_FLOW)
+  })
+
+  it('a group whose NON-anchor is in-flow and opaque cannot be moved either (round-2 major 2)', () => {
+    // `onCommitGroupMove` patches every member; deciding the lock from the anchor alone let the
+    // locked member move 40px down its tilt for a 40px drag right. Mutation guard: consulting only
+    // `selection` reds here (undo depth 1).
+    const html =
+      '<div style="position:absolute;left:0;top:0;width:10px;height:10px">anchor</div>' +
+      '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>'
+    seed(html)
+    const map = buildSlideMap(slideId, html)
+    const [lockedId, anchorId] = [map.order[1]!, map.order[0]!]
+    const members = [
+      boxHit(lockedId, { x: 0, y: 20, width: 100, height: 20 }),
+      boxHit(anchorId, { x: 0, y: 0, width: 10, height: 10 }),
+    ]
+    useDesignStore.setState({ selections: members, selection: members[1]! })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const group = screen.getByTestId('design-group')
+    expect(group.style.cursor).toBe('default')
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain('Move off')
+    drag(group, { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
+    expect(undoDepth()).toBe(0)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(html)
   })
 
   it('a MOVE of a rotated element refreshes rect as the rotated bounds of the moved box', () => {

@@ -288,6 +288,42 @@ describe('buildFieldOps — position and size', () => {
     expect(values.y).toBe('8px')
   })
 
+  it('opaque, no translate: the new translate LEADS so it acts in parent space (round-2 major 1)', () => {
+    // `matrix(2, …)` doubles; a trailing translate would land at 80px on screen. Mutation guard:
+    // `out.push` in `replaceTranslate` reds here.
+    expect(edit('<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40')).toBe(
+      '<div style="transform: translate(40px, 0) matrix(2, 0, 0, 2, 0, 0)">x</div>',
+    )
+  })
+
+  it('opaque, exact translate present: reads both axes and an X edit keeps the author Y', () => {
+    // Mutation guard: `translateArgs` returning null for an opaque value reads 0/0 and zeroes 6px.
+    const { source, element } = at(
+      '<div style="transform: translate(5px, 6px) skew(3deg)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('5px')
+    expect(values.y).toBe('6px')
+    expect(
+      edit('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="transform: translate(40px, 6px) skew(3deg)">x</div>')
+  })
+
+  it('a top-only element is positioned by offsets: Y reads top, X reads null, X writes left', () => {
+    // Pins the `top` half of `positionsByOffsets` (round-2 minor: dropping it survived the suite).
+    const { source, element } = at(
+      '<div style="top: 5px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBeNull()
+    expect(values.y).toBe('5px')
+    expect(edit('<div style="top: 5px">x</div>', 0, 'x', '120')).toBe(
+      '<div style="top: 5px; left: 120px">x</div>',
+    )
+  })
+
   it('replaces an existing translate where it stands', () => {
     expect(
       edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),
