@@ -60,6 +60,10 @@ const rasterSlide: SlidePlan = {
 /** Points → EMU, as pptxgenjs writes `<a:bodyPr>` insets. */
 const emu = (pt: number): string => String(Math.round(pt * 12700))
 
+/** The `ppt/media/*` parts of an unzipped package, in archive order. */
+const media = (files: Record<string, Uint8Array>): [string, Uint8Array][] =>
+  Object.entries(files).filter(([p]) => p.startsWith('ppt/media/'))
+
 async function build(plan: DeckPptxPlan): Promise<Record<string, Uint8Array>> {
   const bytes = await writeDeckPptx(plan)
   return unzipSync(bytes)
@@ -245,6 +249,35 @@ describe('writeDeckPptx (OPC validity)', () => {
       (await build({ title: 'D', author: 'S', slides: [plain] }))['ppt/slides/slide1.xml']!,
     )
     expect(/<a:bodyPr\b[^>]*>/.exec(plainXml)![0]).toContain('lIns="0"')
+  })
+
+  it('keeps embedded pictures byte-identical whether or not a slide part was rewritten (r1)', async () => {
+    // Single-run boxes: no slide part changes, the package pptxgenjs wrote is returned as is.
+    const untouched = await build({
+      title: 'D',
+      author: 'S',
+      slides: [structuredSlide, rasterSlide],
+    })
+    // A multi-run box: the slide part is rewritten and the package re-zipped, media stored as-is.
+    const multi: SlidePlan = {
+      ...structuredSlide,
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 5, h: 1 },
+          runs: [{ text: 'a ' }, { text: 'b', bold: true }],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+    }
+    const rezipped = await build({ title: 'D', author: 'S', slides: [multi, rasterSlide] })
+    expect([...strFromU8(rezipped['ppt/slides/slide1.xml']!).matchAll(/<a:pPr\b/g)]).toHaveLength(1)
+    // Same picture in, same media parts out — names and bytes — on both paths.
+    expect(media(untouched).length).toBeGreaterThan(0)
+    expect(media(rezipped).map(([p]) => p)).toEqual(media(untouched).map(([p]) => p))
+    for (const [i, [, bytes]] of media(rezipped).entries())
+      expect(Buffer.from(bytes).equals(Buffer.from(media(untouched)[i]![1]))).toBe(true)
   })
 
   it('gives a text box with a radius roundRect geometry and forwards its border as a line', async () => {

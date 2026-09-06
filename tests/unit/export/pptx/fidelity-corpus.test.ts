@@ -404,6 +404,24 @@ describe('§5.2 targets over the corpus', () => {
       expect(pills.truth.texts.filter((t) => t.text === 'Shipped')).toHaveLength(2)
     })
 
+    it('line spacing is the block ratio and every box is top-anchored — seen by the oracle, not assumed (r1)', async () => {
+      for (const a of [...auto, ...editable]) {
+        if (a.tier === 'structured') expect(a.lineSpacingWrong, a.file).toEqual([])
+      }
+      // Not vacuous: x19's lead paragraph is `line-height: 1.5` over runs of one size, its second
+      // bullet `1.6` over 22/34/14 px runs, and its headline `normal`.
+      const x19 = await readbackOf('x19-inline-runs.html', 'auto')
+      const lead = x19.shapes.find((sh) => sh.text.startsWith('Growth was driven by'))!
+      const sized = x19.shapes.find((sh) => sh.text.startsWith('Sized bigger'))!
+      const headline = x19.shapes.find((sh) => sh.text === 'Run-level text in one box')!
+      expect([lead.lineSpacing, sized.lineSpacing, headline.lineSpacing]).toEqual([1.5, 1.6, null])
+      expect(new Set(x19.shapes.filter((sh) => sh.text !== '').map((sh) => sh.anchor))).toEqual(
+        new Set(['t']),
+      )
+      // Mutations: `lineSpacingMultiple` → undefined, or +1, or `valign: 'bottom'` each red the
+      // corpus-wide assertion above through `constructsLost` and the silent-lie verdict.
+    })
+
     it('05 with its insets stripped IS a silent lie: the pill labels sit 18 px off, boxes exact', async () => {
       // The counterfactual the check exists for — the pre-M4.8b writer, which passed `margin: 0`
       // on every text box. The box check reports 0.000 % and the text check 10/10; only the glyph

@@ -109,6 +109,13 @@ export type TruthBlock = {
   h: number
   /** The rendered lines of the element, `innerText.split('\n')`. */
   lines: string[]
+  /**
+   * The element's own computed `line-height` (`normal` or a px length) and `font-size`. The
+   * exporter emits the box's line spacing as their ratio; with runs of several sizes in one box
+   * that ratio is a decision, and nothing else here can see it (M4.8b r1).
+   */
+  lineHeight: string
+  fontSizePx: number
 }
 
 /** A `::before`/`::after` that paints. It has no measurable rect, so nothing can be emitted for it. */
@@ -301,14 +308,21 @@ export function groundTruthScript(): string {
   // elements, which fall back to their normalized text content.
   const renderedLines = (el) =>
     (typeof el.innerText === 'string' ? el.innerText : (el.textContent || '').replace(/\\s+/g, ' ').trim()).split('\\n');
+  // <body> included: \`querySelectorAll('*')\` never yields it, and text can sit directly in it.
+  for (const el of [document.body, ...document.body.querySelectorAll('*')]) {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    if (!painted(cs) || replacedAncestor(el) || r.width < 0.5 || r.height < 0.5) continue;
+    if ([...el.childNodes].some((c) => c.nodeType === 3 && /[^ \\t\\n\\r\\f]/.test(c.data)))
+      blocks.push({ tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height, lines: renderedLines(el),
+        lineHeight: cs.lineHeight, fontSizePx: parseFloat(cs.fontSize) });
+  }
   for (const el of document.body.querySelectorAll('*')) {
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     // A replaced element's OWN background still paints behind the replacement image; its
     // descendants do not render at all, so only a strict ancestor disqualifies the box.
     if (!painted(cs) || replacedAncestor(el.parentElement) || r.width < 0.5 || r.height < 0.5) continue;
-    if (!replacedAncestor(el) && [...el.childNodes].some((c) => c.nodeType === 3 && /[^ \\t\\n\\r\\f]/.test(c.data)))
-      blocks.push({ tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height, lines: renderedLines(el) });
     if (pseudoPaints(el, '::before')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::before' });
     if (pseudoPaints(el, '::after')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::after' });
     const bgAlpha = alphaOf(cs.backgroundColor);

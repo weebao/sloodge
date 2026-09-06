@@ -392,8 +392,8 @@ function runStyleOf(style: NodeStyle): RunStyle {
 
 /**
  * Lay out one block root's inline content into paragraphs of runs — see the module docstring for
- * the white-space rules. `fallback` styles an empty line that no text node contributes to (a
- * `<p><br></p>`). Returns no paragraph for content that is only formatting white space.
+ * the white-space rules. `fallback` styles an empty line that no text node contributes to (the
+ * middle line of `a<br><br>b`). Returns no paragraph for content that is only formatting white space.
  */
 export function layOutInline(items: readonly InlineItem[], fallback: RunStyle): LaidParagraph[] {
   const paragraphs: LaidParagraph[] = []

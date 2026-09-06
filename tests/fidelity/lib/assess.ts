@@ -98,6 +98,8 @@ const TRANSFORM_BOUNDS_TOLERANCE_PX = 1
 export const UNIFORM_SCALE_TOLERANCE = 0.02
 /** How far a box's first run may start from where Chromium put the first glyph of that text (px). */
 export const GLYPH_ORIGIN_TOLERANCE_PX = 1
+/** Emitted line spacing vs the block's `line-height / font-size`; the walker rounds to 2 decimals. */
+export const LINE_SPACING_TOLERANCE = 0.01
 
 export type SlideAssessment = {
   file: string
@@ -147,6 +149,13 @@ export type SlideAssessment = {
    * text only, where the first glyph's x is determined.
    */
   glyphOriginWrong: string[]
+  /**
+   * Text boxes whose paragraph line spacing is not the block's `line-height / font-size` (or that
+   * carry spacing where the block's is `normal`), or that are not anchored at the top. With runs
+   * of several sizes in one box this is the vertical twin of the glyph origin: every box exact,
+   * every paragraph 60 % too tall (M4.8b r1).
+   */
+  lineSpacingWrong: string[]
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
   unmodelledProperties: string[]
   /**
@@ -585,6 +594,35 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
   }
 
+  // --- Line spacing and anchor, against the oracle's own record of each text block's line-height
+  // and font-size, paired by geometry and by a rendered line (M4.8b r1) ---
+  const lineSpacingWrong: string[] = []
+  for (const shape of readback.shapes) {
+    if (shape.kind !== 'sp' || shape.text === '') continue
+    const firstLine = shape.lines.find((l) => l !== '')
+    const block = truth.blocks.find(
+      (b) =>
+        boxDeviationPct(shapeBounds(shape), b) <= BOX_TOLERANCE_PCT &&
+        firstLine !== undefined &&
+        b.lines.includes(firstLine),
+    )
+    if (block === undefined) continue
+    const want =
+      block.lineHeight === 'normal' || block.fontSizePx <= 0
+        ? null
+        : parseFloat(block.lineHeight) / block.fontSizePx
+    const got = shape.lineSpacing
+    const label = `"${shape.text.slice(0, 40)}"`
+    if (
+      want === null ? got !== null : got === null || Math.abs(got - want) > LINE_SPACING_TOLERANCE
+    )
+      lineSpacingWrong.push(
+        `${label}: line spacing ${String(got)} ≠ ${want === null ? 'normal' : want.toFixed(2)}`,
+      )
+    if (shape.anchor !== 't')
+      lineSpacingWrong.push(`${label}: anchored ${String(shape.anchor)}, not top`)
+  }
+
   // --- Text the browser cuts off but the file carries whole: PowerPoint has no clipping ---
   const truncatedShipped: string[] = []
   for (const t of texts) {
@@ -625,6 +663,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     constructsLost.push(...rotationLost.map((r) => `rotation wrong: ${r}`))
     for (const l of textLinesWrong) constructsLost.push(`text line not as rendered: ${l}`)
     for (const g of glyphOriginWrong) constructsLost.push(`glyph origin wrong: ${g}`)
+    for (const l of lineSpacingWrong) constructsLost.push(`line spacing wrong: ${l}`)
     for (const t of truncatedShipped) constructsLost.push(`clipped text shipped in full: "${t}"`)
     constructsLost.push(...surplusShapes.map((sh) => `surplus shape: ${sh}`))
     if (bulletsInvented > 0)
@@ -668,6 +707,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     rotationLost,
     textLinesWrong,
     glyphOriginWrong,
+    lineSpacingWrong,
     unmodelledProperties,
     rootPaintOps,
     rotationsExpected: corpus.rotations.length,
