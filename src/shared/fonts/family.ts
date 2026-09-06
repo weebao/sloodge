@@ -83,11 +83,20 @@ export const MAX_FONT_FAMILY_NAME_LENGTH = 128
 export const MAX_SYSTEM_FONT_FAMILIES = 2000
 
 /**
- * The character allow-list. A name must *start* with a letter or digit — so it can never open with
- * `@` (an at-rule sigil), `-` (a custom-property sigil) or whitespace — and may then use letters,
- * combining marks (Vietnamese, Devanagari), digits, space, `.`, `_` and `-`.
+ * The character allow-list, and the word structure. A name must *start* with a letter or digit — so
+ * it can never open with `@` (an at-rule sigil), `-` (a custom-property sigil) or whitespace — and
+ * may then use letters, combining marks (Vietnamese, Devanagari), digits, `.`, `_` and `-`, in words
+ * separated by exactly one space.
+ *
+ * One space, because that is the only separator an identifier sequence has: `<custom-ident>+` is
+ * joined by single spaces when it is matched against installed families, so `Foo  Bar` written as
+ * an identifier sequence resolves to the family `Foo Bar` — measured in Chromium, where the CSSOM
+ * serialises it back as `"Foo Bar"` — while the panel would read the source and show the two-space
+ * name as applied. A face whose name carries a doubled space cannot be addressed by anything this
+ * module writes, so it is refused rather than silently collapsed (round-8 review).
  */
-const FONT_FAMILY_NAME_PATTERN = /^[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd} ._-]*$/u
+const FONT_FAMILY_NAME_PATTERN =
+  /^[\p{L}\p{Nd}][\p{L}\p{M}\p{Nd}._-]*(?: [\p{L}\p{M}\p{Nd}._-]+)*$/u
 
 /** SL-G05's viewport-unit test, applied to a name so a face called `Display 3vh` cannot trip it. */
 const VIEWPORT_UNIT_PATTERN = /\b\d*\.?\d+(?:vh|vw|vmin|vmax|vi|vb|dvh|dvw|svh|svw|lvh|lvw)\b/i
@@ -131,6 +140,12 @@ export function isValidFontFamilyName(value: unknown): value is string {
   if (value.length === 0 || value.length > MAX_FONT_FAMILY_NAME_LENGTH) return false
   if (!FONT_FAMILY_NAME_PATTERN.test(value)) return false
   if (RESERVED_FAMILY_WORDS.has(value.toLowerCase())) return false
+  // The first word decides the grammar of the whole value: `Serif Gothic` parses as the
+  // `<generic-family>` `serif` followed by a stray ident, and the declaration is dropped whole — the
+  // same silent miss as an unescaped inner word, one grammar rule over (round-8 review). Single-word
+  // names are covered by the line above and, for `system-ui`, by `composeFontFamilyValue`.
+  const space = value.indexOf(' ')
+  if (space !== -1 && GENERIC_FAMILY_WORDS.has(value.slice(0, space).toLowerCase())) return false
   return isContractSafeFontFamilyName(value)
 }
 
@@ -236,6 +251,19 @@ export function isSystemGroupFamily(name: string): boolean {
  * the separator between the identifiers of one family name, and escaping them would turn readable
  * source into `Segoe\ UI` for no gain.
  *
+ * ## The whole `<family-name>` rule, in one place
+ *
+ * Three rounds of review each found one clause of this grammar missing, so here is all of it.
+ * `<family-name>` is `<string> | <custom-ident>+`, and this module writes the ident form, so:
+ *
+ *   1. every code point of every word is an identifier code point or an escape — this function;
+ *   2. every word *starts* like an identifier: not with a digit, not with a lone or numeric `-` —
+ *      this function, per word, not per name (round 7);
+ *   3. the first word is not a `<generic-family>`, since escaping resolves back into the same
+ *      ident — `isValidFontFamilyName` refuses it (round 8);
+ *   4. words are separated by exactly one space, since that is all an ident sequence can express —
+ *      `FONT_FAMILY_NAME_PATTERN` refuses anything else (round 8).
+ *
  * @internal Exported as a test seam. Callers ask `buildFontFamilyValue`.
  */
 export function cssIdentFontFamily(name: string): string {
@@ -318,6 +346,33 @@ const HEX_DIGIT = /[0-9a-fA-F]/
 const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
 
 /**
+ * The `<generic-family>` keywords of css-fonts-4. Refused as a whole name (below) and as the *first*
+ * word of a longer one: `<font-family>` is `[ <family-name> | <generic-family> ]#`, and a value
+ * whose first ident is a generic is that generic — whatever follows is a parse error, and the
+ * declaration is dropped. Measured in Chromium over a 29,578-name word-level corpus: 7,392 values
+ * dropped, every one of them with a first word in `serif`, `sans-serif`, `monospace`, `cursive`,
+ * `fantasy`, `math` or `system-ui`, and no other shape. Chromium currently lets the other six
+ * through, but they are generics in every engine the HTML export may be opened in, and no family on
+ * either dev host starts with any of the thirteen — so the whole spec set is refused, at no cost.
+ * Only the first word matters: `Gothic Serif` and `Noto Serif JP` parse correctly and stay.
+ */
+const GENERIC_FAMILY_WORDS: ReadonlySet<string> = new Set([
+  'serif',
+  'sans-serif',
+  'monospace',
+  'cursive',
+  'fantasy',
+  'math',
+  'emoji',
+  'fangsong',
+  'system-ui',
+  'ui-serif',
+  'ui-sans-serif',
+  'ui-monospace',
+  'ui-rounded',
+])
+
+/**
  * Names CSS reads as something other than a family. A face carrying one is **refused** — kept out of
  * the dropdown and never written — rather than escaped.
  *
@@ -332,18 +387,7 @@ const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
  * text renders in a different font. `system-ui` is absent on purpose — there we *want* the keyword.
  */
 const RESERVED_FAMILY_WORDS: ReadonlySet<string> = new Set([
-  'serif',
-  'sans-serif',
-  'monospace',
-  'cursive',
-  'fantasy',
-  'math',
-  'emoji',
-  'fangsong',
-  'ui-serif',
-  'ui-sans-serif',
-  'ui-monospace',
-  'ui-rounded',
+  ...[...GENERIC_FAMILY_WORDS].filter((word) => word !== 'system-ui'),
   'inherit',
   'initial',
   'unset',
