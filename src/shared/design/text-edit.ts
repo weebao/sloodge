@@ -62,6 +62,8 @@ import {
 import { applyOps } from './patch'
 import { resolveElement } from './property-model'
 import { LEADING_NEWLINE_DROPPED } from './slide-map'
+import { parseFragment } from 'parse5'
+import type { DefaultTreeAdapterTypes } from 'parse5'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -445,4 +447,33 @@ export function resolveTextEdit(map: SlideMap, slId: string, rawText: string): T
   }
 
   return { kind: 'patched', source: patched }
+}
+
+/** Elements whose character data is never rendered as text: nothing in them is "visible text". */
+const INVISIBLE_TEXT_TAGS: ReadonlySet<string> = new Set([
+  'style',
+  'script',
+  'template',
+  'noscript',
+])
+
+/**
+ * Whether the element's subtree holds any visible text — decided over the **parsed** text nodes of
+ * its inner bytes, not a regex over the markup, so a `<style>` rule or a `>` inside a quoted
+ * attribute is not mistaken for prose (round-1 minor). Used by M3.6's flip to know when the mirrored
+ * glyphs deserve a notice; a fragment parse is enough here because text nodes survive it even where
+ * a context-dependent element (`<td>` outside a table) does not.
+ */
+export function hasVisibleText(source: string, element: ElementSpan): boolean {
+  if (element.inner === null) return false
+  const fragment = parseFragment(source.slice(element.inner.start, element.inner.end))
+  const stack: DefaultTreeAdapterTypes.ChildNode[] = [...fragment.childNodes]
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    if ('value' in node) {
+      if (/\S/.test(node.value)) return true
+    } else if ('childNodes' in node && !INVISIBLE_TEXT_TAGS.has(node.nodeName)) {
+      stack.push(...node.childNodes)
+    }
+  }
+  return false
 }

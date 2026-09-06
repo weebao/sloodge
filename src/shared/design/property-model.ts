@@ -43,6 +43,7 @@ import {
   type SourceOp,
 } from './patch'
 import { parseTransform } from './style'
+import { composeTransform, inspectTransform } from './transform'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -79,13 +80,36 @@ function isSvg(element: ElementSpan): boolean {
   return element.ns === 'svg'
 }
 
+/**
+ * The translate arguments of a `transform` value as the handles read them: `inspectTransform`'s
+ * folded translate for an editable value (so `translateX(120px)` reads as `120px, 0`), else the
+ * exact `translate()` function if the opaque value has one. One definition shared with M3.6's
+ * transform algebra, so the panel and the handles cannot disagree about what a translate is.
+ */
+function translateArgs(transform: string | null): string | null {
+  const shape = inspectTransform(transform)
+  if (shape.editable) return shape.parts.translate
+  return parseTransform(transform ?? '').find((f) => f.name === 'translate')?.args ?? null
+}
+
 /** The x-translate and y-translate of a `transform` value in source, defaulting to `'0'` each. */
 function readTranslate(transform: string | null): { tx: string; ty: string } {
-  if (transform === null) return { tx: '0', ty: '0' }
-  const fn = parseTransform(transform).find((f) => f.name === 'translate')
-  if (fn === undefined) return { tx: '0', ty: '0' }
-  const parts = fn.args.split(',').map((part) => part.trim())
+  const args = translateArgs(transform)
+  if (args === null) return { tx: '0', ty: '0' }
+  const parts = args.split(',').map((part) => part.trim())
   return { tx: parts[0] ?? '0', ty: parts[1] ?? '0' }
+}
+
+/**
+ * Whether the source positions the element with `left`/`top`. That is the channel X/Y edits and
+ * drags write when it is there (§5.3), and it never touches the `transform` — which is why the
+ * overlay keeps move available under a transform lock exactly when this holds.
+ */
+export function positionsByOffsets(source: string, element: ElementSpan): boolean {
+  return (
+    readStyleProp(source, element, 'left') !== null ||
+    readStyleProp(source, element, 'top') !== null
+  )
 }
 
 /** Read every field's current source value. Pure over `(map.source, element)`. */
@@ -160,6 +184,11 @@ function asLength(value: string): string {
  * Set one axis of the element's `transform: translate(...)`, preserving the other axis and every
  * other transform function (rotate, scale). Writes the whole `transform` declaration via
  * `setStyleProp`, so all the other inline-style declarations are untouched.
+ *
+ * An editable transform is re-emitted through `composeTransform`, the same writer M3.6's rotate,
+ * flip and duplicate use, so a `translateX(120px)` becomes one `translate(40px, 0)` rather than a
+ * second translate beside it — which would have made the element opaque, and its handles dead, on
+ * the user's first drag. An opaque transform gets the in-place rewrite of `replaceTranslate`.
  */
 function translateOps(
   source: string,
@@ -169,12 +198,16 @@ function translateOps(
 ): SourceOp[] {
   const transform = readStyleProp(source, element, 'transform')
   const { tx, ty } = readTranslate(transform)
-  const next = replaceTranslate(transform ?? '', axis === 'x' ? px : tx, axis === 'y' ? px : ty)
+  const args = `${axis === 'x' ? px : tx}, ${axis === 'y' ? px : ty}`
+  const shape = inspectTransform(transform)
+  const next = shape.editable
+    ? composeTransform({ ...shape.parts, translate: args })
+    : replaceTranslate(transform ?? '', args)
   return setStyleProp(source, element, 'transform', next)
 }
 
 /**
- * Rebuild a transform string, replacing only its `translate` with `translate(x, y)`.
+ * Rebuild an opaque transform string, replacing only its exact `translate()` with `translate(args)`.
  *
  * A translate that was absent is **prepended**, not appended. CSS applies a transform list right to
  * left, so the leading function is the one that acts in the parent's frame: `translate(10px, 0)
@@ -183,17 +216,17 @@ function translateOps(
  * rotated would otherwise move it in the wrong direction. Prepending is also §5.3's canonical
  * `translate → rotate → scale` order. An existing translate is replaced where it stands.
  */
-function replaceTranslate(transform: string, x: string, y: string): string {
+function replaceTranslate(transform: string, args: string): string {
   const fns = parseTransform(transform)
   let replaced = false
   const out = fns.map((fn) => {
     if (fn.name === 'translate') {
       replaced = true
-      return `translate(${x}, ${y})`
+      return `translate(${args})`
     }
     return `${fn.name}(${fn.args})`
   })
-  if (!replaced) out.unshift(`translate(${x}, ${y})`)
+  if (!replaced) out.unshift(`translate(${args})`)
   return out.join(' ')
 }
 
@@ -274,10 +307,7 @@ export function buildFieldOps(
       const axis = field === 'x' ? 'x' : 'y'
       if (svg) return setAttr(element, attr, attr, value)
       // HTML: prefer left/top if the source already positions with them, else transform:translate.
-      const positioned =
-        readStyleProp(source, element, 'left') !== null ||
-        readStyleProp(source, element, 'top') !== null
-      if (positioned) {
+      if (positionsByOffsets(source, element)) {
         return setStyleProp(source, element, field === 'x' ? 'left' : 'top', asLength(value))
       }
       return translateOps(source, element, axis, asLength(value))

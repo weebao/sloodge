@@ -19,27 +19,12 @@ import { buildDuplicatePatch, type DuplicateOffset } from '../../../../shared/de
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { buildFlipPatch, buildRotatePatch } from '../../../../shared/design/transform-commit'
 import type { FlipAxis } from '../../../../shared/design/transform'
-import type { ElementSpan } from '../../../../shared/design/types'
+import { hasVisibleText } from '../../../../shared/design/text-edit'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 
 /** PowerPoint nudges a duplicate down-and-right so it does not sit exactly over the original. */
 const DUPLICATE_OFFSET: DuplicateOffset = { dx: 16, dy: 16 }
-
-/**
- * Whether the element's subtree holds any visible text — the one case a flip has a consequence the
- * user may not have meant. `scaleX(-1)` mirrors the glyphs along with the box, because CSS has no
- * way to flip a container and leave its text readable; PowerPoint counter-flips text and Figma
- * mirrors it, and Sloodge mirrors (the transform is the source of truth and a counter-flip would
- * mean editing every text descendant). Mirrored text is legible enough to look like a bug rather
- * than a choice, so the flip goes through and the notice names what happened and how to undo it.
- * Markup is stripped from the inner bytes; what remains is text.
- */
-function hasVisibleText(source: string, element: ElementSpan): boolean {
-  if (element.inner === null) return false
-  const inner = source.slice(element.inner.start, element.inner.end)
-  return inner.replace(/<[^>]*>/g, '').trim().length > 0
-}
 
 export interface ElementActions {
   /** Flip the selected element on `axis`, one undoable command. */
@@ -75,6 +60,11 @@ export function useElementActions(slideId: string): ElementActions {
       ) {
         return
       }
+      // The one case a flip has a consequence the user may not have meant: `scaleX(-1)` mirrors the
+      // glyphs along with the box, because CSS has no way to flip a container and leave its text
+      // readable. PowerPoint counter-flips text and Figma mirrors it; Sloodge mirrors (the transform
+      // is the source of truth, and a counter-flip would mean editing every text descendant), and
+      // since mirrored text looks like a bug rather than a choice, the notice names what happened.
       const element = buildSlideMap(slideId, current).byId.get(selection.slId)
       if (element !== undefined && hasVisibleText(current, element)) {
         setNotice({
@@ -118,7 +108,7 @@ export function useElementActions(slideId: string): ElementActions {
     // The clone's box is the original's, shifted by the nudge it actually received — a clone that
     // could not be nudged (see `duplicate.ts`) sits exactly over the original, and its selection box
     // must say so rather than outline empty canvas 16px away.
-    const nudge = result.nudged ? DUPLICATE_OFFSET : { dx: 0, dy: 0 }
+    const nudge = result.declined === null ? DUPLICATE_OFFSET : { dx: 0, dy: 0 }
     const offsetRect = (rect: SlHit['rect']): SlHit['rect'] => ({
       ...rect,
       x: rect.x + nudge.dx,
@@ -139,10 +129,10 @@ export function useElementActions(slideId: string): ElementActions {
       ancestors: selection.ancestors,
     }
     setSelection(cloneHit)
-    if (!result.nudged) {
+    if (result.declined !== null) {
       setNotice({
         slideId,
-        text: 'Duplicated in place — this element is positioned in percentages, so the copy sits exactly over the original.',
+        text: `Duplicated in place — ${result.declined}, so the copy sits exactly over the original.`,
       })
     }
   }, [selection, slideId, setSlideHtml, setSelection, setNotice])

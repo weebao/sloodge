@@ -501,6 +501,29 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
     expect(useDesignStore.getState().notice).toBeNull()
   })
 
+  it('flipping an element whose only content is a <style> raises no notice (no visible text)', () => {
+    useDeckStore
+      .getState()
+      .setSlideHtml(slideId, '<h1><style>.a{color:red}</style></h1>', slideId, 'seed')
+    useDesignStore.setState({ notice: null })
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-flip-h'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('scale(-1, 1)')
+    expect(useDesignStore.getState().notice).toBeNull()
+  })
+
+  it('duplicating an em-translated element names the translate it could not offset', () => {
+    useDeckStore
+      .getState()
+      .setSlideHtml(slideId, '<h1 style="transform: translate(1em, 0)">Hello</h1>', slideId, 'seed')
+    useDesignStore.setState({ notice: null })
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-duplicate'))
+    expect(useDesignStore.getState().notice?.text).toContain('translate(1em, 0) is not in px')
+  })
+
   it('duplicating a percentage-translated element clones it in place, selects the clone, and says so', () => {
     const centred = '<h1 style="transform: translate(-50%, -50%)">Hello</h1>'
     useDeckStore.getState().setSlideHtml(slideId, centred, slideId, 'seed')
@@ -515,6 +538,6 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
     expect(selection.slId).not.toBe(h1Id())
     // The clone's box is the original's — not 16px away from where it actually is.
     expect(selection.rect).toEqual(before)
-    expect(useDesignStore.getState().notice?.text).toContain('in place')
+    expect(useDesignStore.getState().notice?.text).toContain('translate(-50%, -50%) is not in px')
   })
 })

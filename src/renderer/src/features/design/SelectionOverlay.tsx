@@ -112,6 +112,7 @@ import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
+import { positionsByOffsets } from '../../../../shared/design/property-model'
 import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
@@ -383,11 +384,14 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // full parses per token for the ordinary case of watching the agent write with something selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, shapeOf } = useMemo<{
+  const { elementOf, shapeOf, positionedOf } = useMemo<{
     elementOf: (slId: string) => ElementSpan | undefined
     shapeOf: (slId: string) => TransformShape | null
+    positionedOf: (slId: string) => boolean
   }>(() => {
-    if (source === undefined) return { elementOf: () => undefined, shapeOf: () => null }
+    if (source === undefined) {
+      return { elementOf: () => undefined, shapeOf: () => null, positionedOf: () => false }
+    }
     let map: SlideMap | null = null
     const lookup = (slId: string): ElementSpan | undefined => {
       map ??= buildSlideMap(slideId, source)
@@ -398,6 +402,10 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       shapeOf: (slId) => {
         const element = lookup(slId)
         return element === undefined ? null : readTransformShape(source, element)
+      },
+      positionedOf: (slId) => {
+        const element = lookup(slId)
+        return element !== undefined && positionsByOffsets(source, element)
       },
     }
   }, [source, slideId])
@@ -419,12 +427,17 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const sourceAngle =
     transformShape !== null && transformShape.editable ? transformShape.parts.rotate : 0
   // Loud, not lossy: an element whose transform `inspectTransform` cannot decompose — a `matrix()`,
-  // a `rotate()` written before its `translate()` — gets no handles at all, and a badge saying why.
-  // Every handle gesture assumes it can read the rotation and rewrite one function; on such an
-  // element a resize would slide off its anchor and a move would head along the wrong axis, so
-  // nothing is offered blind. The panel fields, the keyboard and the AI path still reach it.
+  // a `rotate()` written before its `translate()` — gets no grips and no rotation handle, and a
+  // badge saying why. A resize or rotation assumes it can read the rotation and rewrite one
+  // function; on such an element a resize would slide off its anchor, so neither is offered blind.
+  // The panel fields, the keyboard and the AI path still reach it.
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
+  // Move is a separate question. On an element positioned with `left`/`top` a drag writes those and
+  // never touches the transform (`buildDragPatch` → `positionsByOffsets`), so it stays available under
+  // the lock — round-1 found `translateZ(0)`, the compositing idiom, had made such elements
+  // unmovable. An in-flow element moves *through* the transform, so there the refusal stands.
+  const moveLocked = transformLock !== null && !(selection !== null && positionedOf(selection.slId))
 
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
   // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
@@ -695,9 +708,9 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       transform: box.transform,
       transformOrigin: 'center',
       pointerEvents: 'auto',
-      cursor: transformLock === null ? 'move' : 'default',
+      cursor: moveLocked ? 'default' : 'move',
     }
-  }, [boxRect, scale, angle, transformLock])
+  }, [boxRect, scale, angle, moveLocked])
 
   // The grips turn with the box, so each one's cursor follows its on-screen direction (M3.6).
   const handleStyles = useMemo<readonly CSSProperties[]>(
@@ -846,7 +859,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                 `absolute border-2 ${isEditing ? 'border-dashed border-amber-500' : 'border-accent'}`
           }
           style={selectionStyle}
-          onPointerDown={transformLock === null ? onBodyPointerDown : undefined}
+          onPointerDown={moveLocked ? undefined : onBodyPointerDown}
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${

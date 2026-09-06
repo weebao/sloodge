@@ -61,17 +61,24 @@ const IDENTITY: TransformParts = { translate: null, rotate: 0, scale: IDENTITY_S
 
 type Family = 'translate' | 'rotate' | 'scale'
 
-/** Function name (lowercased) → the family it belongs to. Anything absent here is opaque. */
-const FAMILY_OF: Readonly<Record<string, Family>> = {
-  translate: 'translate',
-  translatex: 'translate',
-  translatey: 'translate',
-  rotate: 'rotate',
-  rotatez: 'rotate',
-  scale: 'scale',
-  scalex: 'scale',
-  scaley: 'scale',
-}
+/**
+ * Function name (lowercased) → the family it belongs to. Anything absent here is opaque. A
+ * null-prototype map, so a name such as `constructor` cannot resolve through `Object.prototype` to
+ * something that is not `undefined` and slip past the refusal.
+ */
+const FAMILY_OF: Readonly<Record<string, Family>> = Object.assign(
+  Object.create(null) as Record<string, Family>,
+  {
+    translate: 'translate',
+    translatex: 'translate',
+    translatey: 'translate',
+    rotate: 'rotate',
+    rotatez: 'rotate',
+    scale: 'scale',
+    scalex: 'scale',
+    scaley: 'scale',
+  } satisfies Record<string, Family>,
+)
 
 /** Canonical emit order of §5.3; an author value in any other relative order is opaque. */
 const RANK: Readonly<Record<Family, number>> = { translate: 0, rotate: 1, scale: 2 }
@@ -83,7 +90,12 @@ const RANK: Readonly<Record<Family, number>> = { translate: 0, rotate: 1, scale:
  */
 const FUNCTION_LIST = /^\s*(?:[a-zA-Z][\w-]*\s*\([^()]*\)\s*)+$/
 
-const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)$/
+/** A CSS `<number>`: optional sign, digits with an optional fraction, optional exponent. */
+const NUMBER_SOURCE = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?`
+const NUMBER = new RegExp(`^${NUMBER_SOURCE}$`, 'i')
+/** Units are ASCII case-insensitive in CSS (`45DEG`, `10PX`), like the function names above. */
+const DEGREES = new RegExp(`^(${NUMBER_SOURCE})(deg)?$`, 'i')
+const PX = new RegExp(`^(${NUMBER_SOURCE})(px)?$`, 'i')
 
 function opaque(reason: string): TransformShape {
   return { editable: false, reason }
@@ -91,7 +103,7 @@ function opaque(reason: string): TransformShape {
 
 /** Degrees from a `<angle>`: `45deg`, or a bare number read as degrees. Other units → `null`. */
 function parseDegrees(args: string): number | null {
-  const match = /^(-?(?:\d+\.?\d*|\.\d+))(deg)?$/.exec(args.trim())
+  const match = DEGREES.exec(args.trim())
   return match === null ? null : Number(match[1])
 }
 
@@ -112,7 +124,8 @@ function parseNumbers(args: string): number[] | null {
 export function inspectTransform(transform: string | null): TransformShape {
   if (transform === null) return { editable: true, parts: IDENTITY }
   const value = transform.trim()
-  if (value.length === 0 || value === 'none') return { editable: true, parts: IDENTITY }
+  if (value.length === 0 || value.toLowerCase() === 'none')
+    return { editable: true, parts: IDENTITY }
   if (!FUNCTION_LIST.test(value)) return opaque(`the transform value could not be parsed`)
 
   let translate: string | null = null
@@ -208,7 +221,7 @@ export function withFlip(parts: TransformParts, axis: FlipAxis): TransformParts 
 
 /** A px or unitless length (`"16px"`, `"0"`, `"-4.5px"`) as a number; anything else → `null`. */
 function parsePx(part: string): number | null {
-  const match = /^(-?(?:\d+\.?\d*|\.\d+))(px)?$/.exec(part.trim())
+  const match = PX.exec(part.trim())
   return match === null ? null : Number(match[1])
 }
 

@@ -269,6 +269,25 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
+  it('folds a translateX alias into the one translate the handles write (round-1 major 2)', () => {
+    // `transform.ts` folds `translateX` into the translate family; writing a second `translate()`
+    // beside it made the element opaque ("translate() appears more than once") on its first drag.
+    // Mutation guard: the exact-name `replaceTranslate` path reds both.
+    expect(edit('<div style="transform: translateX(120px)">x</div>', 0, 'x', '40')).toBe(
+      '<div style="transform: translate(40px, 0)">x</div>',
+    )
+    expect(
+      edit('<div style="transform: translateX(120px) rotate(5deg)">x</div>', 0, 'y', '8'),
+    ).toBe('<div style="transform: translate(120px, 8px) rotate(5deg)">x</div>')
+  })
+
+  it('reads the X/Y fields from a folded alias too', () => {
+    const { source, element } = at('<div style="transform: translateY(8px)">x</div>', 0)
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('0')
+    expect(values.y).toBe('8px')
+  })
+
   it('replaces an existing translate where it stands', () => {
     expect(
       edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),
