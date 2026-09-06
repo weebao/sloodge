@@ -264,6 +264,13 @@ export function isSystemGroupFamily(name: string): boolean {
  *   4. words are separated by exactly one space, since that is all an ident sequence can express —
  *      `FONT_FAMILY_NAME_PATTERN` refuses anything else (round 8).
  *
+ * One known divergence, recorded before it bites (round 9): `IDENT_CODE_POINT` follows the pre-2021
+ * CSS Syntax definition, under which every code point from U+0080 up is an identifier code point.
+ * The current definition excludes U+00AA `ª`, U+00B5 `µ` and U+00BA `º`, all three `\p{L}` and so
+ * admitted by the allow-list unescaped. No shipping engine has adopted the narrowing — Chromium,
+ * Gecko and WebKit all accept `µ Sans` — so this is not escaped today; if one does, hex-escaping
+ * those three is one character in that regex.
+ *
  * @internal Exported as a test seam. Callers ask `buildFontFamilyValue`.
  */
 export function cssIdentFontFamily(name: string): string {
@@ -346,15 +353,27 @@ const HEX_DIGIT = /[0-9a-fA-F]/
 const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
 
 /**
- * The `<generic-family>` keywords of css-fonts-4. Refused as a whole name (below) and as the *first*
- * word of a longer one: `<font-family>` is `[ <family-name> | <generic-family> ]#`, and a value
- * whose first ident is a generic is that generic — whatever follows is a parse error, and the
- * declaration is dropped. Measured in Chromium over a 29,578-name word-level corpus: 7,392 values
- * dropped, every one of them with a first word in `serif`, `sans-serif`, `monospace`, `cursive`,
- * `fantasy`, `math` or `system-ui`, and no other shape. Chromium currently lets the other six
- * through, but they are generics in every engine the HTML export may be opened in, and no family on
- * either dev host starts with any of the thirteen — so the whole spec set is refused, at no cost.
- * Only the first word matters: `Gothic Serif` and `Noto Serif JP` parse correctly and stay.
+ * The words that make a value's first ident a `<generic-family>` rather than a family name.
+ * Refused as a whole name (below) and as the *first* word of a longer one: `<font-family>` is
+ * `[ <family-name> | <generic-family> ]#`, so a value whose first ident is a generic *is* that
+ * generic — whatever follows is a parse error, and the declaration is dropped. Only the first word
+ * matters: `Gothic Serif` and `Noto Serif JP` parse correctly in every engine and stay.
+ *
+ * Membership is by measurement and by engine, not by reading the spec's list of names:
+ *
+ *   - the seven complete generics — `serif`, `sans-serif`, `monospace`, `cursive`, `fantasy`,
+ *     `math`, `system-ui` — because Chromium drops them: over a 29,578-name word-level corpus,
+ *     7,392 values dropped, every one with a first word in this set and no other shape;
+ *   - the four `ui-*` generics, because Safari implements them as generics and the HTML export
+ *     renders wherever it is opened.
+ *
+ * `fangsong` and `emoji` are **not** here, and were until round 9. The current css-fonts-4 draft
+ * has no bare `emoji` at all and spells the other only as `generic(fangsong)`; no shipping engine
+ * treats either bare word as a generic (Chromium: `FangSong, …` and `Emoji One, …` accepted and
+ * parsed exactly); and `FangSong` is the exact family name of `simfang.ttf`, shipped with every
+ * Windows since 7. Refusing it removed an installed font from the dropdown — a worse outcome than
+ * the drops this set exists to prevent, because a dropped declaration is a bug and a missing row is
+ * a font the user cannot pick at all. The keep-list in `family.test.ts` pins both names admitted.
  */
 const GENERIC_FAMILY_WORDS: ReadonlySet<string> = new Set([
   'serif',
@@ -363,8 +382,6 @@ const GENERIC_FAMILY_WORDS: ReadonlySet<string> = new Set([
   'cursive',
   'fantasy',
   'math',
-  'emoji',
-  'fangsong',
   'system-ui',
   'ui-serif',
   'ui-sans-serif',
