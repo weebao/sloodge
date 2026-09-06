@@ -89,6 +89,11 @@ describe('isTextEditable', () => {
     expect(isTextEditable(only('<h1></h1>'))).toBe(true)
   })
 
+  it('an empty element takes a write from the caret — the gate accepting it is not enough', () => {
+    const map = mapOf('<div class="slide"><h1></h1></div>')
+    expect(patchOf(map, idOf(map, 'h1'), 'Filled')).toBe('<div class="slide"><h1>Filled</h1></div>')
+  })
+
   it('rejects mixed inline content — plain-text replacement would delete the <b>', () => {
     const map = mapOf('<p>Revenue <b>18%</b> Q3</p>')
     expect(isTextEditable(map.byId.get(idOf(map, 'p'))!)).toBe(false)

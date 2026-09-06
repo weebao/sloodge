@@ -191,9 +191,13 @@ describe('PropertyPanel', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} />)
     const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    input.focus()
     fireEvent.change(input, { target: { value: '日本' } })
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+    // And the edit stays open: a guard that blurred on the way out would commit the half-composed
+    // text through `handleBlur` in a real browser (round-3 review, mutation X1).
+    expect(document.activeElement).toBe(input)
     expectNoUndoEntrySince(starterHtml)
 
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -202,23 +206,43 @@ describe('PropertyPanel', () => {
     )
   })
 
-  it('the Content field is disabled, with the hint, for an element whose inner is not pure text', () => {
-    // The disabled state is what keeps mixed inline content from being flattened to plain text
-    // through the panel; it had no component test (round-2 review, mutation N4).
-    useDeckStore.getState().setSlideHtml(slideId, '<p>a <b>c</b></p>', slideId, 'mixed')
+  it.each([
+    ['mixed inline content', '<p>a <b>c</b></p>', 'mixed content', /mixes text with other markup/],
+    ['a data-sl-lock element', '<div data-sl-lock>Hello</div>', 'locked', /locked/],
+    ['a <script>', '<script>console.log(1)</script>', 'not text', /code or metadata/],
+  ])(
+    'the Content field is disabled, with the reason, for %s',
+    (_label, html, placeholder, hint) => {
+      // The disabled state is what keeps mixed inline content from being flattened to plain text
+      // through the panel (round-2 review, mutation N4) — and, since round 3, what keeps the panel
+      // from editing a locked element or a script the caret refuses.
+      useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
+      select()
+      render(<PropertyPanel slide={currentSlide()} />)
+      const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+      expect(input.disabled).toBe(true)
+      expect(input.value).toBe('')
+      expect(input.placeholder).toBe(placeholder)
+      expect(input.title).toMatch(hint)
+      // Even forced, nothing is written: the model refuses the text op on the write side too.
+      fireEvent.change(input, { target: { value: 'fetch("x")' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      fireEvent.blur(input)
+      expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(html)
+      expectNoUndoEntrySince(SOURCE)
+    },
+  )
+
+  it('an empty element is editable, not "mixed": an emptied heading can be retyped', () => {
+    useDeckStore.getState().setSlideHtml(slideId, '<h1></h1>', slideId, 'empty')
     select()
     render(<PropertyPanel slide={currentSlide()} />)
     const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
-    expect(input.disabled).toBe(true)
+    expect(input.disabled).toBe(false)
     expect(input.value).toBe('')
-    expect(input.placeholder).toBe('mixed content')
-    expect(input.title).toMatch(/mixes text with other markup/)
-    // Even forced, nothing is written: the model refuses a text op on a non-textOnly element.
-    fireEvent.change(input, { target: { value: 'flattened' } })
+    fireEvent.change(input, { target: { value: 'Filled' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    fireEvent.blur(input)
-    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<p>a <b>c</b></p>')
-    expectNoUndoEntrySince(SOURCE)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>Filled</h1>')
   })
 
   it('an edit is undoable, restoring the exact prior source', () => {

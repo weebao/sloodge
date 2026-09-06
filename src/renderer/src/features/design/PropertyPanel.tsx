@@ -42,6 +42,7 @@ import {
   readPropertyValues,
   resolveElement,
   type PropertyField,
+  type TextFieldBlock,
 } from '../../../../shared/design/property-model'
 import { themeColorSwatches, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import { useChatContextStore } from '../chat/chatContextStore'
@@ -216,6 +217,23 @@ interface PropertyFieldsProps {
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
 
+/**
+ * Why the Content field is disabled, in words. A disabled field that says only "mixed" tells the
+ * user nothing about why they cannot type in it (round-5 major 2 of M3.11) — and these are the same
+ * elements a double-click on the canvas refuses, for the same three reasons.
+ */
+const TEXT_BLOCK_HINT: Readonly<Record<TextFieldBlock, string>> = {
+  'mixed-content':
+    'This element mixes text with other markup, so its text can’t be edited here yet.',
+  locked: 'This element is locked, so its text can’t be edited.',
+  'not-text': 'This element holds code or metadata, not slide text, so it can’t be edited here.',
+}
+const TEXT_BLOCK_PLACEHOLDER: Readonly<Record<TextFieldBlock, string>> = {
+  'mixed-content': 'mixed content',
+  locked: 'locked',
+  'not-text': 'not text',
+}
+
 /** The Content textarea and the other fields' inputs share one set of handlers. */
 type FieldElement = HTMLInputElement | HTMLTextAreaElement
 
@@ -228,7 +246,7 @@ function PropertyFields({
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
-  const textDisabled = values.text === null
+  const textBlock = values.textBlock
 
   // One controlled value per field, seeded from source. The component is remounted (via `key`) on
   // every source change, so this initial-from-props read is correct, not stale.
@@ -314,12 +332,8 @@ function PropertyFields({
   )
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
-    const disabled = name === 'text' && textDisabled
-    // A disabled field that says only "mixed" tells the user nothing about why they cannot type in
-    // it, and this is the same element a double-click on the canvas also refuses (round-5 major 2).
-    const disabledHint = disabled
-      ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
-      : undefined
+    const block = name === 'text' ? textBlock : null
+    const disabled = block !== null
     // One prop set for both controls, so the disabled state and its hint cannot drift between
     // the textarea and the inputs; only the control-specific props differ below.
     const common = {
@@ -328,8 +342,8 @@ function PropertyFields({
       'data-testid': `prop-${name}`,
       value: draft[name],
       disabled,
-      placeholder: disabled ? 'mixed content' : '',
-      title: disabledHint,
+      placeholder: block === null ? '' : TEXT_BLOCK_PLACEHOLDER[block],
+      title: block === null ? undefined : TEXT_BLOCK_HINT[block],
       onChange: handleChange,
       onBlur: handleBlur,
       onKeyDown: handleKeyDown,

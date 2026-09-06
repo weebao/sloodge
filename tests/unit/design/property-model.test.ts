@@ -177,16 +177,27 @@ describe('Content field round trip — read decoded, commit escaped, unchanged i
 
   it('holds across every text-only element of the hostile corpus', () => {
     let checked = 0
+    let blocked = 0
     for (const { html } of CORPUS) {
       for (const { map, element } of textOnlyElements(html)) {
-        const shown = readPropertyValues(map.source, element).text!
-        expect(applyOps(map.source, buildFieldOps(map.source, element, 'text', shown))).toBe(
+        const { text, textBlock } = readPropertyValues(map.source, element)
+        // Text-only to the parser but not editable from the panel (`<style>`, `<title>`, a lock):
+        // reads null with its reason, and the write side refuses the same element.
+        if (text === null) {
+          expect(textBlock).not.toBeNull()
+          expect(buildFieldOps(map.source, element, 'text', 'z')).toEqual([])
+          blocked += 1
+          continue
+        }
+        expect(textBlock).toBeNull()
+        expect(applyOps(map.source, buildFieldOps(map.source, element, 'text', text))).toBe(
           map.source,
         )
         checked += 1
       }
     }
     expect(checked).toBeGreaterThan(20)
+    expect(blocked).toBeGreaterThan(0)
   })
 
   it('a changed value is written through the same escape the caret uses', () => {
@@ -208,11 +219,44 @@ describe('Content field round trip — read decoded, commit escaped, unchanged i
     // Mixed inline content, and a mis-nested original whose text nodes do not tile `inner`: neither
     // has a decoded string that could round-trip, so the panel shows no text rather than a flattened
     // preview that looks editable.
-    for (const html of ['<p>a <b>c</b></p>', '<b><p>x</b>y</p>', '<img src="x">']) {
+    for (const html of ['<p>a <b>c</b></p>', '<b><p>x</b>y</p>']) {
       const { source, element } = at(html, 0)
-      expect(readPropertyValues(source, element).text).toBeNull()
+      const values = readPropertyValues(source, element)
+      expect(values.text).toBeNull()
+      expect(values.textBlock).toBe('mixed-content')
       expect(buildFieldOps(source, element, 'text', 'z')).toEqual([])
     }
+  })
+
+  /**
+   * Round-3 review: the panel shares the caret's write core, so it has to share the caret's gate
+   * too — `data-sl-lock` is "selectable but not mutable", and a `<script>`/`<style>`'s character
+   * data is text-only to the parser but never slide text (an escaped `<` in raw text is six literal
+   * bytes; a neutralized `fetch(` is a syntax error). The gate holds on the write as well as the
+   * read, so a value forced into the field is still refused.
+   */
+  it.each([
+    ['a data-sl-lock element', '<div data-sl-lock>Hello</div>', 'locked'],
+    ['a <script>', '<script>console.log(1)</script>', 'not-text'],
+    ['a <style>', '<style>a > b { color: red }</style>', 'not-text'],
+    ['a <title>', '<title>Deck</title>', 'not-text'],
+    ['a void element', '<img src="x">', 'not-text'],
+  ] as const)('refuses %s on read and on write, with the reason', (_label, html, block) => {
+    const { source, element } = at(html, 0)
+    const values = readPropertyValues(source, element)
+    expect(values.text).toBeNull()
+    expect(values.textBlock).toBe(block)
+    expect(buildFieldOps(source, element, 'text', 'fetch("x")')).toEqual([])
+    expect(applyOps(source, buildFieldOps(source, element, 'text', 'Changed'))).toBe(source)
+  })
+
+  it('an empty element reads as "" and can be filled — emptied text stays retypable', () => {
+    const { source, element } = at('<h1></h1>', 0)
+    const values = readPropertyValues(source, element)
+    expect(values.text).toBe('')
+    expect(values.textBlock).toBeNull()
+    expect(edit('<h1></h1>', 0, 'text', 'Filled')).toBe('<h1>Filled</h1>')
+    expect(edit('<p class="x"></p>', 0, 'text', 'a & b')).toBe('<p class="x">a &amp; b</p>')
   })
 })
 
