@@ -17,6 +17,8 @@ export type ReadbackRun = {
   /** 6-digit uppercase hex, or null when the run inherits. */
   color: string | null
   sizePt: number | null
+  bold: boolean
+  underline: boolean
   /** Alpha the run paints at, 0–1, from `<a:alpha>`; 1 when the fill is fully opaque. */
   opacity: number
 }
@@ -35,6 +37,15 @@ export type ReadbackShape = {
   runs: ReadbackRun[]
   /** All run text joined, whitespace-normalized. */
   text: string
+  /**
+   * The text as PowerPoint lays it out, one entry per visual line: paragraphs (`<a:p>`) and soft
+   * breaks (`<a:br/>`) both end a line; run text is joined RAW, so a doubled or eaten space between
+   * two runs is visible here and not in `text` (M4.8b).
+   */
+  lines: string[]
+  /** `<a:bodyPr>` left/top insets in CSS px — where the first run starts inside the box. */
+  insetLeft: number
+  insetTop: number
   fill: string | null
   /** Alpha of the shape fill, 0–1. */
   fillOpacity: number
@@ -97,6 +108,21 @@ function firstAlpha(xml: string): number {
   return m?.[1] === undefined ? 1 : parseInt(m[1], 10) / 100000
 }
 
+/** Visual lines: each `<a:p>` is one or more lines, split again at every `<a:br/>`. */
+function parseLines(txBody: string): string[] {
+  const lines: string[] = []
+  for (const p of txBody.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)) {
+    for (const segment of (p[1] ?? '').split(/<a:br\s*\/>/)) {
+      lines.push(
+        [...segment.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
+          .map((t) => unescapeXml(t[1] ?? ''))
+          .join(''),
+      )
+    }
+  }
+  return lines
+}
+
 function parseRuns(txBody: string): ReadbackRun[] {
   const runs: ReadbackRun[] = []
   for (const m of txBody.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)) {
@@ -109,6 +135,8 @@ function parseRuns(txBody: string): ReadbackRun[] {
       text: unescapeXml(text),
       color: firstSrgb(rPrBlock),
       sizePt: sz === null ? null : parseInt(sz, 10) / 100,
+      bold: attr(rPrTag, 'b') === '1',
+      underline: attr(rPrTag, 'u') === 'sng',
       opacity: firstAlpha(rPrBlock),
     })
   }
@@ -133,6 +161,7 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
   const ln = /<a:ln\b[\s\S]*?<\/a:ln>/.exec(spPr)?.[0] ?? ''
   const txBody = /<p:txBody>[\s\S]*?<\/p:txBody>/.exec(xml)?.[0] ?? ''
   const runs = parseRuns(txBody)
+  const bodyPr = /<a:bodyPr\b[^>]*>/.exec(txBody)?.[0] ?? ''
   return {
     kind,
     geom: /<a:prstGeom prst="([^"]+)"/.exec(spPr)?.[1] ?? null,
@@ -143,6 +172,9 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
     rot: ((rot % 360) + 360) % 360,
     runs,
     text: normalizeWhitespace(runs.map((r) => r.text).join('')),
+    lines: parseLines(txBody),
+    insetLeft: emuAttrToPx(attr(bodyPr, 'lIns')),
+    insetTop: emuAttrToPx(attr(bodyPr, 'tIns')),
     fill: firstSrgb(spPrNoLine),
     fillOpacity: firstAlpha(spPrNoLine),
     line: ln === '' ? null : firstSrgb(ln),

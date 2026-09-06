@@ -65,10 +65,17 @@
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../src/shared/export/types'
 import { pxToPoints } from '../../../src/shared/export/pptx/geometry'
 import { decomposeTransformSpec } from '../../../src/shared/export/pptx/confidence'
+import { hasOwnText } from '../../../src/shared/export/pptx/node'
+import { renderedBlockText } from '../../../src/shared/export/pptx/walker'
 import type { MeasureResult, SlideNode } from '../../../src/shared/export/pptx/node'
 import type { SlideTier } from '../../../src/shared/export/pptx/types'
 import type { CorpusSlide } from './corpus'
-import { normalizeWhitespace, type ReadbackShape, type ReadbackSlide } from './readback'
+import {
+  normalizeWhitespace,
+  type ReadbackRun,
+  type ReadbackShape,
+  type ReadbackSlide,
+} from './readback'
 import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from './truth'
 
 /** A slide at or above this confidence is trusted to be structured; losing a construct here is the lie. */
@@ -89,6 +96,8 @@ const INVISIBLE_ALPHA = 0.03
 const TRANSFORM_BOUNDS_TOLERANCE_PX = 1
 /** How far the two bounds/layout ratios may diverge and still be one uniform scale (px rounding). */
 export const UNIFORM_SCALE_TOLERANCE = 0.02
+/** How far a box's first run may start from where Chromium put the first glyph of that text (px). */
+export const GLYPH_ORIGIN_TOLERANCE_PX = 1
 
 export type SlideAssessment = {
   file: string
@@ -125,6 +134,19 @@ export type SlideAssessment = {
   surplusShapes: string[]
   /** Rotations the oracle measured from the rendered quad that the file does not carry. */
   rotationLost: string[]
+  /**
+   * Lines of an emitted text box that are not a line of any element's rendered `innerText` — a
+   * doubled or eaten space between two runs, an invented or missing line break, a `text-transform`
+   * applied differently from Chromium (M4.8b). The text-node check above cannot see any of these:
+   * it looks for each node's normalized text as a substring.
+   */
+  textLinesWrong: string[]
+  /**
+   * Text boxes whose first run starts somewhere other than where Chromium drew that text's first
+   * glyph — the box is right and the inset is not (M4.8b). Start-aligned, unrotated, unbulleted
+   * text only, where the first glyph's x is determined.
+   */
+  glyphOriginWrong: string[]
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
   unmodelledProperties: string[]
   /**
@@ -154,12 +176,53 @@ export type AssessArgs = {
   reasons: readonly string[]
 }
 
+/**
+ * The text node as the reader sees it. `uppercase` and `lowercase` are unambiguous; `capitalize` is
+ * word-boundary dependent and UA-defined, so a capitalized node is matched case-insensitively here
+ * and its exact casing is judged by the rendered-line check against Chromium's own `innerText`.
+ */
 function expectedText(t: TruthText): string {
-  return t.textTransform === 'uppercase' ? t.text.toUpperCase() : t.text
+  if (t.textTransform === 'uppercase') return t.text.toUpperCase()
+  if (t.textTransform === 'lowercase') return t.text.toLowerCase()
+  return t.text
+}
+
+function fold(text: string, t: TruthText): string {
+  return t.textTransform === 'capitalize' ? text.toLowerCase() : text
+}
+
+/** True when the (normalized) `haystack` contains the text node as rendered. */
+function carries(haystack: string, t: TruthText): boolean {
+  return fold(haystack, t).includes(fold(expectedText(t), t))
+}
+
+/** True when a run's text is (part of) the text node, or the text node is (part of) the run. */
+function runMatches(run: ReadbackRun, t: TruthText): boolean {
+  const r = fold(normalizeWhitespace(run.text), t)
+  const e = fold(expectedText(t), t)
+  return r.includes(e) || e.includes(r)
 }
 
 function runsContaining(readback: ReadbackSlide, text: string): ReadbackShape[] {
   return readback.shapes.filter((s) => s.text.includes(text))
+}
+
+function containsPoint(s: ReadbackShape, x: number, y: number): boolean {
+  const b = shapeBounds(s)
+  return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h
+}
+
+/**
+ * The shapes that carry a text node — preferring the ones whose bounds contain it. A short node
+ * ("in", "01", a second "Shipped") is a substring of other boxes' text too, and pairing by first
+ * substring match judged the wrong box's colour, size and origin (M4.8b).
+ */
+function holdersOf(readback: ReadbackSlide, t: TruthText): ReadbackShape[] {
+  const all = readback.shapes.filter((s) => carries(s.text, t))
+  const cx = t.x + t.w / 2
+  const cy = t.y + t.h / 2
+  const containing = all.filter((s) => containsPoint(s, cx, cy))
+  return containing.length > 0 ? containing : all
 }
 
 function angleDelta(a: number, b: number): number {
@@ -295,9 +358,26 @@ function rootPaintOpsOf(paint: TruthRootPaint, where: string): string[] {
   return ops
 }
 
-function leafText(node: SlideNode): string {
-  const text = node.style.textTransform === 'uppercase' ? node.text.toUpperCase() : node.text
-  return normalizeWhitespace(text)
+/** The text a block root's box carries, normalized like `ReadbackShape.text`, for pairing. */
+function blockText(node: SlideNode): string {
+  return normalizeWhitespace(renderedBlockText(node))
+}
+
+/**
+ * The shape whose FIRST run begins with this text node (or that the node begins with), and whose
+ * bounds contain it — the box this node opens, if any. `undefined` for every later node of a box.
+ */
+function firstRunHolder(readback: ReadbackSlide, t: TruthText): ReadbackShape | undefined {
+  const expected = fold(expectedText(t), t)
+  return readback.shapes.find((s) => {
+    const first = s.runs.find((r) => normalizeWhitespace(r.text) !== '')
+    if (first === undefined) return false
+    const run = fold(normalizeWhitespace(first.text), t)
+    return (
+      (run.startsWith(expected) || expected.startsWith(run)) &&
+      containsPoint(s, t.x + t.w / 2, t.y + t.h / 2)
+    )
+  })
 }
 
 export function assessSlide(args: AssessArgs): SlideAssessment {
@@ -318,22 +398,16 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   // string one the reader sees at all" does not, and the surplus check below asks only that.
   const textCarriers = new Set<ReadbackShape>()
   for (const t of truth.texts)
-    for (const h of runsContaining(readback, expectedText(t))) textCarriers.add(h)
+    for (const h of readback.shapes) if (carries(h.text, t)) textCarriers.add(h)
   for (const t of texts) {
     const expected = expectedText(t)
-    const holders = runsContaining(readback, expected)
+    const holders = holdersOf(readback, t)
     if (holders.length === 0) {
       lostText.push(expected)
       continue
     }
     textKept += 1
-    const run = holders
-      .flatMap((s) => s.runs)
-      .find(
-        (r) =>
-          normalizeWhitespace(r.text).includes(expected) ||
-          expected.includes(normalizeWhitespace(r.text)),
-      )
+    const run = holders.flatMap((s) => s.runs).find((r) => runMatches(r, t))
     if (run?.color === t.color) colorExact += 1
     else colorWrong.push(`${expected}: ${String(run?.color)} ≠ ${t.color}`)
     const wantAlpha = t.opacity * t.colorAlpha
@@ -356,14 +430,14 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     else sizeWrong.push(`${expected}: ${String(run?.sizePt)}pt ≠ ${wantPt.toFixed(2)}pt`)
   }
 
-  // --- Emitted box vs DOM box: pair every text shape with the leaf node that produced it ---
-  const leaves = measure.nodes.filter((n) => n.isLeaf && n.text !== '')
+  // --- Emitted box vs DOM box: pair every text shape with the block root that produced it ---
+  const roots = measure.nodes.filter(hasOwnText)
   const used = new Set<SlideNode>()
   let boxChecks = 0
   let boxWorstPct = 0
   for (const shape of readback.shapes) {
     if (shape.kind !== 'sp' || shape.text === '') continue
-    const node = leaves.find((n) => !used.has(n) && leafText(n) === shape.text)
+    const node = roots.find((n) => !used.has(n) && blockText(n) === shape.text)
     if (node === undefined) continue
     used.add(node)
     boxChecks += 1
@@ -465,7 +539,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     // Already named as an un-decomposable transform: report each loss once.
     if (flattened.has(`text "${expectedText(t)}"`)) continue
     if (!rotatedBoundsSignature(t.hostW, t.hostH, t.hostLayoutW, t.hostLayoutH)) continue
-    const holder = runsContaining(readback, expectedText(t))[0]
+    const holder = holdersOf(readback, t)[0]
     if (holder === undefined) continue
     if (shippedUpright(holder, t.hostW, t.hostH))
       rotationLost.push(
@@ -482,12 +556,40 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
   }
 
+  // --- Rendered lines: every line of every emitted box must be a line Chromium rendered, from the
+  // oracle's own `innerText` — the only check here that sees the SPACES between runs (M4.8b) ---
+  const renderedLines = new Set(truth.blocks.flatMap((b) => b.lines))
+  const textLinesWrong: string[] = []
+  for (const shape of readback.shapes) {
+    if (shape.kind !== 'sp') continue
+    for (const line of shape.lines) {
+      if (line === '' || renderedLines.has(line)) continue
+      textLinesWrong.push(`"${line}"`)
+    }
+  }
+
+  // --- Glyph origin: the first run of a start-aligned box must start where Chromium drew it. The
+  // box check above proves the BOX; a padded pill's label sat at the pill's border edge for two
+  // milestones with every box exact (M4.8b) ---
+  const glyphOriginWrong: string[] = []
+  for (const t of texts) {
+    if (t.transformed || t.bulleted) continue
+    if (t.textAlign !== 'left' && t.textAlign !== 'start' && t.textAlign !== 'justify') continue
+    const expected = expectedText(t)
+    const holder = firstRunHolder(readback, t)
+    if (holder === undefined || holder.rot !== 0) continue
+    const originX = holder.x + holder.insetLeft
+    if (Math.abs(originX - t.x) > GLYPH_ORIGIN_TOLERANCE_PX)
+      glyphOriginWrong.push(
+        `"${expected}" drawn at x=${t.x.toFixed(1)}, box text starts at x=${originX.toFixed(1)}`,
+      )
+  }
+
   // --- Text the browser cuts off but the file carries whole: PowerPoint has no clipping ---
   const truncatedShipped: string[] = []
   for (const t of texts) {
     if (!t.clipped) continue
-    const expected = expectedText(t)
-    if (runsContaining(readback, expected).length > 0) truncatedShipped.push(expected)
+    if (holdersOf(readback, t).length > 0) truncatedShipped.push(expectedText(t))
   }
 
   // --- Bullets: a `list-style: none` chip row must not arrive with invented glyphs ---
@@ -521,6 +623,8 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     for (const ps of truth.pseudos) constructsLost.push(`pseudo: ${ps.hostTag}${ps.which}`)
     for (const f of flattened) constructsLost.push(`transform flattened: ${f}`)
     constructsLost.push(...rotationLost.map((r) => `rotation wrong: ${r}`))
+    for (const l of textLinesWrong) constructsLost.push(`text line not as rendered: ${l}`)
+    for (const g of glyphOriginWrong) constructsLost.push(`glyph origin wrong: ${g}`)
     for (const t of truncatedShipped) constructsLost.push(`clipped text shipped in full: "${t}"`)
     constructsLost.push(...surplusShapes.map((sh) => `surplus shape: ${sh}`))
     if (bulletsInvented > 0)
@@ -562,6 +666,8 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     bulletsInvented,
     surplusShapes,
     rotationLost,
+    textLinesWrong,
+    glyphOriginWrong,
     unmodelledProperties,
     rootPaintOps,
     rotationsExpected: corpus.rotations.length,

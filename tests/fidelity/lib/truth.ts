@@ -30,6 +30,8 @@ export type TruthText = {
   fontWeight: string
   fontStyle: string
   textTransform: string
+  /** The parent's computed `text-align`; the glyph-origin check applies to start-aligned text only. */
+  textAlign: string
   /** The parent element's own four transform properties, as computed. */
   transform: string
   rotate: string
@@ -91,6 +93,24 @@ export type TruthBox = {
   opacity: number
 }
 
+/**
+ * An element with a text node of its own, and what Chromium says that text READS as: `innerText`,
+ * which applies white-space collapsing, `text-transform`, `<br>`s and block boundaries (as `\n`)
+ * exactly as the reader sees them (M4.8b). It is the only rendered-text API the platform has, and
+ * it is computed by Chromium rather than by the exporter, so an emitted box whose lines are not
+ * among these lines has doubled, eaten or invented a space or a break. SVG text has no `innerText`
+ * and is recorded whitespace-normalized instead.
+ */
+export type TruthBlock = {
+  tag: string
+  x: number
+  y: number
+  w: number
+  h: number
+  /** The rendered lines of the element, `innerText.split('\n')`. */
+  lines: string[]
+}
+
 /** A `::before`/`::after` that paints. It has no measurable rect, so nothing can be emitted for it. */
 export type TruthPseudo = {
   hostTag: string
@@ -117,6 +137,7 @@ export type TruthRootPaint = {
 export type GroundTruth = {
   texts: TruthText[]
   boxes: TruthBox[]
+  blocks: TruthBlock[]
   pseudos: TruthPseudo[]
   bodyBg: string | null
   bodyBgImage: string
@@ -249,6 +270,7 @@ export function groundTruthScript(): string {
       x: b.x, y: b.y, w: b.width, h: b.height,
       color: toHex(cs.color), colorAlpha: alphaOf(cs.color), fontSizePx: parseFloat(cs.fontSize),
       fontWeight: cs.fontWeight, fontStyle: cs.fontStyle, textTransform: cs.textTransform,
+      textAlign: cs.textAlign,
       ...spec(cs), transformed: transformedAncestor(el),
       hostW: host.width, hostH: host.height,
       hostLayoutW: hostLayout.layoutW, hostLayoutH: hostLayout.layoutH,
@@ -274,12 +296,19 @@ export function groundTruthScript(): string {
     return { px, color };
   };
   const boxes = [];
+  const blocks = [];
+  // What the text of an element READS as, from Chromium itself. \`innerText\` is undefined on SVG
+  // elements, which fall back to their normalized text content.
+  const renderedLines = (el) =>
+    (typeof el.innerText === 'string' ? el.innerText : (el.textContent || '').replace(/\\s+/g, ' ').trim()).split('\\n');
   for (const el of document.body.querySelectorAll('*')) {
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     // A replaced element's OWN background still paints behind the replacement image; its
     // descendants do not render at all, so only a strict ancestor disqualifies the box.
     if (!painted(cs) || replacedAncestor(el.parentElement) || r.width < 0.5 || r.height < 0.5) continue;
+    if (!replacedAncestor(el) && [...el.childNodes].some((c) => c.nodeType === 3 && /[^ \\t\\n\\r\\f]/.test(c.data)))
+      blocks.push({ tag: el.tagName.toLowerCase(), x: r.x, y: r.y, w: r.width, h: r.height, lines: renderedLines(el) });
     if (pseudoPaints(el, '::before')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::before' });
     if (pseudoPaints(el, '::after')) pseudos.push({ hostTag: el.tagName.toLowerCase(), which: '::after' });
     const bgAlpha = alphaOf(cs.backgroundColor);
@@ -306,7 +335,7 @@ export function groundTruthScript(): string {
   };
   const bodyCs = getComputedStyle(document.body);
   return {
-    texts, boxes, pseudos,
+    texts, boxes, blocks, pseudos,
     bodyBg: alphaOf(bodyCs.backgroundColor) > 0.03 ? toHex(bodyCs.backgroundColor) : null,
     bodyBgImage: bodyCs.backgroundImage,
     rootPaint: { html: rootPaintOf(document.documentElement), body: rootPaintOf(document.body) },

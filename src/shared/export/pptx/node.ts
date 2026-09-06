@@ -9,8 +9,23 @@
  * with no browser and no Electron.
  *
  * The script is kept here as a source string — like `slideReadinessScript` — so the one thing a unit
- * test *can* pin about it (that it applies the leaf-text rule, the paint rule, and rejects invisible
+ * test *can* pin about it (that it applies the block-root rule, the paint rule, and rejects invisible
  * nodes) is asserted by substring rather than buried in an `executeJavaScript` call.
+ *
+ * ## Text is collected per block, one item per text node (M4.8b)
+ *
+ * Until M4.8b an element contributed text only when it had no element children — the leaf-text rule —
+ * and the bare text beside an inline element (`<p>a <b>b</b> c</p>` → `a `, ` c`) belonged to no leaf
+ * and was never visited (research §1.3(c)). The rule now keys on the **block**: every element whose
+ * computed `display` is not `inline`/`contents` is a *block root*, and its `inlineContent` is the
+ * sequence of text nodes reachable through inline descendants, each carrying the computed style of
+ * its own parent element, plus markers for `<br>`, for nested block children, and for atomic inline
+ * boxes. The walker turns that into one text box with one run per text node. A text node has exactly
+ * one block root, so nothing is emitted twice — the anti-double-render guarantee the leaf rule bought
+ * is kept by keying on the root rather than the leaf.
+ *
+ * Text is recorded **raw**: CSS white-space processing (collapsing, trimming at line edges) and
+ * `text-transform` are applied by the pure walker, where they are unit-tested against exact strings.
  *
  * ## The style subset is no longer the whole story (M4.8a, review r2)
  *
@@ -82,6 +97,14 @@ export type NodeStyle = TransformSpec & {
   borderRight: BorderSide
   borderBottom: BorderSide
   borderLeft: BorderSide
+  /**
+   * The padding, in px (M4.8b). The measured rect is the border box; the text a block carries starts
+   * at its content box, so padding and border width become the text box's inset.
+   */
+  paddingTop: string
+  paddingRight: string
+  paddingBottom: string
+  paddingLeft: string
   boxShadow: string
   filter: string
   backdropFilter: string
@@ -93,6 +116,63 @@ export type NodeStyle = TransformSpec & {
   /** `none` on a `list-style: none` chip row, where emitting a bullet invents a glyph (review r2). */
   listStyleType: string
 }
+
+/**
+ * The computed style of one text node's parent element — everything a run carries (M4.8b). Computed
+ * values are already inherited, so a `<strong>` inside a coloured `<p>` reports both the weight and
+ * the colour; nothing here is specified-vs-inherited.
+ */
+export type RunStyle = {
+  fontFamily: string
+  /** Resolved font size in CSS px. */
+  fontSize: number
+  fontWeight: string
+  fontStyle: string
+  /**
+   * The union of `text-decoration-line` up the ancestor chain. Decoration is not inherited but
+   * *propagates*: an underline on the `<p>` is drawn under the `<strong>` inside it, whose own
+   * computed value is `none`.
+   */
+  textDecorationLine: string
+  color: string
+  textTransform: string
+  letterSpacing: string
+  textShadow: string
+}
+
+/**
+ * The computed `white-space-collapse`, reduced to the three behaviours that change a run's text:
+ * collapse everything (`normal`, `nowrap`), preserve everything (`pre`, `pre-wrap`), or collapse
+ * spaces but keep segment breaks (`pre-line`).
+ */
+export type WhiteSpaceMode = 'collapse' | 'preserve' | 'preserve-breaks'
+
+/**
+ * One item of a block root's inline content, in DOM order (M4.8b).
+ *
+ * - `text` — a text node, verbatim, with the style and effective opacity of its parent element.
+ * - `br` — a `<br>`: a hard line break inside the same paragraph.
+ * - `block` — a nested block-level child. It has its own node and its own box; here it only ends
+ *   the paragraph.
+ * - `box` — an atomic inline (inline-block, inline-flex, a replaced `<img>`/`<svg>`, a float, a
+ *   `visibility: hidden` inline) that occupies space in the line no run can reproduce. It has its
+ *   own node when it paints or carries text; here it marks that the text after it will land
+ *   elsewhere in PowerPoint's own flow, which the scorer deducts for.
+ */
+export type InlineItem =
+  | {
+      kind: 'text'
+      text: string
+      whiteSpace: WhiteSpaceMode
+      style: RunStyle
+      /** The parent element's own `opacity` times every ancestor's. */
+      opacity: number
+      /** `href` of the nearest `<a>` ancestor, else `null`. */
+      href: string | null
+    }
+  | { kind: 'br' }
+  | { kind: 'block' }
+  | { kind: 'box' }
 
 /** One visible element from the measurement pass. Boxes are in CSS px, relative to the viewport. */
 export type SlideNode = {
@@ -106,13 +186,24 @@ export type SlideNode = {
   z: number
   /** DOM traversal order, the paint-order tiebreak within an equal `z`. */
   domIndex: number
-  /** True when the element has no element children — the only nodes that contribute text (§3.2). */
-  isLeaf: boolean
-  /** Trimmed text content; non-empty only for leaf nodes. */
-  text: string
-  /** `href` for an `<a>`, else `null`. */
-  href: string | null
-  /** `'ul' | 'ol'` when this leaf is inside a list item, for bullet emission. */
+  /**
+   * The text this element's box carries (M4.8b): its inline content when it is a block root that
+   * contains text, else empty. An SVG `<text>`/`<tspan>` leaf carries its own text as a single item.
+   */
+  inlineContent: InlineItem[]
+  /**
+   * For a `display: inline` element, the `domIndex` of the block root its text belongs to — the box
+   * that must be emitted *after* this element's own paint, so a highlighted span's background sits
+   * under the paragraph's glyphs rather than over them. `null` for a block root, and for an inline
+   * whose root is not itself a visible node.
+   */
+  inlineOf: number | null
+  /**
+   * True for a visible inline element whose block root is not visible (`visibility: hidden` on the
+   * block, `visible` re-declared inside it): its text belongs to no emitted box and is dropped.
+   */
+  orphanText: boolean
+  /** `'ul' | 'ol'` when this block carries the list marker of its `<li>`, for bullet emission. */
   listType: 'ul' | 'ol' | null
   /** For `<svg>`: count of drawable primitives (rect/circle/ellipse/line/path/polygon/polyline). */
   svgPrimitiveCount: number
@@ -127,12 +218,6 @@ export type SlideNode = {
   layoutH: number
   /** Every transformed ancestor's four transform properties, nearest first. Empty in the common case. */
   ancestorTransforms: TransformSpec[]
-  /**
-   * Direct text-node children with content on a NON-leaf element — text no leaf owns, which the
-   * leaf-text rule drops (`<p>a <b>b</b> c</p>` → 2). Always 0 on a leaf. Scored as a loss until
-   * M4.8b's run-level walk emits it.
-   */
-  bareTextCount: number
   /**
    * Own `opacity` times every ancestor's — the alpha the element actually paints at (M4.8a). Folded
    * into fill/line/run transparency by the walker; an 8 % watermark used to ship fully opaque.
@@ -150,10 +235,11 @@ export type SlideNode = {
    */
   escapingDescendants: number
   /**
-   * Px of this leaf's **own text** that its own `overflow` clips away (`scrollWidth − clientWidth`,
+   * Px of this block's **own text** that its own `overflow` clips away (`scrollWidth − clientWidth`,
    * or the block-axis equivalent). PowerPoint cannot clip, so the whole string ships and overflows:
    * an ellipsised headline arrives at full length, a three-of-six-lines tile spills over the footer
-   * (review r2). Always 0 on a non-leaf — a child escaping a clip is `escapingDescendants`.
+   * (review r2). Always 0 on an element with no text of its own — a child escaping a clip is
+   * `escapingDescendants`.
    */
   clippedTextPx: number
   /**
@@ -199,11 +285,23 @@ export type MeasureResult = {
   hasAnimation: boolean
 }
 
+/** True when a block root carries at least one text node with something other than collapsible space. */
+export function hasOwnText(node: SlideNode): boolean {
+  return node.inlineContent.some((item) => item.kind === 'text' && /[^ \t\n\r\f]/.test(item.text))
+}
+
+/** Every text item across the slide — what the scorer's per-run checks (font, shadow) range over. */
+export function textItems(nodes: readonly SlideNode[]): Extract<InlineItem, { kind: 'text' }>[] {
+  return nodes.flatMap((n) =>
+    n.inlineContent.filter((i): i is Extract<InlineItem, { kind: 'text' }> => i.kind === 'text'),
+  )
+}
+
 /**
  * The injected measurement script (source). Runs in the slide's sandboxed context and returns a
- * `MeasureResult`. Mirrors 60-export.md §3.2: visibility filter, leaf-text rule (only childless
- * elements carry text — prevents the double-render bug on nested spans), and a serializable style
- * subset. The walker classifies these nodes; nothing about CSS is interpreted here.
+ * `MeasureResult`. Mirrors 60-export.md §3.2: visibility filter, block-root text rule (each text node
+ * belongs to its nearest non-inline ancestor's box, so nothing is emitted twice), and a serializable
+ * style subset. The walker classifies these nodes; nothing about CSS is interpreted here.
  */
 export function slideMeasurementScript(): string {
   return `(() => {
@@ -212,6 +310,9 @@ export function slideMeasurementScript(): string {
   const CURRENTCOLOR = new Set(${JSON.stringify(CURRENTCOLOR_PROPERTIES)});
   const VALUE_SCOPED = ${JSON.stringify(VALUE_SCOPED_EXEMPTIONS)};
   const MAX_UNMODELLED = ${String(MAX_UNMODELLED_PER_NODE)};
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  // Elements whose box is a replacement, not a container for inline text: atomic in the line.
+  const REPLACED = new Set(['img', 'svg', 'canvas', 'video', 'audio', 'iframe', 'embed', 'object', 'input', 'select', 'textarea']);
   const alphaOf = (c) => {
     const m = /^rgba?\\(([^)]+)\\)$/.exec(c.trim());
     if (!m) return c === 'transparent' ? 0 : 1;
@@ -259,15 +360,81 @@ export function slideMeasurementScript(): string {
     }
     return n;
   };
-  // How much of a leaf's OWN text its own overflow cuts off. \`scrollWidth\`/\`scrollHeight\` include
+  // How much of a block's OWN text its own overflow cuts off. \`scrollWidth\`/\`scrollHeight\` include
   // the overflowing content; \`clientWidth\`/\`clientHeight\` are the visible padding box.
-  const clippedTextPx = (el, cs, isLeaf) => {
-    if (!isLeaf || (el.textContent || '').trim() === '') return 0;
+  const clippedTextPx = (el, cs, ownText) => {
+    if (!ownText) return 0;
     const contained = clipsByContain(cs);
     let px = 0;
     if (contained || clips(cs.overflowX)) px = Math.max(px, el.scrollWidth - el.clientWidth);
     if (contained || clips(cs.overflowY)) px = Math.max(px, el.scrollHeight - el.clientHeight);
     return Math.max(0, px);
+  };
+  // --- Run-level text (M4.8b) ---
+  // An element takes part in its parent's line rather than making a box of its own when its
+  // computed display is \`inline\` (and it is not replaced) or \`contents\`. Everything else — block,
+  // flex/grid items and floats (blockified in the computed value), list items, table cells,
+  // inline-block and friends, replaced elements — is a box: a block ROOT for the text inside it.
+  const inlineFlow = (el, cs) =>
+    cs.display === 'contents' || (cs.display === 'inline' && !REPLACED.has(el.tagName.toLowerCase()) && el.namespaceURI !== SVG_NS);
+  // An atomic inline sits IN the line without contributing runs; a float is out of flow but still
+  // shortens the lines beside it. Both leave a hole PowerPoint's own flow will close up.
+  const atomicInline = (cs) => cs.display.startsWith('inline-') || cs.float !== 'none';
+  const outOfFlow = (cs) => cs.position === 'absolute' || cs.position === 'fixed';
+  const whiteSpaceMode = (cs) => {
+    const c = cs.whiteSpaceCollapse || '';
+    if (c !== '') return c === 'collapse' ? 'collapse' : c === 'preserve-breaks' ? 'preserve-breaks' : 'preserve';
+    const w = cs.whiteSpace;
+    return w === 'pre-line' ? 'preserve-breaks' : (w === 'pre' || w === 'pre-wrap' || w === 'break-spaces') ? 'preserve' : 'collapse';
+  };
+  // Text decoration propagates to in-flow descendants without being inherited: the \`<strong>\`
+  // inside an underlined \`<p>\` computes \`none\` and is drawn underlined. The walk stops at the
+  // first box that is atomic or out of flow, which decoration does not cross.
+  const decorationChain = (el) => {
+    const parts = new Set();
+    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+      const pcs = getComputedStyle(p);
+      const d = pcs.textDecorationLine || 'none';
+      if (d !== 'none') for (const t of d.split(/\\s+/)) parts.add(t);
+      if (atomicInline(pcs) || outOfFlow(pcs)) break;
+    }
+    return parts.size > 0 ? [...parts].join(' ') : 'none';
+  };
+  const runStyle = (el, cs) => ({
+    fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize) || 0, fontWeight: cs.fontWeight,
+    fontStyle: cs.fontStyle, textDecorationLine: decorationChain(el), color: cs.color,
+    textTransform: cs.textTransform, letterSpacing: cs.letterSpacing, textShadow: cs.textShadow,
+  });
+  const hrefOf = (el) => { const a = el.closest('a[href]'); return a ? a.getAttribute('href') : null; };
+  // The inline content of one block root, in DOM order. Recurses through inline elements; a nested
+  // block ends the paragraph; an atomic inline, a float or a hidden inline leaves a \`box\` marker.
+  const collectInline = (el, items) => {
+    for (const c of el.childNodes) {
+      if (c.nodeType === 3) { items.push({ kind: 'text', text: c.data, el }); continue; }
+      if (c.nodeType !== 1) continue;
+      if (c.tagName.toLowerCase() === 'br') { items.push({ kind: 'br' }); continue; }
+      const ccs = getComputedStyle(c);
+      if (ccs.display === 'none' || outOfFlow(ccs)) continue;
+      if (inlineFlow(c, ccs)) {
+        if (ccs.visibility !== 'visible' && ccs.display !== 'contents') { items.push({ kind: 'box' }); continue; }
+        collectInline(c, items);
+        continue;
+      }
+      items.push({ kind: atomicInline(ccs) || REPLACED.has(c.tagName.toLowerCase()) || c.namespaceURI === SVG_NS ? 'box' : 'block' });
+    }
+    return items;
+  };
+  const hasText = (items) => items.some((i) => i.kind === 'text' && /[^ \\t\\n\\r\\f]/.test(i.text));
+  const finishInline = (items) => items.map((i) => {
+    if (i.kind !== 'text') return i;
+    const pcs = getComputedStyle(i.el);
+    return { kind: 'text', text: i.text, whiteSpace: whiteSpaceMode(pcs), style: runStyle(i.el, pcs), opacity: effectiveOpacity(i.el), href: hrefOf(i.el) };
+  });
+  const blockRootOf = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (!inlineFlow(p, getComputedStyle(p))) return p;
+    }
+    return document.body;
   };
   // The baseline every element is censused against: its own tag's computed style under the UA
   // stylesheet alone. A single \`all: initial\` probe is NOT enough — the HTML UA stylesheet sets
@@ -337,47 +504,81 @@ export function slideMeasurementScript(): string {
   const nodes = [];
   const all = document.body ? document.body.querySelectorAll('*') : [];
   const replaced = new Set();
+  const rootIndex = new Map();
+  const bulletedLis = new Set();
   let domIndex = 0;
-  for (const el of all) {
+  // <body> is a block root like any other when text sits directly in it (or in an inline child of
+  // it); it is outside \`querySelectorAll('*')\`, so it is walked first, with its paint left to
+  // \`RootPaint\` — the slide background already carries it.
+  const bodyItems = document.body ? collectInline(document.body, []) : [];
+  const elements = hasText(bodyItems) ? [document.body, ...all] : [...all];
+  for (const el of elements) {
     if (el.parentElement !== null && replaced.has(el.parentElement)) { replaced.add(el); continue; }
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     const isReplaced = contentReplaced(cs);
     if (isReplaced) replaced.add(el);
     if (!visible(el, cs, r)) continue;
-    const isLeaf = el.children.length === 0;
     const tag = el.tagName.toLowerCase();
-    const inSvg = el.namespaceURI === 'http://www.w3.org/2000/svg' || el.closest('svg') !== null;
+    const isBody = el === document.body;
+    const inSvg = el.namespaceURI === SVG_NS || el.closest('svg') !== null;
     const ancestorTransforms = [];
     for (let p = el.parentElement; p; p = p.parentElement) {
       const t = transformSpec(getComputedStyle(p));
       if (transformed(t)) ancestorTransforms.push(t);
     }
-    let bareTextCount = 0;
-    if (!isLeaf && !isReplaced) for (const c of el.childNodes) if (c.nodeType === 3 && (c.textContent || '').trim() !== '') bareTextCount++;
+    // Inline text of this root. A replaced element renders an image instead of its children; SVG
+    // keeps the leaf rule, since a childless <text>/<tspan> is one run.
+    let inlineContent = [];
+    let inlineOf = null;
+    let orphanText = false;
+    if (!isReplaced) {
+      if (inSvg) {
+        if (el.children.length === 0 && (el.textContent || '').trim() !== '')
+          inlineContent = [{ kind: 'text', text: el.textContent, whiteSpace: 'collapse', style: runStyle(el, cs), opacity: effectiveOpacity(el), href: null }];
+      } else if (isBody) {
+        inlineContent = finishInline(bodyItems);
+      } else if (inlineFlow(el, cs)) {
+        const root = blockRootOf(el);
+        const idx = rootIndex.get(root);
+        if (idx !== undefined) inlineOf = idx;
+        else orphanText = /[^ \\t\\n\\r\\f]/.test(el.textContent || '');
+      } else {
+        const items = collectInline(el, []);
+        if (hasText(items)) inlineContent = finishInline(items);
+      }
+    }
+    const ownText = inlineContent.length > 0;
+    rootIndex.set(el, domIndex);
+    // The list marker belongs to the FIRST block that carries text inside the <li>: the <li>
+    // itself when its text is direct, else the <p> markdown-style lists put inside it. Every later
+    // block in the same <li> would otherwise invent a second marker.
     let listType = null;
-    const li = el.closest('li');
-    if (li) { const list = li.parentElement; listType = list && list.tagName.toLowerCase() === 'ol' ? 'ol' : 'ul'; }
+    const li = ownText && !inSvg ? el.closest('li') : null;
+    if (li && !bulletedLis.has(li)) {
+      bulletedLis.add(li);
+      const list = li.parentElement;
+      listType = list && list.tagName.toLowerCase() === 'ol' ? 'ol' : 'ul';
+    }
     nodes.push({
       slId: el.getAttribute('data-sl-id') || null,
       tag,
       x: r.x, y: r.y, w: r.width, h: r.height,
       z: cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0),
       domIndex: domIndex++,
-      isLeaf,
-      text: isLeaf && !isReplaced ? (el.textContent || '').trim() : '',
-      href: tag === 'a' ? el.getAttribute('href') : null,
+      inlineContent,
+      inlineOf,
+      orphanText,
       listType,
       svgPrimitiveCount: tag === 'svg' ? el.querySelectorAll(SVG_PRIMS).length : 0,
       src: tag === 'img' ? (el.currentSrc || el.src || null) : null,
       layoutW: el.offsetWidth > 0 ? el.offsetWidth : r.width,
       layoutH: el.offsetHeight > 0 ? el.offsetHeight : r.height,
       ancestorTransforms,
-      bareTextCount,
       effectiveOpacity: effectiveOpacity(el),
       paintedPseudoCount: (pseudoPaints(el, '::before') ? 1 : 0) + (pseudoPaints(el, '::after') ? 1 : 0),
       escapingDescendants: escapingDescendants(el, cs, r),
-      clippedTextPx: clippedTextPx(el, cs, isLeaf),
+      clippedTextPx: clippedTextPx(el, cs, ownText),
       // SVG interiors are accounted for wholesale by the SVG deduction and the coverage metric —
       // the walker never emits them — so a per-property census there would say nothing new.
       unmodelledProperties: inSvg ? [] : censusOf(el, cs, tag),
@@ -386,9 +587,13 @@ export function slideMeasurementScript(): string {
         fontStyle: cs.fontStyle, textDecorationLine: cs.textDecorationLine || '',
         color: cs.color, textAlign: cs.textAlign, lineHeight: cs.lineHeight,
         letterSpacing: cs.letterSpacing, textTransform: cs.textTransform, textShadow: cs.textShadow,
-        backgroundColor: cs.backgroundColor, backgroundImage: cs.backgroundImage,
+        // <body>'s own paint is the slide background (RootPaint); repeating it as a shape would
+        // stack a second copy over it.
+        backgroundColor: isBody ? 'rgba(0, 0, 0, 0)' : cs.backgroundColor,
+        backgroundImage: isBody ? 'none' : cs.backgroundImage,
         borderRadius: cs.borderRadius,
         borderTop: side(cs, 'Top'), borderRight: side(cs, 'Right'), borderBottom: side(cs, 'Bottom'), borderLeft: side(cs, 'Left'),
+        paddingTop: cs.paddingTop, paddingRight: cs.paddingRight, paddingBottom: cs.paddingBottom, paddingLeft: cs.paddingLeft,
         boxShadow: cs.boxShadow, filter: cs.filter, backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || 'none',
         mixBlendMode: cs.mixBlendMode, clipPath: cs.clipPath || 'none',
         writingMode: cs.writingMode, overflow: cs.overflow, position: cs.position,
