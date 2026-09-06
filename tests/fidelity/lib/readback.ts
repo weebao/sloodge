@@ -46,6 +46,13 @@ export type ReadbackShape = {
   /** `<a:bodyPr>` left/top insets in CSS px — where the first run starts inside the box. */
   insetLeft: number
   insetTop: number
+  /** `<a:bodyPr anchor>`: `t`/`ctr`/`b`, or null when absent. */
+  anchor: string | null
+  /**
+   * The first paragraph's `<a:lnSpc><a:spcPct>` as a multiple (1.6 for `val="160000"`), or null
+   * when the paragraph has no line spacing — PowerPoint's single spacing (M4.8b r1).
+   */
+  lineSpacing: number | null
   fill: string | null
   /** Alpha of the shape fill, 0–1. */
   fillOpacity: number
@@ -106,6 +113,13 @@ function firstSrgb(xml: string): string | null {
 function firstAlpha(xml: string): number {
   const m = /<a:alpha val="(\d+)"\s*\/>/.exec(xml)
   return m?.[1] === undefined ? 1 : parseInt(m[1], 10) / 100000
+}
+
+/** The first paragraph's percentage line spacing, as a multiple; null when it carries none. */
+function parseLineSpacing(txBody: string): number | null {
+  const pPr = /<a:pPr\b[\s\S]*?<\/a:pPr>/.exec(txBody)?.[0] ?? ''
+  const m = /<a:lnSpc><a:spcPct val="(\d+)"\/><\/a:lnSpc>/.exec(pPr)
+  return m?.[1] === undefined ? null : parseInt(m[1], 10) / 100000
 }
 
 /** Visual lines: each `<a:p>` is one or more lines, split again at every `<a:br/>`. */
@@ -175,6 +189,8 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
     lines: parseLines(txBody),
     insetLeft: emuAttrToPx(attr(bodyPr, 'lIns')),
     insetTop: emuAttrToPx(attr(bodyPr, 'tIns')),
+    anchor: attr(bodyPr, 'anchor'),
+    lineSpacing: parseLineSpacing(txBody),
     fill: firstSrgb(spPrNoLine),
     fillOpacity: firstAlpha(spPrNoLine),
     line: ln === '' ? null : firstSrgb(ln),

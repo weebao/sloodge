@@ -25,7 +25,7 @@
  * Do not add `sanitizeXmlText` calls here — the boundary owns it.
  */
 
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
 import { MAX_IMAGE_DATA_URL_BYTES, isImageDataUrl } from '../../shared/export/pptx/image'
 import { createSafePptxDeck, type SafePptxSlide, type SafeTextRun } from './safe-pptx'
@@ -258,14 +258,26 @@ export function singleParagraphProperties(slideXml: string): string {
   })
 }
 
-/** Rewrite every slide part of the package through `singleParagraphProperties`. */
+/**
+ * Rewrite every slide part of the package through `singleParagraphProperties`. The package is
+ * returned untouched when no slide part changed, and pictures are stored rather than deflated
+ * again: a 40-slide raster deck spent 1–4 s re-compressing 16 MB of PNG captures for 0 bytes (r1).
+ */
 function normalizeSlideParts(pptx: Uint8Array): Uint8Array {
   const parts = unzipSync(pptx)
-  for (const name of Object.keys(parts)) {
-    if (!/^ppt\/slides\/slide\d+\.xml$/.test(name)) continue
-    parts[name] = strToU8(singleParagraphProperties(strFromU8(parts[name]!)))
+  const out: Zippable = {}
+  let changed = false
+  for (const [name, bytes] of Object.entries(parts)) {
+    if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) {
+      const xml = strFromU8(bytes)
+      const once = singleParagraphProperties(xml)
+      if (once !== xml) changed = true
+      out[name] = strToU8(once)
+    } else {
+      out[name] = name.startsWith('ppt/media/') ? [bytes, { level: 0 }] : bytes
+    }
   }
-  return zipSync(parts)
+  return changed ? zipSync(out) : pptx
 }
 
 /**

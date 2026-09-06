@@ -330,6 +330,26 @@ describe('walkSlide run-level text boxes (M4.8b)', () => {
     expect(textShapes(walkSlide(makeMeasure([plain])).shapes)[0]!.inset).toBeUndefined()
   })
 
+  it("sets the box's line spacing from the BLOCK's line-height/font-size, whatever sizes its runs have, anchored top", () => {
+    // `<li style="font-size:22px; line-height:1.6">Sized <span style="font-size:34px">bigger</span></li>`:
+    // Chromium computes the li's line-height to 35.2px. The paragraph gets 1.6 — proportional, as
+    // the unitless value gives each run — not 35.2/34 from the larger run. (r1: `lineSpacingMultiple`
+    // had no test, and `readback.ts` could not see `<a:lnSpc>`.)
+    const li = makeNode({
+      tag: 'li',
+      style: { fontSize: 22, lineHeight: '35.2px' },
+      inlineContent: [textItem('Sized ', { fontSize: 22 }), textItem('bigger', { fontSize: 34 })],
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([li])).shapes)
+    expect(box!.lineSpacingMultiple).toBe(1.6)
+    expect(box!.valign).toBe('top')
+    // `line-height: normal` emits no spacing at all — PowerPoint's own single spacing.
+    const normal = makeNode({ text: 'Plain', style: { fontSize: 22, lineHeight: 'normal' } })
+    expect(
+      textShapes(walkSlide(makeMeasure([normal])).shapes)[0]!.lineSpacingMultiple,
+    ).toBeUndefined()
+  })
+
   it('scales the inset with a scaled element, like the font size', () => {
     const scaled = makeNode({
       text: '42%',

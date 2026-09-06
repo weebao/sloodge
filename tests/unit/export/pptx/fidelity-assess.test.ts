@@ -72,6 +72,8 @@ function shape(overrides: Partial<ReadbackShape> = {}): ReadbackShape {
     lines: [],
     insetLeft: 0,
     insetTop: 0,
+    anchor: 't',
+    lineSpacing: null,
     fill: 'FF0000',
     fillOpacity: 1,
     line: null,
@@ -252,6 +254,19 @@ describe('surplusShapes catches fabrication without being told what was fabricat
       [truthText('Visible heading'), truthText('EMEA', { inSvg: true })],
     )
     expect(a.surplusShapes).toEqual([])
+  })
+
+  it('is case-sensitive except for `capitalize`, whose casing the rendered-line check judges (r1)', () => {
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const shouted = shape({ runs: [{ ...run, text: 'QUIET WORDS' }], text: 'QUIET WORDS' })
+    // `text-transform: none` and a run in the wrong case: the node is lost, not matched loosely.
+    expect(assess([], [shouted], [truthText('quiet words')]).lostText).toEqual(['quiet words'])
+    // `capitalize` matches case-insensitively here; the exact casing is `textLinesWrong`'s.
+    const titled = shape({ runs: [{ ...run, text: 'Quiet Words' }], text: 'Quiet Words' })
+    expect(
+      assess([], [titled], [truthText('quiet words', { textTransform: 'capitalize' })]).lostText,
+    ).toEqual([])
+    // Mutation: widen `fold()` to every transform → the first assertion passes 'QUIET WORDS' as kept.
   })
 
   it('matches an uppercased run against its untransformed source text', () => {
