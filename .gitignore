@@ -27,3 +27,6 @@ perf/results/*.trace.json
 perf/results/export-*
 perf/results/run-*.json
 perf/results/sweep-*.json
+
+# Model-escalation tier is local session state, not product code
+.claude/model-policy.json
