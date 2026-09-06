@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  ENUMERATE_TIMEOUT_MS,
   enumerateSystemFonts,
   parseFcListOutput,
   parsePowerShellOutput,
@@ -98,19 +99,26 @@ describe('enumerateSystemFonts', () => {
     await expect(enumerateSystemFonts('freebsd')).resolves.toEqual({ families: [], source: 'none' })
   })
 
-  it('always resolves with an already-normalised result, whatever the platform tool does', async () => {
-    // Asserted as invariants rather than as a fixed list, because this one really does run the
-    // Windows enumerator where the host can reach it (under WSL, `powershell.exe` resolves through
-    // interop and answers in ~0.5 s with the Windows host's families) and fails to spawn anywhere
-    // else. Both outcomes must be well-formed: a rejected promise would leave the dropdown stuck on
-    // "loading", and an unnormalised one would put OS-authored strings into slide CSS.
-    const result = await enumerateSystemFonts('win32')
-    expect(['powershell', 'none']).toContain(result.source)
-    expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
-    for (const name of result.families) {
-      expect(isValidFontFamilyName(name), name).toBe(true)
-    }
-    // Idempotent under normalisation: already sorted, deduped and allow-listed.
-    expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
-  })
+  it(
+    'always resolves with an already-normalised result, whatever the platform tool does',
+    async () => {
+      // Asserted as invariants rather than as a fixed list, because this one really does run the
+      // Windows enumerator where the host can reach it (under WSL, `powershell.exe` resolves through
+      // interop and answers in ~0.5 s with the Windows host's families) and fails to spawn anywhere
+      // else. Both outcomes must be well-formed: a rejected promise would leave the dropdown stuck on
+      // "loading", and an unnormalised one would put OS-authored strings into slide CSS.
+      const result = await enumerateSystemFonts('win32')
+      expect(['powershell', 'none']).toContain(result.source)
+      expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
+      for (const name of result.families) {
+        expect(isValidFontFamilyName(name), name).toBe(true)
+      }
+      // Idempotent under normalisation: already sorted, deduped and allow-listed.
+      expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
+    },
+    // The "times out" outcome is one of the ones under test, and it takes the enumerator's own
+    // timeout to arrive — under a loaded host, interop `powershell.exe` has taken longer than
+    // vitest's 5 s default and this test died before its subject had answered.
+    ENUMERATE_TIMEOUT_MS + 2_000,
+  )
 })
