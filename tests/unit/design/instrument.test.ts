@@ -362,6 +362,9 @@ function generateLargeSlide(rows: number): string {
   return parts.join('')
 }
 
+/** Samples per measurement in the scaling test; see its docblock for why best-of-N is used. */
+const BEST_OF = 5
+
 describe('instrument — performance', () => {
   /**
    * Rebuilding the whole document once per insertion is O(elements x length). Measured on this
@@ -411,6 +414,19 @@ describe('instrument — performance', () => {
     expect(buildMs + instrumentMs).toBeLessThan(2000)
   })
 
+  /**
+   * A single wall-clock sample of a ~5ms operation cannot tell linear from quadratic on a loaded
+   * machine. Measured here over 8 repetitions while other work ran: the 1000-row sample alone
+   * ranged 1.83ms - 85.91ms, a 47x spread, and the resulting ratio reached 35.7 and 31.45 against
+   * this 30 ceiling in two separate CI-style runs. The noise had grown into the band the assertion
+   * exists to detect, so the test was failing for reasons unrelated to complexity.
+   *
+   * Best-of-N fixes it because scheduler noise, GC and CPU contention can only ever *add* time:
+   * the minimum of several samples is the least-contaminated estimate of the true cost, and taking
+   * it on both sides removes the fast-denominator/slow-numerator pairing that produced the spikes.
+   * Re-measured with best-of-5: max ratio 10.58 across 8 repetitions (median 8.83), against a
+   * quadratic that runs ~44x in practice. The 30 ceiling now sits well clear of both.
+   */
   it('scales roughly linearly rather than quadratically', () => {
     const time = (rows: number): number => {
       const map = buildSlideMap(SLIDE_ID, generateLargeSlide(rows))
@@ -418,11 +434,16 @@ describe('instrument — performance', () => {
       instrument(map)
       return performance.now() - started
     }
+    const best = (rows: number): number => {
+      let fastest = Infinity
+      for (let attempt = 0; attempt < BEST_OF; attempt += 1) fastest = Math.min(fastest, time(rows))
+      return fastest
+    }
 
     // Warm up so the first measurement does not pay JIT costs the second avoids.
     time(500)
-    const small = Math.max(time(1000), 0.5)
-    const large = time(8000)
+    const small = Math.max(best(1000), 0.5)
+    const large = best(8000)
 
     // 8x the input. Linear would be ~8x; the quadratic version was ~64x (and 44x in practice).
     expect(large / small).toBeLessThan(30)
