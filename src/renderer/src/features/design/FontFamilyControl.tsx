@@ -37,6 +37,7 @@ import {
   useId,
   useMemo,
   useRef,
+  useLayoutEffect,
   useState,
   type CSSProperties,
   type JSX,
@@ -60,6 +61,9 @@ const VIEWPORT_ROWS = 8
 const OVERSCAN_ROWS = 4
 
 const LIST_HEIGHT_PX = ROW_HEIGHT_PX * VIEWPORT_ROWS
+
+/** Gap between the trigger's top edge and the popover's bottom edge. */
+const POPOVER_GAP_PX = 4
 
 /** Loads the machine's families. Injected by tests; defaults to the preload bridge. */
 export type SystemFontLoader = () => Promise<SystemFontsResponse>
@@ -158,6 +162,8 @@ export function FontFamilyControl({
   const [activeIndex, setActiveIndex] = useState(-1)
   const [scrollTop, setScrollTop] = useState(0)
   const [fonts, setFonts] = useState<SystemFontsResponse | null>(null)
+  // The popover's `style`, held in state so the JSX prop is the same object across renders.
+  const [anchor, setAnchor] = useState<CSSProperties | null>(null)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
@@ -267,6 +273,41 @@ export function FontFamilyControl({
       document.removeEventListener('pointerdown', onPointerDown)
     }
   }, [open, close])
+
+  // Where the popover goes, measured from the trigger rather than laid out around it. The control
+  // lives in the property panel, which since M3.11 is a fixed-height dock with `overflow-y-auto` —
+  // and an `absolute bottom-full` popover inside a scrolling container is clipped at the
+  // container's top edge. Measured in the built renderer: the filter input and every row but the
+  // last two were hidden above the dock. `position: fixed` takes the viewport as its containing
+  // block, so the dock's overflow no longer applies, and the popover stays a descendant of
+  // `rootRef` so the click-away and focusout logic above keep working — a portal would have moved
+  // it out of `contains` for both. Re-measured on scroll (captured, so the dock's own counts) and
+  // resize, because a fixed box does not follow a trigger that moves under it. Nothing between
+  // here and the root carries a transform or filter, which is what would re-parent a fixed box.
+  useLayoutEffect(() => {
+    if (!open) return
+    const measure = (): void => {
+      const rect = triggerRef.current?.getBoundingClientRect()
+      if (rect === undefined) return
+      const next: CSSProperties = {
+        position: 'fixed',
+        left: rect.left,
+        bottom: window.innerHeight - rect.top + POPOVER_GAP_PX,
+      }
+      setAnchor((previous) =>
+        previous !== null && previous.left === next.left && previous.bottom === next.bottom
+          ? previous
+          : next,
+      )
+    }
+    measure()
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
 
   const choose = useCallback(
     (name: string): void => {
@@ -468,8 +509,12 @@ export function FontFamilyControl({
         </span>
       ) : null}
 
-      {open ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-64 rounded-md border border-chrome-line bg-white p-1 shadow-lg dark:border-ink-line dark:bg-ink">
+      {open && anchor !== null ? (
+        <div
+          data-testid="font-popover"
+          style={anchor}
+          className="z-20 w-64 rounded-md border border-chrome-line bg-white p-1 shadow-lg dark:border-ink-line dark:bg-ink"
+        >
           <input
             autoFocus
             type="text"

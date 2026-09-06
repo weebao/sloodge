@@ -168,6 +168,41 @@ describe('FontFamilyControl — ARIA', () => {
   })
 })
 
+describe('FontFamilyControl — placement', () => {
+  it('anchors the popover to the trigger in viewport space, not inside the scrolling dock', async () => {
+    // happy-dom lays nothing out, so the trigger's rect is scripted. What the assertion pins is the
+    // arithmetic and the positioning scheme: `fixed`, above the trigger, with the gap — `absolute
+    // bottom-full` would put the popover back inside the dock's `overflow-y-auto` clip.
+    const rect = { top: 500, left: 40 }
+    render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
+    const trigger = screen.getByTestId('prop-fontFamily')
+    trigger.getBoundingClientRect = () => ({
+      ...rect,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const innerHeight = vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(800)
+    fireEvent.click(trigger)
+    const popover = await screen.findByTestId('font-popover')
+    expect(popover.style.position).toBe('fixed')
+    expect(popover.style.left).toBe('40px')
+    expect(popover.style.bottom).toBe('304px')
+
+    // The dock scrolled under the open popover: the trigger moved, so the popover must follow.
+    rect.top = 460
+    fireEvent.scroll(document.body)
+    await waitFor(() => {
+      expect(popover.style.bottom).toBe('344px')
+    })
+    innerHeight.mockRestore()
+  })
+})
+
 describe('FontFamilyControl — keyboard', () => {
   it('opens from the trigger with ArrowDown', async () => {
     render(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
