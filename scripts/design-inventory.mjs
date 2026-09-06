@@ -493,7 +493,7 @@ const CURRENT_PAIRS = [
     'text',
     ['chrome-muted', 'white'],
     ['ink-muted', 'ink-alt'],
-    'ThumbnailPreview:470 (9px), ChatPanel:141 placeholder/258/272/281, ArrangeBar:147',
+    'ThumbnailPreview:81 (9px), ChatPanel:141 placeholder/258/272/281, ArrangeBar:147',
   ),
   p('text', ['chrome-muted', 'chrome-alt'], ['ink-muted', 'ink-alt'], 'AuthTab:132/140'),
   p(
@@ -797,6 +797,7 @@ const PROPOSED_LIGHT = `
   --color-edit: oklch(0.546 0.245 262.9);
   --color-guide: oklch(0.600 0.118 184.7);
   --color-hud: oklch(0 0 0 / 0.7);
+  --color-hud-strong: oklch(0 0 0 / 0.85);
   --color-hud-fg: oklch(1 0 0);
   --color-scrim: oklch(0 0 0 / 0.4);
 `
@@ -867,6 +868,11 @@ const PROPOSED_PAIRS = [
   q('text', 'success', 'success-soft', 'success notice text'),
   q('text', 'hud-fg', 'hud over surface-raised', 'zoom pill, overlay dimension label'),
   q('text', 'hud-fg', 'hud over canvas', 'HUD over the mat'),
+  q('text', 'hud-fg', 'hud-strong over surface-raised', 'HUD pill on hover'),
+  q('text', 'hud-fg/70', 'hud over surface-raised', 'secondary HUD text (breadcrumb parents)'),
+  q('text', 'text', 'danger-soft', 'Notice body on a danger tint'),
+  q('text', 'text', 'warning-soft', 'Notice body on a warning tint'),
+  q('text', 'text', 'success-soft', 'Notice body on a success tint'),
   q('ui', 'line-strong', 'surface', 'control border on panels'),
   q('ui', 'line-strong', 'surface-raised', 'control border on the toolbar row'),
   q('ui', 'line-strong', 'field', 'input border vs its own fill'),
