@@ -196,3 +196,33 @@ describe('buildDuplicatePatch — hostile corpus', () => {
     })
   }
 })
+
+describe('buildDuplicatePatch — the nudge follows inspectTransform (loud, not lossy)', () => {
+  it('folds the offset into a px translate and keeps the rotation', () => {
+    const source = '<div style="transform: translate(10px, 20px) rotate(30deg)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.nudged).toBe(true)
+    expect(result.source).toContain('translate(26px, 36px) rotate(30deg)')
+  })
+
+  it('prepends a parent-space translate to an opaque transform, leaving the matrix intact', () => {
+    const source = '<div style="transform: matrix(1, 0, 0, 1, 5, 5)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.nudged).toBe(true)
+    // Leading, so it is applied last — a screen shift whatever the matrix does. Mutation guard:
+    // appending it (inside the matrix's frame) or dropping the matrix reds here.
+    expect(result.source.slice(result.cloneStart)).toContain(
+      'transform: translate(16px, 16px) matrix(1, 0, 0, 1, 5, 5)',
+    )
+    // The original is byte-identical.
+    expect(result.source.slice(0, result.cloneStart)).toBe(source)
+  })
+
+  it('leaves a percentage-translated clone in place and says so, rather than writing -34px', () => {
+    const source = '<div style="transform: translate(-50%, -50%)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.nudged).toBe(false)
+    expect(result.source).toBe(source + source)
+    expect(result.source).not.toContain('px')
+  })
+})

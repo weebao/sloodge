@@ -173,7 +173,16 @@ function translateOps(
   return setStyleProp(source, element, 'transform', next)
 }
 
-/** Rebuild a transform string, replacing only its `translate` with `translate(x, y)`. */
+/**
+ * Rebuild a transform string, replacing only its `translate` with `translate(x, y)`.
+ *
+ * A translate that was absent is **prepended**, not appended. CSS applies a transform list right to
+ * left, so the leading function is the one that acts in the parent's frame: `translate(10px, 0)
+ * rotate(30deg)` shifts the element 10px right on screen, while `rotate(30deg) translate(10px, 0)`
+ * shifts it 10px along its own tilted axis — an X edit (or an M3.5 drag) on an element M3.6 has
+ * rotated would otherwise move it in the wrong direction. Prepending is also §5.3's canonical
+ * `translate → rotate → scale` order. An existing translate is replaced where it stands.
+ */
 function replaceTranslate(transform: string, x: string, y: string): string {
   const fns = parseTransform(transform)
   let replaced = false
@@ -184,7 +193,7 @@ function replaceTranslate(transform: string, x: string, y: string): string {
     }
     return `${fn.name}(${fn.args})`
   })
-  if (!replaced) out.push(`translate(${x}, ${y})`)
+  if (!replaced) out.unshift(`translate(${x}, ${y})`)
   return out.join(' ')
 }
 

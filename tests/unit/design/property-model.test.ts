@@ -260,10 +260,19 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
-  it('preserves other transform functions when editing translate', () => {
+  it('preserves other transform functions, prepending a new translate so it acts in parent space', () => {
+    // `rotate(4deg) translate(10px, 0)` would shift the element along its own tilted axis; the
+    // leading position is the one CSS applies last, i.e. in the parent's frame (§5.3 canonical order).
+    // Mutation guard: appending the translate (the M3.3 behaviour) reds here.
     expect(edit('<div style="transform: rotate(4deg)">x</div>', 0, 'x', '10')).toBe(
-      '<div style="transform: rotate(4deg) translate(10px, 0)">x</div>',
+      '<div style="transform: translate(10px, 0) rotate(4deg)">x</div>',
     )
+  })
+
+  it('replaces an existing translate where it stands', () => {
+    expect(
+      edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),
+    ).toBe('<div style="transform: translate(10px, 2px) rotate(4deg)">x</div>')
   })
 })
 

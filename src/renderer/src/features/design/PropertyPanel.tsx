@@ -44,6 +44,7 @@ import {
   type PropertyField,
 } from '../../../../shared/design/property-model'
 import { themeColorSwatches, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
+import { readTransformShape } from '../../../../shared/design/transform-commit'
 import { useChatContextStore } from '../chat/chatContextStore'
 import type { SlideView } from '../../stores/deckStore'
 import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckStore'
@@ -154,6 +155,11 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
   // The selected sl-id no longer resolves (e.g. a structural edit reparsed the slide): show the
   // shell but no fields rather than guessing an element. Re-resolution by path is M3.5's job.
   const values = element === null ? null : readPropertyValues(map.source, element)
+  // Same gate as the overlay's handles: a transform the flip cannot compose into is refused with
+  // its reason rather than reordered (see `transform.ts`).
+  const transformShape = element === null ? null : readTransformShape(map.source, element)
+  const transformLock =
+    transformShape !== null && !transformShape.editable ? transformShape.reason : null
 
   return (
     <section
@@ -189,6 +195,7 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
             values={values}
             swatches={swatches}
             picker={resolvedPicker}
+            transformLock={transformLock}
           />
           <div className="mt-2">
             <button
@@ -212,6 +219,8 @@ interface PropertyFieldsProps {
   readonly values: ReturnType<typeof readPropertyValues>
   readonly swatches: readonly ThemeSwatch[]
   readonly picker: ColorPicker | null
+  /** Why the transform buttons are off (an opaque `transform`, M3.6), or `null` when they work. */
+  readonly transformLock: string | null
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -222,6 +231,7 @@ function PropertyFields({
   values,
   swatches,
   picker,
+  transformLock,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -360,7 +370,9 @@ function PropertyFields({
           type="button"
           data-testid="transform-flip-h"
           onClick={flipH}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+          disabled={transformLock !== null}
+          title={transformLock ?? undefined}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip H
         </button>
@@ -368,7 +380,9 @@ function PropertyFields({
           type="button"
           data-testid="transform-flip-v"
           onClick={flipV}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+          disabled={transformLock !== null}
+          title={transformLock ?? undefined}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip V
         </button>

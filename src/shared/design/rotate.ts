@@ -10,22 +10,36 @@
  * angle minus that start angle is the rotation the user has swept, added to the element's rotation
  * when the gesture began. Measuring the *delta* this way makes the handle grab-point-agnostic: it
  * does not matter where on the handle the pointer landed, only how far around the centre it travels.
+ *
+ * ## Snapping: free by default, magnetic at 0/45/90, `Shift` forces the grid
+ *
+ * PowerPoint rotates freely and lets `Shift` force 15° steps; the roadmap asks for a snap at
+ * 0/45/90. Both hold: an unmodified drag is free but **magnetic** — within `SNAP_MAGNET_TOLERANCE_DEG`
+ * of a multiple of 45° it lands exactly on it, so squaring an element up is a flick rather than a
+ * hunt — `Shift` forces the 15° grid (which contains 0/45/90), and `Alt` bypasses the magnet for a
+ * deliberate 44°. The first M3.6 cut snapped to 45° *always* unless `Alt` was held, which made a 30°
+ * tilt unreachable without a modifier nobody is told about.
+ *
+ * Every result is a **whole degree**. That is what keeps repeated drags from drifting: each gesture
+ * starts from the integer the source already holds (never from an accumulated float), sweeps a
+ * pointer-measured delta, and commits an integer again, so ten nudges of 10° land on exactly 100°
+ * and the source never carries `rotate(99.99997deg)`.
  */
 
 import type { Point } from './overlay-geometry'
 
 /** The keyboard modifiers that change rotation snapping, read live from the pointer event. */
 export interface RotateModifiers {
-  /** Snap to a finer 15° grid instead of the default 45°. */
+  /** Force the 15° grid. */
   readonly shift: boolean
-  /** Free rotation: snap only to whole degrees, overriding the 45°/15° grid. */
+  /** Bypass the 45° magnet: whole degrees only. */
   readonly alt: boolean
 }
 
-/** Snap increments, in degrees: the default 45° grid, the `Shift` 15° grid, the `Alt` free 1°. */
-export const SNAP_COARSE_DEG = 45
-export const SNAP_FINE_DEG = 15
-export const SNAP_FREE_DEG = 1
+/** The magnetic grid (0/45/90/…), how close a free drag must come to it to snap, and `Shift`'s grid. */
+export const SNAP_MAGNET_DEG = 45
+export const SNAP_MAGNET_TOLERANCE_DEG = 4
+export const SNAP_FORCED_DEG = 15
 
 /** Fold any angle into `[0, 360)`, so `-90°` and `270°` and `630°` all read as `270°`. */
 export function normalizeDeg(degrees: number): number {
@@ -56,12 +70,16 @@ export function rotationFromDrag(
 }
 
 /**
- * Snap a raw rotation to the active grid and fold it into `[0, 360)`. Default is the 45° grid
- * (0/45/90/…), `Shift` the 15° grid, `Alt` free (whole degrees). `Alt` wins over `Shift` when both
- * are held — the more permissive intent is the one to honour when a user is asking for precision.
+ * Snap a raw rotation per the header's rule and fold it into `[0, 360)` as a whole degree: `Shift`
+ * forces the 15° grid, `Alt` is free, and an unmodified drag is free but lands on a multiple of 45°
+ * when within `SNAP_MAGNET_TOLERANCE_DEG` of one. `Alt` wins over `Shift` when both are held — the
+ * more permissive intent is the one to honour when a user is asking for precision.
  */
 export function snapRotation(degrees: number, mods: RotateModifiers): number {
-  const increment = mods.alt ? SNAP_FREE_DEG : mods.shift ? SNAP_FINE_DEG : SNAP_COARSE_DEG
-  const snapped = Math.round(normalizeDeg(degrees) / increment) * increment
-  return normalizeDeg(snapped)
+  const angle = normalizeDeg(degrees)
+  if (mods.alt) return normalizeDeg(Math.round(angle))
+  if (mods.shift) return normalizeDeg(Math.round(angle / SNAP_FORCED_DEG) * SNAP_FORCED_DEG)
+  const nearest = Math.round(angle / SNAP_MAGNET_DEG) * SNAP_MAGNET_DEG
+  if (Math.abs(angle - nearest) <= SNAP_MAGNET_TOLERANCE_DEG) return normalizeDeg(nearest)
+  return normalizeDeg(Math.round(angle))
 }

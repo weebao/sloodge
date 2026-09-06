@@ -455,3 +455,66 @@ describe('PropertyPanel — colour controls (M3.8)', () => {
     expect(patched).toContain('border-style: solid')
   })
 })
+
+describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
+  it('disables Flip on an opaque transform and carries the reason as the tooltip', () => {
+    useDeckStore
+      .getState()
+      .setSlideHtml(
+        slideId,
+        '<h1 style="transform: matrix(1, 0, 0, 1, 0, 0)">Hello</h1>',
+        slideId,
+        'seed',
+      )
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const flipH = screen.getByTestId('transform-flip-h') as HTMLButtonElement
+    expect(flipH.disabled).toBe(true)
+    expect(flipH.title).toContain('matrix(1, 0, 0, 1, 0, 0)')
+    expect((screen.getByTestId('transform-flip-v') as HTMLButtonElement).disabled).toBe(true)
+    // Duplicate still works — a clone of an opaque element is nudged in parent space.
+    expect((screen.getByTestId('transform-duplicate') as HTMLButtonElement).disabled).toBe(false)
+    const before = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
+    fireEvent.click(flipH)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(before)
+  })
+
+  it('flipping an element that holds text goes through and raises the mirrored-text notice', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-flip-h'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('scale(-1, 1)')
+    const notice = useDesignStore.getState().notice
+    expect(notice?.slideId).toBe(slideId)
+    expect(notice?.text).toContain('mirrored')
+  })
+
+  it('flipping an element with no text raises no notice', () => {
+    useDeckStore
+      .getState()
+      .setSlideHtml(slideId, '<h1 style="width: 40px"><img alt=""></h1>', slideId, 'seed')
+    useDesignStore.setState({ notice: null })
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-flip-h'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('scale(-1, 1)')
+    expect(useDesignStore.getState().notice).toBeNull()
+  })
+
+  it('duplicating a percentage-translated element clones it in place, selects the clone, and says so', () => {
+    const centred = '<h1 style="transform: translate(-50%, -50%)">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, centred, slideId, 'seed')
+    useDesignStore.setState({ notice: null })
+    select()
+    const before = useDesignStore.getState().selection!.rect
+    render(<PropertyPanel slide={currentSlide()} />)
+    fireEvent.click(screen.getByTestId('transform-duplicate'))
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toBe(centred + centred)
+    const selection = useDesignStore.getState().selection!
+    expect(selection.slId).not.toBe(h1Id())
+    // The clone's box is the original's — not 16px away from where it actually is.
+    expect(selection.rect).toEqual(before)
+    expect(useDesignStore.getState().notice?.text).toContain('in place')
+  })
+})
