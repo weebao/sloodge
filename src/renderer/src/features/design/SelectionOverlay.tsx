@@ -102,6 +102,7 @@ import { buildDragPatch } from '../../../../shared/design/drag-commit'
 import {
   boxOf,
   rectContainsPoint,
+  rotatedBounds,
   rotatedRectContainsPoint,
   shiftHit,
 } from '../../../../shared/design/hit-geometry'
@@ -296,10 +297,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // selection between the two, and applying one element's delta to another moved a subtitle the user
   // never touched (round-4 major).
   const dragTargetRef = useRef<readonly SlHit[]>([])
+  // The anchor's rotation at `pointerdown`, for the same reason: the commit re-places the box by it.
+  const dragAngleRef = useRef(0)
 
   // Commit a completed single-element drag as one undoable command (M3.5).
   const onCommitGeometry = useCallback(
-    (target: SlHit, startRect: SlRect, nextRect: SlRect): void => {
+    (target: SlHit, startRect: SlRect, nextRect: SlRect, angle: number): void => {
       const current = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (current === undefined) return
       const patched = buildDragPatch(slideId, current, target.slId, startRect, nextRect)
@@ -309,7 +312,15 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           .getState()
           .setSlideHtml(slideId, patched, target.slId, gestureLabel(startRect, nextRect))
       ) {
-        setSelection({ ...target, rect: nextRect })
+        // The gesture ran on the unrotated `box`, so that is what `nextRect` is; the rendered `rect`
+        // is that box turned by the element's rotation. Writing only `rect` (as M3.5 did, before
+        // `box` existed) left the overlay drawing — and the next gesture starting from — the
+        // pre-resize box until a hit-test happened to refresh it.
+        setSelection(
+          target.box === undefined
+            ? { ...target, rect: nextRect }
+            : { ...target, rect: rotatedBounds(nextRect, angle), box: nextRect },
+        )
       }
     },
     [slideId, setSelection],
@@ -349,7 +360,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       const anchor = target.at(-1)
       if (anchor === undefined) return
       if (target.length >= 2) onCommitGroupMove(target, startRect, nextRect)
-      else onCommitGeometry(anchor, startRect, nextRect)
+      else onCommitGeometry(anchor, startRect, nextRect, dragAngleRef.current)
     },
     [onCommitGroupMove, onCommitGeometry],
   )
@@ -627,21 +638,23 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const onBodyPointerDown = useCallback(
     (event: React.PointerEvent): void => {
       dragTargetRef.current = gestureTarget(useDesignStore.getState())
+      dragAngleRef.current = sourceAngle
       requestElements((hits) => {
         elementsRef.current = hits
       })
       startDrag('move', event)
     },
-    [startDrag, requestElements],
+    [startDrag, requestElements, sourceAngle],
   )
   const onHandlePointerDown = useCallback(
     (event: React.PointerEvent): void => {
       const handle = event.currentTarget.getAttribute('data-handle') as DragHandle | null
       if (handle === null) return
       dragTargetRef.current = gestureTarget(useDesignStore.getState())
+      dragAngleRef.current = sourceAngle
       startDrag(handle, event)
     },
-    [startDrag],
+    [startDrag, sourceAngle],
   )
   const onRotatePointerDown = useCallback(
     (event: React.PointerEvent): void => {
@@ -848,7 +861,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   ? `${String(Math.round(angle))}°`
                   : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
-          {transformLock !== null && !isMulti && !isEditing ? (
+          {transformLock !== null && !isEditing ? (
             <span
               data-testid="design-transform-lock"
               className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-600 px-1 text-[11px] leading-4 text-white"

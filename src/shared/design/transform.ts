@@ -98,9 +98,7 @@ function parseDegrees(args: string): number | null {
 /** One or two comma-separated `<number>`s; anything else → `null`. */
 function parseNumbers(args: string): number[] | null {
   const parts = args.split(',').map((part) => part.trim())
-  if (parts.length === 0 || parts.length > 2 || !parts.every((part) => NUMBER.test(part))) {
-    return null
-  }
+  if (parts.length > 2 || !parts.every((part) => NUMBER.test(part))) return null
   return parts.map(Number)
 }
 
