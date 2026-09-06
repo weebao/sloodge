@@ -24,7 +24,7 @@ beforeEach(() => {
     selection: null,
     selections: [],
     notice: null,
-    finishing: false,
+    finishing: 0,
   })
 })
 
@@ -225,24 +225,22 @@ describe('text-edit sessions (M3.11)', () => {
     expect(useDesignStore.getState().editing).toBeNull()
   })
 
-  // M3.13: the toggle that ends a session raises `finishing` in the *same* update, so the render
-  // that removes the overlay is already one that keeps the frame's document. Settling clears it;
-  // a toggle with no caret open never raises it.
-  it('turning Design Mode off over an open session marks it finishing until settled', () => {
-    useDesignStore.getState().beginEditing(HIT.slId)
-    useDesignStore.getState().setEnabled(false)
-    expect(useDesignStore.getState().finishing).toBe(true)
+  // M3.13: the stage frame's hold is a count of sessions, one per open or finishing caret, so two
+  // sessions overlapping inside the finish window hold twice and each releases only its own. The
+  // toggle does not touch it — `OFF` leaves it alone — and it never goes below zero.
+  it('holds the frame per session and releases per session', () => {
+    useDesignStore.getState().holdFinishing()
+    useDesignStore.getState().holdFinishing()
+    expect(useDesignStore.getState().finishing).toBe(2)
 
-    useDesignStore.getState().setEnabled(true)
-    expect(useDesignStore.getState().finishing).toBe(true)
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().finishing).toBe(2)
 
     useDesignStore.getState().settleFinishing()
-    expect(useDesignStore.getState().finishing).toBe(false)
-  })
-
-  it('turning Design Mode off with no session open is not finishing anything', () => {
-    useDesignStore.getState().setEnabled(false)
-    expect(useDesignStore.getState().finishing).toBe(false)
+    expect(useDesignStore.getState().finishing).toBe(1)
+    useDesignStore.getState().settleFinishing()
+    useDesignStore.getState().settleFinishing()
+    expect(useDesignStore.getState().finishing).toBe(0)
   })
 
   it('endEditing is idempotent', () => {

@@ -974,15 +974,20 @@ Content field is simply disabled, with a hint explaining why.
   at 800 ms**: no commit, the frame reverted, nothing said. Ordinary interaction does not reach it —
   the slide's own JS has to stall for about a second at the instant of the toggle, and ~130 real
   sessions across the toggle, Present, `Enter`, `Esc`, `Tab` and blur never lost text — and it fails
-  safe, leaving the document untouched. **Closed in M3.13** by deferring the re-navigation:
-  `setEnabled(false)` raises `designStore.finishing` in the same update that removes the overlay,
-  `SlideCanvas` keeps the instrumented document for as long as it is set, and the `finish` callback
-  clears it — so the caret's document stays until it has answered or `FINISH_TIMEOUT_MS` has
-  passed, and the swap to the raw document happens once, on settle. The other half offered
-  (capturing `contentWindow` at pin time) was not taken: a WindowProxy keeps its identity across
-  navigations, so it cannot tell the documents apart and does nothing about a document torn down
-  before its stalled script can answer. A frame that still does not answer within the timeout is
-  now announced ("didn’t answer in time … wasn’t saved") instead of reverted in silence.
+  safe, leaving the document untouched. **Closed in M3.13** by deferring the re-navigation with a
+  per-session hold: every text session acquires a hold on the stage frame's document when it opens
+  (`designStore.finishing`, a count), `SlideCanvas` keeps the instrumented document while any hold
+  is up, and each session releases exactly its own — for the way out of Design Mode, in the `finish`
+  callback — so the caret's document stays until it has answered or `FINISH_TIMEOUT_MS` has passed,
+  and two sessions finishing inside one window cannot release each other's frame. The other half
+  offered (capturing `contentWindow` at pin time) was not taken and was confirmed irrelevant in
+  Chromium: a WindowProxy keeps its identity across navigations, so it cannot tell the documents
+  apart and does nothing about a document torn down before its stalled script can answer. A frame
+  that still does not confirm the text within the timeout is now announced ("couldn’t confirm the
+  text you typed … wasn’t saved") instead of reverted in silence — unless a newer caret has opened
+  on that same element, in which case the stale session neither touches nor announces it. Accepted
+  edge: the hold is stage-wide, so a slide selected inside a pending window loads instrumented with
+  Design Mode off and is re-navigated once the hold clears — cosmetic, nothing stranded.
 - **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
   quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
   characters live only in the frame's DOM until the session ends. This is consistent with the app

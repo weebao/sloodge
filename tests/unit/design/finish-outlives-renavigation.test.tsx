@@ -22,7 +22,7 @@
 
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { JSX } from 'react'
+import { useMemo, type JSX } from 'react'
 import { SlideCanvas } from '../../../src/renderer/src/features/canvas/SlideCanvas'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import {
@@ -47,12 +47,16 @@ const NOW = 1_700_000_000_000
 
 let slideId = ''
 let h1Id = ''
+let pId = ''
 
 /** The canvas as the shell mounts it, subscribed to the deck so a commit re-renders it. */
 function Canvas(): JSX.Element {
   const deck = useDeckStore((state) => state.deck)
   const slideHtml = useDeckStore((state) => state.slideHtml)
-  const slides = selectSlideViews(deck, slideHtml).filter((view) => view.id === slideId)
+  const slides = useMemo(
+    () => selectSlideViews(deck, slideHtml).filter((view) => view.id === slideId),
+    [deck, slideHtml],
+  )
   return <SlideCanvas slides={slides} currentIndex={0} />
 }
 
@@ -98,18 +102,23 @@ function frameAnswers(frame: HTMLIFrameElement, text: string): void {
   window.dispatchEvent(event)
 }
 
-/** Open a session on the <h1>, as the overlay does once the frame confirms a `begin`. */
-function openSession(): void {
+/** The actions the parent has posted to `frame`, in order. */
+function postedActions(frame: HTMLIFrameElement): string[] {
+  return windowOf(frame).posted.map((m) => (m as { payload: { action: string } }).payload.action)
+}
+
+/** Open a session on the <h1> (or `slId`), as the overlay does once the frame confirms a `begin`. */
+function openSession(slId = h1Id): void {
   act(() => {
     useDesignStore.getState().setSelection({
-      slId: h1Id,
+      slId,
       tag: 'h1',
       id: null,
       classes: [],
       rect: { x: 0, y: 0, width: 1, height: 1 },
       ancestors: [],
     })
-    useDesignStore.getState().beginEditing(h1Id)
+    useDesignStore.getState().beginEditing(slId)
   })
 }
 
@@ -143,6 +152,7 @@ beforeEach(() => {
   slideId = useDeckStore.getState().currentSlideId!
   const map = buildSlideMap(slideId, currentHtml())
   h1Id = [...map.byId.values()].find((el) => el.tagName === 'h1')!.slId
+  pId = [...map.byId.values()].find((el) => el.tagName === 'p')!.slId
   useDesignStore.setState({
     enabled: true,
     hover: null,
@@ -191,7 +201,7 @@ afterEach(() => {
   if (originalContentWindow) {
     Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', originalContentWindow)
   }
-  useDesignStore.setState({ enabled: false, editing: null, notice: null, finishing: false })
+  useDesignStore.setState({ enabled: false, editing: null, notice: null, finishing: 0 })
 })
 
 describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () => {
@@ -224,7 +234,7 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
     expect(currentHtml()).toContain('Answered')
     // Settled: the frame moves on to the new bytes, raw, in one navigation.
     expect(frame.getAttribute('src')).not.toBe(srcAtPin)
-    expect(useDesignStore.getState().finishing).toBe(false)
+    expect(useDesignStore.getState().finishing).toBe(0)
   })
 
   it('re-navigates at once when Design Mode goes off with no session open', () => {
@@ -237,7 +247,7 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
       useDesignStore.getState().setEnabled(false)
     })
     expect(frame.getAttribute('src')).not.toBe(srcBefore)
-    expect(useDesignStore.getState().finishing).toBe(false)
+    expect(useDesignStore.getState().finishing).toBe(0)
   })
 
   it('a toggle that catches a session before it was pinned holds nothing', () => {
@@ -253,7 +263,7 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
       useDesignStore.getState().beginEditing(h1Id)
       useDesignStore.getState().setEnabled(false)
     })
-    expect(useDesignStore.getState().finishing).toBe(false)
+    expect(useDesignStore.getState().finishing).toBe(0)
     expect(frame.getAttribute('src')).not.toBe(srcBefore)
   })
 
@@ -276,13 +286,105 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
     // Nothing written — text the parent never read is text it cannot vouch for — but the loss is
     // announced where the overlay no longer is, and the frame is put back and released.
     expect(useDeckStore.getState().history.summary().undoDepth).toBe(0)
-    expect(screen.getByTestId('design-notice').textContent).toMatch(/didn’t answer/)
+    expect(screen.getByTestId('design-notice').textContent).toMatch(/couldn’t confirm/)
     expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
-    const actions = windowOf(frame).posted.map(
-      (m) => (m as { payload: { action: string } }).payload.action,
-    )
-    expect(actions).toEqual(['commit', 'cancel', 'revert'])
-    expect(useDesignStore.getState().finishing).toBe(false)
+    expect(postedActions(frame)).toEqual(['commit', 'cancel', 'revert'])
+    expect(useDesignStore.getState().finishing).toBe(0)
     expect(frame.getAttribute('src')).not.toBe(srcAtPin)
+  })
+
+  /**
+   * Round-1 review, major 1. The hold is per session, not one shared flag: a second toggle inside
+   * the first session's 2 s window arms a second finish on the same frame, and the first session
+   * settling — here, timing out — must not release the document the second is still waiting on.
+   */
+  it('a session that settles does not release the frame a later session still waits on', () => {
+    const frame = activeFrame()
+    const srcAtPin = frame.getAttribute('src')
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+    openSession()
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    expect(useDesignStore.getState().finishing).toBe(2)
+
+    // Session A's own timeout. The frame stays where it is: B has not answered.
+    act(() => {
+      vi.advanceTimersByTime(FINISH_TIMEOUT_MS - 300)
+    })
+    expect(useDesignStore.getState().finishing).toBe(1)
+    expect(frame.getAttribute('src')).toBe(srcAtPin)
+
+    act(() => {
+      frameAnswers(frame, 'Second session, answered late')
+    })
+    expect(currentHtml()).toContain('Second session, answered late')
+    expect(useDesignStore.getState().finishing).toBe(0)
+    expect(frame.getAttribute('src')).not.toBe(srcAtPin)
+  })
+
+  /**
+   * Round-1 review, major 2. A finish that times out after Design Mode came back must not reach
+   * into a caret a newer session has opened on the same element — no `cancel`/`revert` into the
+   * live caret, and no "wasn't saved" about a session that is not the user's.
+   */
+  it('a stale finish does not cancel, revert or announce over a live caret on the same element', () => {
+    const frame = activeFrame()
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+    openSession()
+    expect(useDesignStore.getState().editing).toBe(h1Id)
+
+    act(() => {
+      vi.advanceTimersByTime(FINISH_TIMEOUT_MS)
+    })
+
+    expect(postedActions(frame)).toEqual(['commit'])
+    expect(useDesignStore.getState().editing).toBe(h1Id)
+    expect(useDesignStore.getState().notice).toBeNull()
+    // The stale session released its own hold; the live one still holds.
+    expect(useDesignStore.getState().finishing).toBe(1)
+  })
+
+  it('a stale finish still puts back and announces when the live caret is on another element', () => {
+    const frame = activeFrame()
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+    openSession(pId)
+
+    act(() => {
+      vi.advanceTimersByTime(FINISH_TIMEOUT_MS)
+    })
+
+    // `cancel` for an element that is not the frame's open session is inert in the frame, and
+    // `revert` only ever touches the element the stale session ended on — so the live caret on the
+    // <p> is untouched and the <h1>'s loss is reported.
+    const posted = windowOf(frame).posted as { payload: { action: string; slId: string } }[]
+    expect(posted.map((m) => m.payload.action)).toEqual(['commit', 'cancel', 'revert'])
+    expect(posted.every((m) => m.payload.slId === h1Id)).toBe(true)
+    expect(useDesignStore.getState().editing).toBe(pId)
+    expect(screen.getByTestId('design-notice').textContent).toMatch(/couldn’t confirm/)
   })
 })

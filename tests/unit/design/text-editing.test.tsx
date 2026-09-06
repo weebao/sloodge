@@ -984,7 +984,7 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
 
     expect(undoDepth()).toBe(0)
     expect(harness.pinned.map((entry) => entry.action)).toEqual(['commit', 'cancel', 'revert'])
-    expect(noticeText()).toMatch(/didn’t answer in time/)
+    expect(noticeText()).toMatch(/couldn’t confirm/)
     expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
   })
 

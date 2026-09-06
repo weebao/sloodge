@@ -82,13 +82,15 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
     enabled: designModeActive,
   })
 
-  // Only pay for the parse + instrument + inject while Design Mode is on — or while a text session
-  // is still being finished on the way out (M3.13). Swapping the document is a navigation, and the
-  // session's answer can only come from the document the caret is in: swapping at the toggle put a
-  // slide whose JS stalled across it past `finish`'s timeout, and the typed text was lost. Keeping
-  // the instrumented document until the session settles costs nothing visible — it is the same
-  // slide plus `data-sl-id`s and a dormant bridge — and the swap happens once, on settle.
-  const documentFor = designEnabled || finishing ? instrumentDocument : undefined
+  // Only pay for the parse + instrument + inject while Design Mode is on — or while any text session
+  // still holds the frame on the way out (M3.13). Swapping the document is a navigation, and a
+  // session's answer can only come from the document its caret is in: swapping at the toggle put a
+  // slide whose JS stalled across it past `finish`'s timeout, and the typed text was lost. The hold
+  // is per session (`designStore.finishing` counts them), so the frame waits for the last of them.
+  // Keeping the instrumented document costs nothing visible — it is the same slide plus
+  // `data-sl-id`s and a dormant bridge — though it is stage-wide: a slide selected inside the window
+  // loads instrumented and is re-navigated once the hold clears (§9.4 of 40-design-mode.md).
+  const documentFor = designEnabled || finishing > 0 ? instrumentDocument : undefined
 
   // Memoized so the relative wrapper's style is not a fresh object on every render (react-perf).
   const stageStyle = useMemo(

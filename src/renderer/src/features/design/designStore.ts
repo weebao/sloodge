@@ -88,21 +88,29 @@ export type DesignSnapshot = {
   /** The refused edit to explain, or `null`. See `TextEditNotice`. */
   readonly notice: TextEditNotice | null
   /**
-   * A text session is being finished on the way out of Design Mode (M3.13): the toggle found a caret
-   * open, and the answer — the typed text — has not arrived yet.
+   * How many text sessions are holding the stage frame's document (M3.13): one per caret that is
+   * open or still being finished. `SlideCanvas` keeps the instrumented document while this is above
+   * zero, whatever `enabled` says.
    *
-   * It exists for the stage frame. Turning Design Mode off swaps every frame's document from the
-   * instrumented copy back to the raw slide, which is a new `slide://` URL and a navigation; the
-   * session's `finish` is then waiting on a document that is being torn down, and a slide whose own
-   * JS stalls across the toggle answers too late — measured lost at 800 ms of stall. `SlideCanvas`
-   * keeps the instrumented document for as long as this is set, so the caret's document stays until
-   * it has answered or been given up on. It is set **in the same update** as `enabled: false`,
-   * because the render that removes the overlay is the render that would otherwise re-navigate the
-   * frame — a flag raised afterwards, from the overlay's unmount, is one render too late and would
-   * mint a second URL rather than prevent the first. `useTextEditing` clears it when the finish
-   * settles, whichever way.
+   * It exists for the way *out* of Design Mode. The toggle swaps every frame's document from the
+   * instrumented copy back to the raw slide — a new `slide://` URL, a navigation — while a caret
+   * open at that moment is being finished on a channel that outlives the overlay; the answer can
+   * only come from the document the caret is in, and a slide whose own JS stalled across the toggle
+   * answered a document already torn down (measured lost at 800 ms of stall). Holding the document
+   * until the session has answered or been given up on closes that.
+   *
+   * A count, and acquired by the session rather than by the toggle, for two reasons that are the
+   * same reason. The hold has to exist *before* the render that removes the overlay — that render
+   * is the one that would hand the stage the raw document, and a flag raised afterwards from the
+   * overlay's unmount is one render too late, minting a second URL instead of preventing the first;
+   * a session that holds from the moment it opens is always early enough. And it has to be **per
+   * session**: two sessions can be finishing on the same frame inside one 2 s window (toggle off
+   * under a stalled caret, on, a new caret, off again), and the first to settle must not release the
+   * document the second is still waiting on — a shared boolean did exactly that (round-1 review).
+   * `useTextEditing` acquires when a session opens and releases exactly its own, on whichever end
+   * the session meets.
    */
-  readonly finishing: boolean
+  readonly finishing: number
 }
 
 export type DesignState = DesignSnapshot & {
@@ -143,7 +151,9 @@ export type DesignState = DesignSnapshot & {
   endEditing: () => void
   /** Raise or dismiss the refused-edit notice. */
   setNotice: (notice: TextEditNotice | null) => void
-  /** The finishing session has settled — committed, refused or given up on. See `finishing`. */
+  /** A text session opened: hold the stage frame's document for it. See `finishing`. */
+  holdFinishing: () => void
+  /** That session ended — committed, refused, cancelled or given up on: release its hold. */
   settleFinishing: () => void
 }
 
@@ -152,7 +162,8 @@ const CLEARED = { hover: null, selections: [], selection: null, editing: null } 
 /**
  * What turning Design Mode off resets. `notice` is deliberately **not** in it: the refusal a toggle
  * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
- * user is owed for it. `finishing` is not in it either — the toggle is what *raises* it.
+ * user is owed for it. `finishing` is not in it either: a caret open at the toggle is about to be
+ * finished on a channel that outlives the overlay, and its hold on the frame must survive the toggle.
  */
 const OFF: Omit<DesignSnapshot, 'notice' | 'finishing'> = { enabled: false, ...CLEARED }
 
@@ -166,7 +177,7 @@ function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
   notice: null,
-  finishing: false,
+  finishing: 0,
   // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
   enabled: true,
 
@@ -177,10 +188,7 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
   setEnabled: (enabled) => {
     // Turning off resets everything to the single OFF snapshot so no stale outline survives a
     // later re-enable; turning on keeps hover/selection null (they were already null while off).
-    // A caret open at that moment is about to be finished by the overlay's unmount, and the frame
-    // it is in must not be re-navigated until that has settled — see `finishing`.
-    if (enabled) set({ enabled: true })
-    else set(get().editing === null ? OFF : { ...OFF, finishing: true })
+    set(enabled ? { enabled: true } : OFF)
   },
 
   setHover: (hit) => {
@@ -239,7 +247,11 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
     set({ notice })
   },
 
+  holdFinishing: () => {
+    set({ finishing: get().finishing + 1 })
+  },
+
   settleFinishing: () => {
-    set({ finishing: false })
+    set({ finishing: Math.max(0, get().finishing - 1) })
   },
 }))
