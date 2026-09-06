@@ -216,6 +216,9 @@ interface PropertyFieldsProps {
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
 
+/** The Content textarea and the other fields' inputs share one set of handlers. */
+type FieldElement = HTMLInputElement | HTMLTextAreaElement
+
 function PropertyFields({
   slide,
   slId,
@@ -268,22 +271,23 @@ function PropertyFields({
     [slide.id, slId, setSlideHtml],
   )
 
-  const handleChange = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
+  const handleChange = useCallback((event: React.ChangeEvent<FieldElement>): void => {
     const name = event.target.name as PropertyField
     const { value } = event.target
     setDraft((prev) => ({ ...prev, [name]: value }))
   }, [])
 
   const handleBlur = useCallback(
-    (event: React.FocusEvent<HTMLInputElement>): void => {
+    (event: React.FocusEvent<FieldElement>): void => {
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
     },
     [commit],
   )
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLInputElement>): void => {
-      if (event.key !== 'Enter') return
+    (event: React.KeyboardEvent<FieldElement>): void => {
+      // Enter commits in every field; Shift+Enter is the Content textarea's newline (see `field`).
+      if (event.key !== 'Enter' || event.shiftKey) return
       event.preventDefault()
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
       event.currentTarget.blur()
@@ -314,25 +318,47 @@ function PropertyFields({
     const disabledHint = disabled
       ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
       : undefined
+    const className = `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`
     return (
       <label
         className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
       >
         <span className="text-chrome-muted dark:text-ink-muted">{FIELD_LABELS[name]}</span>
-        <input
-          name={name}
-          aria-label={FIELD_LABELS[name]}
-          data-testid={`prop-${name}`}
-          value={draft[name]}
-          disabled={disabled}
-          placeholder={disabled ? 'mixed content' : ''}
-          title={disabledHint}
-          inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
-          onChange={handleChange}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
-          className={`${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`}
-        />
+        {name === 'text' ? (
+          // A textarea, not an `<input type="text">`, because the field has to be able to hold the
+          // element's decoded text *exactly*: an input's value sanitization strips CR/LF on
+          // assignment, so a pretty-printed `<h1>\n  Hello\n</h1>` read back as "  Hello" and an
+          // untouched blur rewrote the author's bytes — and flattened a multi-line `<pre>` onto one
+          // line (M3.12 round-1 review). The read → commit-unchanged → no-op invariant has to hold
+          // through the control the user touches, not only in the model. One row tall for the
+          // single-line case, growing with the content to a few lines.
+          <textarea
+            name={name}
+            aria-label={FIELD_LABELS[name]}
+            data-testid={`prop-${name}`}
+            value={draft[name]}
+            disabled={disabled}
+            placeholder={disabled ? 'mixed content' : ''}
+            title={disabledHint}
+            rows={1}
+            onChange={handleChange}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            className={`${className} field-sizing-content max-h-20 resize-none`}
+          />
+        ) : (
+          <input
+            name={name}
+            aria-label={FIELD_LABELS[name]}
+            data-testid={`prop-${name}`}
+            value={draft[name]}
+            inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
+            onChange={handleChange}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            className={className}
+          />
+        )}
       </label>
     )
   }

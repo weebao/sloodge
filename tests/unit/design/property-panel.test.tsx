@@ -46,6 +46,17 @@ function h1Id(): string {
   return map.order[0]!
 }
 
+/**
+ * Prove the last interaction pushed no undo entry: one `undo()` steps back over the test's own seed
+ * to `previous`, and a `redo()` returns — the history object's identity never changes, so this is
+ * the only observable (round-1 review, major 2).
+ */
+function expectNoUndoEntrySince(previous: string): void {
+  expect(useDeckStore.getState().undo()).toBe(true)
+  expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(previous)
+  expect(useDeckStore.getState().redo()).toBe(true)
+}
+
 function select(): void {
   const hit: SlHit = {
     slId: h1Id(),
@@ -115,14 +126,14 @@ describe('PropertyPanel', () => {
     // The roadmap repro, through the component: the field must show `X & Y`, not the source bytes
     // `X &amp; Y`, and leaving it as shown must not write — before the fix every blur re-escaped.
     useDeckStore.getState().setSlideHtml(slideId, '<h1>X &amp; Y</h1>', slideId, 'entities')
-    const before = useDeckStore.getState().history
     select()
     render(<PropertyPanel slide={currentSlide()} />)
-    const input = screen.getByTestId('prop-text') as HTMLInputElement
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
     expect(input.value).toBe('X & Y')
     fireEvent.blur(input)
-    expect(useDeckStore.getState().history).toBe(before)
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>X &amp; Y</h1>')
+    // The blur pushed nothing: one undo steps back over the seed, not over a phantom entry.
+    expectNoUndoEntrySince(SOURCE)
 
     fireEvent.change(input, { target: { value: 'X & Y!' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -131,6 +142,44 @@ describe('PropertyPanel', () => {
     cleanup()
     render(<PropertyPanel slide={currentSlide()} />)
     expect((screen.getByTestId('prop-text') as HTMLInputElement).value).toBe('X & Y!')
+  })
+
+  it('a pretty-printed element round-trips through the Content field untouched (M3.12 r1)', () => {
+    // An `<input type="text">` strips CR/LF on assignment, so this read back as "  Hello" and an
+    // untouched blur rewrote the bytes to `<h1>  Hello</h1>` with a real undo entry behind it. The
+    // field is a textarea now; the invariant has to hold through the control, not only the model.
+    useDeckStore.getState().setSlideHtml(slideId, '<h1>\n  Hello\n</h1>', slideId, 'pretty')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.value).toBe('\n  Hello\n')
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>\n  Hello\n</h1>')
+    expectNoUndoEntrySince(SOURCE)
+  })
+
+  it('a multi-line <pre> keeps its lines; Shift+Enter adds one, Enter commits', () => {
+    useDeckStore.getState().setSlideHtml(slideId, '<pre>line 1\nline 2</pre>', slideId, 'pre')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.value).toBe('line 1\nline 2')
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2</pre>',
+    )
+    expectNoUndoEntrySince(SOURCE)
+
+    // Shift+Enter is the textarea's own newline, not a commit.
+    fireEvent.change(input, { target: { value: 'line 1\nline 2\nline 3' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2</pre>',
+    )
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2\nline 3</pre>',
+    )
   })
 
   it('an edit is undoable, restoring the exact prior source', () => {

@@ -116,6 +116,11 @@ export function applyOps(source: string, ops: readonly SourceOp[]): string {
  * Escape text for an element's content, matching §1.4: escape `&` and `<` only, plus `>` when it
  * would close a `]]>` (which would otherwise terminate a CDATA-like run). Non-ASCII is left as-is
  * so "Café" stays "Café" in source.
+ *
+ * No production caller since M3.12 moved every user-text write onto `text-edit.ts`'s
+ * `escapeAndNeutralizeText`. It stays as that function's **reference implementation**: the tests
+ * assert the two agree exactly on text with no forbidden token, which is what keeps the neutralizer
+ * from drifting in what it does to `&`, `<` and `]]>`.
  */
 export function escapeText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/]]>/g, ']]&gt;')
