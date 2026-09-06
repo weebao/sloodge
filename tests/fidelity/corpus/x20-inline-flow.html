@@ -1,0 +1,69 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* M4.8b: the two flows PowerPoint cannot reproduce. An inline-block pill mid-sentence is its own
+     box, so the words after it are laid out by PowerPoint as if the pill took no space; a block
+     with text on both sides of a nested paragraph puts its second run under the first, not under
+     the paragraph. Both must route to raster in auto and be named in editable. */
+  body {
+    background: #ffffff;
+    color: #111827;
+    padding: 72px;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+    margin-bottom: 32px;
+  }
+  p.prose {
+    font-size: 26px;
+    line-height: 1.5;
+    width: 1000px;
+  }
+  .pill {
+    display: inline-block;
+    background: #dbeafe;
+    color: #1d4ed8;
+    font-weight: 700;
+    padding: 4px 16px;
+    border-radius: 999px;
+    margin: 0 6px;
+  }
+  .mixed {
+    margin-top: 40px;
+    width: 720px;
+    background: #f1f5f9;
+    padding: 24px;
+    font-size: 22px;
+    line-height: 1.5;
+  }
+  .mixed p {
+    margin: 16px 0;
+    font-size: 30px;
+    font-weight: 700;
+    color: #b91c1c;
+  }
+</style>
+<h1>Objects in the flow of a paragraph</h1>
+<p class="prose">
+  Conversion moved to <span class="pill">24%</span> this quarter, up from the plan of nineteen.
+</p>
+<div class="mixed">
+  Intro text before the nested block.
+  <p>A nested paragraph in its own box.</p>
+  Trailing text after it, which PowerPoint would place directly under the intro.
+</div>

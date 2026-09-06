@@ -14,6 +14,15 @@ import {
 describe('slideMeasurementScript', () => {
   const src = slideMeasurementScript()
 
+  it('parses as JavaScript', () => {
+    // The script is a template literal, so a regex character class written with single
+    // backslashes (`\\t\\n`) reaches the slide as a literal newline inside `[...]` — a SyntaxError
+    // that `runInSlide` turns into `EMPTY_MEASURE`, i.e. every slide measuring no text at score
+    // 100. That happened once in M4.8b and cost a harness run to see; this costs milliseconds.
+    // eslint-disable-next-line no-new-func
+    expect(() => new Function(`return ${src}`)).not.toThrow()
+  })
+
   it('is a self-invoking expression returning nodes + body + hasAnimation', () => {
     expect(src.startsWith('(() =>')).toBe(true)
     expect(src).toContain('nodes')
@@ -21,13 +30,28 @@ describe('slideMeasurementScript', () => {
     expect(src).toContain('hasAnimation')
   })
 
-  it('applies the visibility filter and the leaf-text rule', () => {
+  it('applies the visibility filter and the block-root text rule', () => {
     expect(src).toContain("cs.display !== 'none'")
     // `=== 'visible'`, not `!== 'hidden'`: `visibility: collapse` paints nothing on a non-table
     // element, so the loose test let the exporter invent a banner nobody could see (review r3).
     expect(src).toContain("cs.visibility === 'visible'")
     expect(src).not.toContain("cs.visibility !== 'hidden'")
+    // Text belongs to the nearest non-inline ancestor, one item per text node (M4.8b); the leaf
+    // rule survives only for SVG, whose `<text>`/`<tspan>` have no CSS block structure.
+    expect(src).toContain('collectInline')
+    expect(src).toContain('blockRootOf')
+    expect(src).toContain("cs.display === 'inline'")
+    expect(src).toContain('inlineOf')
     expect(src).toContain('el.children.length === 0')
+  })
+
+  it("records raw text with its parent's white-space mode and propagated decoration (M4.8b)", () => {
+    expect(src).toContain('whiteSpaceCollapse')
+    expect(src).toContain('decorationChain')
+    // `<br>` is a hard break; an atomic inline, a float and a hidden inline are flow holes.
+    expect(src).toContain("kind: 'br'")
+    expect(src).toContain("cs.float !== 'none'")
+    expect(src).toContain('bulletedLis')
   })
 
   it('censuses the two root elements, which querySelectorAll cannot reach', () => {

@@ -37,7 +37,12 @@ export type ShadowSpec = {
   opacity: number
 }
 
-/** One styled run inside a text box. `fontSize` is in points; `color` is 6-digit hex. */
+/**
+ * One styled run inside a text box — one per source text node (M4.8b). `fontSize` and `charSpacing`
+ * are in points; `color` is 6-digit hex. `text` is already CSS-white-space-processed and
+ * `text-transform`ed: it is what the reader sees, and it never contains a newline — line structure is
+ * carried by the two break flags, which the writer turns into `<a:br/>` and a new `<a:p>`.
+ */
 export type TextRunSpec = {
   text: string
   bold?: boolean
@@ -49,9 +54,17 @@ export type TextRunSpec = {
   transparency?: number
   fontFace?: string
   fontSize?: number
+  charSpacing?: number
   bullet?: boolean | { type: 'number' }
   hyperlink?: string
+  /** A hard line break (`<br>`, a preserved newline) before this run, within the same paragraph. */
+  lineBreakBefore?: boolean
+  /** This run starts a new paragraph (the source had a nested block between the two). */
+  paragraphBreakBefore?: boolean
 }
+
+/** A text box's inset from its border box to where its runs start, in points, clockwise from the left. */
+export type TextInset = { left: number; top: number; right: number; bottom: number }
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify'
 
@@ -75,7 +88,8 @@ export type ShapeSpec =
       /** Clockwise rotation in degrees, from the element's (and its ancestors') `transform`. */
       rotate?: number
       lineSpacingMultiple?: number
-      charSpacing?: number
+      /** Padding plus border width of the block, so the runs land on its content box. Omitted when zero. */
+      inset?: TextInset
     }
   | {
       kind: 'rect' | 'roundRect' | 'ellipse'

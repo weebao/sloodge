@@ -269,7 +269,7 @@ for (const el of document.body.querySelectorAll('*')) {
     x: px2in(r.x), y: px2in(r.y), w: px2in(r.width), h: px2in(r.height),
     z: cs.zIndex === 'auto' ? 0 : +cs.zIndex,
     domIndex: nodes.length,                          // paint-order tiebreak
-    text: el.children.length === 0 ? el.textContent.trim() : '',
+    inlineContent: isBlockRoot ? collectInline(el) : [],   // one item per text node (M4.8b)
     style: {
       fontFamily: cs.fontFamily, fontSize: parseFloat(cs.fontSize), fontWeight: cs.fontWeight,
       fontStyle: cs.fontStyle, textDecoration: cs.textDecorationLine,
@@ -288,7 +288,7 @@ for (const el of document.body.querySelectorAll('*')) {
 
 Two structural rules:
 
-- **Leaf-text rule.** Only elements with no element children contribute text. This prevents emitting a heading twice (once for the `<h1>`, once for a nested `<span>`) — the classic double-render bug in naive DOM→PPTX converters.
+- **Block-root text rule (M4.8b).** Every element whose computed `display` is not `inline` is a *block root*; its text is the sequence of text nodes reachable through its inline descendants, one item per text node, each in the computed style of its own parent, with `<br>`s, nested blocks and atomic inlines marked. One text box per block root, one run per text node — `<p>a <strong>b</strong> c</p>` is one box and three runs. A text node has exactly one block root, so nothing is emitted twice; this keeps the guarantee the original *leaf-text rule* (only childless elements contribute text) bought, without its cost — that rule dropped the bare text beside every inline element (research §1.3(c)), and every emitted box had exactly one run. Inline-level boxes (`inline-block`, `inline-flex`, replaced elements) and floats are block roots of their own; where a block's own text comes *after* one of them, the scorer deducts (`interruptedFlow`), because PowerPoint flows the runs as if the object took no space. White-space processing (collapsing, line-edge trimming, `pre`/`pre-line`) and `text-transform` are applied by the pure walker so that a box's text equals the block's rendered `innerText`, which the fidelity oracle checks line by line.
 - **Container rule.** A non-leaf element contributes a shape *only* if it paints something itself (non-transparent background, visible border, or radius+background). Pure layout wrappers (`display: flex/grid` with no paint) are skipped entirely — PowerPoint has no concept of them.
 
 Z-order for emission is `(z, domIndex)` ascending, approximating paint order. Full CSS stacking-context semantics are not reproduced, and **the score does not stand in for them** (M4.8a): a property that establishes a stacking context is either kept out of the layout-resolved exemption list — an invariant in `node.test.ts` enforces that against CSS's own list of creators, so putting one back reds a test — or it carries a named deduction that rasters the slide (`filter`, `backdrop-filter`, `clip-path`, `mix-blend-mode`, `position: sticky`).
@@ -299,16 +299,20 @@ The gap is the *modelled* ones. `transform`, `rotate`, `scale`, `translate`, `op
 
 | DOM / CSS | pptxgenjs | Notes |
 |---|---|---|
-| Leaf text node | `addText(runs, { x,y,w,h, ... })` | `w`/`h` from the measured box; `valign: 'top'`; `margin: 0`; `wrap: true`; `shrinkText: false` |
+| Block root with text | `addText(runs, { x,y,w,h, margin, ... })` | one run per text node (M4.8b); `w`/`h` from the measured border box; `margin` = padding + border width per side, so runs start on the content box and wrap within Chromium's width; `valign: 'top'`; `wrap: true`; `shrinkText: false` — no autofit: mixed-size runs keep Chromium's box height and overflow where PowerPoint breaks lines differently |
+| `<br>` / preserved newline | run `softBreakBefore` → `<a:br/>` | inside the same `<a:p>`; a trailing `<br>` adds no line, as in Chromium |
+| Nested block between two text runs | previous run `breakLine` → new `<a:p>` | the nested block is its own box; the second paragraph's position is scored (`interruptedFlow`) |
 | `font-size` px | `fontSize` pt | `pt = px * 0.75` (96 dpi → 72 pt/in) |
 | `color`, `background-color` | `color`, `fill.color` | rgb(a)→`RRGGBB` + `transparency` percent |
 | `font-weight >= 600` | `bold: true` | intermediate weights collapse to bold/regular |
 | `font-family` | `fontFace` | first family name only; §3.6 |
 | `text-align` | `align` | `justify` → `justify` (supported) |
 | `line-height` | `lineSpacingMultiple` | ratio to font-size; `normal` → omit |
-| `letter-spacing` | `charSpacing` (pt) | |
-| `text-transform: uppercase` | applied to the string | PPTX has no run-level transform |
-| `<ul>/<ol>` + `<li>` leaves | one `addText` with `bullet: true` runs | `<ol>` → `bullet: { type: 'number' }` |
+| `letter-spacing` | run `charSpacing` (pt) | per run since M4.8b |
+| `text-transform` | applied to the run text | `uppercase`/`lowercase`/`capitalize`, the last carrying the word boundary across runs; PPTX has no run-level transform |
+| `text-decoration` on an ancestor | run `underline`/`strike` | decoration propagates without inheriting; the run walk unions the chain |
+| `white-space-collapse` | applied to the run text | collapse / preserve / preserve-breaks, per text node |
+| `<ul>/<ol>` + `<li>` | `bullet: true` on the first run of the first block that carries text inside the `<li>` | `<ol>` → `bullet: { type: 'number' }`; one marker per `<li>`, however many lines or blocks |
 | `<a href>` | run `hyperlink: { url }` | |
 | Div/section with bg or border | `addShape(rect \| roundRect, { fill, line, rectRadius })` | uniform radius only |
 | Uniform 1-color `border` | `line: { color, width, dashType }` | non-uniform borders → a filled rect per painted side (M4.8a) |
@@ -347,7 +351,8 @@ The table below is the one in `confidence.ts`, and it is expected to stay that w
 | >120 emitted nodes | −15 | Shape explosion; also slow in PowerPoint |
 | `<body>` gradient/image background | −5 | Representable, but only as a full-bleed picture (§3.3) |
 | `filter`/`backdrop-filter`/blend/clip on `<html>` or `<body>` | −35 | Recomposites everything beneath it: *every* colour in the file is wrong, not one effect missing. `body { filter: invert(1) }` scored 100 until M4.8a r3 |
-| Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) | −35 | Dropped by the leaf-text rule — the slide loses words. M4.8b's run-level walk removes the loss and this deduction with it |
+| A block's own text after an object in its flow (an inline-block pill mid-sentence, an inline `<img>`, a float, a nested block between two runs) | −35 | The object gets its own box at Chromium's position; PowerPoint lays the text after it out as if the object took no space (M4.8b, `interruptedFlow`). Replaces the leaf-text rule's −35 for dropped bare text, which the run-level walk no longer drops |
+| A visible inline inside a `visibility: hidden` block | −35 | The block that would carry its text is not a node, so the words are dropped (M4.8b, `orphanText`) |
 | Painting `::before` / `::after` | −35 | No rect can be measured for them, so nothing is emitted |
 | Visible descendant escaping an element that clips overflow | −35 | PowerPoint cannot clip; it would spill out over its neighbours |
 | A leaf whose own `overflow` truncates its own text | −35 | PowerPoint ships the whole string: the ellipsised headline arrives at full length |
@@ -371,7 +376,7 @@ Three things this list used to call hard blockers are not, and the difference is
 - **Content reachable only by scrolling.** Now the two `overflow` deductions above. Both are wrong-class, so `auto` still rasters on that signal alone; the difference is that `editable` keeps the slide structured and lists the risk in the report instead of being overridden.
 - **A measurement-pass exception.** It yields an empty node list, which scores 100 with nothing to emit — so such a slide currently ships structured and *blank*, not as the capture that was taken for it (verified by running the planner over an empty `MeasureResult`, M4.8a r5). Routing it to raster is a behaviour change with a real trade-off, since a deliberately empty slide would become a picture; it is recorded here rather than made quietly.
 
-The thresholds are constants in one module with the score table beside them — not scattered magic numbers — and the boundary is pinned by two fixtures whose *computed* scores straddle it. Since M4.8a the whole table is exercised end to end by the 26-slide fidelity corpus in [`tests/fidelity/`](../../../tests/fidelity/README.md), which runs the real planner and the real pptxgenjs and reads the shapes back out of the emitted file.
+The thresholds are constants in one module with the score table beside them — not scattered magic numbers — and the boundary is pinned by two fixtures whose *computed* scores straddle it. Since M4.8a the whole table is exercised end to end by the 28-slide fidelity corpus in [`tests/fidelity/`](../../../tests/fidelity/README.md), which runs the real planner and the real pptxgenjs and reads the shapes back out of the emitted file.
 
 ### 3.5 The raster path
 
@@ -398,6 +403,8 @@ PPTX embeds font *references*, not files. A slide using a webfont renders in Pow
 Font embedding (`fontEmbed` in OOXML) is out of scope for v1: it requires shipping/ licensing the TTF and pptxgenjs does not automate it. Revisit if it becomes the top fidelity complaint.
 
 ### 3.7 Deck-level PPTX setup
+
+**One post-pass on pptxgenjs's output (M4.8b).** pptxgenjs writes a paragraph's `<a:pPr>` once per *run*, so a multi-run paragraph carries N of them — schema-invalid, and on a bulleted `<li>` the first says `<a:buChar/>` while every later one says `<a:buNone/>`, so the marker PowerPoint shows is undefined. `pptx-writer.ts` unzips the emitted package with fflate, keeps the first `<a:pPr>` of every `<a:p>` in each slide part, and re-zips. Every paragraph property the walker sets is identical across the runs except the bullet, which is deliberately on the first run, so the first `pPr` is the paragraph's. Pinned by `pptx-writer.test.ts`.
 
 ```ts
 const pptx = new pptxgen();
