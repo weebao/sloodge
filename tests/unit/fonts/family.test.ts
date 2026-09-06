@@ -127,7 +127,7 @@ const DIGIT_LED_WORD_NAMES = [
   '000 Orange Fizz 2.0 TB',
 ]
 
-/** css-fonts-4's `<generic-family>` keywords; a composed value may not begin with one. */
+/** The generic words the validator refuses in first position; a composed value may not begin with one. */
 const GENERIC_FAMILY_KEYWORDS: ReadonlySet<string> = new Set([
   'serif',
   'sans-serif',
@@ -135,8 +135,6 @@ const GENERIC_FAMILY_KEYWORDS: ReadonlySet<string> = new Set([
   'cursive',
   'fantasy',
   'math',
-  'emoji',
-  'fangsong',
   'system-ui',
   'ui-serif',
   'ui-sans-serif',
@@ -412,13 +410,34 @@ describe('cssIdentFontFamily', () => {
       expect(isValidFontFamilyName(name), name).toBe(true)
       const value = buildFontFamilyValue(name)
       expect(value, name).not.toBeNull()
-      const family = value!.split(',')[0]!
-      expect(everyWordIsAnIdentifier(family), value!).toBe(true)
-      expect(GENERIC_FAMILY_KEYWORDS.has(family.split(' ')[0]!.toLowerCase()), value!).toBe(false)
+      expect(everyWordIsAnIdentifier(value!.split(',')[0]!), value!).toBe(true)
     }
     // …and the predicate can say no: this is the exact string the composer used to write.
     expect(everyWordIsAnIdentifier('Wingdings 2')).toBe(false)
     expect(everyWordIsAnIdentifier('FSP DEMO - Bank')).toBe(false)
+  })
+
+  it('lets nothing through normalisation whose composed value begins with a generic', () => {
+    // Asked of the survivors of `normalizeFontFamilies` over the corpus WITH a leading-generic name
+    // planted in it, so the assertion has something to catch: were the first-word check missing,
+    // `Serif Gothic` would survive and its composed value would begin with `serif` (round 9 found
+    // the earlier form of this assertion vacuous — its corpus had no such name to refuse).
+    const survivors = normalizeFontFamilies([
+      ...DIGIT_LED_WORD_NAMES,
+      'Serif Gothic',
+      'Gothic Serif',
+      'Fantasque Sans Mono',
+      'FangSong',
+    ])
+    expect(survivors).not.toContain('Serif Gothic')
+    expect(survivors).toContain('Gothic Serif')
+    expect(survivors).toContain('FangSong')
+    expect(survivors).toHaveLength(DIGIT_LED_WORD_NAMES.length + 3)
+    for (const name of survivors) {
+      const family = buildFontFamilyValue(name)!.split(',')[0]!
+      expect(everyWordIsAnIdentifier(family), name).toBe(true)
+      expect(GENERIC_FAMILY_KEYWORDS.has(family.split(' ')[0]!.toLowerCase()), name).toBe(false)
+    }
   })
 
   it('escapes a leading NON-ASCII digit with its own code point, not a hardcoded \\3', () => {
@@ -523,8 +542,6 @@ describe('buildFontFamilyValue', () => {
       'cursive',
       'fantasy',
       'math',
-      'emoji',
-      'fangsong',
       'ui-serif',
       'ui-sans-serif',
       'ui-monospace',
@@ -561,8 +578,6 @@ describe('buildFontFamilyValue', () => {
       'Fantasy Land',
       'Math Sans',
       'system-ui Gothic',
-      'Emoji One',
-      'Fangsong Song',
       'ui-serif Pro',
       'ui-rounded Display',
     ]) {
@@ -584,6 +599,18 @@ describe('buildFontFamilyValue', () => {
       'Cambria Math',
       'Segoe UI Emoji',
       'Default Gothic',
+      // Not generics in any engine, nor bare ones in the current spec (`generic(fangsong)` is its
+      // only form). `FangSong` is `simfang.ttf`, on every Windows since 7; round 9 found it refused.
+      'FangSong',
+      'Fangsong Song',
+      'Emoji One',
+      // A first word that merely *starts* with a generic is a family: a check that matched by prefix
+      // would lose `Serifa`, `Mathilde Script` and `Monospaced` (and nothing here noticed until
+      // round 9). `Fantasque Sans Mono` is the real-world case that motivates the exact match.
+      'Fantasque Sans Mono',
+      'Serifa',
+      'Mathilde Script',
+      'Monospaced',
     ]) {
       expect(isValidFontFamilyName(name), name).toBe(true)
       expect(buildFontFamilyValue(name), name).toBe(`${name}, Segoe UI, system-ui, sans-serif`)
