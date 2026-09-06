@@ -67,6 +67,7 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
   const fit = useMemo(() => fitSlide(mat, { maxScale: 1 }), [mat])
   const designEnabled = useDesignStore((state) => state.enabled)
   const editing = useDesignStore((state) => state.editing)
+  const finishing = useDesignStore((state) => state.finishing)
   const frameRef = useRef<HTMLIFrameElement>(null)
 
   const slide = slides[currentIndex] ?? null
@@ -81,8 +82,13 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
     enabled: designModeActive,
   })
 
-  // Only pay for the parse + instrument + inject while Design Mode is on.
-  const documentFor = designEnabled ? instrumentDocument : undefined
+  // Only pay for the parse + instrument + inject while Design Mode is on — or while a text session
+  // is still being finished on the way out (M3.13). Swapping the document is a navigation, and the
+  // session's answer can only come from the document the caret is in: swapping at the toggle put a
+  // slide whose JS stalled across it past `finish`'s timeout, and the typed text was lost. Keeping
+  // the instrumented document until the session settles costs nothing visible — it is the same
+  // slide plus `data-sl-id`s and a dormant bridge — and the swap happens once, on settle.
+  const documentFor = designEnabled || finishing ? instrumentDocument : undefined
 
   // Memoized so the relative wrapper's style is not a fresh object on every render (react-perf).
   const stageStyle = useMemo(

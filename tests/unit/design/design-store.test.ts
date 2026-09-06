@@ -24,6 +24,7 @@ beforeEach(() => {
     selection: null,
     selections: [],
     notice: null,
+    finishing: false,
   })
 })
 
@@ -222,6 +223,26 @@ describe('text-edit sessions (M3.11)', () => {
     useDesignStore.getState().setEnabled(false)
 
     expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  // M3.13: the toggle that ends a session raises `finishing` in the *same* update, so the render
+  // that removes the overlay is already one that keeps the frame's document. Settling clears it;
+  // a toggle with no caret open never raises it.
+  it('turning Design Mode off over an open session marks it finishing until settled', () => {
+    useDesignStore.getState().beginEditing(HIT.slId)
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().finishing).toBe(true)
+
+    useDesignStore.getState().setEnabled(true)
+    expect(useDesignStore.getState().finishing).toBe(true)
+
+    useDesignStore.getState().settleFinishing()
+    expect(useDesignStore.getState().finishing).toBe(false)
+  })
+
+  it('turning Design Mode off with no session open is not finishing anything', () => {
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().finishing).toBe(false)
   })
 
   it('endEditing is idempotent', () => {

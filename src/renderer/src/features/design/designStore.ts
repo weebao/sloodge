@@ -87,6 +87,22 @@ export type DesignSnapshot = {
   readonly editing: string | null
   /** The refused edit to explain, or `null`. See `TextEditNotice`. */
   readonly notice: TextEditNotice | null
+  /**
+   * A text session is being finished on the way out of Design Mode (M3.13): the toggle found a caret
+   * open, and the answer — the typed text — has not arrived yet.
+   *
+   * It exists for the stage frame. Turning Design Mode off swaps every frame's document from the
+   * instrumented copy back to the raw slide, which is a new `slide://` URL and a navigation; the
+   * session's `finish` is then waiting on a document that is being torn down, and a slide whose own
+   * JS stalls across the toggle answers too late — measured lost at 800 ms of stall. `SlideCanvas`
+   * keeps the instrumented document for as long as this is set, so the caret's document stays until
+   * it has answered or been given up on. It is set **in the same update** as `enabled: false`,
+   * because the render that removes the overlay is the render that would otherwise re-navigate the
+   * frame — a flag raised afterwards, from the overlay's unmount, is one render too late and would
+   * mint a second URL rather than prevent the first. `useTextEditing` clears it when the finish
+   * settles, whichever way.
+   */
+  readonly finishing: boolean
 }
 
 export type DesignState = DesignSnapshot & {
@@ -127,6 +143,8 @@ export type DesignState = DesignSnapshot & {
   endEditing: () => void
   /** Raise or dismiss the refused-edit notice. */
   setNotice: (notice: TextEditNotice | null) => void
+  /** The finishing session has settled — committed, refused or given up on. See `finishing`. */
+  settleFinishing: () => void
 }
 
 const CLEARED = { hover: null, selections: [], selection: null, editing: null } as const
@@ -134,9 +152,9 @@ const CLEARED = { hover: null, selections: [], selection: null, editing: null } 
 /**
  * What turning Design Mode off resets. `notice` is deliberately **not** in it: the refusal a toggle
  * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
- * user is owed for it.
+ * user is owed for it. `finishing` is not in it either — the toggle is what *raises* it.
  */
-const OFF: Omit<DesignSnapshot, 'notice'> = { enabled: false, ...CLEARED }
+const OFF: Omit<DesignSnapshot, 'notice' | 'finishing'> = { enabled: false, ...CLEARED }
 
 /** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
 function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
@@ -148,6 +166,7 @@ function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
   notice: null,
+  finishing: false,
   // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
   enabled: true,
 
@@ -158,7 +177,10 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
   setEnabled: (enabled) => {
     // Turning off resets everything to the single OFF snapshot so no stale outline survives a
     // later re-enable; turning on keeps hover/selection null (they were already null while off).
-    set(enabled ? { enabled: true } : OFF)
+    // A caret open at that moment is about to be finished by the overlay's unmount, and the frame
+    // it is in must not be re-navigated until that has settled — see `finishing`.
+    if (enabled) set({ enabled: true })
+    else set(get().editing === null ? OFF : { ...OFF, finishing: true })
   },
 
   setHover: (hit) => {
@@ -215,5 +237,9 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
 
   setNotice: (notice) => {
     set({ notice })
+  },
+
+  settleFinishing: () => {
+    set({ finishing: false })
   },
 }))

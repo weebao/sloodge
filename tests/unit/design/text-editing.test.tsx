@@ -967,6 +967,27 @@ describe('useTextEditing — a caret the frame closed by itself is still put bac
     expect(undoDepth()).toBe(1)
   })
 
+  it('a frame that never answers is said out loud, not just put back (M3.13)', () => {
+    // The one loss left after M3.13's deferral: `finish` timed out. Before, this path put the element
+    // back and said nothing — the user's sentence vanished with no explanation.
+    const harness = mount(false)
+    const id = idOfClass('title')
+    open(harness, id)
+    act(() => {
+      harness.replies[0]!({ slId: id, text: 'Old title', editing: true })
+    })
+
+    cleanup()
+    act(() => {
+      harness.finishers[0]!(null)
+    })
+
+    expect(undoDepth()).toBe(0)
+    expect(harness.pinned.map((entry) => entry.action)).toEqual(['commit', 'cancel', 'revert'])
+    expect(noticeText()).toMatch(/didn’t answer in time/)
+    expect(useDesignStore.getState().notice?.slideId).toBe(slideId)
+  })
+
   it('a refusal that arrives after the overlay has gone puts the frame back, and says why', () => {
     const harness = mount(false)
     const id = idOfClass('title')

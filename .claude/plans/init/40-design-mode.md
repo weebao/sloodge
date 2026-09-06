@@ -974,10 +974,15 @@ Content field is simply disabled, with a hint explaining why.
   at 800 ms**: no commit, the frame reverted, nothing said. Ordinary interaction does not reach it —
   the slide's own JS has to stall for about a second at the instant of the toggle, and ~130 real
   sessions across the toggle, Present, `Enter`, `Esc`, `Tab` and blur never lost text — and it fails
-  safe, leaving the document untouched. Every exit therefore keeps the text provided the frame can
-  answer within a frame of the click; closing the residual window means capturing the frame's
-  `contentWindow` at pin time, or deferring the stage's re-navigation until a pending `finish`
-  settles (M3.13 in 80-roadmap.md).
+  safe, leaving the document untouched. **Closed in M3.13** by deferring the re-navigation:
+  `setEnabled(false)` raises `designStore.finishing` in the same update that removes the overlay,
+  `SlideCanvas` keeps the instrumented document for as long as it is set, and the `finish` callback
+  clears it — so the caret's document stays until it has answered or `FINISH_TIMEOUT_MS` has
+  passed, and the swap to the raw document happens once, on settle. The other half offered
+  (capturing `contentWindow` at pin time) was not taken: a WindowProxy keeps its identity across
+  navigations, so it cannot tell the documents apart and does nothing about a document torn down
+  before its stalled script can answer. A frame that still does not answer within the timeout is
+  now announced ("didn’t answer in time … wasn’t saved") instead of reverted in silence.
 - **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
   quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
   characters live only in the frame's DOM until the session ends. This is consistent with the app

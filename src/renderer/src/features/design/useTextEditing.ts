@@ -135,11 +135,20 @@
  * value is still refused and put back. Only a frame that never answers falls back to cancelling:
  * text the parent could not read is text it cannot vouch for.
  *
- * That is a wide window, not an unconditional one, and §40-design-mode.md §9.4 now records the bound:
- * the same toggle re-navigates the stage frame ~28 ms later, so `finish` is answered by a document
- * already on its way out. A slide whose own JS stalls its main thread for about a second across the
- * toggle answers too late and loses the text — measured at 800 ms of stall, against 400 ms surviving.
- * Closing that window is M3.13.
+ * That used to be a window, not a guarantee: the same toggle re-navigated the stage frame ~28 ms
+ * later (the instrumented document swapped back for the raw slide — a new URL), so `finish` was
+ * answered by a document already on its way out, and a slide whose own JS stalled its main thread
+ * across the toggle answered too late — measured lost at 800 ms of stall, against 400 ms surviving,
+ * reverted and unannounced. M3.13 closes it from the store side: `setEnabled(false)` raises
+ * `designStore.finishing` in the same update that removes the overlay, `SlideCanvas` keeps the
+ * frame's document for as long as it is set, and the `finish` callback below clears it — so the
+ * caret's document stays until it has answered or been given up on, and the swap happens once. The
+ * other half the roadmap offered, capturing `frame.contentWindow` at pin time, is not taken because
+ * it would change nothing: a WindowProxy keeps its identity across navigations, so a captured window
+ * compares identically to a re-read one and cannot tell the old document from the new — and the loss
+ * was never a mis-attributed answer, it was a document torn down before its stalled script could
+ * answer at all. What remains is a frame that does not answer within `FINISH_TIMEOUT_MS`, and that
+ * is no longer silent: the element is put back **and** the notice says the text was not saved.
  *
  * ## The untrusted-text rule
  *
@@ -194,6 +203,14 @@ const REFUSAL_NOTICE: Readonly<Record<TextEditRefusal, string>> = {
   'unknown-element': 'That element is no longer on this slide, so the edit was not applied.',
   'forbidden-token': 'That text is not allowed in a slide, so the element was left as it was.',
 }
+
+/**
+ * The one loss that can still happen, said out loud (M3.13): a session finished on the way out of
+ * Design Mode whose frame never answered. Text the parent never read is text it cannot write, so
+ * the element is put back — and unlike before, the user is told, in the same voice as a refusal.
+ */
+const UNANSWERED_NOTICE =
+  'The slide didn’t answer in time, so the text you typed wasn’t saved and the element was left as it was.'
 
 /**
  * End a caret from the parent: take the `contenteditable` away and put the element back to the text
@@ -367,9 +384,18 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   /**
    * The single commit point. Re-derives the element from current bytes and the parent-tracked id,
    * then writes at most one `setSlideHtml` — the whole session's undo entry.
+   *
+   * `text === null` is a finishing session whose frame never answered (`PinnedEdit.finish`): the
+   * frame is gone, or its script is dead. Nothing can be written, so the element is put back rather
+   * than left showing text no document contains (round-6) — and the loss is announced (M3.13).
    */
   const commitText = useCallback(
-    (slId: string, text: string, session: PinnedEdit | null): void => {
+    (slId: string, text: string | null, session: PinnedEdit | null): void => {
+      if (text === null) {
+        endFrameCaret(session)
+        setNotice(UNANSWERED_NOTICE)
+        return
+      }
       const source = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (source === undefined) return
       const outcome = resolveTextEdit(buildSlideMap(slideId, source), slId, text)
@@ -417,16 +443,20 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     return () => {
       const slId = editingRef.current
       const session = sessionFrameRef.current
-      if (slId === null) return
-      dropSession()
-      if (session === null) return
+      if (slId !== null) dropSession()
+      if (slId === null || session === null) {
+        // Nothing to wait for, so nothing may hold the frame: the toggle raises `finishing` on the
+        // store's own `editing`, which can be set before this hook has pinned the session (both in
+        // one batch), and a flag nobody settles would keep the frame on the instrumented document
+        // with Design Mode off. A no-op settle costs nothing — the store does not notify on one.
+        useDesignStore.getState().settleFinishing()
+        return
+      }
       session.finish((text) => {
-        // The frame never answered: it is gone, or its script is dead. Put the element back rather
-        // than leave it showing text no document contains (round-6).
-        if (text === null) {
-          endFrameCaret(session)
-          return
-        }
+        // Settled, whichever way: the frame may be re-navigated now. Cleared *before* the commit so
+        // the raw document and the new bytes reach the stage in one render — one navigation, not
+        // an instrumented reload followed by a raw one.
+        useDesignStore.getState().settleFinishing()
         commitTextRef.current(slId, text, session)
       })
     }
