@@ -69,14 +69,16 @@ export function useArrangeActions(slideId: string): ArrangeActions {
         startRect: boxOf(hit),
         nextRect: targets[index] ?? boxOf(hit),
       }))
-      const patched = buildMultiElementPatch(slideId, current, edits)
+      const { source: patched, moved } = buildMultiElementPatch(slideId, current, edits)
       if (patched === current) return
       if (!setSlideHtml(slideId, patched, anchor.slId, label)) return
 
+      // A member the pure layer refused (its move would have gone through an opaque transform)
+      // kept its bytes, so its stored box stays where it is too.
       setSelections(
         selections.map((hit, index) => {
           const target = targets[index]
-          if (target === undefined) return hit
+          if (target === undefined || !moved.has(hit.slId)) return hit
           const start = boxOf(hit)
           return shiftHit(hit, target.x - start.x, target.y - start.y)
         }),

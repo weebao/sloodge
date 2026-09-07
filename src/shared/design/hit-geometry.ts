@@ -59,6 +59,26 @@ export function rotatedRectContainsPoint(
 }
 
 /**
+ * The axis-aligned bounds of `rect` once CSS has rotated it `angleDeg` about its own centre — what
+ * the frame reports as a rotated element's `rect` (M3.6). Used to keep a selection's rendered
+ * bounds honest after a committed resize without a round trip to the frame.
+ */
+export function rotatedBounds(rect: SlRect, angleDeg: number): SlRect {
+  if (angleDeg === 0) return rect
+  const radians = (angleDeg * Math.PI) / 180
+  const cos = Math.abs(Math.cos(radians))
+  const sin = Math.abs(Math.sin(radians))
+  const width = rect.width * cos + rect.height * sin
+  const height = rect.width * sin + rect.height * cos
+  return {
+    x: rect.x + rect.width / 2 - width / 2,
+    y: rect.y + rect.height / 2 - height / 2,
+    width,
+    height,
+  }
+}
+
+/**
  * Shift a hit's stored geometry by `(dx, dy)` so the overlay boxes stay glued after a committed
  * move. Both `rect` and (when present) `box` translate; every other field is preserved.
  */

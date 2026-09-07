@@ -34,11 +34,11 @@ const SLIDE_HTML = `<!doctype html><html><body>
 let slideId = ''
 
 /** Install `SLIDE_HTML` as the deck's only slide with a clean (empty) undo stack. */
-function seedDeck(): string {
+function seedDeck(html: string = SLIDE_HTML): string {
   const base = createStarterDeck(0)
   const id = base.currentSlideId
   if (id === null) throw new Error('starter deck has no slide')
-  const slides = Object.assign(Object.create(null) as Record<string, string>, { [id]: SLIDE_HTML })
+  const slides = Object.assign(Object.create(null) as Record<string, string>, { [id]: html })
   base.history.reset({
     manifest: base.deck,
     slides,
@@ -176,5 +176,60 @@ describe('ArrangeBar', () => {
     expect((screen.getByLabelText('Distribute horizontally') as HTMLButtonElement).disabled).toBe(
       true,
     )
+  })
+})
+
+/**
+ * The transform lock reaches align/distribute through `buildDragPatch` (round-3 major 1): a member
+ * whose move would be written through an opaque transform keeps its bytes and its stored box while
+ * the others arrange as one command.
+ */
+describe('useArrangeActions — a transform-locked member stays put', () => {
+  const LOCKED_HTML = `<!doctype html><html><body>
+<div class="slide" data-sl-slide="X">
+  <div class="a" style="position:absolute;left:10px;top:20px;width:100px;height:40px">A</div>
+  <div class="k" style="transform: rotate(90deg) translate(10px, 0)">K</div>
+  <div class="c" style="position:absolute;left:400px;top:100px;width:60px;height:40px">C</div>
+</div>
+</body></html>`
+
+  it('align left moves A and C, leaves K byte-identical, one entry, K box unshifted', () => {
+    const id = seedDeck(LOCKED_HTML)
+    const map = buildSlideMap(id, LOCKED_HTML)
+    const hit = (cls: string, rect: SlRect): SlHit => {
+      const span = [...map.byId.values()].find((candidate) =>
+        LOCKED_HTML.slice(candidate.outer.start, candidate.outer.end).startsWith(
+          `<div class="${cls}"`,
+        ),
+      )!
+      return {
+        slId: span.slId,
+        tag: 'div',
+        id: null,
+        classes: [cls],
+        rect,
+        box: rect,
+        ancestors: [],
+      }
+    }
+    const members = [
+      hit('a', { x: 10, y: 20, width: 100, height: 40 }),
+      hit('k', { x: 200, y: 60, width: 80, height: 40 }),
+      hit('c', { x: 400, y: 100, width: 60, height: 40 }),
+    ]
+    useDesignStore.getState().setSelections(members)
+    const { result } = renderHook(() => useArrangeActions(id))
+    result.current.align('left')
+
+    expect(undoDepth()).toBe(1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, id) ?? ''
+    // Mutation guard: without the pure-layer refusal K becomes `rotate(90deg) translate(-180px, 0)`.
+    expect(patched).toContain(
+      '<div class="k" style="transform: rotate(90deg) translate(10px, 0)">K</div>',
+    )
+    expect(patched.match(/left:\s*10px/g)?.length).toBe(2)
+    const after = useDesignStore.getState().selections
+    expect(after[1]?.rect.x).toBe(200)
+    expect(after[2]?.rect.x).toBe(10)
   })
 })

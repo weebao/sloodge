@@ -19,6 +19,7 @@ import { buildDuplicatePatch, type DuplicateOffset } from '../../../../shared/de
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { buildFlipPatch, buildRotatePatch } from '../../../../shared/design/transform-commit'
 import type { FlipAxis } from '../../../../shared/design/transform'
+import { hasVisibleText } from '../../../../shared/design/text-edit'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
 
@@ -39,6 +40,7 @@ export interface ElementActions {
 export function useElementActions(slideId: string): ElementActions {
   const selection = useDesignStore((state) => state.selection)
   const setSelection = useDesignStore((state) => state.setSelection)
+  const setNotice = useDesignStore((state) => state.setNotice)
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
 
   const flip = useCallback(
@@ -48,14 +50,30 @@ export function useElementActions(slideId: string): ElementActions {
       if (current === undefined) return
       const patched = buildFlipPatch(slideId, current, selection.slId, axis)
       if (patched === current) return
-      setSlideHtml(
-        slideId,
-        patched,
-        selection.slId,
-        axis === 'x' ? 'Flip horizontal' : 'Flip vertical',
-      )
+      if (
+        !setSlideHtml(
+          slideId,
+          patched,
+          selection.slId,
+          axis === 'x' ? 'Flip horizontal' : 'Flip vertical',
+        )
+      ) {
+        return
+      }
+      // The one case a flip has a consequence the user may not have meant: `scaleX(-1)` mirrors the
+      // glyphs along with the box, because CSS has no way to flip a container and leave its text
+      // readable. PowerPoint counter-flips text and Figma mirrors it; Sloodge mirrors (the transform
+      // is the source of truth, and a counter-flip would mean editing every text descendant), and
+      // since mirrored text looks like a bug rather than a choice, the notice names what happened.
+      const element = buildSlideMap(slideId, current).byId.get(selection.slId)
+      if (element !== undefined && hasVisibleText(current, element)) {
+        setNotice({
+          slideId,
+          text: 'Flipped — the text is mirrored with it. Flip the same way again to restore it.',
+        })
+      }
     },
-    [selection, slideId, setSlideHtml],
+    [selection, slideId, setSlideHtml, setNotice],
   )
 
   const rotateTo = useCallback(
@@ -87,10 +105,14 @@ export function useElementActions(slideId: string): ElementActions {
 
     const classAttr = clone.attrs['class']
     const idAttr = clone.attrs['id']
+    // The clone's box is the original's, shifted by the nudge it actually received — a clone that
+    // could not be nudged (see `duplicate.ts`) sits exactly over the original, and its selection box
+    // must say so rather than outline empty canvas 16px away.
+    const nudge = result.declined === null ? DUPLICATE_OFFSET : { dx: 0, dy: 0 }
     const offsetRect = (rect: SlHit['rect']): SlHit['rect'] => ({
       ...rect,
-      x: rect.x + DUPLICATE_OFFSET.dx,
-      y: rect.y + DUPLICATE_OFFSET.dy,
+      x: rect.x + nudge.dx,
+      y: rect.y + nudge.dy,
     })
     const cloneHit: SlHit = {
       slId: clone.slId,
@@ -107,7 +129,13 @@ export function useElementActions(slideId: string): ElementActions {
       ancestors: selection.ancestors,
     }
     setSelection(cloneHit)
-  }, [selection, slideId, setSlideHtml, setSelection])
+    if (result.declined !== null) {
+      setNotice({
+        slideId,
+        text: `Duplicated in place — ${result.declined}, so the copy sits exactly over the original.`,
+      })
+    }
+  }, [selection, slideId, setSlideHtml, setSelection, setNotice])
 
   return { flip, duplicate, rotateTo, hasSelection: selection !== null }
 }

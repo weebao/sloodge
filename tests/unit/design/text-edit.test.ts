@@ -26,6 +26,7 @@ import {
   MAX_TEXT_LENGTH,
   NON_EDITABLE_TAGS,
   sanitizeEditedText,
+  hasVisibleText,
 } from '../../../src/shared/design/text-edit'
 import type { ElementSpan, SlideMap } from '../../../src/shared/design/types'
 import { CORPUS } from './corpus'
@@ -775,5 +776,28 @@ describe('resolveTextEdit — why an edit did not land', () => {
       kind: 'refused',
       reason: 'not-editable',
     })
+  })
+})
+
+describe('hasVisibleText', () => {
+  const has = (html: string): boolean => hasVisibleText(html, only(html))
+
+  it('is true for prose, including nested and entity text', () => {
+    expect(has('<div>x</div>')).toBe(true)
+    expect(has('<div><p><b>deep</b></p></div>')).toBe(true)
+    expect(has('<div>&nbsp;&amp;</div>')).toBe(true)
+  })
+
+  it('is false for whitespace, a void element, and an empty element', () => {
+    expect(has('<div>  \n </div>')).toBe(false)
+    expect(has('<img alt="">')).toBe(false)
+    expect(has('<div></div>')).toBe(false)
+  })
+
+  it('ignores style/script/template content and a `>` inside a quoted attribute (round-1)', () => {
+    // Mutation guard: the regex tag-strip reported both of these as text.
+    expect(has('<div><style>.a{color:red}</style></div>')).toBe(false)
+    expect(has('<div><script>1</script><template><p>t</p></template></div>')).toBe(false)
+    expect(has('<div><img alt="" title="a > b"></div>')).toBe(false)
   })
 })

@@ -43,6 +43,8 @@ import {
   type SourceOp,
 } from './patch'
 import { parseTransform } from './style'
+import { composeTransform, inspectTransform, type TransformParts } from './transform'
+import { readTransformShape } from './transform-commit'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -79,13 +81,91 @@ function isSvg(element: ElementSpan): boolean {
   return element.ns === 'svg'
 }
 
+/**
+ * The translate arguments of a `transform` value as the handles read them: `inspectTransform`'s
+ * folded translate for an editable value (so `translateX(120px)` reads as `120px, 0`), else the
+ * exact `translate()` function if the opaque value has one. One definition shared with M3.6's
+ * transform algebra, so the panel and the handles cannot disagree about what a translate is.
+ */
+function translateArgs(transform: string | null): string | null {
+  const shape = inspectTransform(transform)
+  if (shape.editable) return shape.parts.translate
+  return parseTransform(transform ?? '').find((f) => f.name === 'translate')?.args ?? null
+}
+
 /** The x-translate and y-translate of a `transform` value in source, defaulting to `'0'` each. */
 function readTranslate(transform: string | null): { tx: string; ty: string } {
-  if (transform === null) return { tx: '0', ty: '0' }
-  const fn = parseTransform(transform).find((f) => f.name === 'translate')
-  if (fn === undefined) return { tx: '0', ty: '0' }
-  const parts = fn.args.split(',').map((part) => part.trim())
+  const args = translateArgs(transform)
+  if (args === null) return { tx: '0', ty: '0' }
+  const parts = args.split(',').map((part) => part.trim())
   return { tx: parts[0] ?? '0', ty: parts[1] ?? '0' }
+}
+
+/**
+ * Whether the source positions the element with `left`/`top`. That is the channel X/Y edits and
+ * drags write when it is there (§5.3), and it never touches the `transform` — which is why the
+ * overlay keeps move available under a transform lock exactly when this holds.
+ */
+export function positionsByOffsets(source: string, element: ElementSpan): boolean {
+  return (
+    readStyleProp(source, element, 'left') !== null ||
+    readStyleProp(source, element, 'top') !== null
+  )
+}
+
+/**
+ * Whether an X/Y edit on this element is written **through its `transform`** — an HTML element not
+ * positioned with `left`/`top` (an SVG element writes `x`/`y` attributes). This is the one channel a
+ * geometry edit can corrupt on a transform the handles cannot decompose, so it is the predicate
+ * `buildDragPatch` refuses on (see its header).
+ */
+export function movesThroughTransform(source: string, element: ElementSpan): boolean {
+  return !isSvg(element) && !positionsByOffsets(source, element)
+}
+
+/**
+ * Which channel an X/Y edit on this element uses — and, when that channel is `transform`, whether
+ * the edit may be written at all. **One function answers it for the reader, the writer and the
+ * message**, so they cannot drift apart; four review rounds of this milestone were spent on sites
+ * that each re-derived a paraphrase of it.
+ *
+ * - `attr` — an SVG element positions with `x`/`y` attributes; its `transform` is irrelevant.
+ * - `offsets` — the source declares `left`/`top`; an edit writes those and never touches the
+ *   `transform`. `translateZ(0)`, the compositing idiom, must not make an element unmovable.
+ * - `translate` — an in-flow HTML element moves by rewriting its `translate()`, and
+ *   `inspectTransform` could decompose the transform, so the rewrite is safe and composable.
+ * - `refused` — the same, except the transform is one `inspectTransform` cannot decompose (a
+ *   `matrix()`, a `rotate()` written before its `translate()`). Rewriting the exact `translate()`
+ *   where it stands sends a screen-space delta along the element's own tilted axis: a +40 X edit
+ *   under `rotate(90deg)` moves the element 40px *down*, a +40 Y edit moves it 40px *left*. The
+ *   value is still readable — the panel shows it greyed with `reason` as the tooltip — but no
+ *   write goes out. **This is the transform lock, and this arm is the whole of it.**
+ */
+export type MoveChannel =
+  | { readonly kind: 'attr' }
+  | { readonly kind: 'offsets' }
+  | { readonly kind: 'translate'; readonly parts: TransformParts }
+  | { readonly kind: 'refused'; readonly reason: string }
+
+export function moveChannel(source: string, element: ElementSpan): MoveChannel {
+  if (isSvg(element)) return { kind: 'attr' }
+  if (positionsByOffsets(source, element)) return { kind: 'offsets' }
+  const shape = readTransformShape(source, element)
+  return shape.editable
+    ? { kind: 'translate', parts: shape.parts }
+    : { kind: 'refused', reason: shape.reason }
+}
+
+/**
+ * Why an X/Y edit on this element must be refused, or `null` when it may be written — the `refused`
+ * arm of `moveChannel`, for the consumers that only need the message: the overlay's badge and group
+ * cursor, and the panel's disabled X/Y inputs. They call this rather than restating the rule, so a
+ * badge cannot accuse a move that would have succeeded (an earlier paraphrase, `!positionsByOffsets`,
+ * did exactly that to every SVG child).
+ */
+export function moveRefusal(source: string, element: ElementSpan): string | null {
+  const channel = moveChannel(source, element)
+  return channel.kind === 'refused' ? channel.reason : null
 }
 
 /** Read every field's current source value. Pure over `(map.source, element)`. */
@@ -106,23 +186,23 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
     ? (readAttr(source, element, 'stroke') ?? readStyleProp(source, element, 'stroke'))
     : readStyleProp(source, element, 'border-color')
 
+  // The same `moveChannel` the writer switches on, so the field the panel shows is by construction
+  // the field an edit would write. A `refused` element still *reads* its translate: the value is
+  // shown, greyed, with the reason as the tooltip — hiding it would say less, not more.
   let x: string | null
   let y: string | null
-  if (svg) {
+  const channel = moveChannel(source, element)
+  if (channel.kind === 'attr') {
     x = readAttr(source, element, 'x')
     y = readAttr(source, element, 'y')
+  } else if (channel.kind === 'offsets') {
+    x = readStyleProp(source, element, 'left')
+    y = readStyleProp(source, element, 'top')
   } else {
-    const left = readStyleProp(source, element, 'left')
-    const top = readStyleProp(source, element, 'top')
-    if (left !== null || top !== null) {
-      x = left
-      y = top
-    } else {
-      const transform = readStyleProp(source, element, 'transform')
-      const translate = transform === null ? null : readTranslate(transform)
-      x = translate ? translate.tx : null
-      y = translate ? translate.ty : null
-    }
+    const transform = readStyleProp(source, element, 'transform')
+    const translate = transform === null ? null : readTranslate(transform)
+    x = translate ? translate.tx : null
+    y = translate ? translate.ty : null
   }
 
   const width =
@@ -160,32 +240,29 @@ function asLength(value: string): string {
  * Set one axis of the element's `transform: translate(...)`, preserving the other axis and every
  * other transform function (rotate, scale). Writes the whole `transform` declaration via
  * `setStyleProp`, so all the other inline-style declarations are untouched.
+ *
+ * The transform is re-emitted through `composeTransform`, the same writer M3.6's rotate, flip and
+ * duplicate use, so a `translateX(120px)` becomes one `translate(40px, 0)` rather than a second
+ * translate beside it — which would have made the element opaque, and its handles dead, on the
+ * user's first drag.
+ *
+ * Takes the already-decomposed `parts` from `moveChannel`'s `translate` arm rather than
+ * re-inspecting, so this function has no opinion about whether the write is allowed — it cannot,
+ * because it is only ever reached down the arm where it is. Round 2 fixed *how* an opaque transform
+ * was written through (a new translate had to lead, or the shift ran along the element's own tilted
+ * axis); round 4 decided such a write must not happen at all, which subsumes that fix, so its
+ * in-place rewrite is gone rather than left behind as a path production can no longer take.
  */
 function translateOps(
   source: string,
   element: ElementSpan,
+  parts: TransformParts,
   axis: 'x' | 'y',
   px: string,
 ): SourceOp[] {
-  const transform = readStyleProp(source, element, 'transform')
-  const { tx, ty } = readTranslate(transform)
-  const next = replaceTranslate(transform ?? '', axis === 'x' ? px : tx, axis === 'y' ? px : ty)
-  return setStyleProp(source, element, 'transform', next)
-}
-
-/** Rebuild a transform string, replacing only its `translate` with `translate(x, y)`. */
-function replaceTranslate(transform: string, x: string, y: string): string {
-  const fns = parseTransform(transform)
-  let replaced = false
-  const out = fns.map((fn) => {
-    if (fn.name === 'translate') {
-      replaced = true
-      return `translate(${x}, ${y})`
-    }
-    return `${fn.name}(${fn.args})`
-  })
-  if (!replaced) out.push(`translate(${x}, ${y})`)
-  return out.join(' ')
+  const { tx, ty } = readTranslate(readStyleProp(source, element, 'transform'))
+  const args = `${axis === 'x' ? px : tx}, ${axis === 'y' ? px : ty}`
+  return setStyleProp(source, element, 'transform', composeTransform({ ...parts, translate: args }))
 }
 
 /**
@@ -261,17 +338,22 @@ export function buildFieldOps(
     case 'x':
     case 'y': {
       if (value.length === 0) return []
-      const attr = field === 'x' ? 'x' : 'y'
       const axis = field === 'x' ? 'x' : 'y'
-      if (svg) return setAttr(element, attr, attr, value)
-      // HTML: prefer left/top if the source already positions with them, else transform:translate.
-      const positioned =
-        readStyleProp(source, element, 'left') !== null ||
-        readStyleProp(source, element, 'top') !== null
-      if (positioned) {
-        return setStyleProp(source, element, field === 'x' ? 'left' : 'top', asLength(value))
+      const channel = moveChannel(source, element)
+      switch (channel.kind) {
+        case 'attr':
+          return setAttr(element, axis, axis, value)
+        case 'offsets':
+          return setStyleProp(source, element, axis === 'x' ? 'left' : 'top', asLength(value))
+        case 'translate':
+          return translateOps(source, element, channel.parts, axis, asLength(value))
+        case 'refused':
+          // The transform lock, and the only place it is applied. `buildDragPatch` and every one of
+          // its callers — single drag, group drag, align/distribute, a drag whose element turned
+          // opaque mid-gesture — and the panel's X/Y inputs all arrive here, so none of them needs
+          // a gate of its own and none of them can forget one.
+          return []
       }
-      return translateOps(source, element, axis, asLength(value))
     }
   }
 }

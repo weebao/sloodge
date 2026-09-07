@@ -88,12 +88,13 @@ import type {
   SlHit,
   SlRect,
 } from '../../../../shared/design/bridge-protocol'
-import type { DragHandle } from '../../../../shared/design/drag'
+import type { DragHandle, ResizeHandle } from '../../../../shared/design/drag'
 import type { Point } from '../../../../shared/design/overlay-geometry'
 import {
   clientPointToFrame,
   frameRectCentreClient,
   frameRectToOverlay,
+  resizeCursor,
   rotatedOverlayStyle,
   unionRects,
 } from '../../../../shared/design/overlay-geometry'
@@ -101,6 +102,7 @@ import { buildDragPatch } from '../../../../shared/design/drag-commit'
 import {
   boxOf,
   rectContainsPoint,
+  rotatedBounds,
   rotatedRectContainsPoint,
   shiftHit,
 } from '../../../../shared/design/hit-geometry'
@@ -109,8 +111,9 @@ import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smar
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
-import { readStyleProp } from '../../../../shared/design/patch'
-import { readRotation } from '../../../../shared/design/transform'
+import { readTransformShape } from '../../../../shared/design/transform-commit'
+import { moveRefusal } from '../../../../shared/design/property-model'
+import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore, type DesignSnapshot } from './designStore'
@@ -138,32 +141,21 @@ const NO_POINTER: CSSProperties = { pointerEvents: 'none' }
 /** The root swallows all pointer events in Design Mode, freezing the slide's own handlers (§2.1). */
 const CAPTURE_POINTER: CSSProperties = { pointerEvents: 'auto' }
 
-const HANDLE_CURSOR: Readonly<Record<string, string>> = {
-  nw: 'nwse-resize',
-  n: 'ns-resize',
-  ne: 'nesw-resize',
-  e: 'ew-resize',
-  se: 'nwse-resize',
-  s: 'ns-resize',
-  sw: 'nesw-resize',
-  w: 'ew-resize',
-}
-
-const HANDLES: readonly { readonly key: string; readonly style: CSSProperties }[] = (
-  [
-    ['nw', '0%', '0%'],
-    ['n', '50%', '0%'],
-    ['ne', '100%', '0%'],
-    ['e', '100%', '50%'],
-    ['se', '100%', '100%'],
-    ['s', '50%', '100%'],
-    ['sw', '0%', '100%'],
-    ['w', '0%', '50%'],
-  ] as const
-).map(([key, left, top]) => ({
-  key,
-  style: { left, top, pointerEvents: 'auto', cursor: HANDLE_CURSOR[key] } as CSSProperties,
-}))
+/** The eight grips and where each sits on the box; the cursor is per render, since it turns with it. */
+const HANDLES: readonly {
+  readonly key: ResizeHandle
+  readonly left: string
+  readonly top: string
+}[] = [
+  { key: 'nw', left: '0%', top: '0%' },
+  { key: 'n', left: '50%', top: '0%' },
+  { key: 'ne', left: '100%', top: '0%' },
+  { key: 'e', left: '100%', top: '50%' },
+  { key: 'se', left: '100%', top: '100%' },
+  { key: 's', left: '50%', top: '100%' },
+  { key: 'sw', left: '0%', top: '100%' },
+  { key: 'w', left: '0%', top: '50%' },
+]
 
 /** How far above the box's top edge the rotation handle floats, and the stalk that reaches it. */
 const ROTATE_OFFSET_PX = 24
@@ -306,10 +298,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // selection between the two, and applying one element's delta to another moved a subtitle the user
   // never touched (round-4 major).
   const dragTargetRef = useRef<readonly SlHit[]>([])
+  // The anchor's rotation at `pointerdown`, for the same reason: the commit re-places the box by it.
+  const dragAngleRef = useRef(0)
 
   // Commit a completed single-element drag as one undoable command (M3.5).
   const onCommitGeometry = useCallback(
-    (target: SlHit, startRect: SlRect, nextRect: SlRect): void => {
+    (target: SlHit, startRect: SlRect, nextRect: SlRect, angle: number): void => {
       const current = getSlideHtml(useDeckStore.getState().slideHtml, slideId)
       if (current === undefined) return
       const patched = buildDragPatch(slideId, current, target.slId, startRect, nextRect)
@@ -319,7 +313,15 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           .getState()
           .setSlideHtml(slideId, patched, target.slId, gestureLabel(startRect, nextRect))
       ) {
-        setSelection({ ...target, rect: nextRect })
+        // The gesture ran on the unrotated `box`, so that is what `nextRect` is; the rendered `rect`
+        // is that box turned by the element's rotation. Writing only `rect` (as M3.5 did, before
+        // `box` existed) left the overlay drawing — and the next gesture starting from — the
+        // pre-resize box until a hit-test happened to refresh it.
+        setSelection(
+          target.box === undefined
+            ? { ...target, rect: nextRect }
+            : { ...target, rect: rotatedBounds(nextRect, angle), box: nextRect },
+        )
       }
     },
     [slideId, setSelection],
@@ -344,10 +346,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           nextRect: { ...start, x: start.x + dx, y: start.y + dy },
         }
       })
-      const patched = buildMultiElementPatch(slideId, current, edits)
+      const { source: patched, moved } = buildMultiElementPatch(slideId, current, edits)
       if (patched === current) return
       if (useDeckStore.getState().setSlideHtml(slideId, patched, anchor.slId, 'Move elements')) {
-        setSelections(target.map((hit) => shiftHit(hit, dx, dy)))
+        // Only what the pure layer actually moved is shifted: a member it refused (an opaque
+        // transform it would have had to write through) kept its bytes and keeps its box.
+        setSelections(target.map((hit) => (moved.has(hit.slId) ? shiftHit(hit, dx, dy) : hit)))
       }
     },
     [slideId, setSelections],
@@ -359,7 +363,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       const anchor = target.at(-1)
       if (anchor === undefined) return
       if (target.length >= 2) onCommitGroupMove(target, startRect, nextRect)
-      else onCommitGeometry(anchor, startRect, nextRect)
+      else onCommitGeometry(anchor, startRect, nextRect, dragAngleRef.current)
     },
     [onCommitGroupMove, onCommitGeometry],
   )
@@ -371,6 +375,104 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     return unionRects(selections.map(boxOf))
   }, [isMulti, selections])
   const selectionBox = isMulti ? groupBox : (selection?.box ?? selection?.rect ?? null)
+
+  // What this overlay needs from the slide's *bytes* — a rotation and an element's shape — read from
+  // the source, never from a bridge payload (§2.2).
+  //
+  // `buildSlideMap` is a full pass over the slide, and `slideHtml` changes once per token while the
+  // agent streams, so the parse is both lazy and shared: nobody selected means nobody asks and it
+  // never runs, and every reader below goes through this one map rather than parsing again. Round-6
+  // major 1 measured the alternative — `canEditSelection` parsing on its own doubled the cost to two
+  // full parses per token for the ordinary case of watching the agent write with something selected.
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const source = getSlideHtml(slideHtml, slideId)
+  const { elementOf, shapeOf, moveRefusalOf } = useMemo<{
+    elementOf: (slId: string) => ElementSpan | undefined
+    shapeOf: (slId: string) => TransformShape | null
+    moveRefusalOf: (slId: string) => string | null
+  }>(() => {
+    if (source === undefined) {
+      return {
+        elementOf: () => undefined,
+        shapeOf: () => null,
+        moveRefusalOf: () => null,
+      }
+    }
+    let map: SlideMap | null = null
+    const lookup = (slId: string): ElementSpan | undefined => {
+      map ??= buildSlideMap(slideId, source)
+      return map.byId.get(slId)
+    }
+    return {
+      elementOf: lookup,
+      shapeOf: (slId) => {
+        const element = lookup(slId)
+        return element === undefined ? null : readTransformShape(source, element)
+      },
+      moveRefusalOf: (slId) => {
+        const element = lookup(slId)
+        return element === undefined ? null : moveRefusal(source, element)
+      },
+    }
+  }, [source, slideId])
+  const angleOf = useCallback(
+    (slId: string): number => {
+      const shape = shapeOf(slId)
+      return shape !== null && shape.editable ? shape.parts.rotate : 0
+    },
+    [shapeOf],
+  )
+
+  // The single element's transform as the handles see it (M3.6): its rotation, or the reason the
+  // handles are off. A group is not rotated as a unit and is never locked, so both are neutral while
+  // multi-selected.
+  const transformShape = useMemo<TransformShape | null>(
+    () => (isMulti || selection === null ? null : shapeOf(selection.slId)),
+    [shapeOf, selection, isMulti],
+  )
+  const sourceAngle =
+    transformShape !== null && transformShape.editable ? transformShape.parts.rotate : 0
+  // Loud, not lossy: an element whose transform `inspectTransform` cannot decompose — a `matrix()`,
+  // a `rotate()` written before its `translate()` — gets no grips and no rotation handle, and a
+  // badge saying why. A resize or rotation assumes it can read the rotation and rewrite one
+  // function; on such an element a resize would slide off its anchor, so neither is offered blind.
+  // The panel fields, the keyboard and the AI path still reach it.
+  const transformLock =
+    transformShape !== null && !transformShape.editable ? transformShape.reason : null
+  // Move is a separate question. On an element positioned with `left`/`top` a drag writes those and
+  // never touches the transform, so it stays available under the lock — round-1 found `translateZ(0)`,
+  // the compositing idiom, had made such elements unmovable — and an SVG child writes `x`/`y`
+  // attributes, so it is never at risk either. Only an in-flow HTML element moves *through* the
+  // transform, which is exactly `movesThroughTransform`.
+  //
+  // The refusal itself lives in `buildFieldOps` (`moveChannel`), where the bytes are made, so every
+  // entry point — this body drag, a group drag, align/distribute, the panel's X/Y inputs, a drag
+  // whose element turned opaque mid-gesture — is safe without consulting this. What is decided here
+  // is only the message and the cursor, and it calls the writer's own function rather than a
+  // paraphrase of it: an earlier paraphrase (`!positionsByOffsets`) called an SVG rect locked that
+  // the writer moves cleanly, so the badge accused a move that would have succeeded. Counted over
+  // every member the gesture would move (round 2 found a locked member riding inside a group whose
+  // anchor was fine), the drag is withheld when *nothing* would move, and a group with some movable
+  // members still drags, its badge saying how many will stay.
+  const memberMoveLock = useMemo<{ count: number; reason: string | null }>(() => {
+    let count = 0
+    let reason: string | null = null
+    for (const hit of selections) {
+      const refusal = moveRefusalOf(hit.slId)
+      if (refusal !== null) {
+        count += 1
+        reason ??= refusal
+      }
+    }
+    return { count, reason }
+  }, [selections, moveRefusalOf])
+  const moveLocked = memberMoveLock.count > 0 && memberMoveLock.count === selections.length
+  const lockBadge =
+    transformLock !== null
+      ? `Handles off — ${transformLock}`
+      : memberMoveLock.reason !== null
+        ? `${String(memberMoveLock.count)} of ${String(selections.length)} won't move — ${memberMoveLock.reason}`
+        : null
 
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
   // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
@@ -386,6 +488,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const { startDrag, previewRect, guides, isDragging, consumeDragClick } = useDragGesture({
     scale,
     selectionRect: selectionBox,
+    angle: sourceAngle,
     onCommit: onCommitGesture,
     resolveRect,
   })
@@ -396,43 +499,6 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
     requestElements,
     onSelect: setSelections,
   })
-
-  // What this overlay needs from the slide's *bytes* — a rotation and an element's shape — read from
-  // the source, never from a bridge payload (§2.2).
-  //
-  // `buildSlideMap` is a full pass over the slide, and `slideHtml` changes once per token while the
-  // agent streams, so the parse is both lazy and shared: nobody selected means nobody asks and it
-  // never runs, and every reader below goes through this one map rather than parsing again. Round-6
-  // major 1 measured the alternative — `canEditSelection` parsing on its own doubled the cost to two
-  // full parses per token for the ordinary case of watching the agent write with something selected.
-  const slideHtml = useDeckStore((state) => state.slideHtml)
-  const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, angleOf } = useMemo<{
-    elementOf: (slId: string) => ElementSpan | undefined
-    angleOf: (slId: string) => number
-  }>(() => {
-    if (source === undefined) return { elementOf: () => undefined, angleOf: () => 0 }
-    let map: SlideMap | null = null
-    const lookup = (slId: string): ElementSpan | undefined => {
-      map ??= buildSlideMap(slideId, source)
-      return map.byId.get(slId)
-    }
-    return {
-      elementOf: lookup,
-      angleOf: (slId) => {
-        const element = lookup(slId)
-        if (element === undefined) return 0
-        return readRotation(readStyleProp(source, element, 'transform'))
-      },
-    }
-  }, [source, slideId])
-
-  // The single-element rotation (M3.6). Group selections are not rotated as a unit, so this is 0
-  // while multi-selected.
-  const sourceAngle = useMemo<number>(
-    () => (isMulti || selection === null ? 0 : angleOf(selection.slId)),
-    [angleOf, selection, isMulti],
-  )
 
   // What counts as "on a member" for the group-gap rule: each member's box turned by its own source
   // rotation, so the region tested is the one the user sees. See the header.
@@ -620,21 +686,23 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const onBodyPointerDown = useCallback(
     (event: React.PointerEvent): void => {
       dragTargetRef.current = gestureTarget(useDesignStore.getState())
+      dragAngleRef.current = sourceAngle
       requestElements((hits) => {
         elementsRef.current = hits
       })
       startDrag('move', event)
     },
-    [startDrag, requestElements],
+    [startDrag, requestElements, sourceAngle],
   )
   const onHandlePointerDown = useCallback(
     (event: React.PointerEvent): void => {
       const handle = event.currentTarget.getAttribute('data-handle') as DragHandle | null
       if (handle === null) return
       dragTargetRef.current = gestureTarget(useDesignStore.getState())
+      dragAngleRef.current = sourceAngle
       startDrag(handle, event)
     },
-    [startDrag],
+    [startDrag, sourceAngle],
   )
   const onRotatePointerDown = useCallback(
     (event: React.PointerEvent): void => {
@@ -675,9 +743,21 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
       transform: box.transform,
       transformOrigin: 'center',
       pointerEvents: 'auto',
-      cursor: 'move',
+      cursor: moveLocked ? 'default' : 'move',
     }
-  }, [boxRect, scale, angle])
+  }, [boxRect, scale, angle, moveLocked])
+
+  // The grips turn with the box, so each one's cursor follows its on-screen direction (M3.6).
+  const handleStyles = useMemo<readonly CSSProperties[]>(
+    () =>
+      HANDLES.map((handle) => ({
+        left: handle.left,
+        top: handle.top,
+        pointerEvents: 'auto',
+        cursor: resizeCursor(handle.key, angle),
+      })),
+    [angle],
+  )
 
   // The light per-element outlines shown while multi-selected, each following the live group delta.
   const memberStyles = useMemo<readonly CSSProperties[]>(() => {
@@ -814,7 +894,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                 `absolute border-2 ${isEditing ? 'border-dashed border-amber-500' : 'border-accent'}`
           }
           style={selectionStyle}
-          onPointerDown={onBodyPointerDown}
+          onPointerDown={moveLocked ? undefined : onBodyPointerDown}
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
@@ -825,8 +905,19 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
               ? 'Editing — Enter or Esc to finish'
               : isMulti
                 ? `${String(selections.length)} selected`
-                : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
+                : isRotating
+                  ? `${String(Math.round(angle))}°`
+                  : `${String(Math.round(boxRect.width))} × ${String(Math.round(boxRect.height))}`}
           </span>
+          {lockBadge !== null && !isEditing ? (
+            <span
+              data-testid="design-transform-lock"
+              className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-600 px-1 text-[11px] leading-4 text-white"
+              title={lockBadge}
+            >
+              {lockBadge}
+            </span>
+          ) : null}
           {/* Double-click is invisible until you try it, so say so while the element is selected. */}
           {canEditSelection && !isEditing ? (
             <span
@@ -837,23 +928,24 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
             </span>
           ) : null}
           {/* Resize + rotate handles only for a single element; a group only moves — and none while
-              editing, where the box is a caret frame rather than a transform target. */}
-          {isMulti || isEditing
+              editing, where the box is a caret frame rather than a transform target, nor on a
+              transform-locked element (see `transformLock`). */}
+          {isMulti || isEditing || transformLock !== null
             ? null
-            : HANDLES.map((handle) => (
+            : HANDLES.map((handle, index) => (
                 <span
                   key={handle.key}
                   data-testid={`design-handle-${handle.key}`}
                   data-handle={handle.key}
                   aria-hidden="true"
                   className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
-                  style={handle.style}
+                  style={handleStyles[index]}
                   onPointerDown={onHandlePointerDown}
                   // A handle is a control, not a view of the element under it: never fall through.
                   onClick={stop}
                 />
               ))}
-          {isMulti || isEditing ? null : (
+          {isMulti || isEditing || transformLock !== null ? null : (
             <>
               <span
                 aria-hidden="true"

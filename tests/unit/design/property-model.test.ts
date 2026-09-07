@@ -260,10 +260,110 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
-  it('preserves other transform functions when editing translate', () => {
+  it('preserves other transform functions, prepending a new translate so it acts in parent space', () => {
+    // `rotate(4deg) translate(10px, 0)` would shift the element along its own tilted axis; the
+    // leading position is the one CSS applies last, i.e. in the parent's frame (§5.3 canonical order).
+    // Mutation guard: appending the translate (the M3.3 behaviour) reds here.
     expect(edit('<div style="transform: rotate(4deg)">x</div>', 0, 'x', '10')).toBe(
-      '<div style="transform: rotate(4deg) translate(10px, 0)">x</div>',
+      '<div style="transform: translate(10px, 0) rotate(4deg)">x</div>',
     )
+  })
+
+  it('folds a translateX alias into the one translate the handles write (round-1 major 2)', () => {
+    // `transform.ts` folds `translateX` into the translate family; writing a second `translate()`
+    // beside it made the element opaque ("translate() appears more than once") on its first drag.
+    // Mutation guard: the exact-name `replaceTranslate` path reds both.
+    expect(edit('<div style="transform: translateX(120px)">x</div>', 0, 'x', '40')).toBe(
+      '<div style="transform: translate(40px, 0)">x</div>',
+    )
+    expect(
+      edit('<div style="transform: translateX(120px) rotate(5deg)">x</div>', 0, 'y', '8'),
+    ).toBe('<div style="transform: translate(120px, 8px) rotate(5deg)">x</div>')
+  })
+
+  it('reads the X/Y fields from a folded alias too', () => {
+    const { source, element } = at('<div style="transform: translateY(8px)">x</div>', 0)
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('0')
+    expect(values.y).toBe('8px')
+  })
+
+  it('opaque + in-flow: an X edit is REFUSED, not written through the transform (round-4 major)', () => {
+    // Round 2 made the new translate LEAD here (`translate(40px, 0) matrix(2, …)`) so it acted in
+    // parent space. Round 4 goes one further: the write does not happen at all, because the panel's
+    // X/Y inputs reach `buildFieldOps` without passing through the drag's gate, and on
+    // `rotate(90deg) translate(10px, 0)` the in-place rewrite moved the element 40px DOWN for a +40
+    // X edit. Mutation guard: restoring that write in `moveChannel`'s `refused` arm reds here
+    // with `translate(40px, 0) matrix(2, 0, 0, 2, 0, 0)`.
+    const html = '<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>'
+    expect(edit(html, 0, 'x', '40')).toBe(html)
+  })
+
+  it('opaque + in-flow: a Y edit is refused too — both axes, one refusal', () => {
+    // The vertical half (round-4 minor 1): a Y edit under `rotate(90deg)` moves the element LEFT.
+    const html = '<div style="transform: rotate(90deg) translate(10px, 0)">x</div>'
+    expect(edit(html, 0, 'y', '40')).toBe(html)
+    expect(edit(html, 0, 'x', '40')).toBe(html)
+  })
+
+  it('opaque, exact translate present: still READ on both axes, so the disabled field shows them', () => {
+    // The write is refused but the value is not hidden — the panel shows `5px`/`6px` greyed out with
+    // the reason as its tooltip. Mutation guard: `translateArgs` returning null for an opaque value
+    // reads 0/0 here.
+    const { source, element } = at(
+      '<div style="transform: translate(5px, 6px) skew(3deg)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('5px')
+    expect(values.y).toBe('6px')
+    expect(
+      edit('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>')
+  })
+
+  it('opaque but POSITIONED, or SVG: the write still lands — the refusal is narrow', () => {
+    // `moveRefusal` is `movesThroughTransform && !editable`, so neither of these is refused.
+    expect(
+      edit('<div style="left: 10px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="left: 40px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>')
+    expect(
+      edit('<svg><rect x="5" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="40" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>')
+  })
+
+  it('a top-only element is positioned by offsets: Y reads top, X reads null, X writes left', () => {
+    // Pins the `top` half of `positionsByOffsets` (round-2 minor: dropping it survived the suite).
+    const { source, element } = at(
+      '<div style="top: 5px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBeNull()
+    expect(values.y).toBe('5px')
+    expect(edit('<div style="top: 5px">x</div>', 0, 'x', '120')).toBe(
+      '<div style="top: 5px; left: 120px">x</div>',
+    )
+  })
+
+  it('a left-only element: X reads left, Y reads null, a Y edit writes top', () => {
+    // Pins the `left` half at the READER (round-3 minor 2): every other left/top fixture declares both.
+    const { source, element } = at(
+      '<div style="left: 100px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('100px')
+    expect(values.y).toBeNull()
+    expect(edit('<div style="left: 100px">x</div>', 0, 'y', '20')).toBe(
+      '<div style="left: 100px; top: 20px">x</div>',
+    )
+  })
+
+  it('replaces an existing translate where it stands', () => {
+    expect(
+      edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),
+    ).toBe('<div style="transform: translate(10px, 2px) rotate(4deg)">x</div>')
   })
 })
 

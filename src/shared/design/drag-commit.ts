@@ -20,6 +20,18 @@
  * the border-box width equals the measured rect width, and writing the absolute `nextRect` size
  * reproduces the box exactly whether or not the source previously declared a size.
  *
+ * ## The transform lock is inherited here, not re-derived (M3.6, rounds 3-4)
+ *
+ * An in-flow element with a transform `inspectTransform` cannot decompose moves *through* that
+ * transform, and a move written that way travels along the element's own tilted axis. That move is
+ * refused in `buildFieldOps` (`moveChannel`'s `refused` arm), the function that writes the bytes;
+ * this one does nothing about it and needs to do nothing about it. The X/Y steps below simply
+ * produce no ops on a locked element, so `current` stays the identical `source` string — already
+ * what "commit nothing" means here — while the width/height steps, which never touch the
+ * `transform`, still apply. Round 3 put the refusal in *this* function and round 4 found the
+ * panel's X/Y inputs reaching `buildFieldOps` without passing through it. One level down, a caller
+ * cannot reopen it; a member that is refused keeps its bytes while the others commit.
+ *
  * ## The re-derivation rule (§2.2) and why fields are applied one at a time
  *
  * The element is resolved from the **parent-owned** map keyed by the parent-tracked `slId` — never a
@@ -66,7 +78,9 @@ export function buildDragPatch(
   if (element === undefined) return source
   const values = readPropertyValues(source, element)
 
-  // Ordered so a corner resize writes position before size; each entry is one field edit.
+  // Ordered so a corner resize writes position before size; each entry is one field edit. X and Y
+  // are pushed unconditionally: `buildFieldOps` refuses the ones the transform lock forbids (see
+  // the header), so a refused element falls through the loop below with `current` untouched.
   const edits: (readonly [PropertyField, string])[] = []
   if (delta.dx !== 0) edits.push(['x', String(Math.round(parseLength(values.x) + delta.dx))])
   if (delta.dy !== 0) edits.push(['y', String(Math.round(parseLength(values.y) + delta.dy))])

@@ -12,6 +12,7 @@ import {
   frameRectToOverlay,
   rotatedOverlayStyle,
   unionRects,
+  resizeCursor,
 } from '../../../src/shared/design/overlay-geometry'
 
 describe('clientPointToFrame', () => {
@@ -126,5 +127,32 @@ describe('rotatedOverlayStyle', () => {
   it('emits transform: none when upright (no compositor layer for an unrotated box)', () => {
     const box = rotatedOverlayStyle({ x: 0, y: 0, width: 10, height: 10 }, 1, 0)
     expect(box.transform).toBe('none')
+  })
+})
+
+describe('resizeCursor', () => {
+  it('upright: the eight grips get their usual cursors', () => {
+    expect(resizeCursor('e', 0)).toBe('ew-resize')
+    expect(resizeCursor('w', 0)).toBe('ew-resize')
+    expect(resizeCursor('n', 0)).toBe('ns-resize')
+    expect(resizeCursor('s', 0)).toBe('ns-resize')
+    expect(resizeCursor('nw', 0)).toBe('nwse-resize')
+    expect(resizeCursor('se', 0)).toBe('nwse-resize')
+    expect(resizeCursor('ne', 0)).toBe('nesw-resize')
+    expect(resizeCursor('sw', 0)).toBe('nesw-resize')
+  })
+
+  it('turns with the box: at 90° the east grip points down and wants ns-resize', () => {
+    // Mutation guard: ignoring the angle leaves this ew-resize.
+    expect(resizeCursor('e', 90)).toBe('ns-resize')
+    expect(resizeCursor('n', 90)).toBe('ew-resize')
+    expect(resizeCursor('se', 90)).toBe('nesw-resize')
+  })
+
+  it('rounds to the nearest 45° and folds a negative or full-turn angle', () => {
+    expect(resizeCursor('e', 20)).toBe('ew-resize')
+    expect(resizeCursor('e', 30)).toBe('nwse-resize')
+    expect(resizeCursor('e', -90)).toBe('ns-resize')
+    expect(resizeCursor('e', 360)).toBe('ew-resize')
   })
 })

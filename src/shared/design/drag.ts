@@ -18,6 +18,20 @@
  * `Shift` locks a move to its dominant axis and locks a corner resize to the box's start aspect
  * ratio. These are the modifiers §5.5 and §4.2 name; anything else is left for a later milestone.
  *
+ * ## Resize under rotation stretches along the element's own axis
+ *
+ * A rotated element's handles turn with it (the overlay's box carries the element's CSS rotation), so
+ * the east handle of a 30° box points 30° down-right on screen. The pointer delta arrives in screen
+ * axes; applied to the unrotated rect as-is, a drag along that handle's own direction would change
+ * both width *and* height and the box would slide off its anchor. So a resize under rotation first
+ * turns the delta into the element's local axes (`rotateVector(delta, -angle)`), resizes the
+ * axis-aligned rect there — anchors, floors and modifiers all unchanged — and then re-places the
+ * result so the anchored edge or corner stays where it was **on screen**. Rotation is about the box
+ * centre, so the anchor's screen position is `centre + R(angle)·(anchor − centre)`; keeping it fixed
+ * while the size changes moves the centre by `R(angle)·(a₀ − a₁)`, where `a₀`/`a₁` are the anchor's
+ * offset from the centre before and after. `move` is untouched: a screen delta moves a rotated box
+ * exactly as it moves an upright one.
+ *
  * ## Floors, not walls
  *
  * A resize is floored at `MIN_SIZE` frame px so a box can never invert or collapse to nothing — the
@@ -173,6 +187,14 @@ function floorVertical(edges: Edges, vEdge: 'top' | 'bottom', alt: boolean): voi
   }
 }
 
+/** Rotate a vector by `degrees` in screen convention (y down, so a positive angle turns clockwise). */
+export function rotateVector(vector: Point, degrees: number): Point {
+  const radians = (degrees * Math.PI) / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  return { x: vector.x * cos - vector.y * sin, y: vector.x * sin + vector.y * cos }
+}
+
 /**
  * The new frame rect after dragging `handle` by `delta` (frame px), with modifiers applied.
  *
@@ -180,15 +202,52 @@ function floorVertical(edges: Edges, vEdge: 'top' | 'bottom', alt: boolean): voi
  * (or, with `Alt`, moves symmetrically so the centre stays put). `Shift` locks a move to its
  * dominant axis and a corner resize to the start aspect ratio. The result is floored at `MIN_SIZE`
  * per axis so the box can never invert. Pure — no clamp to the frame (off-frame is allowed).
+ *
+ * `angleDeg` is the element's own rotation; a resize then works in the element's axes and keeps the
+ * anchor fixed on screen (see the header). `start` is the **unrotated** box, as `SlHit.box` reports
+ * it, and so is the result.
  */
 export function applyDrag(
   start: SlRect,
   handle: DragHandle,
   delta: Point,
   mods: DragModifiers,
+  angleDeg = 0,
 ): SlRect {
   if (!isResizeHandle(handle)) return applyMove(start, delta, mods)
+  if (angleDeg === 0) return resizeAligned(start, handle, delta, mods)
 
+  const local = resizeAligned(start, handle, rotateVector(delta, -angleDeg), mods)
+  // The anchor's position along each axis as a fraction of the box: the edge opposite the one being
+  // dragged, or the centre when `Alt` resizes symmetrically or the handle does not drag that axis.
+  const hEdge = H_EDGE[handle]
+  const vEdge = V_EDGE[handle]
+  const fx = mods.alt || hEdge === null ? 0.5 : hEdge === 'left' ? 1 : 0
+  const fy = mods.alt || vEdge === null ? 0.5 : vEdge === 'top' ? 1 : 0
+  const shift = rotateVector(
+    {
+      x: (fx - 0.5) * (start.width - local.width),
+      y: (fy - 0.5) * (start.height - local.height),
+    },
+    angleDeg,
+  )
+  const cx = start.x + start.width / 2 + shift.x
+  const cy = start.y + start.height / 2 + shift.y
+  return {
+    x: cx - local.width / 2,
+    y: cy - local.height / 2,
+    width: local.width,
+    height: local.height,
+  }
+}
+
+/** An axis-aligned resize: the handle's edge(s) move by `delta`, the opposite edge (or centre) stays. */
+function resizeAligned(
+  start: SlRect,
+  handle: ResizeHandle,
+  delta: Point,
+  mods: DragModifiers,
+): SlRect {
   const hEdge = H_EDGE[handle]
   const vEdge = V_EDGE[handle]
 

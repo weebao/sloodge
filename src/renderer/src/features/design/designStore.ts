@@ -23,7 +23,10 @@ import type { SlHit } from '../../../../shared/design/bridge-protocol'
 import { createStore } from '../../stores/createStore'
 
 /**
- * A refused text edit waiting to be explained, and the slide it was raised on (M3.11).
+ * A refused text edit waiting to be explained, and the slide it was raised on (M3.11). M3.6's
+ * transform actions raise their caveats through the same channel — a flip that mirrored text, a
+ * duplicate that could not be offset — since each is the same kind of sentence: what just happened
+ * to the selected element and why, shown where the element is.
  *
  * Ephemeral view state like the rest of this store, but it lives here rather than in
  * `useTextEditing`'s own `useState` for one reason: the two exits that can refuse an edit *while
