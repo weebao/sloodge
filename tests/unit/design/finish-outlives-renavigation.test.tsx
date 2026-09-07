@@ -47,6 +47,7 @@ const NOW = 1_700_000_000_000
 
 let slideId = ''
 let h1Id = ''
+let pId = ''
 
 /** The canvas as the shell mounts it, subscribed to the deck so a commit re-renders it. */
 function Canvas(): JSX.Element {
@@ -125,6 +126,20 @@ function openSession(): void {
   })
 }
 
+/** Click another element: the store closes the open session behind the hook's back. */
+function selectOtherElement(): void {
+  act(() => {
+    useDesignStore.getState().setSelection({
+      slId: pId,
+      tag: 'p',
+      id: null,
+      classes: [],
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      ancestors: [],
+    })
+  })
+}
+
 /**
  * The scenario: a caret is open, the user has typed, and Design Mode is turned off while the slide's
  * script is stalled for `stall` ms. Returns whether the frame's answer could still be delivered —
@@ -155,6 +170,7 @@ beforeEach(() => {
   slideId = useDeckStore.getState().currentSlideId!
   const map = buildSlideMap(slideId, currentHtml())
   h1Id = [...map.byId.values()].find((el) => el.tagName === 'h1')!.slId
+  pId = [...map.byId.values()].find((el) => el.tagName === 'p')!.slId
   useDesignStore.setState({
     enabled: true,
     hover: null,
@@ -329,6 +345,93 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
       frameAnswers(frame, 'Second session, answered late')
     })
     expect(currentHtml()).toContain('Second session, answered late')
+    expect(useDesignStore.getState().finishing).toBe(0)
+    expect(frame.getAttribute('src')).not.toBe(srcAtPin)
+  })
+
+  /**
+   * Round-4 review, major 1. The other half of round-1 major 1, and the twin of `holdFrame`'s
+   * idempotence guard (which `text-editing.test.tsx` pins): a hook that has **already** released
+   * its own hold must not release again at unmount. The unmount cleanup's backstop is
+   * unconditional, so without `releaseFrame`'s `holdingRef` guard the second call decrements a
+   * count that now belongs to somebody else — B's hook takes A's hold, A's frame is re-navigated
+   * under it, and A's text is lost at its own timeout with nothing said. `Math.max(0, …)` in the
+   * store cannot catch that: the count is 1, not 0.
+   */
+  it('a hook that has already released does not release again when it unmounts', () => {
+    const frame = activeFrame()
+    const srcAtPin = frame.getAttribute('src')
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    act(() => {
+      useDesignStore.getState().setEnabled(true)
+    })
+    openSession()
+    expect(useDesignStore.getState().finishing).toBe(2)
+
+    // The store closes B — a click on another element — so B's hook releases its own hold here,
+    // while it is still mounted. A's is the only one left.
+    selectOtherElement()
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(useDesignStore.getState().finishing).toBe(1)
+
+    // Now B's hook unmounts with nothing to finish and runs the cleanup's backstop release. It has
+    // nothing of its own left to give up, and A's hold is not its to drop.
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    expect(useDesignStore.getState().finishing).toBe(1)
+    expect(frame.getAttribute('src')).toBe(srcAtPin)
+
+    // A still lands, on the document it was pinned to.
+    act(() => {
+      frameAnswers(frame, 'Held through the other session')
+    })
+    expect(currentHtml()).toContain('Held through the other session')
+    expect(useDesignStore.getState().finishing).toBe(0)
+    expect(frame.getAttribute('src')).not.toBe(srcAtPin)
+  })
+
+  /**
+   * Round-4 review, minor 2. The finish callback releases *before* it commits, so a commit that
+   * throws cannot leave the frame held for the rest of the launch. Pinned by making the commit
+   * throw — the store's `setNotice`, which the unanswered path reaches — rather than left as a
+   * comment the next reorder gets for free.
+   */
+  it('a commit that throws inside the finish callback still gives the frame back', () => {
+    const frame = activeFrame()
+    const srcAtPin = frame.getAttribute('src')
+    act(() => {
+      useDesignStore.getState().setEnabled(false)
+    })
+    expect(useDesignStore.getState().finishing).toBe(1)
+
+    const setNotice = useDesignStore.getState().setNotice
+    useDesignStore.setState({
+      setNotice: () => {
+        throw new Error('commit blew up')
+      },
+    })
+    let thrown: unknown = null
+    try {
+      // Caught *inside* `act` so the render the release scheduled still flushes — the throw is the
+      // scenario, not the assertion.
+      act(() => {
+        try {
+          vi.advanceTimersByTime(FINISH_TIMEOUT_MS)
+        } catch (error) {
+          thrown = error
+        }
+      })
+    } finally {
+      useDesignStore.setState({ setNotice })
+    }
+    expect((thrown as Error | null)?.message).toBe('commit blew up')
+
     expect(useDesignStore.getState().finishing).toBe(0)
     expect(frame.getAttribute('src')).not.toBe(srcAtPin)
   })

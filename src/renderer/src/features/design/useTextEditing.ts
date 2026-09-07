@@ -466,6 +466,10 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    *
    * Another element's caret is unaffected either way: the frame ignores a `cancel` for an element
    * that is not its open session, and `revert` only ever reaches the element this session ended on.
+   *
+   * `session !== null` on that first check is type narrowing, not a reachable case: `text === null`
+   * arrives only from `PinnedEdit.finish`'s callback, which the unmount cleanup arms only after it
+   * has established a session. The parameter is nullable for the *other* caller, `onFrameEditEnd`.
    */
   const commitText = useCallback(
     (slId: string, text: string | null, session: Session | null): void => {
@@ -537,8 +541,10 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       }
       session.frame.finish((text) => {
         // Settled, whichever way: this session's hold on the frame goes. Released *before* the
-        // commit so a commit that throws cannot leave the frame held; React batches the release and
-        // the deck write into one render either way.
+        // commit so a commit that throws cannot leave the frame held — pinned by 'a commit that
+        // throws inside the finish callback still gives the frame back' (round-4 review, which
+        // found the order resting on this comment alone). React batches the release and the deck
+        // write into one render either way.
         releaseFrame()
         commitTextRef.current(slId, text, session)
       })
