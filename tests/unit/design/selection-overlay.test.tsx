@@ -648,6 +648,32 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     expect(undoDepth()).toBe(0)
   })
 
+  it('an SVG member under an opaque transform is not accused: it moves by x/y attributes', () => {
+    // The badge asks `buildDragPatch`'s own predicate, not a paraphrase of it. A paraphrase that
+    // says "locked unless positioned by left/top" counts this rect locked, yet the writer moves it
+    // cleanly — the badge would accuse a move that succeeds. Mutation guard: `!positionsByOffsets`
+    // in place of `movesThroughTransform` reds here.
+    const html =
+      '<div style="position:absolute;left:0;top:0;width:10px;height:10px">a</div>' +
+      '<svg width="200" height="100"><rect x="5" y="5" width="20" height="20" style="transform: matrix(1, 0, 0, 1, 0, 0)"/></svg>'
+    seed(html)
+    const map = buildSlideMap(slideId, html)
+    const rectId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
+    const members = [
+      boxHit(map.order[0]!, { x: 0, y: 0, width: 10, height: 10 }),
+      { ...boxHit(rectId, { x: 5, y: 5, width: 20, height: 20 }), tag: 'rect' },
+    ]
+    useDesignStore.setState({ selections: members, selection: members[0]! })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.queryByTestId('design-transform-lock')).toBeNull()
+    drag(screen.getByTestId('design-group'), { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
+    expect(undoDepth()).toBe(1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('<rect x="45" y="5"')
+    expect(patched).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+    expect(useDesignStore.getState().selections[1]?.rect.x).toBe(45)
+  })
+
   it('a drag whose element turns opaque mid-gesture commits nothing (round-3 major 2)', () => {
     // The lock is enforced at commit time by `buildDragPatch`, against the bytes that exist then —
     // not at `pointerdown` by the overlay. An agent edit lands between two pointer moves.

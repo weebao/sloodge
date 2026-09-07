@@ -143,6 +143,19 @@ describe('buildDragPatch — the transform lock', () => {
     expect(patched).not.toContain('translate(20px')
   })
 
+  it('an SVG element writes x/y attributes, so an opaque transform never refuses its move', () => {
+    // Mutation guard: refusing on `!positionsByOffsets` alone (dropping the `isSvg` half of
+    // `movesThroughTransform`) freezes every transformed SVG child.
+    const html =
+      '<svg><rect x="5" y="5" width="20" height="20" style="transform: matrix(1, 0, 0, 1, 0, 0)"/></svg>'
+    const map = buildSlideMap('s', html)
+    const slId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
+    const rect: SlRect = { x: 5, y: 5, width: 20, height: 20 }
+    const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 45 })
+    expect(patched).toContain('<rect x="45" y="5"')
+    expect(patched).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+  })
+
   it('a left-only element is positioned by offsets: +40 lands at left: 140px (round-3 minor 2)', () => {
     // Mutation guard: a reader deciding the channel by `top` alone reads x as null and writes
     // `left: 40px` — a 60px jump backwards.
