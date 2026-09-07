@@ -158,6 +158,7 @@ import {
   type TextEditBlock,
   type TextEditRefusal,
 } from '../../../../shared/design/text-edit'
+import { BLOCK_NOTICE } from './textBlockNotice'
 import { resolveElement } from '../../../../shared/design/property-model'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
 import { useDesignStore } from './designStore'
@@ -192,20 +193,6 @@ const REFUSAL_NOTICE: Readonly<Record<TextEditRefusal, string>> = {
   'not-editable': 'That element can no longer be edited here, so it was left as it was.',
   'unknown-element': 'That element is no longer on this slide, so the edit was not applied.',
   'forbidden-token': 'That text is not allowed in a slide, so the element was left as it was.',
-}
-
-/**
- * What to tell the user about a caret that would not open. Same voice as `REFUSAL_NOTICE`, different
- * tense: nothing was attempted yet, so each of these says why *this* element cannot take a caret and,
- * where there is one, where the text can be changed instead.
- */
-const BLOCK_NOTICE: Readonly<Record<TextEditBlock, string>> = {
-  'mixed-content':
-    'This text has formatting inside it, so it can’t be edited on the canvas yet — ask Claude to change it.',
-  'not-text': 'There is no text on this element to edit.',
-  'too-long': 'This text is too long to edit on the canvas — use the Content field in the panel.',
-  locked: 'This element is locked, so its text can’t be edited.',
-  'unknown-element': 'That element is no longer on this slide.',
 }
 
 /**

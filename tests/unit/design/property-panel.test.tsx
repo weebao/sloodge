@@ -15,6 +15,7 @@ import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { useChatContextStore } from '../../../src/renderer/src/features/chat/chatContextStore'
 import { PropertyPanel } from '../../../src/renderer/src/features/design/PropertyPanel'
+import { BLOCK_NOTICE } from '../../../src/renderer/src/features/design/textBlockNotice'
 import {
   createStarterDeck,
   getSlideHtml,
@@ -207,12 +208,31 @@ describe('PropertyPanel', () => {
   })
 
   it.each([
-    ['mixed inline content', '<p>a <b>c</b></p>', 'mixed content', /mixes text with other markup/],
-    ['a data-sl-lock element', '<div data-sl-lock>Hello</div>', 'locked', /locked/],
-    ['a <script>', '<script>console.log(1)</script>', 'not text', /code or metadata/],
-  ])(
-    'the Content field is disabled, with the reason, for %s',
-    (_label, html, placeholder, hint) => {
+    [
+      'mixed inline content',
+      '<p>a <b>c</b></p>',
+      'mixed content',
+      'mixed-content',
+      /formatting inside it/,
+    ],
+    ['a data-sl-lock element', '<div data-sl-lock>Hello</div>', 'locked', 'locked', /is locked/],
+    [
+      'a <script>',
+      '<script>console.log(1)</script>',
+      'not text',
+      'not-text',
+      /no text on this element/,
+    ],
+    [
+      'an <img> — the common void case',
+      '<img src="x">',
+      'not text',
+      'not-text',
+      /no text on this element/,
+    ],
+  ] as const)(
+    'the Content field is disabled, with the caret’s own reason, for %s',
+    (_label, html, placeholder, reason, hint) => {
       // The disabled state is what keeps mixed inline content from being flattened to plain text
       // through the panel (round-2 review, mutation N4) — and, since round 3, what keeps the panel
       // from editing a locked element or a script the caret refuses.
@@ -223,7 +243,12 @@ describe('PropertyPanel', () => {
       expect(input.disabled).toBe(true)
       expect(input.value).toBe('')
       expect(input.placeholder).toBe(placeholder)
+      // The sentence spelled out here, so a rewording is a deliberate edit — and asserted to be the
+      // *caret's* sentence for the same reason, from the one shared table (round-4 review): a second
+      // table over these keys captioned an `<img>` "holds code or metadata" while the caret said,
+      // correctly, that there is no text on it.
       expect(input.title).toMatch(hint)
+      expect(input.title).toBe(BLOCK_NOTICE[reason])
       // Even forced, nothing is written: the model refuses the text op on the write side too.
       fireEvent.change(input, { target: { value: 'fetch("x")' } })
       fireEvent.keyDown(input, { key: 'Enter' })

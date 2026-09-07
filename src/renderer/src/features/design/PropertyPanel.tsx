@@ -52,6 +52,7 @@ import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
 import { ColorControls, type ColorTarget } from './ColorControls'
 import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
+import { BLOCK_NOTICE } from './textBlockNotice'
 import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
@@ -218,16 +219,9 @@ interface PropertyFieldsProps {
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
 
 /**
- * Why the Content field is disabled, in words. A disabled field that says only "mixed" tells the
- * user nothing about why they cannot type in it (round-5 major 2 of M3.11) — and these are the same
- * elements a double-click on the canvas refuses, for the same three reasons.
+ * The disabled Content field's own two-word marker, visible without hovering for the hint. Short
+ * labels, not sentences: the sentence is the caret's, from the one shared `BLOCK_NOTICE` table.
  */
-const TEXT_BLOCK_HINT: Readonly<Record<TextFieldBlock, string>> = {
-  'mixed-content':
-    'This element mixes text with other markup, so its text can’t be edited here yet.',
-  locked: 'This element is locked, so its text can’t be edited.',
-  'not-text': 'This element holds code or metadata, not slide text, so it can’t be edited here.',
-}
 const TEXT_BLOCK_PLACEHOLDER: Readonly<Record<TextFieldBlock, string>> = {
   'mixed-content': 'mixed content',
   locked: 'locked',
@@ -343,7 +337,10 @@ function PropertyFields({
       value: draft[name],
       disabled,
       placeholder: block === null ? '' : TEXT_BLOCK_PLACEHOLDER[block],
-      title: block === null ? undefined : TEXT_BLOCK_HINT[block],
+      // The caret's own sentence for the same reason (`textBlockNotice.ts`): a disabled field that
+      // says only "mixed" tells the user nothing (M3.11 round-5), and a second table over the same
+      // reasons drifted (M3.12 round-4).
+      title: block === null ? undefined : BLOCK_NOTICE[block],
       onChange: handleChange,
       onBlur: handleBlur,
       onKeyDown: handleKeyDown,
