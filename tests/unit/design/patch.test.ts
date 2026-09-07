@@ -11,7 +11,6 @@ import {
   removeStyleProp,
   setAttr,
   setStyleProp,
-  setTextContent,
   type SourceOp,
 } from '../../../src/shared/design/patch'
 import type { ElementSpan } from '../../../src/shared/design/types'
@@ -190,32 +189,6 @@ describe('readStyleProp / readAttr', () => {
     const { source, element } = only('<rect fill="#abc"/>')
     expect(readAttr(source, element, 'fill')).toBe('#abc')
     expect(readAttr(source, element, 'stroke')).toBeNull()
-  })
-})
-
-describe('setTextContent', () => {
-  it('replaces text content for a textOnly element', () => {
-    const { source, element } = only('<h1>Old</h1>')
-    const op = setTextContent(element, 'New')
-    expect(op).not.toBeNull()
-    expect(applyOps(source, [op!])).toBe('<h1>New</h1>')
-  })
-
-  it('escapes the written text', () => {
-    const { source, element } = only('<h1>x</h1>')
-    expect(applyOps(source, [setTextContent(element, 'a < b & c')!])).toBe(
-      '<h1>a &lt; b &amp; c</h1>',
-    )
-  })
-
-  it('returns null for mixed content (not textOnly)', () => {
-    const { element } = only('<p>a <b>c</b></p>')
-    expect(setTextContent(element, 'x')).toBeNull()
-  })
-
-  it('returns null for a void element', () => {
-    const { element } = only('<br>')
-    expect(setTextContent(element, 'x')).toBeNull()
   })
 })
 

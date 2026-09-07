@@ -42,6 +42,7 @@ import {
   readPropertyValues,
   resolveElement,
   type PropertyField,
+  type TextFieldBlock,
 } from '../../../../shared/design/property-model'
 import { themeColorSwatches, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import { useChatContextStore } from '../chat/chatContextStore'
@@ -51,6 +52,7 @@ import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
 import { ColorControls, type ColorTarget } from './ColorControls'
 import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
+import { BLOCK_NOTICE } from './textBlockNotice'
 import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
@@ -216,6 +218,19 @@ interface PropertyFieldsProps {
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
 
+/**
+ * The disabled Content field's own two-word marker, visible without hovering for the hint. Short
+ * labels, not sentences: the sentence is the caret's, from the one shared `BLOCK_NOTICE` table.
+ */
+const TEXT_BLOCK_PLACEHOLDER: Readonly<Record<TextFieldBlock, string>> = {
+  'mixed-content': 'mixed content',
+  locked: 'locked',
+  'not-text': 'not text',
+}
+
+/** The Content textarea and the other fields' inputs share one set of handlers. */
+type FieldElement = HTMLInputElement | HTMLTextAreaElement
+
 function PropertyFields({
   slide,
   slId,
@@ -225,7 +240,7 @@ function PropertyFields({
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
-  const textDisabled = values.text === null
+  const textBlock = values.textBlock
 
   // One controlled value per field, seeded from source. The component is remounted (via `key`) on
   // every source change, so this initial-from-props read is correct, not stale.
@@ -268,22 +283,25 @@ function PropertyFields({
     [slide.id, slId, setSlideHtml],
   )
 
-  const handleChange = useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
+  const handleChange = useCallback((event: React.ChangeEvent<FieldElement>): void => {
     const name = event.target.name as PropertyField
     const { value } = event.target
     setDraft((prev) => ({ ...prev, [name]: value }))
   }, [])
 
   const handleBlur = useCallback(
-    (event: React.FocusEvent<HTMLInputElement>): void => {
+    (event: React.FocusEvent<FieldElement>): void => {
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
     },
     [commit],
   )
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLInputElement>): void => {
-      if (event.key !== 'Enter') return
+    (event: React.KeyboardEvent<FieldElement>): void => {
+      // Enter commits in every field; Shift+Enter is the Content textarea's newline (see `field`).
+      // Enter during IME composition accepts the candidate and must never commit — the same gate
+      // as the chat composer's, the only other Enter-commits textarea in the app (round-2 review).
+      if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
       event.preventDefault()
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
       event.currentTarget.blur()
@@ -308,31 +326,47 @@ function PropertyFields({
   )
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
-    const disabled = name === 'text' && textDisabled
-    // A disabled field that says only "mixed" tells the user nothing about why they cannot type in
-    // it, and this is the same element a double-click on the canvas also refuses (round-5 major 2).
-    const disabledHint = disabled
-      ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
-      : undefined
+    const block = name === 'text' ? textBlock : null
+    const disabled = block !== null
+    // One prop set for both controls, so the disabled state and its hint cannot drift between
+    // the textarea and the inputs; only the control-specific props differ below.
+    const common = {
+      name,
+      'aria-label': FIELD_LABELS[name],
+      'data-testid': `prop-${name}`,
+      value: draft[name],
+      disabled,
+      placeholder: block === null ? '' : TEXT_BLOCK_PLACEHOLDER[block],
+      // The caret's own sentence for the same reason (`textBlockNotice.ts`): a disabled field that
+      // says only "mixed" tells the user nothing (M3.11 round-5), and a second table over the same
+      // reasons drifted (M3.12 round-4).
+      title: block === null ? undefined : BLOCK_NOTICE[block],
+      onChange: handleChange,
+      onBlur: handleBlur,
+      onKeyDown: handleKeyDown,
+      className: `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`,
+    }
     return (
       <label
         className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
       >
         <span className="text-chrome-muted dark:text-ink-muted">{FIELD_LABELS[name]}</span>
-        <input
-          name={name}
-          aria-label={FIELD_LABELS[name]}
-          data-testid={`prop-${name}`}
-          value={draft[name]}
-          disabled={disabled}
-          placeholder={disabled ? 'mixed content' : ''}
-          title={disabledHint}
-          inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
-          onChange={handleChange}
-          onBlur={handleBlur}
-          onKeyDown={handleKeyDown}
-          className={`${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`}
-        />
+        {name === 'text' ? (
+          // A textarea, not an `<input type="text">`, because the field has to be able to hold the
+          // element's decoded text *exactly*: an input's value sanitization strips CR/LF on
+          // assignment, so a pretty-printed `<h1>\n  Hello\n</h1>` read back as "  Hello" and an
+          // untouched blur rewrote the author's bytes — and flattened a multi-line `<pre>` onto one
+          // line (M3.12 round-1 review). The read → commit-unchanged → no-op invariant has to hold
+          // through the control the user touches, not only in the model. One row tall for the
+          // single-line case, growing with the content to a few lines.
+          <textarea
+            {...common}
+            rows={1}
+            className={`${common.className} field-sizing-content max-h-20 resize-none`}
+          />
+        ) : (
+          <input {...common} inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined} />
+        )}
       </label>
     )
   }

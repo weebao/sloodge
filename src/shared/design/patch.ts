@@ -116,6 +116,11 @@ export function applyOps(source: string, ops: readonly SourceOp[]): string {
  * Escape text for an element's content, matching §1.4: escape `&` and `<` only, plus `>` when it
  * would close a `]]>` (which would otherwise terminate a CDATA-like run). Non-ASCII is left as-is
  * so "Café" stays "Café" in source.
+ *
+ * No production caller since M3.12 moved every user-text write onto `text-edit.ts`'s
+ * `escapeAndNeutralizeText`. It stays as that function's **reference implementation**: the tests
+ * assert the two agree exactly on text with no forbidden token, which is what keeps the neutralizer
+ * from drifting in what it does to `&`, `<` and `]]>`.
  */
 export function escapeText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/]]>/g, ']]&gt;')
@@ -258,14 +263,4 @@ export function readAttr(source: string, element: ElementSpan, key: string): str
   const value = element.attrs[key]?.value ?? null
   if (value === null) return null
   return source.slice(value.start, value.end)
-}
-
-/**
- * Op to replace an element's text content. Valid only when `element.textOnly` and it has an `inner`
- * span (guaranteed together — a void element is never `textOnly`). Returns `null` when the element
- * cannot hold plain text, so a caller can disable the field rather than corrupt mixed content.
- */
-export function setTextContent(element: ElementSpan, text: string): SourceOp | null {
-  if (!element.textOnly || element.inner === null) return null
-  return { kind: 'replaceSpan', span: element.inner, text: escapeText(text) }
 }

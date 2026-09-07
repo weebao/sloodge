@@ -15,6 +15,7 @@ import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { useChatContextStore } from '../../../src/renderer/src/features/chat/chatContextStore'
 import { PropertyPanel } from '../../../src/renderer/src/features/design/PropertyPanel'
+import { BLOCK_NOTICE } from '../../../src/renderer/src/features/design/textBlockNotice'
 import {
   createStarterDeck,
   getSlideHtml,
@@ -30,6 +31,8 @@ const SAMPLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resol
 const CANCELLING_PICKER = { pickColor: (): Promise<string | null> => Promise.resolve(null) }
 
 let slideId: string
+/** The slide's html before `beforeEach` seeds `SOURCE` over it — what one `undo()` of the seed shows. */
+let starterHtml: string
 
 /** The SlideView the canvas would pass, reflecting the store's current bytes for the slide. */
 function currentSlide(): SlideView {
@@ -44,6 +47,17 @@ function currentSlide(): SlideView {
 function h1Id(): string {
   const map = buildSlideMap(slideId, SOURCE)
   return map.order[0]!
+}
+
+/**
+ * Prove the last interaction pushed no undo entry: one `undo()` steps back over the test's own seed
+ * to `previous`, and a `redo()` returns — the history object's identity never changes, so this is
+ * the only observable (round-1 review, major 2).
+ */
+function expectNoUndoEntrySince(previous: string): void {
+  expect(useDeckStore.getState().undo()).toBe(true)
+  expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(previous)
+  expect(useDeckStore.getState().redo()).toBe(true)
 }
 
 function select(): void {
@@ -61,6 +75,7 @@ function select(): void {
 beforeEach(() => {
   useDeckStore.setState(createStarterDeck(NOW))
   slideId = useDeckStore.getState().currentSlideId!
+  starterHtml = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
   // Install a controlled, known source for the current slide (one undoable step).
   useDeckStore.getState().setSlideHtml(slideId, SOURCE, slideId, 'seed')
   useDesignStore.setState({ enabled: true, hover: null, selection: null })
@@ -81,7 +96,7 @@ describe('PropertyPanel', () => {
   it('populates fields from the element’s source values', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} />)
-    expect((screen.getByTestId('prop-text') as HTMLInputElement).value).toBe('Hello')
+    expect((screen.getByTestId('prop-text') as HTMLTextAreaElement).value).toBe('Hello')
     expect((screen.getByTestId('prop-color') as HTMLInputElement).value).toBe('#111')
     expect((screen.getByTestId('prop-fontSize') as HTMLInputElement).value).toBe('44px')
     expect((screen.getByTestId('prop-fontWeight') as HTMLInputElement).value).toBe('')
@@ -102,13 +117,157 @@ describe('PropertyPanel', () => {
   it('commits a text edit on Enter', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} />)
-    const input = screen.getByTestId('prop-text') as HTMLInputElement
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: 'Goodbye' } })
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
       '<h1 style="color: #111; font-size: 44px">Goodbye</h1>',
     )
+  })
+
+  it('the Content field shows decoded text and an unchanged blur commits nothing (M3.12)', () => {
+    // The roadmap repro, through the component: the field must show `X & Y`, not the source bytes
+    // `X &amp; Y`, and leaving it as shown must not write — before the fix every blur re-escaped.
+    useDeckStore.getState().setSlideHtml(slideId, '<h1>X &amp; Y</h1>', slideId, 'entities')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.value).toBe('X & Y')
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>X &amp; Y</h1>')
+    // The blur pushed nothing: one undo steps back over the seed, not over a phantom entry.
+    expectNoUndoEntrySince(SOURCE)
+
+    fireEvent.change(input, { target: { value: 'X & Y!' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>X &amp; Y!</h1>')
+    // And after the commit the remounted field reads back what was typed, one level of escaping.
+    cleanup()
+    render(<PropertyPanel slide={currentSlide()} />)
+    expect((screen.getByTestId('prop-text') as HTMLTextAreaElement).value).toBe('X & Y!')
+  })
+
+  it('a pretty-printed element round-trips through the Content field untouched (M3.12 r1)', () => {
+    // An `<input type="text">` strips CR/LF on assignment, so this read back as "  Hello" and an
+    // untouched blur rewrote the bytes to `<h1>  Hello</h1>` with a real undo entry behind it. The
+    // field is a textarea now; the invariant has to hold through the control, not only the model.
+    useDeckStore.getState().setSlideHtml(slideId, '<h1>\n  Hello\n</h1>', slideId, 'pretty')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.value).toBe('\n  Hello\n')
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>\n  Hello\n</h1>')
+    expectNoUndoEntrySince(SOURCE)
+  })
+
+  it('a multi-line <pre> keeps its lines; Shift+Enter adds one, Enter commits', () => {
+    useDeckStore.getState().setSlideHtml(slideId, '<pre>line 1\nline 2</pre>', slideId, 'pre')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.value).toBe('line 1\nline 2')
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2</pre>',
+    )
+    expectNoUndoEntrySince(SOURCE)
+
+    // Shift+Enter is the textarea's own newline, not a commit.
+    fireEvent.change(input, { target: { value: 'line 1\nline 2\nline 3' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2</pre>',
+    )
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<pre>line 1\nline 2\nline 3</pre>',
+    )
+  })
+
+  it('Enter during IME composition never commits (round-2 review)', () => {
+    // The chat composer's rule, the only other Enter-commits textarea in the app: Enter accepting
+    // an IME candidate must not fire the commit, or half-composed text lands in the source.
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    input.focus()
+    fireEvent.change(input, { target: { value: '日本' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(SOURCE)
+    // And the edit stays open: a guard that blurred on the way out would commit the half-composed
+    // text through `handleBlur` in a real browser (round-3 review, mutation X1).
+    expect(document.activeElement).toBe(input)
+    expectNoUndoEntrySince(starterHtml)
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(
+      '<h1 style="color: #111; font-size: 44px">日本</h1>',
+    )
+  })
+
+  it.each([
+    [
+      'mixed inline content',
+      '<p>a <b>c</b></p>',
+      'mixed content',
+      'mixed-content',
+      /formatting inside it/,
+    ],
+    ['a data-sl-lock element', '<div data-sl-lock>Hello</div>', 'locked', 'locked', /is locked/],
+    [
+      'a <script>',
+      '<script>console.log(1)</script>',
+      'not text',
+      'not-text',
+      /no text on this element/,
+    ],
+    [
+      'an <img> — the common void case',
+      '<img src="x">',
+      'not text',
+      'not-text',
+      /no text on this element/,
+    ],
+  ] as const)(
+    'the Content field is disabled, with the caret’s own reason, for %s',
+    (_label, html, placeholder, reason, hint) => {
+      // The disabled state is what keeps mixed inline content from being flattened to plain text
+      // through the panel (round-2 review, mutation N4) — and, since round 3, what keeps the panel
+      // from editing a locked element or a script the caret refuses.
+      useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
+      select()
+      render(<PropertyPanel slide={currentSlide()} />)
+      const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+      expect(input.disabled).toBe(true)
+      expect(input.value).toBe('')
+      expect(input.placeholder).toBe(placeholder)
+      // The sentence spelled out here, so a rewording is a deliberate edit — and asserted to be the
+      // *caret's* sentence for the same reason, from the one shared table (round-4 review): a second
+      // table over these keys captioned an `<img>` "holds code or metadata" while the caret said,
+      // correctly, that there is no text on it.
+      expect(input.title).toMatch(hint)
+      expect(input.title).toBe(BLOCK_NOTICE[reason])
+      // Even forced, nothing is written: the model refuses the text op on the write side too.
+      fireEvent.change(input, { target: { value: 'fetch("x")' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      fireEvent.blur(input)
+      expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(html)
+      expectNoUndoEntrySince(SOURCE)
+    },
+  )
+
+  it('an empty element is editable, not "mixed": an emptied heading can be retyped', () => {
+    useDeckStore.getState().setSlideHtml(slideId, '<h1></h1>', slideId, 'empty')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId('prop-text') as HTMLTextAreaElement
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('')
+    fireEvent.change(input, { target: { value: 'Filled' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe('<h1>Filled</h1>')
   })
 
   it('an edit is undoable, restoring the exact prior source', () => {

@@ -39,10 +39,10 @@ import {
   setAttr,
   setStyleProp,
   setStyleProps,
-  setTextContent,
   type SourceOp,
 } from './patch'
 import { parseTransform } from './style'
+import { textContentOp, textEditBlock } from './text-edit'
 import type { ElementSpan, SlideMap } from './types'
 
 /**
@@ -52,10 +52,36 @@ import type { ElementSpan, SlideMap } from './types'
 export type PropertyField =
   'text' | 'fontSize' | 'fontWeight' | 'color' | 'fill' | 'stroke' | 'x' | 'y' | 'width' | 'height'
 
+/**
+ * Why the Content field is disabled for an element: its content is not plain text (`mixed-content`),
+ * it is `data-sl-lock`ed, or its tag does not hold slide text at all (`not-text` — `<script>`,
+ * `<style>`, `<title>`…, whose character data is text-only to the parser but never prose). The same
+ * three reasons the caret refuses with (`textEditBlock`), so the panel and the canvas agree on what
+ * may be edited; the caret's frame-input gates (the 64 KiB cap, the one-DOM-node rule) are
+ * deliberately not applied here — the panel's input is typed in the parent, and M3.11 named the
+ * panel as the way to edit an over-cap element.
+ */
+export type TextFieldBlock = 'mixed-content' | 'locked' | 'not-text'
+
+/** Why `element`'s text is not editable from the panel, or `null` when it is. */
+export function textFieldBlock(element: ElementSpan): TextFieldBlock | null {
+  const block = textEditBlock(element)
+  if (block === 'not-text' || block === 'locked') return block
+  return element.textOnly ? null : 'mixed-content'
+}
+
 /** Current source values for every field, `null` where the source declares nothing. */
 export interface PropertyValues {
-  /** Element text, only when it is `textOnly`; `null` for mixed/void content (field disabled). */
+  /**
+   * Element text **as the DOM reads it** — entities decoded — or `null` when the field is disabled
+   * (see `textBlock`). Decoded because the field is the read half of a round trip whose write half
+   * (`textContentOp`) escapes: showing the source bytes `X &amp; Y` here made every commit add a
+   * level of escaping (M3.12). An empty element reads as `''`, not `null`: an emptied heading is
+   * still retypable.
+   */
   readonly text: string | null
+  /** Why `text` is `null` and the field disabled, or `null` when the text is editable. */
+  readonly textBlock: TextFieldBlock | null
   readonly fontSize: string | null
   readonly fontWeight: string | null
   readonly color: string | null
@@ -91,11 +117,6 @@ function readTranslate(transform: string | null): { tx: string; ty: string } {
 /** Read every field's current source value. Pure over `(map.source, element)`. */
 export function readPropertyValues(source: string, element: ElementSpan): PropertyValues {
   const svg = isSvg(element)
-  const text =
-    element.textOnly && element.inner !== null
-      ? source.slice(element.inner.start, element.inner.end)
-      : null
-
   const fill = svg
     ? (readAttr(source, element, 'fill') ?? readStyleProp(source, element, 'fill'))
     : readStyleProp(source, element, 'background-color')
@@ -134,8 +155,10 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
       ? readAttr(source, element, 'height')
       : readStyleProp(source, element, 'height')
 
+  const textBlock = textFieldBlock(element)
   return {
-    text,
+    text: textBlock === null ? element.textContent : null,
+    textBlock,
     fontSize: readStyleProp(source, element, 'font-size'),
     fontWeight: readStyleProp(source, element, 'font-weight'),
     color: readStyleProp(source, element, 'color'),
@@ -190,7 +213,10 @@ function replaceTranslate(transform: string, x: string, y: string): string {
 
 /**
  * Turn one field edit into the source ops that apply it. Returns `[]` when the edit is a no-op the
- * panel should not commit: an empty value, or a `text` edit on an element that is not `textOnly`.
+ * panel should not commit: an empty value, a `text` edit on an element whose text the panel does
+ * not edit (`textFieldBlock` — mixed content, a lock, a non-text tag; the gate is applied on the
+ * write as well as the read, so a value cannot be forced into a disabled field), or a `text` value
+ * that already reads as the element's text (see `textContentOp`).
  *
  * `element` must come from `resolveElement(map, parentSlId)` — see the file header. `source` is the
  * map's own source (`map.source`); passing a different string would misplace every span.
@@ -206,7 +232,8 @@ export function buildFieldOps(
 
   switch (field) {
     case 'text': {
-      const op = setTextContent(element, rawValue)
+      if (textFieldBlock(element) !== null) return []
+      const op = textContentOp(element, rawValue)
       return op === null ? [] : [op]
     }
 

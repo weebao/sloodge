@@ -24,6 +24,7 @@ import { DEFAULT_MAX_HISTORY_ENTRIES } from '../../../src/shared/document/histor
 import { runEditAction } from '../../../src/renderer/src/app/editActions'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { activeTextEditSession } from '../../../src/renderer/src/features/design/textEditSession'
+import { BLOCK_NOTICE } from '../../../src/renderer/src/features/design/textBlockNotice'
 import { useTextEditing } from '../../../src/renderer/src/features/design/useTextEditing'
 import {
   createStarterDeck,
@@ -36,6 +37,7 @@ const SLIDE_HTML = `<!doctype html><html><body>
   <h1 class="title">Old title</h1>
   <p class="mixed">Revenue <b>18%</b> Q3</p>
   <p class="locked" data-sl-lock>Chrome</p>
+  <hr class="rule">
 </div>
 </body></html>`
 
@@ -1383,7 +1385,10 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
 
     expect(opened).toBe(false)
     // The exact failure the milestone exists to answer: a double-click that does nothing at all.
+    // Spelled out, and asserted to be the shared sentence: the panel shows the same words for the
+    // same reason, and this is the half of that pair the caret owns (M3.12 round-5 review).
     expect(noticeText()).toContain('formatting')
+    expect(noticeText()).toBe(BLOCK_NOTICE['mixed-content'])
     // Refusing still means refusing: no request reached the frame, no session was opened.
     expect(harness.sent).toEqual([])
     expect(harness.result.current.editing).toBeNull()
@@ -1397,6 +1402,28 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
       harness.result.current.beginEdit(id)
     })
     expect(noticeText()).toContain('locked')
+    expect(noticeText()).toBe(BLOCK_NOTICE.locked)
+  })
+
+  /**
+   * The void case, and the one the wording was wrong for: an element with no `inner` at all — an
+   * image, an `<hr>`, an SVG `<rect>` — is the commonest thing a double-click lands on that cannot
+   * take a caret. Until M3.12 round 4 the panel captioned it "holds code or metadata"; now both
+   * surfaces read one table, and this is what stops the caret's half from forking back.
+   */
+  it('a void element says there is no text on it — the caret\u2019s own shared sentence', () => {
+    const harness = mount()
+    const id = idOfClass('rule')
+    let opened = true
+    act(() => {
+      select(id)
+      opened = harness.result.current.beginEdit(id)
+    })
+
+    expect(opened).toBe(false)
+    expect(noticeText()).toContain('no text on this element')
+    expect(noticeText()).toBe(BLOCK_NOTICE['not-text'])
+    expect(harness.sent).toEqual([])
   })
 
   it('an id the map no longer has says the element is gone', () => {
