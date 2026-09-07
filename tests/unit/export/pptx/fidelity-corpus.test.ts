@@ -15,11 +15,15 @@ import {
   type SlideAssessment,
 } from '../../../fidelity/lib/assess'
 import { CORPUS, recordedFileName, type RecordedSlide } from '../../../fidelity/lib/corpus'
-import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback'
+import {
+  readbackPptx,
+  type ReadbackShape,
+  type ReadbackSlide,
+} from '../../../fidelity/lib/readback'
 import { groundTruthScript } from '../../../fidelity/lib/truth'
 
 /**
- * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 28-slide corpus.
+ * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 29-slide corpus.
  *
  * The inputs are recordings made by `tests/fidelity/harness.ts` from the *real* export window: the
  * measurement pass production consumed, and an independent ground truth (text nodes via `Range`,
@@ -54,7 +58,12 @@ import { groundTruthScript } from '../../../fidelity/lib/truth'
  * collapse reds the x19 rendered-line case (`"Growth was driven by enterprise expansion  and a"`);
  * emitting the runs before the inline paint reds the x19 highlight-order case; dropping the text
  * inset reds the `05` glyph-origin case (the pill label lands 18 px left of where Chromium drew it);
- * dropping `interruptedFlow` from the scorer makes x20 a silent lie at 90.
+ * dropping `interruptedFlow` from the scorer makes x20 a silent lie at 90. From M4.8b review r2:
+ * pairing the line-spacing check to the FIRST block at the rect rather than the most specific one
+ * reds x21 (the overlay's correct 2.5 reported as ≠ 1.50, a silent lie at 90); skipping the pairing
+ * altogether reds the `lineSpacingChecks` guard and the x19 counterfactual; stripping `<a:lnSpc>`
+ * from every paragraph after the first in `normalizeSlideParts` reds x20's second paragraph; and
+ * `shrinkText: true` or `wrap: false` in `pptx-writer.ts` each red 10 cases.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -211,6 +220,7 @@ async function assessPreR2Walker(file: string): Promise<SlideAssessment> {
 
 const recorded = loadRecorded()
 const x1Readback = await readbackOf('x1-ghost-opacity.html', 'editable')
+const x19Readback = await readbackOf('x19-inline-runs.html', 'editable')
 const x4Readback = await readbackOf('x4-shadows.html', 'auto')
 const asOldExporter = await assessAsOldExporter()
 const auto = await assessAll('auto')
@@ -242,7 +252,7 @@ describe('fidelity corpus recordings', () => {
   })
 
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(28)
+    expect(recorded).toHaveLength(29)
     expect(summary.textTotal).toBeGreaterThan(40)
     expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
@@ -404,22 +414,67 @@ describe('§5.2 targets over the corpus', () => {
       expect(pills.truth.texts.filter((t) => t.text === 'Shipped')).toHaveLength(2)
     })
 
-    it('line spacing is the block ratio and every box is top-anchored — seen by the oracle, not assumed (r1)', async () => {
+    it('line spacing is PLUMBED as the block ratio, every box top-anchored, wrapped, no autofit (r1/r2)', async () => {
+      // What this proves: the block's `line-height / font-size` (not a run's) reaches every
+      // paragraph's <a:lnSpc> unchanged, `normal` reaches none, and every box is `anchor="t"`,
+      // `wrap="square"`, autofit-free. What it cannot prove: that `spcPct` is the right PowerPoint
+      // spacing — the oracle reads the same two computed values the walker reads. See
+      // `TruthBlock.lineHeight` and the roadmap's line-pitch row.
       for (const a of [...auto, ...editable]) {
         if (a.tier === 'structured') expect(a.lineSpacingWrong, a.file).toEqual([])
       }
+      // The check pairs and judges most structured text boxes; disabling the pairing reds this.
+      expect(summary.lineSpacingChecks).toBeGreaterThan(40)
       // Not vacuous: x19's lead paragraph is `line-height: 1.5` over runs of one size, its second
       // bullet `1.6` over 22/34/14 px runs, and its headline `normal`.
       const x19 = await readbackOf('x19-inline-runs.html', 'auto')
       const lead = x19.shapes.find((sh) => sh.text.startsWith('Growth was driven by'))!
       const sized = x19.shapes.find((sh) => sh.text.startsWith('Sized bigger'))!
       const headline = x19.shapes.find((sh) => sh.text === 'Run-level text in one box')!
-      expect([lead.lineSpacing, sized.lineSpacing, headline.lineSpacing]).toEqual([1.5, 1.6, null])
-      expect(new Set(x19.shapes.filter((sh) => sh.text !== '').map((sh) => sh.anchor))).toEqual(
-        new Set(['t']),
-      )
+      expect([lead.lineSpacings, sized.lineSpacings, headline.lineSpacings]).toEqual([
+        [1.5],
+        [1.6],
+        [null],
+      ])
       // Mutations: `lineSpacingMultiple` → undefined, or +1, or `valign: 'bottom'` each red the
       // corpus-wide assertion above through `constructsLost` and the silent-lie verdict.
+    })
+
+    it('the line-spacing check CAN fire on this corpus: x19 with its spacing nulled or its anchor moved (r2)', () => {
+      // The counterfactual that pins the pairing, the way 05-uninset pins the glyph origin: the
+      // same recording, the emitted file altered as the r1 mutations would alter it.
+      const recording = recorded.find((r) => r.file === 'x19-inline-runs.html')!
+      const x19 = editable.find((a) => a.file === 'x19-inline-runs.html')!
+      expect(x19.lineSpacingChecks).toBeGreaterThanOrEqual(8)
+      const judge = (alter: (sh: ReadbackShape) => ReadbackShape): SlideAssessment =>
+        assessSlide({
+          corpus: CORPUS.find((c) => c.file === 'x19-inline-runs.html')!,
+          truth: recording.truth,
+          measure: recording.measure,
+          readback: { ...x19Readback, shapes: x19Readback.shapes.map(alter) },
+          tier: 'structured',
+          score: 100,
+          reasons: [],
+        })
+      const nulled = judge((sh) => ({ ...sh, lineSpacings: sh.lineSpacings.map(() => null) }))
+      expect(nulled.lineSpacingWrong.length).toBeGreaterThanOrEqual(3)
+      expect(nulled.silentLie).toBe(true)
+      const bottom = judge((sh) => ({ ...sh, anchor: 'b' }))
+      expect(bottom.lineSpacingWrong.filter((l) => l.includes('anchored b')).length).toBe(
+        x19.lineSpacingChecks,
+      )
+      const unwrapped = judge((sh) => ({ ...sh, wrap: 'none', autofit: true }))
+      expect(unwrapped.lineSpacingWrong.some((l) => l.includes('wrap none'))).toBe(true)
+      expect(unwrapped.lineSpacingWrong.some((l) => l.includes('autofit set'))).toBe(true)
+    })
+
+    it('x21: two text blocks at one rect export with their own spacing and are NOT reported as a lie (r2)', () => {
+      const x21 = auto.find((a) => a.file === 'x21-overlay-spacing.html')!
+      expect(x21.tier).toBe('structured')
+      expect(x21.score).toBeGreaterThanOrEqual(HIGH_CONFIDENCE)
+      expect(x21.constructsLost).toEqual([])
+      expect(x21.lineSpacingChecks).toBe(3)
+      // Mutation: pair to the first matching block → "Inner text on the overlay": 2.5 ≠ 1.50, silent lie.
     })
 
     it('05 with its insets stripped IS a silent lie: the pill labels sit 18 px off, boxes exact', async () => {
@@ -655,7 +710,7 @@ describe('§5.2 targets over the corpus', () => {
    * scorer-free exporter invents nothing. The old walker's losses are pinned by mutation instead,
    * one fix at a time (see the module docstring).
    */
-  it('the retroactive figure: with the scorer deleted, 14 of 28 slides are silent lies', () => {
+  it('the retroactive figure: with the scorer deleted, 14 of 29 slides are silent lies', () => {
     // `01-title-body` left this list in M4.8b: the run-level walk carries its bare text, so even a
     // scorer-free exporter loses nothing there. `x20-inline-flow` joined it — with the flow signal
     // deleted, the sentence around its pill ships at 100 with the pill's words missing from it.

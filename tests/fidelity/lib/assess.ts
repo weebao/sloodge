@@ -150,12 +150,15 @@ export type SlideAssessment = {
    */
   glyphOriginWrong: string[]
   /**
-   * Text boxes whose paragraph line spacing is not the block's `line-height / font-size` (or that
-   * carry spacing where the block's is `normal`), or that are not anchored at the top. With runs
-   * of several sizes in one box this is the vertical twin of the glyph origin: every box exact,
-   * every paragraph 60 % too tall (M4.8b r1).
+   * Text boxes whose paragraphs' line spacing is not the block's `line-height / font-size` (or that
+   * carry spacing where the block's is `normal`), or that are not top-anchored, wrapped and
+   * autofit-free. This is a PLUMBING check — it reads the same two computed values the walker
+   * reads (see `TruthBlock.lineHeight`) — so it catches a dropped, offset, run-derived or
+   * later-paragraph-stripped multiple and any anchor/wrap/autofit change, not a wrong mapping.
    */
   lineSpacingWrong: string[]
+  /** Text boxes the line-spacing check actually paired and judged; the vacuity guard for the above. */
+  lineSpacingChecks: number
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
   unmodelledProperties: string[]
   /**
@@ -594,33 +597,48 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
   }
 
-  // --- Line spacing and anchor, against the oracle's own record of each text block's line-height
-  // and font-size, paired by geometry and by a rendered line (M4.8b r1) ---
+  // --- Line spacing, anchor, wrap and autofit, against the oracle's own record of each text
+  // block's line-height and font-size, paired by geometry and by a rendered line (M4.8b r1/r2) ---
   const lineSpacingWrong: string[] = []
+  let lineSpacingChecks = 0
   for (const shape of readback.shapes) {
     if (shape.kind !== 'sp' || shape.text === '') continue
     const firstLine = shape.lines.find((l) => l !== '')
-    const block = truth.blocks.find(
-      (b) =>
-        boxDeviationPct(shapeBounds(shape), b) <= BOX_TOLERANCE_PCT &&
-        firstLine !== undefined &&
-        b.lines.includes(firstLine),
-    )
+    if (firstLine === undefined) continue
+    // The MOST SPECIFIC block at this rect: a parent's `innerText` contains every descendant's
+    // lines, so a same-rect nested block (an `inset: 0` overlay with text) paired to its ancestor
+    // by first match and a correct 2.5 was reported as ≠ 1.50 — a manufactured silent lie (r2).
+    // Fewest lines wins; on a tie, the deepest (last in DOM order).
+    const block = truth.blocks
+      .map((b, index) => ({ b, index }))
+      .filter(
+        ({ b }) =>
+          boxDeviationPct(shapeBounds(shape), b) <= BOX_TOLERANCE_PCT &&
+          b.lines.includes(firstLine),
+      )
+      .toSorted((p, q) => p.b.lines.length - q.b.lines.length || q.index - p.index)[0]?.b
     if (block === undefined) continue
+    lineSpacingChecks += 1
     const want =
       block.lineHeight === 'normal' || block.fontSizePx <= 0
         ? null
         : parseFloat(block.lineHeight) / block.fontSizePx
-    const got = shape.lineSpacing
     const label = `"${shape.text.slice(0, 40)}"`
-    if (
-      want === null ? got !== null : got === null || Math.abs(got - want) > LINE_SPACING_TOLERANCE
-    )
-      lineSpacingWrong.push(
-        `${label}: line spacing ${String(got)} ≠ ${want === null ? 'normal' : want.toFixed(2)}`,
+    // Every paragraph of the box, not only the first: `paragraphBreakBefore` makes several routine.
+    for (const got of shape.lineSpacings) {
+      if (
+        want === null ? got !== null : got === null || Math.abs(got - want) > LINE_SPACING_TOLERANCE
       )
+        lineSpacingWrong.push(
+          `${label}: line spacing ${String(got)} ≠ ${want === null ? 'normal' : want.toFixed(2)}`,
+        )
+    }
     if (shape.anchor !== 't')
       lineSpacingWrong.push(`${label}: anchored ${String(shape.anchor)}, not top`)
+    if (shape.wrap !== 'square')
+      lineSpacingWrong.push(`${label}: wrap ${String(shape.wrap)}, not square`)
+    if (shape.autofit)
+      lineSpacingWrong.push(`${label}: autofit set — PowerPoint may shrink the text`)
   }
 
   // --- Text the browser cuts off but the file carries whole: PowerPoint has no clipping ---
@@ -708,6 +726,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     textLinesWrong,
     glyphOriginWrong,
     lineSpacingWrong,
+    lineSpacingChecks,
     unmodelledProperties,
     rootPaintOps,
     rotationsExpected: corpus.rotations.length,
@@ -731,6 +750,8 @@ export type CorpusSummary = {
   sizeExact: number
   boxChecks: number
   boxWorstPct: number
+  /** Text boxes whose line spacing/anchor/wrap the oracle paired and judged. */
+  lineSpacingChecks: number
   /** Over structured slides only, like the text row. */
   paintedTotal: number
   paintedKept: number
@@ -758,6 +779,7 @@ export function summarize(assessments: readonly SlideAssessment[]): CorpusSummar
     sizeExact: sum(structured, (a) => a.sizeExact),
     boxChecks: sum(assessments, (a) => a.boxChecks),
     boxWorstPct: Math.max(0, ...assessments.map((a) => a.boxWorstPct)),
+    lineSpacingChecks: sum(assessments, (a) => a.lineSpacingChecks),
     paintedTotal: sum(structured, (a) => a.paintedTotal),
     paintedKept: sum(structured, (a) => a.paintedKept),
     pseudoTotal: sum(structured, (a) => a.pseudoTotal),
@@ -783,6 +805,7 @@ export function formatSummary(label: string, s: CorpusSummary): string {
     `| Exact hex colour on preserved runs | ${pct(s.colorExact, s.colorTotal)} |`,
     `| Exact font size (±${String(SIZE_TOLERANCE_PT)} pt) on preserved runs | ${pct(s.sizeExact, s.colorTotal)} |`,
     `| Emitted box vs DOM box, worst (% of slide dimension, ${String(s.boxChecks)} boxes) | ${s.boxWorstPct.toFixed(4)}% |`,
+    `| Text boxes whose line spacing, anchor and wrap were judged (plumbing only) | ${String(s.lineSpacingChecks)} |`,
     `| Painted boxes (background/border) carried by an emitted shape | ${pct(s.paintedKept, s.paintedTotal)} |`,
     `| Painting \`::before\`/\`::after\` in structured slides (unrepresentable) | ${String(s.pseudoTotal)} |`,
     `| Rotated elements carrying a correct \`rot\` (±${String(ROTATION_TOLERANCE_DEG)}°) | ${String(s.rotationsOk)}/${String(s.rotationsExpected)} |`,

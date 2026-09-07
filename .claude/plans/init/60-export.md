@@ -307,7 +307,7 @@ The gap is the *modelled* ones. `transform`, `rotate`, `scale`, `translate`, `op
 | `font-weight >= 600` | `bold: true` | intermediate weights collapse to bold/regular |
 | `font-family` | `fontFace` | first family name only; §3.6 |
 | `text-align` | `align` | `justify` → `justify` (supported) |
-| `line-height` | `lineSpacingMultiple` | ratio to font-size; `normal` → omit |
+| `line-height` | `lineSpacingMultiple` | the *block's* ratio to the *block's* font-size; `normal` → omit. That the block's ratio reaches every paragraph's `<a:lnSpc><a:spcPct>` unchanged is asserted structurally (M4.8b r1/r2, `lineSpacingWrong`); whether the ratio is the *right* PowerPoint spacing is not, and cannot be until the pixel step runs — PowerPoint's 100 % is the font's single spacing (≈1.15 em, not 1.0), and a length `line-height` over a larger inline run is mis-mapped by construction (`30px` on a 20 px block with a 40 px run emits 1.5 for a line Chromium draws at 37 px, not 60) |
 | `letter-spacing` | run `charSpacing` (pt) | per run since M4.8b |
 | `text-transform` | applied to the run text | `uppercase`/`lowercase`/`capitalize`, the last carrying the word boundary across runs; PPTX has no run-level transform |
 | `text-decoration` on an ancestor | run `underline`/`strike` | decoration propagates without inheriting; the run walk unions the chain |
@@ -376,7 +376,7 @@ Three things this list used to call hard blockers are not, and the difference is
 - **Content reachable only by scrolling.** Now the two `overflow` deductions above. Both are wrong-class, so `auto` still rasters on that signal alone; the difference is that `editable` keeps the slide structured and lists the risk in the report instead of being overridden.
 - **A measurement-pass exception.** It yields an empty node list, which scores 100 with nothing to emit — so such a slide currently ships structured and *blank*, not as the capture that was taken for it (verified by running the planner over an empty `MeasureResult`, M4.8a r5). Routing it to raster is a behaviour change with a real trade-off, since a deliberately empty slide would become a picture; it is recorded here rather than made quietly.
 
-The thresholds are constants in one module with the score table beside them — not scattered magic numbers — and the boundary is pinned by two fixtures whose *computed* scores straddle it. Since M4.8a the whole table is exercised end to end by the 28-slide fidelity corpus in [`tests/fidelity/`](../../../tests/fidelity/README.md), which runs the real planner and the real pptxgenjs and reads the shapes back out of the emitted file.
+The thresholds are constants in one module with the score table beside them — not scattered magic numbers — and the boundary is pinned by two fixtures whose *computed* scores straddle it. Since M4.8a the whole table is exercised end to end by the 29-slide fidelity corpus in [`tests/fidelity/`](../../../tests/fidelity/README.md), which runs the real planner and the real pptxgenjs and reads the shapes back out of the emitted file.
 
 ### 3.5 The raster path
 

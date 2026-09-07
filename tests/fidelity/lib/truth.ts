@@ -110,9 +110,14 @@ export type TruthBlock = {
   /** The rendered lines of the element, `innerText.split('\n')`. */
   lines: string[]
   /**
-   * The element's own computed `line-height` (`normal` or a px length) and `font-size`. The
-   * exporter emits the box's line spacing as their ratio; with runs of several sizes in one box
-   * that ratio is a decision, and nothing else here can see it (M4.8b r1).
+   * The element's own computed `line-height` (`normal` or a px length) and `font-size`, read by the
+   * oracle's own script. These are the SAME two computed values the walker reads, so what
+   * `assess.ts` proves with them is plumbing: that the block's ratio (not a run's) reaches the XML
+   * unchanged and that the box is top-anchored. It cannot judge whether `spcPct` is the right
+   * PowerPoint spacing — a unitless `1.5` and a `30px` line-height on a 20 px block with a 40 px
+   * run both compute to the same two numbers here while Chromium renders their first lines 60 px
+   * and 37 px tall (M4.8b r2). The independent quantity is the rendered line pitch
+   * (`Range.getClientRects()`); recording it is a roadmap row for when a renderer is present.
    */
   lineHeight: string
   fontSizePx: number
