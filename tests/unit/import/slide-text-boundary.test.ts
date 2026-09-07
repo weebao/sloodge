@@ -129,18 +129,22 @@ describe('text into slide HTML goes through slideText', () => {
     ])
   })
 
-  it('the SL-S04 matcher is defined once, in slide-contract.ts', () => {
+  it('the SL-S04 matcher is defined once, in forbidden-apis.ts', () => {
     // Round 5 lifted `foldForScan`/`forbiddenBreakPoints`/`tokenPattern` out of Design Mode's text
     // editor so the importer and the editor share one matcher; the rebase onto M3.11 completed that
-    // dedupe. `text-edit.ts` imports `forbiddenBreakPoints` from slide-contract.ts and declares none
-    // of the three — `foldForScan` it has no use for, and `tokenPattern` is module-private here.
-    // Both writers of slide text therefore agree with the validator on Unicode case folds by
-    // construction, and this pin reds if either grows a copy again: enforced, not remembered.
+    // dedupe. `text-edit.ts` and `slide-text.ts` import `forbiddenBreakPoints` from the leaf and
+    // declare none of the three — `foldForScan` neither has a use for, and `tokenPattern` is
+    // module-private there. Both writers of slide text therefore agree with the validator on
+    // Unicode case folds by construction, and this pin reds if either grows a copy again:
+    // enforced, not remembered.
     //
-    // When #58's `forbidden-apis.ts` leaf lands, the matcher moves there with the token list and
-    // the expected path below changes with it. That is a deliberate edit, which is the point.
+    // The path is the leaf, not `slide-contract.ts`, because #58's `forbidden-apis.ts` landed and
+    // the matcher followed the token list into it — `tokenPattern` calls `packForApiScan` and
+    // `TOKEN_PATTERNS` maps `FORBIDDEN_API_TOKENS`, so the matcher cannot stay behind without
+    // importing back the very names `preload-bundle-deps.test.ts` counts. That was a deliberate
+    // edit, which is the point.
     expect(definers(['foldForScan', 'forbiddenBreakPoints', 'tokenPattern'])).toEqual([
-      'src/shared/document/slide-contract.ts',
+      'src/shared/document/forbidden-apis.ts',
     ])
   })
 })

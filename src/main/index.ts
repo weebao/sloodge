@@ -3,6 +3,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { installAgentIpc } from './ipc/agent'
 import { installDocumentIpc } from './document/open-ipc'
 import { installExportIpc } from './export/install'
+import { installFontsIpc } from './fonts/install'
 import { installAppMenu } from './menu/appMenu'
 import { installPresentIpc } from './present/install'
 import { isAllowedNavigation, toSafeExternalUrl } from './security/externalUrls'
@@ -99,6 +100,9 @@ if (!gotSingleInstanceLock) {
     // File ▸ Open (M4.5): main owns the native chooser and the read for .sloodge, .pptx and .potx,
     // so a compromised renderer cannot turn the channel into an arbitrary-file read.
     installDocumentIpc()
+    // Installed-font enumeration (M3.10): main owns it so the property panel's family dropdown
+    // never triggers the renderer's `local-fonts` permission prompt.
+    installFontsIpc()
     app.on('before-quit', () => {
       void agentService.disposeAll()
     })

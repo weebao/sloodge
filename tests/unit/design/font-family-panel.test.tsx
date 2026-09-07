@@ -1,0 +1,577 @@
+/**
+ * @vitest-environment happy-dom
+ *
+ * The font-family dropdown wired into the Properties panel (M3.10): a pick must patch the slide
+ * source through the byte-span map, cost exactly one undo entry, and leave every element id intact
+ * so the selection survives. The dropdown's own keyboard/ARIA/windowing behaviour lives in
+ * `font-family-control.test.tsx`; this file is about what reaches the document.
+ */
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { useMemo, type JSX } from 'react'
+
+import type { SlHit } from '../../../src/shared/design/bridge-protocol'
+import { buildSlideMap } from '../../../src/shared/design/slide-map'
+import { validateSlideContract } from '../../../src/shared/document/slide-contract'
+import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
+import { PropertyPanel } from '../../../src/renderer/src/features/design/PropertyPanel'
+import {
+  createStarterDeck,
+  getSlideHtml,
+  useDeckStore,
+  type SlideView,
+} from '../../../src/renderer/src/stores/deckStore'
+import type { SystemFontsResponse } from '../../../src/shared/ipc-contract'
+
+const NOW = 1_700_000_000_000
+const SOURCE = '<h1 style="color: #111; font-size: 44px">Hello</h1>'
+
+const INSTALLED = ['Bodoni MT', 'Papyrus', 'Verdana']
+
+/** Module-scoped so the prop is a stable reference across renders (react-perf). */
+const LOAD_FONTS = async (): Promise<SystemFontsResponse> => ({
+  families: INSTALLED,
+  source: 'powershell',
+})
+
+/** A loader offering a name the allow-list refuses, as a hostile enumerator would. */
+const LOAD_HOSTILE = async (): Promise<SystemFontsResponse> => ({
+  families: ['Papyrus'],
+  source: 'powershell',
+})
+
+let slideId: string
+
+function currentSlide(): SlideView {
+  return {
+    id: slideId,
+    title: 'Slide',
+    html: getSlideHtml(useDeckStore.getState().slideHtml, slideId)!,
+  }
+}
+
+function html(): string {
+  return getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+}
+
+function h1Id(): string {
+  return buildSlideMap(slideId, SOURCE).order[0]!
+}
+
+function select(): void {
+  const hit: SlHit = {
+    slId: h1Id(),
+    tag: 'h1',
+    id: null,
+    classes: [],
+    rect: { x: 0, y: 0, width: 100, height: 40 },
+    ancestors: [],
+  }
+  useDesignStore.setState({ enabled: true, hover: null, selection: hit })
+}
+
+/**
+ * The panel wired to the store the way the app wires it, rather than to a fixed `slide` prop.
+ *
+ * This matters for one test and is harmless for the rest: a commit and the subtree remount it
+ * causes (`key` carries `map.sourceHash`) then land in a SINGLE React commit, which is the commit
+ * structure the running app produces. Passing a captured `slide` and calling `rerender` afterwards
+ * splits them in two — a shape the app never produces, and the one shape in which losing focus to
+ * `<body>` is invisible.
+ */
+function Panel(): JSX.Element {
+  const slideHtml = useDeckStore((state) => state.slideHtml)
+  const slide = useMemo<SlideView>(
+    () => ({ id: slideId, title: 'Slide', html: getSlideHtml(slideHtml, slideId)! }),
+    [slideHtml],
+  )
+  return <PropertyPanel slide={slide} loadFonts={LOAD_FONTS} />
+}
+
+function undoDepth(): number {
+  return useDeckStore.getState().history.summary().undoDepth
+}
+
+/** Open the dropdown and wait for the installed group to arrive. */
+async function openDropdown(): Promise<void> {
+  fireEvent.click(screen.getByTestId('prop-fontFamily'))
+  await waitFor(() => {
+    expect(screen.getByTestId('font-option-Bodoni MT')).toBeTruthy()
+  })
+}
+
+beforeEach(() => {
+  useDeckStore.setState(createStarterDeck(NOW))
+  slideId = useDeckStore.getState().currentSlideId!
+  useDeckStore.getState().setSlideHtml(slideId, SOURCE, slideId, 'seed')
+  useDesignStore.setState({ enabled: true, hover: null, selection: null })
+})
+
+afterEach(cleanup)
+
+describe('font family pick — write-back', () => {
+  it('writes the stack as a minimal splice, leaving the other declarations alone', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).not.toBe(SOURCE)
+    })
+    expect(html()).toBe(
+      '<h1 style="color: #111; font-size: 44px; font-family: Papyrus, Segoe UI, system-ui, sans-serif">Hello</h1>',
+    )
+  })
+
+  it('survives a second edit to another property without corrupting the style attribute', async () => {
+    // The regression this pins: a quoted family would be written as `&quot;…&quot;`, whose
+    // semicolons split `parseDeclarations`, and the next edit would re-serialise the wreckage.
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    const size = screen.getByTestId('prop-fontSize')
+    fireEvent.change(size, { target: { value: '60' } })
+    fireEvent.blur(size)
+
+    await waitFor(() => {
+      expect(html()).toContain('font-size: 60px')
+    })
+    expect(html()).toBe(
+      '<h1 style="color: #111; font-size: 60px; font-family: Papyrus, Segoe UI, system-ui, sans-serif">Hello</h1>',
+    )
+  })
+
+  it('reads its own write back, rather than an HTML-escaped fragment of it', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    // The trigger shows the face, not `&quot` — the symptom a quoted write produced.
+    expect(screen.getByTestId('prop-fontFamily').textContent).toContain('Papyrus')
+  })
+
+  it('keeps the map id set identical, so the selection is not invalidated', async () => {
+    select()
+    const before = buildSlideMap(slideId, html()).order
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).not.toBe(SOURCE)
+    })
+    expect(buildSlideMap(slideId, html()).order).toEqual(before)
+  })
+
+  it('introduces no new contract issue', async () => {
+    // The seeded fragment is not a whole slide, so it never satisfies the geometry rules; what
+    // matters is that the pick adds nothing. Contract validity of a real, complete slide after a
+    // pick is proven in `tests/unit/fonts/family.test.ts`.
+    select()
+    const before = validateSlideContract(SOURCE).issues.map((issue) => issue.rule)
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).not.toBe(SOURCE)
+    })
+    expect(validateSlideContract(html()).issues.map((issue) => issue.rule)).toEqual(before)
+  })
+
+  it('replaces the declaration rather than appending a second one on a re-pick', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Verdana'))
+    await waitFor(() => {
+      expect(html()).toContain('Verdana')
+    })
+
+    expect(html().match(/font-family/g)).toHaveLength(1)
+    expect(html()).not.toContain('Papyrus')
+  })
+})
+
+describe('font family pick — undo', () => {
+  it('costs exactly one undo entry', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    const before = undoDepth()
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).not.toBe(SOURCE)
+    })
+    expect(undoDepth()).toBe(before + 1)
+  })
+
+  it('spends no undo entry on opening, filtering or arrowing around', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    const before = undoDepth()
+    await openDropdown()
+    const input = screen.getByTestId('font-filter')
+    fireEvent.change(input, { target: { value: 'pap' } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect(undoDepth()).toBe(before)
+    expect(html()).toBe(SOURCE)
+  })
+
+  it('restores the exact original bytes on undo', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).not.toBe(SOURCE)
+    })
+
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(html()).toBe(SOURCE)
+  })
+
+  it('takes two picks back with two undos, never one', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Verdana'))
+    await waitFor(() => {
+      expect(html()).toContain('Verdana')
+    })
+
+    // Two separate gestures are two separate entries: the first undo must land on Papyrus, not on
+    // the seeded source. Coalescing the two would make this assertion fail.
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(html()).toContain('Papyrus')
+    expect(useDeckStore.getState().undo()).toBe(true)
+    expect(html()).toBe(SOURCE)
+  })
+})
+
+describe('font family pick — export-fidelity warning', () => {
+  it('is absent before any pick', () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    expect(screen.queryByTestId('font-export-warning')).toBeNull()
+  })
+
+  it('appears after picking a face that will not travel', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    expect(screen.getByTestId('font-export-warning').textContent).toContain("Won't travel")
+  })
+
+  it('stays away after picking a system face', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Georgia'))
+    await waitFor(() => {
+      expect(html()).toContain('Georgia')
+    })
+
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    expect(screen.queryByTestId('font-export-warning')).toBeNull()
+  })
+
+  it('goes away again when the pick is undone', async () => {
+    select()
+    const { rerender } = render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    useDeckStore.getState().undo()
+    rerender(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_FONTS} />)
+    expect(screen.queryByTestId('font-export-warning')).toBeNull()
+  })
+})
+
+describe('font family pick — a hostile enumerator', () => {
+  it('never offers a name the allow-list refused', async () => {
+    select()
+    render(<PropertyPanel slide={currentSlide()} loadFonts={LOAD_HOSTILE} />)
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    await waitFor(() => {
+      expect(screen.getByTestId('font-option-Papyrus')).toBeTruthy()
+    })
+    // The dropdown is fed straight from the loader; only the vetted name is listed.
+    const names = screen.queryAllByRole('option').map((el) => el.textContent)
+    expect(names).toContain('Papyrus')
+    for (const name of names) {
+      expect(name).not.toContain('"')
+      expect(name).not.toContain(';')
+      expect(name).not.toContain('<')
+    }
+  })
+})
+
+/**
+ * Focus after a pick, at the panel level — the only level where the bug exists.
+ *
+ * `close(true)` focuses the trigger synchronously and that is enough for Escape. A pick is
+ * different: it commits first, `PropertyPanel` keys the field subtree on `map.sourceHash`, and
+ * React therefore replaces the very button that was focused a microsecond earlier. Measured over
+ * CDP in the built app before the fix: `document.activeElement` was `BODY` after Enter, so a
+ * keyboard user who picked a font was dumped at the top of the document.
+ */
+describe('font family pick — focus', () => {
+  it('returns focus to the trigger after an Enter pick, across the commit-driven remount', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    const filter = screen.getByTestId('font-filter')
+    fireEvent.change(filter, { target: { value: 'Papyrus' } })
+    fireEvent.keyDown(filter, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('returns focus to the trigger after a click pick', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('returns focus to the trigger on Escape, which commits nothing', async () => {
+    select()
+    render(<Panel />)
+    await openDropdown()
+
+    fireEvent.keyDown(screen.getByTestId('font-filter'), { key: 'Escape' })
+
+    expect(html()).toBe(SOURCE)
+    expect(document.activeElement).toBe(screen.getByTestId('prop-fontFamily'))
+  })
+
+  it('consumes the restore flag even when the pick writes nothing', async () => {
+    // The case that keeps the focus-restore effect's *missing dependency array* load-bearing:
+    // picking the face that is already applied makes `commit` bail at `patched === map.source`, so
+    // there is no store write, no `sourceHash` change and no remount — only a re-render. An effect
+    // with a `[]` dependency array never runs again, the flag stays armed, and the next unrelated
+    // remount hands focus to the font trigger from wherever the user actually was.
+    select()
+    render(<Panel />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    const before = html()
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    expect(html()).toBe(before)
+
+    screen.getByTestId('ask-claude-element').focus()
+    useDeckStore.getState().setSlideHtml(slideId, `${html()}<p>after</p>`, slideId, 'append')
+
+    await waitFor(() => {
+      expect(html()).toContain('after')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('ask-claude-element'))
+  })
+
+  it('leaves focus alone when a later remount follows no pick', async () => {
+    // The restore flag must not survive the commit that consumes it: re-selecting an element
+    // remounts the same subtree, and the font trigger must not take focus from wherever it is.
+    select()
+    render(<Panel />)
+    await openDropdown()
+    fireEvent.click(screen.getByTestId('font-option-Papyrus'))
+    await waitFor(() => {
+      expect(html()).toContain('Papyrus')
+    })
+
+    // The "Ask Claude" button lives outside the keyed subtree, so it is still the same element
+    // after the remount — which is what makes it a fair place to watch focus from.
+    screen.getByTestId('ask-claude-element').focus()
+    useDeckStore.getState().setSlideHtml(slideId, `${html()}<p>after</p>`, slideId, 'append')
+
+    await waitFor(() => {
+      expect(html()).toContain('after')
+    })
+    expect(document.activeElement).toBe(screen.getByTestId('ask-claude-element'))
+  })
+})
+
+/** Type into a property field and commit it, the way a blur does in the app. */
+function type(field: string, value: string): void {
+  const input = screen.getByTestId(field)
+  fireEvent.change(input, { target: { value } })
+  fireEvent.blur(input)
+}
+
+/**
+ * The panel's own gate, below the font composer. `family.ts` refuses a name whose declaration would
+ * trip SL-S04, but that is one field's composer; this is the line every field's write passes
+ * through, so it holds whatever the composer above it does.
+ *
+ * **Exercised on a CSS-value field, not on Text, and that is the point.** These tests typed
+ * `localStorage` into the Content field until M3.12 landed: its fix routes that field's write
+ * through `textContentOp`, which *defuses* a forbidden token into a numeric character reference
+ * (`&#108;ocalStorage`) instead of letting the gate refuse it — the end state M3.14 prescribes for
+ * prose, shipped early for the one field it covers. So Text no longer reaches this gate, and a
+ * fixture that kept typing into it would be asserting a refusal that no longer happens; the last
+ * test below pins the defusing instead, so this suite still notices if that write path regresses to
+ * a refusal or, worse, to writing the raw token. Every other field's value lands in the style
+ * attribute verbatim and is still gated here.
+ */
+describe('the write gate', () => {
+  /** Seed a source other than the shared one, and select its heading. */
+  function seed(source: string): void {
+    useDeckStore.getState().setSlideHtml(slideId, source, slideId, 'seed')
+    const hit: SlHit = {
+      slId: buildSlideMap(slideId, source).order[0]!,
+      tag: 'h1',
+      id: null,
+      classes: [],
+      rect: { x: 0, y: 0, width: 100, height: 40 },
+      ancestors: [],
+    }
+    useDesignStore.setState({ enabled: true, hover: null, selection: hit })
+  }
+
+  it('refuses a commit that would take the slide from clean to SL-S04-violating, and says so', () => {
+    select()
+    render(<Panel />)
+    const before = undoDepth()
+
+    type('prop-color', 'localStorage')
+
+    expect(html()).toBe(SOURCE)
+    expect(undoDepth()).toBe(before)
+
+    // The revert is only half the behaviour. A discarded keystroke with nothing to explain it is
+    // the shape of the bug this panel exists to fix, so the message is pinned here alongside it:
+    // named field, named token, and announced rather than merely painted.
+    const refusal = screen.getByTestId('prop-refusal')
+    expect(refusal.getAttribute('role')).toBe('alert')
+    expect(refusal.textContent).toContain('Color not applied')
+    expect(refusal.textContent).toContain('localStorage')
+  })
+
+  it('explains the whitespace rule when the refusal was ordinary prose', () => {
+    // The case the user cannot possibly guess: `local storage` is a phrase, not an API, and it is
+    // refused only because SL-S04 packs the space out. Saying just "not allowed" would leave them
+    // retyping the same words.
+    select()
+    render(<Panel />)
+
+    type('prop-fontWeight', 'local storage')
+
+    expect(html()).toBe(SOURCE)
+    expect(screen.getByTestId('prop-refusal').textContent).toContain('spaces are ignored')
+  })
+
+  it('drops the refusal as soon as the user edits again', () => {
+    select()
+    render(<Panel />)
+    type('prop-color', 'localStorage')
+    expect(screen.queryByTestId('prop-refusal')).not.toBeNull()
+
+    fireEvent.change(screen.getByTestId('prop-color'), { target: { value: '#222' } })
+
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
+  })
+
+  it('still commits an edit that carries no forbidden token', () => {
+    // The control: the gate must block a token, not an edit.
+    select()
+    render(<Panel />)
+
+    type('prop-color', '#222')
+
+    expect(html()).toContain('color: #222')
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
+  })
+
+  it('lets the Content field write prose the gate would refuse, defused rather than refused', () => {
+    // M3.12's write path, pinned from this side so the gate's scope stays honest: `local storage`
+    // is `localStorage` once SL-S04 packs the space out, and refusing it would cost the user a
+    // sentence. `textContentOp` breaks the token with a numeric character reference instead — the
+    // DOM decodes it back, so the heading reads exactly as typed while the bytes carry no token.
+    // Reds if that path regresses to a refusal (no text committed) or to writing the raw token.
+    select()
+    render(<Panel />)
+
+    type('prop-text', 'local storage')
+
+    expect(html()).toContain('&#108;ocal storage')
+    expect(html()).not.toContain('>local storage<')
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
+  })
+
+  it('leaves an already-violating slide editable', () => {
+    // Only *newly introduced* tokens block. The agent writes slides too, and a deck can already
+    // hold one the validator rejects; refusing to let the user edit it is the worse failure.
+    const dirty = '<h1 style="font-size: 44px">localStorage</h1>'
+    seed(dirty)
+    render(<Panel />)
+
+    type('prop-fontSize', '60')
+
+    expect(html()).toContain('font-size: 60px')
+    expect(html()).toContain('localStorage')
+  })
+
+  it('renders against a font-family escape no font install could produce', () => {
+    // Model-authored slide HTML, and nothing in the contract rejects it: `\ffffff` is out of range,
+    // and decoding it threw a RangeError inside the render — taking the whole panel down.
+    seed('<h1 style="font-family: A\\ffffff B, serif">Hello</h1>')
+    expect(() => render(<Panel />)).not.toThrow()
+    expect(screen.getByTestId('prop-fontFamily')).toBeTruthy()
+  })
+})

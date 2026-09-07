@@ -33,10 +33,11 @@
  * the one with the panel open, so reserving it costs the never-selected state only.
  */
 
-import { useCallback, useMemo, useState, type JSX } from 'react'
+import { useCallback, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
 import { buildElementContextBundle } from '../../../../shared/design/element-context'
+import { findForbiddenApiTokens } from '../../../../shared/document/forbidden-apis'
 import {
   buildFieldOps,
   readPropertyValues,
@@ -51,12 +52,14 @@ import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckS
 import { useDesignStore } from './designStore'
 import { useElementActions } from './useElementActions'
 import { ColorControls, type ColorTarget } from './ColorControls'
+import { FontFamilyControl, type SystemFontLoader } from './FontFamilyControl'
 import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
 import { BLOCK_NOTICE } from './textBlockNotice'
 import type { ElementInspectApi } from './useElementInspect'
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   text: 'Text',
+  fontFamily: 'Font',
   fontSize: 'Size',
   fontWeight: 'Weight',
   color: 'Color',
@@ -91,6 +94,56 @@ export interface PropertyPanelProps {
    * recorded demo, or `null` to force the eyedropper button hidden.
    */
   readonly picker?: ColorPicker | null
+  /**
+   * The font-enumeration seam (M3.10), mirroring `picker`. Omitted in production, where the control
+   * asks the preload bridge; passed explicitly by tests and the recorded demo so neither depends on
+   * the machine's actual font collection.
+   */
+  readonly loadFonts?: SystemFontLoader
+}
+
+/**
+ * Which forbidden API tokens would this write introduce that the slide did not already contain?
+ *
+ * The last gate before the bytes land, and deliberately duplicated: `family.ts` refuses a font name
+ * whose declaration would trip the contract, but a check inside one field's composer protects one
+ * field, and only while that composer stays correct. This one reads the patched source, which every
+ * field's write passes through.
+ *
+ * Only *newly introduced* tokens block. A deck can already contain a slide the validator rejects
+ * (the agent writes slides too), and refusing to let the user edit it would be a worse failure than
+ * the one being prevented.
+ *
+ * It applies to prose as much as to CSS, which is the rule as written rather than an over-reach:
+ * SL-S04 packs whitespace out, so a heading reading `local storage` *is* `localStorage` to the
+ * validator, and letting it land would trade a reverted keystroke for a deck that fails on export
+ * naming an API the user never wrote.
+ *
+ * **The Content field no longer arrives here carrying one.** M3.12 routes that field's write
+ * through `textContentOp`, which breaks a token with a numeric character reference — the heading
+ * renders as typed and the bytes hold no token — so the patched source this gate reads is already
+ * clean and the refusal never fires for prose. That is M3.14's end state, shipped for the one field
+ * M3.12 touched; the remaining fields put their value in the style attribute verbatim, where
+ * defusing is not available and refusing is still the answer.
+ *
+ * It returns the tokens rather than a boolean so the panel can name what it refused. Reverting a
+ * keystroke and explaining nothing is the shape of the bug this whole feature exists to fix, not a
+ * smaller version of it.
+ */
+function newlyIntroducedApiTokens(before: string, after: string): readonly string[] {
+  const known = new Set(findForbiddenApiTokens(before))
+  return findForbiddenApiTokens(after).filter((token) => !known.has(token))
+}
+
+/**
+ * What the user sees when the gate above fires. Names the field so the message is unambiguous in a
+ * panel of eleven inputs, and the token so "why" is answerable without reading the contract; the
+ * whitespace note is the part nobody guesses, since `local storage` reads as `localStorage` only
+ * after SL-S04's packing.
+ */
+function refusalMessage(field: PropertyField, tokens: readonly string[]): string {
+  const quoted = tokens.map((token) => `“${token}”`).join(', ')
+  return `${FIELD_LABELS[field]} not applied: slides may not contain ${quoted} (spaces are ignored).`
 }
 
 /**
@@ -98,7 +151,12 @@ export interface PropertyPanelProps {
  * from the editable fields so the fields remount (via `key`) whenever the source or selection
  * changes, resetting every input to the freshly-patched source value after a commit.
  */
-export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): JSX.Element | null {
+export function PropertyPanel({
+  slide,
+  inspect,
+  picker,
+  loadFonts,
+}: PropertyPanelProps): JSX.Element | null {
   const selection = useDesignStore((state) => state.selection)
   const attachContext = useChatContextStore((state) => state.attach)
 
@@ -119,6 +177,12 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
   // The parent-owned map, rebuilt from the *current* slide bytes. Memoized on (id, source) so a
   // re-render that changed neither does not re-parse.
   const map = useMemo(() => buildSlideMap(slide.id, slide.html), [slide.id, slide.html])
+
+  // Owned here, and used one level down, because it has to outlive the `key` below: committing a
+  // font pick changes `map.sourceHash`, which remounts the entire field subtree — including the
+  // trigger the dropdown had just focused. A ref above the key is what carries "give the trigger
+  // focus back" across that remount. See the effect that consumes it in `FontFamilyControl`.
+  const fontFocus = useRef(false)
 
   // "Ask Claude about this element" (§6.1, wireframe §20): build the element context bundle and attach
   // it to the next chat turn as the composer's `[⊕ctx]` chip. The bundle's authoritative field — the
@@ -191,6 +255,8 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
             values={values}
             swatches={swatches}
             picker={resolvedPicker}
+            fontFocus={fontFocus}
+            {...(loadFonts !== undefined ? { loadFonts } : {})}
           />
           <div className="mt-2">
             <button
@@ -214,6 +280,8 @@ interface PropertyFieldsProps {
   readonly values: ReturnType<typeof readPropertyValues>
   readonly swatches: readonly ThemeSwatch[]
   readonly picker: ColorPicker | null
+  readonly loadFonts?: SystemFontLoader
+  readonly fontFocus: RefObject<boolean>
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -237,6 +305,8 @@ function PropertyFields({
   values,
   swatches,
   picker,
+  loadFonts,
+  fontFocus,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -246,6 +316,9 @@ function PropertyFields({
   // every source change, so this initial-from-props read is correct, not stale.
   const [draft, setDraft] = useState<Record<PropertyField, string>>(() => ({
     text: values.text ?? '',
+    // Never rendered as an input — the family is picked from `FontFamilyControl`, not typed — but
+    // the draft record is exhaustive over `PropertyField`, so the key has to exist.
+    fontFamily: values.fontFamily ?? '',
     fontSize: values.fontSize ?? '',
     fontWeight: values.fontWeight ?? '',
     color: values.color ?? '',
@@ -256,6 +329,8 @@ function PropertyFields({
     width: values.width ?? '',
     height: values.height ?? '',
   }))
+
+  const [refusal, setRefusal] = useState<string | null>(null)
 
   // The three input handlers are hoisted to stable `useCallback`s (not recreated per input per
   // render), which keeps the panel warning-clean under react-perf and means the field factory below
@@ -278,6 +353,11 @@ function PropertyFields({
       if (ops.length === 0) return
       const patched = applyOps(map.source, ops)
       if (patched === map.source) return
+      const refused = newlyIntroducedApiTokens(map.source, patched)
+      if (refused.length > 0) {
+        setRefusal(refusalMessage(fieldName, refused))
+        return
+      }
       setSlideHtml(slide.id, patched, slId, editLabel(fieldName, value))
     },
     [slide.id, slId, setSlideHtml],
@@ -286,6 +366,10 @@ function PropertyFields({
   const handleChange = useCallback((event: React.ChangeEvent<FieldElement>): void => {
     const name = event.target.name as PropertyField
     const { value } = event.target
+    // Typing is the user acting on the refusal, so the message goes rather than sitting there
+    // contradicting the field it describes. A successful commit needs no such reset: it changes the
+    // source, and `PropertyFields` is keyed by the source hash, so the whole subtree remounts.
+    setRefusal(null)
     setDraft((prev) => ({ ...prev, [name]: value }))
   }, [])
 
@@ -305,6 +389,16 @@ function PropertyFields({
       event.preventDefault()
       commit(event.currentTarget.name as PropertyField, event.currentTarget.value)
       event.currentTarget.blur()
+    },
+    [commit],
+  )
+
+  // One pick is one `commit`, so one `slide.setHtml`, so exactly one undo entry — the same
+  // structural rule the drag gesture follows: nothing reaches the store until the choice is final,
+  // and hovering or filtering the list touches no document state at all.
+  const pickFont = useCallback(
+    (name: string): void => {
+      commit('fontFamily', name)
     },
     [commit],
   )
@@ -379,6 +473,14 @@ function PropertyFields({
         {field('fontWeight', false)}
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <FontFamilyControl
+          current={values.fontFamily}
+          onPick={pickFont}
+          focusOnRemount={fontFocus}
+          {...(loadFonts !== undefined ? { loadFonts } : {})}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         {field('color', false)}
         {field('fill', false)}
         {field('stroke', false)}
@@ -387,6 +489,21 @@ function PropertyFields({
         {field('width', false)}
         {field('height', false)}
       </div>
+      {refusal !== null ? (
+        <p
+          // `role="alert"` rather than the export warning's `role="status"`: that one describes a
+          // consequence of a choice that was applied, this one reports an edit that was thrown
+          // away, and the repo announces errors assertively (`ChatPanel`, `AuthTab`, `BudgetTab`).
+          // It sits below the inputs so that appearing does not shove the field the user just left
+          // out from under the pointer.
+          role="alert"
+          data-testid="prop-refusal"
+          className="text-[11px] leading-tight text-red-600 dark:text-red-400"
+          title="This edit would make the slide fail its own export check, so it was not applied. The check ignores spaces, so “local storage” reads as “localStorage”."
+        >
+          {refusal}
+        </p>
+      ) : null}
       <ColorControls targets={colorTargets} swatches={swatches} picker={picker} onApply={commit} />
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-chrome-muted dark:text-ink-muted">Transform</span>

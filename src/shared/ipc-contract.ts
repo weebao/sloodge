@@ -120,9 +120,24 @@ export type AgentBudgetResponse = { capUsd: BudgetCap }
 export type PresentFullscreenRequest = { fullscreen: boolean }
 export type PresentFullscreenResponse = { fullscreen: boolean }
 
+/**
+ * The machine's installed font families (M3.10), enumerated in main so no `local-fonts` permission
+ * prompt is involved. `source` reports which enumerator ran, so "this machine has no extra fonts"
+ * stays distinguishable from "enumeration failed" — the renderer shows the same system-only list
+ * either way, but the two are not the same bug.
+ *
+ * Every name in `families` has passed `isValidFontFamilyName`; see `src/shared/fonts/family.ts` for
+ * why that matters, these strings originate in font files rather than in this codebase.
+ */
+export type SystemFontsResponse = {
+  families: readonly string[]
+  source: 'powershell' | 'fc-list' | 'none'
+}
+
 /** Request/response channels, invoked with `ipcRenderer.invoke` only. */
 export type IpcRequests = {
   'app:ping': { req: Record<string, never>; res: { pong: true } }
+  'app:listFonts': { req: Record<string, never>; res: SystemFontsResponse }
   'slide:publish': { req: SlidePublishRequest; res: SlidePublishResponse }
   'slide:revoke': { req: SlideRevokeRequest; res: SlideRevokeResponse }
   'agent:setKey': { req: ApiKeySetRequest; res: AgentSetKeyResponse }
@@ -188,6 +203,9 @@ export const MENU_EVENT_CHANNEL = 'app:menu' satisfies IpcEventChannel
  */
 export const SLIDE_PUBLISH_CHANNEL = 'slide:publish' satisfies IpcRequestChannel
 export const SLIDE_REVOKE_CHANNEL = 'slide:revoke' satisfies IpcRequestChannel
+
+/** Installed-font enumeration (M3.10); see `SystemFontsResponse`. */
+export const APP_LIST_FONTS_CHANNEL = 'app:listFonts' satisfies IpcRequestChannel
 
 /**
  * The agent channels, constants for the same reason the slide ones are: main registers the handlers,
@@ -289,6 +307,7 @@ export const DECK_AGENT_EDIT_RESULT_CHANNEL = 'deck:agentEditResult'
  */
 export const IPC_REQUEST_CHANNELS = [
   'app:ping',
+  APP_LIST_FONTS_CHANNEL,
   SLIDE_PUBLISH_CHANNEL,
   SLIDE_REVOKE_CHANNEL,
   AGENT_SET_KEY_CHANNEL,
