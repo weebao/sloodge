@@ -574,28 +574,104 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED_IN_FLOW)
   })
 
-  it('a group whose NON-anchor is in-flow and opaque cannot be moved either (round-2 major 2)', () => {
-    // `onCommitGroupMove` patches every member; deciding the lock from the anchor alone let the
-    // locked member move 40px down its tilt for a 40px drag right. Mutation guard: consulting only
-    // `selection` reds here (undo depth 1).
+  const GROUP_HTML =
+    '<div style="position:absolute;left:0;top:0;width:10px;height:10px">anchor</div>' +
+    '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>'
+
+  it('a group with an in-flow opaque member drags: the member keeps its bytes, the rest move (round-3)', () => {
+    // The refusal is `buildDragPatch`'s; the overlay only says how many stay. Round 2's version
+    // withheld the whole group; align/distribute did not, so the two disagreed (round-3 major 1).
+    seed(GROUP_HTML)
+    const map = buildSlideMap(slideId, GROUP_HTML)
+    const members = [
+      boxHit(map.order[1]!, { x: 0, y: 20, width: 100, height: 20 }),
+      boxHit(map.order[0]!, { x: 0, y: 0, width: 10, height: 10 }),
+    ]
+    useDesignStore.setState({ selections: members, selection: members[1]! })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const group = screen.getByTestId('design-group')
+    expect(group.style.cursor).toBe('move')
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain("1 of 2 won't move")
+    drag(group, { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
+    expect(undoDepth()).toBe(1)
+    const html = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(html).toContain('left: 40px')
+    expect(html).toContain('<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>')
+    // Only the mover's stored box shifted.
+    const after = useDesignStore.getState().selections
+    expect(after[0]?.rect.x).toBe(0)
+    expect(after[1]?.rect.x).toBe(40)
+  })
+
+  it('counts every member: a locked element in the MIDDLE of three is seen (round-3 minor 1)', () => {
+    // Mutation guard: a lock that inspects only the first member, or the first and last, misses it.
     const html =
-      '<div style="position:absolute;left:0;top:0;width:10px;height:10px">anchor</div>' +
-      '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>'
+      '<div style="position:absolute;left:0;top:0;width:10px;height:10px">a</div>' +
+      '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>' +
+      '<div style="position:absolute;left:100px;top:0;width:10px;height:10px">c</div>'
     seed(html)
     const map = buildSlideMap(slideId, html)
-    const [lockedId, anchorId] = [map.order[1]!, map.order[0]!]
     const members = [
-      boxHit(lockedId, { x: 0, y: 20, width: 100, height: 20 }),
-      boxHit(anchorId, { x: 0, y: 0, width: 10, height: 10 }),
+      boxHit(map.order[0]!, { x: 0, y: 0, width: 10, height: 10 }),
+      boxHit(map.order[1]!, { x: 0, y: 20, width: 100, height: 20 }),
+      boxHit(map.order[2]!, { x: 100, y: 0, width: 10, height: 10 }),
+    ]
+    useDesignStore.setState({ selections: members, selection: members[2]! })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain("1 of 3 won't move")
+    drag(screen.getByTestId('design-group'), { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
+    expect(undoDepth()).toBe(1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain(
+      '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>',
+    )
+    expect(patched).toContain('left: 40px')
+    expect(patched).toContain('left: 140px')
+  })
+
+  it('a group whose EVERY member is locked withholds the drag entirely', () => {
+    const html =
+      '<div style="transform: rotate(90deg) translate(10px, 0)">l1</div>' +
+      '<div style="transform: matrix(1, 0, 0, 1, 0, 0)">l2</div>'
+    seed(html)
+    const map = buildSlideMap(slideId, html)
+    const members = [
+      boxHit(map.order[0]!, { x: 0, y: 0, width: 100, height: 20 }),
+      boxHit(map.order[1]!, { x: 0, y: 40, width: 100, height: 20 }),
     ]
     useDesignStore.setState({ selections: members, selection: members[1]! })
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
     const group = screen.getByTestId('design-group')
     expect(group.style.cursor).toBe('default')
-    expect(screen.getByTestId('design-transform-lock').textContent).toContain('Move off')
-    drag(group, { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain("2 of 2 won't move")
+    drag(group, { x: 5, y: 5 }, { x: 45, y: 5 })
     expect(undoDepth()).toBe(0)
-    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(html)
+  })
+
+  it('a drag whose element turns opaque mid-gesture commits nothing (round-3 major 2)', () => {
+    // The lock is enforced at commit time by `buildDragPatch`, against the bytes that exist then —
+    // not at `pointerdown` by the overlay. An agent edit lands between two pointer moves.
+    const editable = '<div style="width:200px;height:100px;transform: translate(10px, 0)">A</div>'
+    const opaque =
+      '<div style="width:200px;height:100px;transform: rotate(90deg) translate(10px, 0)">A</div>'
+    seed(editable)
+    const slId = buildSlideMap(slideId, editable).order[0]!
+    useDesignStore.setState({
+      selection: boxHit(slId, { x: 10, y: 0, width: 200, height: 100 }),
+      selections: [boxHit(slId, { x: 10, y: 0, width: 200, height: 100 })],
+    })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const body = screen.getByTestId('design-selection')
+    fireEvent.pointerDown(body, { clientX: 50, clientY: 50 })
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 50 })
+    act(() => {
+      expect(useDeckStore.getState().setSlideHtml(slideId, opaque, slId, 'agent edit')).toBe(true)
+    })
+    fireEvent.pointerMove(window, { clientX: 90, clientY: 50 })
+    fireEvent.pointerUp(window, { clientX: 90, clientY: 50 })
+    // Mutation guard: without the pure-layer refusal this is depth 2 with `translate(50px, 0)`.
+    expect(undoDepth()).toBe(1)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(opaque)
   })
 
   it('a MOVE of a rotated element refreshes rect as the rotated bounds of the moved box', () => {

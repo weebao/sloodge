@@ -324,6 +324,20 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
+  it('a left-only element: X reads left, Y reads null, a Y edit writes top', () => {
+    // Pins the `left` half at the READER (round-3 minor 2): every other left/top fixture declares both.
+    const { source, element } = at(
+      '<div style="left: 100px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('100px')
+    expect(values.y).toBeNull()
+    expect(edit('<div style="left: 100px">x</div>', 0, 'y', '20')).toBe(
+      '<div style="left: 100px; top: 20px">x</div>',
+    )
+  })
+
   it('replaces an existing translate where it stands', () => {
     expect(
       edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),

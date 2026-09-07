@@ -29,14 +29,28 @@ export interface ElementMove {
  * the sequence, and each edit re-derives from the parent-owned map by its tracked `slId` — never a
  * bridge payload (§2.2). `source` must be the current slide bytes the caller read at commit time.
  */
+/** The patched source, and which members' bytes actually changed. */
+export interface MultiElementPatch {
+  readonly source: string
+  /**
+   * The `slId`s whose edit produced bytes. A member `buildDragPatch` refused — its transform is
+   * opaque and the move would go through it — or that no longer resolves is absent, so a caller
+   * shifts only the stored geometry of what really moved rather than every member it asked about.
+   */
+  readonly moved: ReadonlySet<string>
+}
+
 export function buildMultiElementPatch(
   slideId: string,
   source: string,
   edits: readonly ElementMove[],
-): string {
+): MultiElementPatch {
   let current = source
+  const moved = new Set<string>()
   for (const edit of edits) {
-    current = buildDragPatch(slideId, current, edit.slId, edit.startRect, edit.nextRect)
+    const next = buildDragPatch(slideId, current, edit.slId, edit.startRect, edit.nextRect)
+    if (next !== current) moved.add(edit.slId)
+    current = next
   }
-  return current
+  return { source: current, moved }
 }

@@ -112,6 +112,16 @@ export function positionsByOffsets(source: string, element: ElementSpan): boolea
   )
 }
 
+/**
+ * Whether an X/Y edit on this element is written **through its `transform`** — an HTML element not
+ * positioned with `left`/`top` (an SVG element writes `x`/`y` attributes). This is the one channel a
+ * geometry edit can corrupt on a transform the handles cannot decompose, so it is the predicate
+ * `buildDragPatch` refuses on (see its header).
+ */
+export function movesThroughTransform(source: string, element: ElementSpan): boolean {
+  return !isSvg(element) && !positionsByOffsets(source, element)
+}
+
 /** Read every field's current source value. Pure over `(map.source, element)`. */
 export function readPropertyValues(source: string, element: ElementSpan): PropertyValues {
   const svg = isSvg(element)
