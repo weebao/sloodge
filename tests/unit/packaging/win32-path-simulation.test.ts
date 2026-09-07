@@ -58,6 +58,12 @@ describe('win32 path simulation — the exclusion list', () => {
     // under it turns every unrelated merge into a false red and invites someone to bump it by one,
     // which is how a vacuity guard dies. A quarter keeps the simulation running on at least three
     // files in four, and no plausible batch of real-I/O tests crosses it by accident.
+    //
+    // Stated exactly: **the ceiling loosened (30 -> 51 today), the guarantee did not.** This is a
+    // canary, not the guard. The two assertions below pin the set itself in both directions —
+    // nothing may be listed that does not really touch the filesystem, and nothing that visibly
+    // does may be omitted — so what may be excluded is determined there, and no number here can
+    // widen it.
     expect(REAL_FILESYSTEM_TESTS.length).toBeGreaterThan(0)
     expect(REAL_FILESYSTEM_TESTS.length).toBeLessThan(allTestFiles().length / 4)
   })
