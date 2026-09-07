@@ -718,6 +718,19 @@ describe('readPickedFontFamily', () => {
     expect(readPickedFontFamily('inherit')).toBe('inherit')
   })
 
+  it('decodes the entities a hand-written declaration carries, and `&amp;` last', () => {
+    // Reachable, not decorative: `splitTopLevel` tracks CSS string quoting, so a `;`-free quoted
+    // family reaches this reader intact and an author (or a model) writes the quotes as entities.
+    // Undecoded, the panel labels the trigger wrong, asks `isSystemFont` the wrong string — so the
+    // "Won't travel" caveat can be wrong — and matches no row, so the listbox highlights nothing.
+    expect(readPickedFontFamily('&quot;Segoe UI&quot;, sans-serif')).toBe('Segoe UI')
+    expect(readPickedFontFamily('&#39;Segoe UI&#39;, sans-serif')).toBe('Segoe UI')
+    expect(readPickedFontFamily('"Ben &amp; Jerry", cursive')).toBe('Ben & Jerry')
+    // `&amp;` decoded last, per the rule on the function: decoding it first turns a literal
+    // `&amp;quot;` into a quote, and `A&amp;quot;B` would read back as `A"B`.
+    expect(readPickedFontFamily('"A&amp;quot;B", cursive')).toBe('A&quot;B')
+  })
+
   it('is null for an absent declaration', () => {
     expect(readPickedFontFamily(null)).toBeNull()
     expect(readPickedFontFamily('')).toBeNull()
