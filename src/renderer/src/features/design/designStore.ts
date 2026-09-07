@@ -126,6 +126,11 @@ export type DesignSnapshot = {
    * *posted*, because that is the same order the frame will run them in: posted before the stale
    * `cancel` means processed before it. Never reset — `OFF` leaves it alone, since the comparison
    * that matters happens across the toggle.
+   *
+   * Asked *alongside* `editing`, never instead of it (round-3 review). A session the store opened
+   * directly — `beginEditing`, `useTextEditing`'s effect acquire site — pins this count without
+   * moving it, so it carries the same number a stale session on the same element already holds and
+   * the count cannot tell the two apart. The two checks cover disjoint orderings; both are asked.
    */
   readonly caretRequests: Readonly<Record<string, number>>
 }

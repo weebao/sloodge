@@ -985,14 +985,22 @@ Content field is simply disabled, with a hint explaining why.
   apart and does nothing about a document torn down before its stalled script can answer. A frame
   that still does not confirm the text within the timeout is now announced ("couldn’t confirm the
   text you typed … wasn’t saved") instead of reverted in silence — unless a newer caret has since
-  been **asked for** on that same element, in which case the stale session neither touches nor
-  announces it. Asked for, not opened (round-2 review): the frame runs the parent's messages in
-  posting order, so under the very stall this closes the newer `begin` is queued behind the stale
-  `commit` and `designStore.editing` cannot yet show it, while the frame will open that caret and
-  then run the stale `cancel` on it; `designStore.caretRequests` counts each element's requests as
-  they are posted, and a session compares the count it opened under. What the newer caret then
-  opens on is the text the stale session left in the element, which is what it commits — nothing
-  is lost, so nothing is said. Accepted edges: the hold is stage-wide, so a slide selected inside a
+  been **asked for** on that same element, or the store already shows one **open** on it, in which
+  case the stale session neither touches nor announces it. Asked for, not only opened (round-2
+  review): the frame runs the parent's messages in posting order, so under the very stall this
+  closes the newer `begin` is queued behind the stale `commit` and `designStore.editing` cannot yet
+  show it, while the frame will open that caret and then run the stale `cancel` on it;
+  `designStore.caretRequests` counts each element's requests as they are posted, and a session
+  compares the count it opened under. Both are asked, never one instead of the other (round-3
+  review): a session the store opens directly (`beginEditing`) pins the count without moving it, so
+  the count alone reads it as the same generation the stale session holds and would let the stale
+  `cancel` into a live caret — which is what `editing` sees. What the newer caret then opens on is
+  the text the stale session left in the element, which is what it commits — nothing is lost, so
+  nothing is said. **The residual is announced with two exceptions**, both of which the pre-M3.13
+  tree is silent about as well: a notice raised on a slide the user has since left is dropped before
+  it is shown (M3.14), and a counted request that resolves *without* a caret — declined, superseded,
+  the selection moved on, or answered `null` — still marks the stale session superseded, so its loss
+  goes unannounced. Accepted edges: the hold is stage-wide, so a slide selected inside a
   pending window loads instrumented with Design Mode off and is re-navigated once the hold clears
   (cosmetic, nothing stranded); a slide switch inside the window drops the announcement before it
   is shown, since a notice belongs to its slide (M3.14); and a stale `revert` that reaches the frame

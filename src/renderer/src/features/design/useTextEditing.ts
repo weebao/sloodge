@@ -311,6 +311,12 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     // while `editing` is still set. Pinning there would bind an open session to the *incoming*
     // frame, and the slide switch that follows would cancel the caret on a frame that never had one
     // — the round-5 blocker, from the other end.
+    //
+    // The generation is the element's request count *as it stands*, not a new one: no `begin` was
+    // posted here, so nothing has been asked for that a session already waiting on this element
+    // should stand aside for. It follows that a session opened here and a stale `beginEdit` session
+    // on the same element carry the same number — which is why `commitText` asks the store's
+    // `editing` as well as the count (round-3 review).
     if (previous === null && editing !== null && sessionRef.current === null) {
       sessionRef.current = {
         frame: pinEdit(editing),
@@ -436,20 +442,37 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    * loss is announced (M3.13). Unless a newer caret has since been asked for on the same element:
    * this one's `cancel` would end that caret and its `revert` overwrite what is being typed, and
    * "wasn't saved" would be said about text that is right there under the user's cursor — so a
-   * superseded session touches nothing and says nothing (round-1 review). Superseded is judged on
-   * the request, not on `editing`: the frame runs the parent's messages in posting order, and on a
-   * stalled frame the newer `begin` is still queued behind this session's `commit` when the timeout
-   * fires — the store shows no caret, yet the frame will open one and then run this `cancel` on it
-   * (round-2 review). A `begin` posted before this session's `cancel` is a `begin` the frame runs
-   * before it, and `designStore.caretRequests` records exactly that order. Another element's caret
-   * is unaffected either way: the frame ignores a `cancel` for an element that is not its open
-   * session, and `revert` only ever reaches the element this session ended on.
+   * superseded session touches nothing and says nothing (round-1 review).
+   *
+   * Superseded is asked **twice**, because the two answers see disjoint orderings and each is blind
+   * where the other looks (round-3 review). The *request* count sees a newer `begin` this hook
+   * posted: the frame runs the parent's messages in posting order, so on a stalled frame — this
+   * milestone's own premise — the newer `begin` is still queued behind this session's `commit` when
+   * the timeout fires, the store shows no caret, yet the frame will open one and then run this
+   * `cancel` on it (round-2 review); `designStore.caretRequests` records exactly that order, and a
+   * `begin` posted before this session's `cancel` is a `begin` the frame runs before it. The
+   * *store*'s `editing` sees a caret the frame has already answered whose request this session
+   * never counted — one opened straight through `beginEditing`, which the effect acquire site pins
+   * from the current count **without moving it**, so both sessions carry the same number and the
+   * count alone compares them equal (round-1 major 2, which that check closed and this one keeps
+   * closed). Either answer bails, and bailing is the safe direction: an over-cautious bail costs an
+   * unannounced loss, never a caret ended under the user's cursor.
+   *
+   * A request that is counted and then resolves *without* opening a caret — the frame declines it,
+   * the selection moved on, a newer one superseded it, the bridge answers `null` — supersedes this
+   * session all the same, and its loss then goes unannounced. That is the second exception to "the
+   * residual is no longer silent" (§9.4); the first is a notice raised on a slide the user has left
+   * (M3.14). Neither is a regression: both are silent on the pre-M3.13 tree too.
+   *
+   * Another element's caret is unaffected either way: the frame ignores a `cancel` for an element
+   * that is not its open session, and `revert` only ever reaches the element this session ended on.
    */
   const commitText = useCallback(
     (slId: string, text: string | null, session: Session | null): void => {
       if (text === null) {
         const requests = useDesignStore.getState().caretRequests[slId] ?? 0
         if (session !== null && requests !== session.generation) return
+        if (useDesignStore.getState().editing === slId) return
         endFrameCaret(session)
         setNotice(UNANSWERED_NOTICE)
         return

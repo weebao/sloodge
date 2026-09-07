@@ -24,6 +24,15 @@
  * while it is `stalled`, draining in posting order when it comes back. happy-dom cannot run an
  * iframe, so the frame's document is a `<div>` in the test page; the script only ever addresses it
  * by `data-sl-id`.
+ *
+ * What this file still cannot show, on top of those two (round-3 review). Delivery while the frame
+ * is live is **synchronous**, which collapses the window in which a second `begin` is posted before
+ * the first is answered — a session whose `generation` is already behind the count at the moment it
+ * opens has to be forced, and is benign when it is (the superseding reply cancels the caret, so
+ * nothing was typed). And the `contentWindow` getter hands *every* iframe the same window object,
+ * so the pinned frame and `frameRef.current` are always identical: a `cancel` addressed to a
+ * different frame element than the `begin` cannot appear here, nor can a queued message dying with
+ * its document.
  */
 
 /* oxlint-disable no-underscore-dangle -- the test resets the frame's `__slDesignBridge` flag. */
@@ -132,6 +141,25 @@ function doubleClick(slId: string, tag: string): void {
   })
   act(() => {
     fireEvent.dblClick(screen.getByTestId('design-selection'))
+  })
+}
+
+/**
+ * Open a session the way the *store* can — `beginEditing` called directly, which is the hook's
+ * effect acquire site. No `begin` is posted and no caret request is counted, which is the whole
+ * point: this is the ordering `designStore.caretRequests` is structurally unable to see.
+ */
+function openSessionInStore(): void {
+  act(() => {
+    useDesignStore.getState().setSelection({
+      slId: h1Id,
+      tag: 'h1',
+      id: null,
+      classes: [],
+      rect: { x: 0, y: 0, width: 1, height: 1 },
+      ancestors: [],
+    })
+    useDesignStore.getState().beginEditing(h1Id)
   })
 }
 
@@ -319,6 +347,73 @@ describe('a text session opened by double-click, against the real frame script (
     expect(currentHtml()).toContain('Hello')
     expect(undoDepth()).toBe(1)
     expect(useDesignStore.getState().notice).toBeNull()
+    expect(useDesignStore.getState().finishing).toBe(0)
+  })
+
+  /**
+   * Round-3 review, major 1. The two ways a session learns it has been superseded see disjoint
+   * orderings, so both are asked. The request count cannot see this one: session B was opened
+   * straight through the store (`beginEditing` — `useTextEditing`'s effect acquire site), which
+   * pins the element's request count *without moving it*, so A and B carry the same number and the
+   * count compares them equal. What A can still see is that the store shows a caret on its own
+   * element, and that is enough to keep out of it.
+   */
+  it('a stale finish stays out of a caret the store opened without a new request', () => {
+    doubleClick(h1Id, 'h1')
+    frameElement(h1Id).textContent = 'Hello'
+    frame.stalled = true
+
+    setEnabled(false)
+    advance(200)
+    setEnabled(true)
+    openSessionInStore()
+
+    // One request has ever been posted for this element, and both sessions answer to it.
+    expect(useDesignStore.getState().caretRequests[h1Id]).toBe(1)
+    expect(useDesignStore.getState().editing).toBe(h1Id)
+    expect(useDesignStore.getState().finishing).toBe(2)
+
+    advance(FINISH_TIMEOUT_MS - 200)
+
+    // Session A's own timeout, into B's live caret: it must neither reach into the frame nor say
+    // anything. `cancel` would end B, `revert` would overwrite what is being typed into it, and
+    // "wasn't saved" would be said about text under the user's cursor.
+    expect(editActions()).toEqual(['begin', 'commit'])
+    expect(useDesignStore.getState().notice).toBeNull()
+    expect(useDesignStore.getState().editing).toBe(h1Id)
+    expect(useDesignStore.getState().finishing).toBe(1)
+    expect(undoDepth()).toBe(0)
+  })
+
+  /**
+   * The other side of the same pin: a session the store opened is superseded by a request *newer*
+   * than the one it recorded, never by one that was already counted when it opened. Its generation
+   * is therefore the count as it stands — an element that has taken a caret before leaves that at
+   * 1, and a session pinned at 0 would read itself as permanently superseded and go silent on a
+   * loss that is real.
+   */
+  it('a session the store opened is superseded by a later request, not by an earlier one', () => {
+    // One real caret first, so this element's request count is not zero when the next session opens.
+    doubleClick(h1Id, 'h1')
+    setEnabled(false)
+    expect(useDesignStore.getState().caretRequests[h1Id]).toBe(1)
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(useDesignStore.getState().finishing).toBe(0)
+    expect(useDesignStore.getState().notice).toBeNull()
+
+    setEnabled(true)
+    openSessionInStore()
+    expect(useDesignStore.getState().finishing).toBe(1)
+
+    frameElement(h1Id).textContent = 'Typed into a session the store opened'
+    frame.stalled = true
+    setEnabled(false)
+    advance(FINISH_TIMEOUT_MS)
+
+    // Nothing newer was asked for on this element and no caret is open on it, so this session is
+    // not superseded: the loss is put back and announced.
+    expect(editActions().slice(-2)).toEqual(['cancel', 'revert'])
+    expect(screen.getByTestId('design-notice').textContent).toMatch(/couldn’t confirm/)
     expect(useDesignStore.getState().finishing).toBe(0)
   })
 
