@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import { writeDeckPptx } from '../../../../src/main/export/pptx-writer'
 import { slideMeasurementScript } from '../../../../src/shared/export/pptx/node'
@@ -124,7 +125,7 @@ async function assessAll(fidelity: PptxFidelity): Promise<SlideAssessment[]> {
 }
 
 /** The `.pptx` one corpus slide produces, for the cases that assert on emitted XML directly. */
-async function readbackOf(file: string, fidelity: PptxFidelity): Promise<ReadbackSlide> {
+async function deckBytes(file: string, fidelity: PptxFidelity): Promise<Uint8Array> {
   const recording = loadRecorded().find((r) => r.file === file)!
   const plan = planSlide({
     measure: recording.measure,
@@ -132,8 +133,28 @@ async function readbackOf(file: string, fidelity: PptxFidelity): Promise<Readbac
     rasterDataUrl: PNG,
     backgroundDataUrl: null,
   })
-  const bytes = await writeDeckPptx({ title: file, author: 'test', slides: [plan] })
-  return readbackPptx(bytes)[0]!
+  return writeDeckPptx({ title: file, author: 'test', slides: [plan] })
+}
+
+async function readbackOf(file: string, fidelity: PptxFidelity): Promise<ReadbackSlide> {
+  return readbackPptx(await deckBytes(file, fidelity))[0]!
+}
+
+/**
+ * The same package with its slide part rewritten — the negative control for the reader. A field the
+ * oracle only ever compares against its passing value cannot be shown to be read at all by a deck
+ * that carries that value; it can by one that carries the opposite (M4.8b r3).
+ */
+async function readbackOfRewritten(
+  file: string,
+  fidelity: PptxFidelity,
+  rewrite: (xml: string) => string,
+): Promise<ReadbackSlide> {
+  const parts = unzipSync(await deckBytes(file, fidelity))
+  const slide = 'ppt/slides/slide1.xml'
+  return readbackPptx(
+    zipSync({ ...parts, [slide]: strToU8(rewrite(strFromU8(parts[slide]!))) }),
+  )[0]!
 }
 
 /**
@@ -436,8 +457,40 @@ describe('§5.2 targets over the corpus', () => {
         [1.6],
         [null],
       ])
+      // Every emitted text box says top/wrap/no-autofit, positively, not just "nothing wrong".
+      expect(
+        new Set(
+          x19.shapes
+            .filter((sh) => sh.text !== '')
+            .map((sh) => `${String(sh.anchor)}|${String(sh.wrap)}|${String(sh.autofit)}`),
+        ),
+      ).toEqual(new Set(['t|square|false']))
+      // …and the ARITY of `lineSpacings`, which only a box with two `<a:p>` can show: reverting the
+      // reader to the first `<a:pPr>` alone passes every single-paragraph expectation above.
+      const twoParagraphs = (await readbackOf('x20-inline-flow.html', 'editable')).shapes.filter(
+        (sh) => sh.lineSpacings.length > 1,
+      )
+      expect(twoParagraphs).toHaveLength(1)
+      expect(twoParagraphs[0]!.lineSpacings).toEqual([1.5, 1.5])
       // Mutations: `lineSpacingMultiple` → undefined, or +1, or `valign: 'bottom'` each red the
       // corpus-wide assertion above through `constructsLost` and the silent-lie verdict.
+    })
+
+    it('the readback READS anchor, wrap and autofit out of the bodyPr rather than assuming them (r3)', async () => {
+      // The assertion above cannot see a reader that returns the passing constant — `wrap: 'square'`,
+      // `autofit: false`, `anchor: 't'` hard-coded each leave the whole suite green while silently
+      // re-opening the writer mutation they guard. The control is the same package with its bodyPr
+      // saying the opposite: only a reader that actually parses can report it.
+      const flipped = await readbackOfRewritten('x19-inline-runs.html', 'editable', (xml) =>
+        xml
+          .replaceAll('wrap="square"', 'wrap="none"')
+          .replaceAll('anchor="t">', 'anchor="b"><a:normAutofit/>'),
+      )
+      const boxes = flipped.shapes.filter((sh) => sh.text !== '')
+      expect(boxes.length).toBeGreaterThanOrEqual(8)
+      expect(
+        new Set(boxes.map((sh) => `${String(sh.anchor)}|${String(sh.wrap)}|${String(sh.autofit)}`)),
+      ).toEqual(new Set(['b|none|true']))
     })
 
     it('the line-spacing check CAN fire on this corpus: x19 with its spacing nulled or its anchor moved (r2)', () => {

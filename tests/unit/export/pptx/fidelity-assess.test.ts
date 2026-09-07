@@ -367,4 +367,62 @@ describe('the line-spacing pairing picks the most specific block at the rect (M4
     expect(later.lineSpacingWrong).toEqual(['"Outer text on the card": line spacing null ≠ 1.50'])
     // Mutation: pair to the first matching block → `correct.lineSpacingWrong` gains the 2.5 ≠ 1.50 entry.
   })
+
+  it('refuses an ambiguous rect rather than guessing: same-rect siblings with identical text (r3)', () => {
+    // The stacked-layer text-stroke trick — two absolutely positioned siblings at one rect with the
+    // same words and different `line-height`. Neither block is more specific than the other, and
+    // whichever way the tie broke, one of the two correct boxes was reported as a lie. Refusing
+    // leaves both unjudged (and uncounted), which the `lineSpacingChecks` floor keeps honest.
+    const rect = { x: 100, y: 200, w: 400, h: 100 }
+    const block = (lineHeight: string): TruthBlock => ({
+      tag: 'div',
+      ...rect,
+      lines: ['Same words here'],
+      lineHeight,
+      fontSizePx: 20,
+    })
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const box = (spacing: number): ReadbackShape =>
+      shape({
+        ...rect,
+        fill: null,
+        runs: [{ ...run, text: 'Same words here' }],
+        text: 'Same words here',
+        lines: ['Same words here'],
+        lineSpacings: [spacing],
+      })
+    const a = assess([], [box(1.5), box(2.5)], [], [block('30px'), block('50px')])
+    expect(a.lineSpacingChecks).toBe(0)
+    expect(a.lineSpacingWrong).toEqual([])
+    // Mutation: take `candidates[0]` without the uniqueness test → one box is judged against the
+    // other's block, `lineSpacingWrong` gains `"Same words here": line spacing 1.5 ≠ 2.50`.
+  })
+
+  it('pairs on EVERY line of the box, so a descendant repeating its first line is not "more specific" (r3)', () => {
+    // An `inset: 0` overlay whose one line repeats the parent's opening line. `fewest lines` alone
+    // handed the parent's three-line box to the one-line overlay — the r2 failure reversed.
+    const rect = { x: 40, y: 60, w: 800, h: 240 }
+    const parent: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Headline', 'second', 'third'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const overlay: TruthBlock = { ...parent, lines: ['Headline'], lineHeight: '50px' }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const parentBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Headline second third' }],
+      text: 'Headline second third',
+      lines: ['Headline', 'second', 'third'],
+      lineSpacings: [1.5],
+    })
+    const a = assess([], [parentBox], [], [parent, overlay])
+    expect(a.lineSpacingChecks).toBe(1)
+    expect(a.lineSpacingWrong).toEqual([])
+    // Mutation: match on the first line alone → the overlay wins on line count and the parent's
+    // correct 1.5 is reported as ≠ 2.50, a silent lie.
+  })
 })
