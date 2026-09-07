@@ -140,6 +140,21 @@ describe('layOutInline white-space processing (M4.8b)', () => {
     // Mutation: emit the runs verbatim → 'a ', ' ', ' b' → the reader sees three spaces.
   })
 
+  it('a `pre` run is not a collapsible neighbour: it neither absorbs the next space nor loses its own', () => {
+    // An inline `white-space: pre` code chip beside ordinary text. Its spaces are not collapsible,
+    // so none of CSS Text §4.1.3 step 4 applies across the boundary in either direction: the space
+    // after it is not "after another collapsible space", the space before it is not dropped, and
+    // its own trailing space survives the end of the line. Each conjunct of the rule is one of the
+    // three cases below, and each is a separate silent space in the exported text (review r7).
+    const preserve = { whiteSpace: 'preserve' } as const
+    expect(texts([textItem('a ', {}, preserve), textItem(' b')])).toEqual([['a ', ' b']])
+    expect(texts([textItem('a '), textItem(' b', {}, preserve)])).toEqual([['a ', ' b']])
+    expect(texts([textItem('a'), textItem(' ', {}, preserve)])).toEqual([['a', ' ']])
+    // Mutations: drop `prev.collapsible &&` → case 1 becomes ['a ', 'b']; strip a leading space
+    // regardless of `seg.collapsible` → case 2 becomes ['a ', 'b']; trim the last run regardless of
+    // `last.collapsible` → case 3 becomes ['a'].
+  })
+
   it('never collapses a non-breaking space', () => {
     expect(texts([textItem('Non\u00a0breaking  space')])).toEqual([['Non\u00a0breaking space']])
   })
@@ -176,6 +191,35 @@ describe('layOutInline white-space processing (M4.8b)', () => {
       fallback,
     )
     expect(preLine[0]!.map((r) => r.text)).toEqual(['first line', 'second line'])
+  })
+
+  it('marks the line break on the first run of a continuation line only, however many runs it has', () => {
+    // `a<br>b <strong>c</strong>` — one `<a:br/>` before 'b ', none before 'c'. Marking every run
+    // of the line puts a second break inside the sentence, which no test could see through a
+    // single-run line (review r7).
+    const laid = layOutInline(
+      [textItem('a'), { kind: 'br' }, textItem('b '), textItem('c', { fontWeight: '700' })],
+      fallback,
+    )
+    expect(laid[0]!.map((r) => [r.text, r.lineBreakBefore])).toEqual([
+      ['a', false],
+      ['b ', true],
+      ['c', false],
+    ])
+  })
+
+  it('keeps the blank line a trailing <br> makes when the paragraph before it ended at a nested block', () => {
+    // `<p>one<div>…</div><br></p>`: the second paragraph's only content is the break, so every one
+    // of its lines trims empty — but Chromium still renders a blank line there, and the run that
+    // carries it is what gives the `<a:p>` its height. The `hasOwnText` guard is why the whole
+    // block cannot reach here empty; a later paragraph of it can (review r7).
+    const laid = layOutInline([textItem('one'), { kind: 'block' }, { kind: 'br' }], fallback)
+    expect(laid.map((p) => p.map((r) => [r.text, r.lineBreakBefore]))).toEqual([
+      [['one', false]],
+      [['', false]],
+    ])
+    // Mutation: return early on all-empty lines without testing `breaks === 0` → the blank line and
+    // its paragraph vanish.
   })
 
   it('splits paragraphs at a nested block and keeps the block itself out of this box', () => {
