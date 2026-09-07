@@ -116,9 +116,8 @@ const SPECIAL_NAME = '(?:transparent|current|inherit)'
 /** `/70`, `/[0.5]` or `/(--a)` — every alpha spelling Tailwind v4 accepts. */
 const ALPHA = '(?:/(?:\\d+|\\[[^\\]]+\\]|\\([^)]+\\)))'
 const COLOUR_PREFIX =
-  '(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|decoration|from|to|via|divide|shadow)'
+  '(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|caret|decoration|from|to|via|divide|shadow)'
 const COLOUR_VALUE = `(?:${TOKEN_NAME}|${PALETTE_NAME}|${SPECIAL_NAME})${ALPHA}?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
-/** Looks like a colour utility (a colour prefix, a dashed name, an optional alpha) — classified or not. */
 /** Looks like a colour utility (colour prefix, dashed name, optional alpha) — classified or not. */
 const COLOUR_SHAPED = new RegExp(`^${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?$`)
 const PALETTE_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${PALETTE_NAME}${ALPHA}?$`)
@@ -214,16 +213,26 @@ const CATEGORIES = [
 ]
 
 /**
- * A chain of Tailwind variants (`dark:hover:`) in front of a utility. A fixed list, not `[a-z-]+:`,
- * so a CSS selector in a string (`button:not(…)`) is not mistaken for a variant.
+ * One chunk of a variant chain, as Tailwind v4 actually spells them — a named variant
+ * (`dark`, `hover`, `aria-pressed`, `group-hover/item`) with an optional `-[…]` / `-(…)` argument,
+ * the arbitrary variant `[&_svg]` / `[&:hover]`, the child and descendant variants `*` and `**`,
+ * or a container query `@md` / `@max-lg` / `@[400px]`. A name list would go blind to whatever it
+ * failed to enumerate, which is how round 4's fix still missed `[&_svg]:`, `*:` and `@md:`.
  */
+const VARIANT_CHUNK =
+  '(?:\\*{1,2}|\\[[^\\]]*\\]|@\\[[^\\]]*\\]|@?[a-z][a-z0-9-]*(?:-(?:\\[[^\\]]*\\]|\\([^)]*\\)))?(?:/[a-z0-9-]+)?)'
 /**
- * A variant chain in front of a utility: `dark:`, `hover:`, `aria-pressed:`, `data-[state=open]:`,
- * `rtl:` — any `name:`, `name-[…]:` or `name-(…):` chunk, so no spelling can hide a utility from a
- * gate column. The variants *table* is fed only from tokens whose bare part classifies or is
- * colour-shaped, which keeps CSS selectors inside strings (`button:not(…)`) out of it.
+ * A variant chain in front of a utility, so no spelling can hide a utility from a gate column. The
+ * variants *table* is fed only from tokens whose bare part classifies or is colour-shaped, which
+ * keeps CSS selectors inside strings (`button:not(…)`) out of it; and a chain this grammar cannot
+ * parse does not silently vanish — `scan` counts the token as `unknown` (see `UNPARSED_VARIANT`).
  */
-const VARIANT_PREFIX = /^((?:[a-z][a-z0-9-]*(?:-\[[^\]]*\]|-\([^)]*\))?:)+)(?=[a-z[(-])/
+const VARIANT_PREFIX = new RegExp(`^((?:${VARIANT_CHUNK}:)+)(?=[a-z[(-])`)
+/**
+ * A token whose variant chain this grammar did not fully consume but which still ends in something
+ * colour-shaped — `--check` must fail on it rather than skip it, per §10's fail-loud rule.
+ */
+const UNPARSED_VARIANT = new RegExp(`:${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?$`)
 
 function classify(raw) {
   const variants = VARIANT_PREFIX.exec(raw)?.[1] ?? ''
@@ -309,7 +318,7 @@ function scan() {
         const bare = token.slice(variants.length)
         const f = perFile.get(file) ?? emptyCounts()
         perFile.set(file, f)
-        if (/(?:^|:)dark:/.test(variants)) f.dark += 1
+        if (token.includes('dark:')) f.dark += 1
         if (ARBITRARY_UTILITY.test(bare)) f.arbitrary += 1
         if (PALETTE_UTILITY.test(bare)) f.palette += 1
         if (TOKEN_ALPHA.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
@@ -321,6 +330,11 @@ function scan() {
             f.unknown += 1
             unknownSites.push({ file, line, token })
           }
+          continue
+        }
+        if (bare.includes(':') && UNPARSED_VARIANT.test(bare)) {
+          f.unknown += 1
+          unknownSites.push({ file, line, token })
           continue
         }
         const hit = classify(token)
@@ -1382,10 +1396,21 @@ async function compileTheme(candidates) {
 
 const asCss = (m) => [...m].map(([n, t]) => `--color-${n}: ${t};`).join('\n')
 
-/** Brace-aware bodies of every block opened by `opener` (a global regex ending in `{`). */
+/**
+ * Brace-aware bodies of every block opened by `opener` (a global regex ending in `{`), each with
+ * the brace depth it was opened at. Depth matters: a block nested inside another at-rule may never
+ * apply at runtime (`@supports (nonsense-prop: 1) { @media … }`), so a caller that needs to know
+ * its declarations are live must reject anything but depth 0.
+ */
 function blockBodies(css, opener) {
   const bodies = []
+  let outer = 0
+  let cursor = 0
   for (const m of css.matchAll(opener)) {
+    for (; cursor < m.index; cursor += 1) {
+      if (css[cursor] === '{') outer += 1
+      else if (css[cursor] === '}') outer -= 1
+    }
     let depth = 0
     let i = m.index + m[0].length - 1
     const start = i + 1
@@ -1396,7 +1421,7 @@ function blockBodies(css, opener) {
         if (depth === 0) break
       }
     }
-    bodies.push(css.slice(start, i))
+    bodies.push({ text: css.slice(start, i), depth: outer })
   }
   return bodies
 }
@@ -1416,23 +1441,49 @@ function colourDeclCounts(text) {
  * (however spaced), and everything else is a stray. Inside one block the last declaration wins,
  * which is also what the cascade does — so a duplicate with the wrong value *first* is benign and
  * a duplicate with the wrong value *last* is a byte mismatch.
+ *
+ * Both openers must sit at the top level. A block nested inside another at-rule is reported as
+ * `nested` rather than read: `@supports (nonsense-prop: 1) { @media (prefers-color-scheme: dark) …`
+ * parses perfectly and applies nothing, and a gate cannot confirm a subject the browser may skip.
  */
 function themeColourBlocks() {
   const css = readFileSync(THEME, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
-  const lightText = blockBodies(css, /@theme(?:\s+static)?\s*\{/g).join('\n')
-  const darkText = blockBodies(
-    css,
-    /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g,
-  ).join('\n')
+  const lightBlocks = blockBodies(css, /@theme(?:\s+static)?\s*\{/g)
+  const darkBlocks = blockBodies(css, /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g)
+  const nested = [
+    ...lightBlocks.filter((b) => b.depth > 0).map(() => '@theme'),
+    ...darkBlocks.filter((b) => b.depth > 0).map(() => '@media (prefers-color-scheme: dark)'),
+  ]
+  const top = (blocks) =>
+    blocks
+      .filter((b) => b.depth === 0)
+      .map((b) => b.text)
+      .join('\n')
+  const lightText = top(lightBlocks)
+  const darkText = top(darkBlocks)
+  // Declarations inside a nested block are accounted for by the `nested` failure; they are not
+  // also unlayered strays, and saying so would bury the real cause under 22 wrong lines.
+  const nestedText = [...lightBlocks, ...darkBlocks]
+    .filter((b) => b.depth > 0)
+    .map((b) => b.text)
+    .join('\n')
   const total = colourDeclCounts(css)
   const inLight = colourDeclCounts(lightText)
   const inDark = colourDeclCounts(darkText)
+  const inNested = colourDeclCounts(nestedText)
   const stray = new Map()
   for (const [name, n] of total) {
-    const outside = n - (inLight.get(name) ?? 0) - (inDark.get(name) ?? 0)
+    const outside =
+      n - (inLight.get(name) ?? 0) - (inDark.get(name) ?? 0) - (inNested.get(name) ?? 0)
     if (outside > 0) stray.set(name, outside)
   }
-  return { light: declaredColourText(lightText), dark: declaredColourText(darkText), total, stray }
+  return {
+    light: declaredColourText(lightText),
+    dark: declaredColourText(darkText),
+    total,
+    stray,
+    nested,
+  }
 }
 
 async function check(args) {
@@ -1505,11 +1556,16 @@ async function check(args) {
   // The role block: absent (pre-M8b.2), present-but-unreadable, partial, or landed and checked.
   const wantLight = declaredColourText(PROPOSED_LIGHT)
   const wantDark = declaredColourText(PROPOSED_DARK)
-  const { light, dark, total, stray } = themeColourBlocks()
+  const { light, dark, total, stray, nested } = themeColourBlocks()
   const newRoles = [...wantLight.keys()].filter((n) => n !== 'accent' && n !== 'accent-soft')
   const anywhere = newRoles.filter((n) => (total.get(n) ?? 0) > 0)
   const landed = newRoles.filter((n) => light.has(n))
   print()
+  for (const opener of nested) {
+    fail(
+      `\`${opener}\` is nested inside another at-rule — its declarations may never apply; the prescribed layout is a top-level block (paste \`--emit-theme\`'s output unwrapped, audit §5.8)`,
+    )
+  }
   for (const [name, n] of stray) {
     if (wantLight.has(name) || RETIRED_TOKENS.includes(name)) {
       fail(
