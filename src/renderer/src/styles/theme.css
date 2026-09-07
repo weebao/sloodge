@@ -13,12 +13,20 @@
   --color-accent: #c43e1c;
   --color-accent-soft: #fbe9e4;
   --color-canvas-mat: #7a7a7a;
+  --color-danger: #b3261e;
+  --color-warning: #8a5a00;
 
   --color-ink: #1f1f22;
   --color-ink-alt: #26262b;
   --color-ink-line: #35353c;
   --color-ink-fg: #e6e6ea;
   --color-ink-muted: #a0a0aa;
+
+  /* Semantic text on the dark surfaces (review r4): the light values sit at ~2.5:1 on `ink`. Same
+     hue, lightness lifted, chroma trimmed to stay inside sRGB — the recipe ui-design-direction.md
+     §5.1 applies to the accent. semantic-contrast.test.ts computes and pins the ratios. */
+  --color-danger-dark: #fa897a; /* oklch(0.75 0.14 28.7) — 6.99:1 on ink */
+  --color-warning-dark: #dca150; /* oklch(0.75 0.12 73.3) — 7.25:1 on ink */
 }
 
 html,

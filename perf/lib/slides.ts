@@ -29,11 +29,8 @@
  *    from a fixed vocabulary and avoids parentheses entirely.
  */
 
-import {
-  escapeHtml,
-  renderThemeBlock,
-  SYSTEM_FONT_STACK,
-} from '../../src/shared/document/starter-slide'
+import { escapeHtml } from '../../src/shared/document/slide-text'
+import { renderThemeBlock, SYSTEM_FONT_STACK } from '../../src/shared/document/starter-slide'
 import type { SlideCapability, SlideKind } from '../../src/shared/document/types'
 import { encodePngDataUri } from './png'
 import { intBetween, pick, type Rng } from './prng'

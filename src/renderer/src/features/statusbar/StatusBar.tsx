@@ -3,6 +3,17 @@ import { formatCostUsd } from '../../../../shared/agent/cost'
 import type { BudgetStatus } from '../../../../shared/agent/budget'
 import type { SessionSkills } from '../../stores/sessionMeterStore'
 
+/**
+ * What File ▸ Open has to say (M4.5). An `error` is a file that could not be opened; a `warning` is
+ * an open that succeeded but lost something (slides over the cap, text-only fallbacks, dropped
+ * images), summarised in `message` with each item in `details`.
+ */
+export type OpenStatus = {
+  readonly severity: 'error' | 'warning'
+  readonly message: string
+  readonly details: readonly string[]
+}
+
 export type StatusBarProps = {
   currentSlide: number
   slideCount: number
@@ -28,6 +39,13 @@ export type StatusBarProps = {
    * through M0.4, so the status bar is still renderable in isolation without standing up Present.
    */
   onPresent?: () => void
+  /**
+   * The outcome of the last File ▸ Open (M4.5). Shown here rather than in a modal: a failed open is
+   * informational — the previous document is still on screen and still editable — and a lossy import
+   * is a fact about the new document, not a decision; a dialog would demand a dismissal the user has
+   * nothing to decide about. The full text, details included, is the tooltip.
+   */
+  openStatus?: OpenStatus | null
 }
 
 /** The one segment whose absence is the good news — see `SkillsIndicator`. */
@@ -155,6 +173,7 @@ export function StatusBar({
   budgetUnknown = false,
   skills,
   onPresent,
+  openStatus = null,
 }: StatusBarProps): JSX.Element {
   return (
     <footer
@@ -173,6 +192,22 @@ export function StatusBar({
       <SkillsIndicator skills={skills} />
       <span aria-hidden="true" className="h-3 w-px bg-chrome-line dark:bg-ink-line" />
       <CostMeter costUsd={sessionCostUsd} budget={budget} budgetUnknown={budgetUnknown} />
+      {openStatus === null ? null : (
+        <>
+          <span aria-hidden="true" className="h-3 w-px bg-chrome-line dark:bg-ink-line" />
+          <span
+            role="status"
+            title={[openStatus.message, ...openStatus.details].join('\n')}
+            className={`max-w-[40ch] truncate ${
+              openStatus.severity === 'error'
+                ? 'text-danger dark:text-danger-dark'
+                : 'text-warning dark:text-warning-dark'
+            }`}
+          >
+            <span aria-hidden="true">⚠</span> {openStatus.message}
+          </span>
+        </>
+      )}
 
       <button
         type="button"

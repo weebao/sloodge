@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { isIpcRequestChannel, MENU_EVENT_CHANNEL, type MenuAction } from '../shared/ipc-contract'
 import { createAgentBridge } from './agentBridge'
+import { createDocumentBridge } from './documentBridge'
 import { createExportBridge } from './exportBridge'
 import { createMenuActionHandler } from './menuActionHandler'
 import { createPresentBridge } from './presentBridge'
@@ -81,6 +82,13 @@ const { exportPdf, exportPptx, exportHtml } = createExportBridge(async (channel,
   ipcRenderer.invoke(channel, payload),
 )
 
+/**
+ * M4.5s File ▸ Open. No path parameter: main owns the native chooser (see documentBridge.ts).
+ */
+const { openDeck } = createDocumentBridge(async (channel, payload) =>
+  ipcRenderer.invoke(channel, payload),
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
@@ -91,6 +99,7 @@ const api = {
   exportPdf,
   exportPptx,
   exportHtml,
+  openDeck,
 } as const
 
 export type SloodgeApi = typeof api

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   contractErrorSummary,
   findForbiddenApiTokens,
+  foldForScan,
+  forbiddenBreakPoints,
   FORBIDDEN_API_TOKENS,
   packForApiScan,
   validateSlideContract,
@@ -239,5 +241,55 @@ describe('SL-S04 scan primitives', () => {
     expect(s04).toHaveLength(1)
     expect(findForbiddenApiTokens(dirty)).toEqual(['localStorage'])
     expect(s04[0]?.message).toContain('localStorage')
+  })
+})
+
+/**
+ * M4.5 review round 5: the importer's defuser matched with the RegExp `i` flag while the validator
+ * folds with `toLowerCase()`, and the two disagree on U+212A KELVIN SIGN — so `WebSoc\u212Aet` was
+ * flagged by one and missed by the other, and one word made a deck unopenable. The matcher now
+ * lives here, beside the list and the normalisation it must agree with, and this pins the
+ * agreement for every token under every letter whose case fold is special.
+ */
+describe('forbiddenBreakPoints — the one matcher for SL-S04', () => {
+  /** Letters whose Unicode case fold differs between `toLowerCase()` and the RegExp `i` flag. */
+  const FOLDS: readonly [letter: string, special: string][] = [
+    ['k', '\u212A'], // KELVIN SIGN: toLowerCase() → k, but /k/i does not match it
+    ['s', '\u017F'], // LONG S: /s/i matches it, but toLowerCase() leaves it alone
+    ['i', '\u0130'], // CAPITAL I WITH DOT ABOVE: toLowerCase() is two code units
+  ]
+
+  it('folds like the validator, code unit for code unit', () => {
+    expect(foldForScan('WebSoc\u212Aet')).toBe('websocket')
+    expect(foldForScan('\u017F')).toBe('\u017F')
+    expect(foldForScan('\u0130ndexedDB')).toBe('\u0130ndexeddb')
+    expect(foldForScan('a\u0130b')).toHaveLength(3)
+  })
+
+  it('fires exactly when the validator would, for every token under every fold', () => {
+    expect(FORBIDDEN_API_TOKENS.length).toBeGreaterThan(10)
+    let flaggedSpellings = 0
+    for (const token of FORBIDDEN_API_TOKENS) {
+      const packed = packForApiScan(token)
+      const spellings = [
+        token,
+        token.toUpperCase(),
+        ...FOLDS.flatMap(([letter, special]) => [
+          token.replaceAll(letter, special),
+          token.toUpperCase().replaceAll(letter.toUpperCase(), special),
+        ]),
+      ]
+      for (const spelling of spellings) {
+        const text = `Try ${spelling} today`
+        const flagged = packForApiScan(text).includes(packed)
+        if (flagged) flaggedSpellings += 1
+        expect(forbiddenBreakPoints(text).size > 0, JSON.stringify(spelling)).toBe(flagged)
+      }
+    }
+    // The agreement is not vacuous: the Kelvin spelling is one the validator flags, and the break
+    // lands on the first letter of the token, not somewhere inside it.
+    expect(flaggedSpellings).toBeGreaterThan(FORBIDDEN_API_TOKENS.length * 2)
+    expect(packForApiScan('WebSoc\u212Aet')).toContain('websocket')
+    expect(forbiddenBreakPoints('Try WebSoc\u212Aet')).toEqual(new Set([4]))
   })
 })

@@ -6,13 +6,16 @@
  *   SL-G01/G02  exactly one `.slide` root at 1280x720, overflow:hidden, position:relative
  *   SL-G03      html,body reset + universal box-sizing
  *   SL-G04      48px root inset
- *   SL-S01..04  zero subresources, zero network/storage APIs, system font stack only
+ *   SL-S01..04  zero subresources, zero network/storage APIs, system font stack only — the title
+ *               and subtitle go through `slideText`, so a caller-supplied "fetch( basics" cannot
+ *               put a forbidden token into the source (M4.5 review r3)
  *   SL-D01      every element inside `.slide` carries a unique data-sl-id, root is e_root
  *   SL-C01      nothing below 16px
  *   SL-T02      the theme token block is wrapped in `sl:theme` sentinels so a theme change is
  *               a byte-range replacement, not a re-render (§4.1)
  */
 
+import { escapeHtml, slideText } from './slide-text'
 import { CANVAS_HEIGHT, CANVAS_WIDTH, type SlideId } from './types'
 
 /** Contract version stamped on `<html data-sl-contract>` (§5.1). */
@@ -39,15 +42,6 @@ export type StarterSlideOptions = {
   tokens?: Readonly<Record<string, string>>
   /** Theme version recorded in the sentinel (`v=`), matched against `theme.json.version`. */
   themeVersion?: number
-}
-
-export function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
 }
 
 /**
@@ -147,13 +141,13 @@ export function createStarterSlideHtml(options: StarterSlideOptions): string {
   const subtitle =
     options.subtitle === undefined
       ? ''
-      : `\n  <p data-sl-id="e_002" class="subtitle">${escapeHtml(options.subtitle)}</p>`
+      : `\n  <p data-sl-id="e_002" class="subtitle">${slideText(options.subtitle)}</p>`
 
   return `<!doctype html>
 <html lang="en" data-sl-slide="${escapeHtml(options.id)}" data-sl-contract="${String(SLIDE_CONTRACT_VERSION)}">
 <head>
 <meta charset="utf-8">
-<title>${escapeHtml(title)}</title>
+<title>${slideText(title)}</title>
 <style>
 ${themeBlock}
   *, *::before, *::after { box-sizing: border-box; }
@@ -176,7 +170,7 @@ ${themeBlock}
 </head>
 <body>
 <div class="slide" data-sl-id="e_root">
-  <h1 data-sl-id="e_001" class="title">${escapeHtml(title)}</h1>${subtitle}
+  <h1 data-sl-id="e_001" class="title">${slideText(title)}</h1>${subtitle}
 </div>
 </body>
 </html>

@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/export/types'
 import type { ExportPptxRequest, ExportPptxResponse } from '../../../shared/export/pptx/types'
 import type { AgentBridge } from '../../../preload/agentBridge'
+import type { OpenDeckResponse } from '../../../shared/document/open'
 
 /**
  * `window.sloodge` — the preload surface — and the single place the `Window` augmentation for it
@@ -61,6 +62,13 @@ export type SloodgeBridge = {
    * slides *are* the output. Absent in a plain-browser host, which has no save dialog.
    */
   exportHtml?: (request: ExportHtmlRequest) => Promise<ExportHtmlResponse>
+
+  /**
+   * M4.5: File ▸ Open for `.sloodge`, `.pptx` and `.potx`. No path parameter — main owns the native
+   * chooser, so the renderer cannot name a file the user did not pick. Absent in a plain-browser
+   * host, which has no file system to open from.
+   */
+  openDeck?: () => Promise<OpenDeckResponse>
 }
 
 declare global {

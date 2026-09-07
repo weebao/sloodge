@@ -98,6 +98,15 @@ const SMIL_TAGS: ReadonlySet<string> = new Set(['animate', 'animatetransform', '
  * token set to avoid emitting source the validator will then reject. `text-edit.ts` builds its
  * neutralization corpus from this array rather than restating it, so a token added here is
  * automatically covered there (and its tests fail if it is not).
+ *
+ * **Exported, together with `packForApiScan` below, because a second module has to satisfy this
+ * rule and must not restate it.** PPTX import (M4.5) rewrites imported *prose* so it cannot trip
+ * this scan — a deck about JavaScript legitimately contains the words `fetch(` and `localStorage` —
+ * and its first implementation re-derived both the list and the normalisation by hand. It got the
+ * normalisation subtly wrong for the one multi-word token (`new Function(`), so `newFunction(`
+ * matched here and was missed there, and the whole import died. Same failure mode `sanitize.ts`
+ * documents for `hasXmlIllegalChars`: a duplicated predicate drifts narrower than the rule it
+ * mirrors, and the drift is invisible until someone types the spelling nobody tested.
  */
 export const FORBIDDEN_API_TOKENS: readonly string[] = [
   'fetch(',
@@ -123,6 +132,11 @@ export const FORBIDDEN_API_TOKENS: readonly string[] = [
  * JS does not care about the spaces. That aggression is why a *writer* of slide source cannot simply
  * check `source.includes(token)` — it has to pack first, which is why this is exported rather than
  * inlined at its one original call site.
+ *
+ * This is the single definition of "the same token" for the rule. It is applied to both sides —
+ * the slide source and the token — which is what makes `new Function(`, `newFunction(`,
+ * `new\tFunction(` and `N E W F U N C T I O N (` one and the same match. Any consumer that has to
+ * agree with this scan must call this function rather than reimplement it.
  */
 export function packForApiScan(text: string): string {
   return text.replace(/\s+/g, '').toLowerCase()
@@ -139,6 +153,77 @@ export function packForApiScan(text: string): string {
 export function findForbiddenApiTokens(source: string): readonly string[] {
   const packed = packForApiScan(source)
   return FORBIDDEN_API_TOKENS.filter((token) => packed.includes(packForApiScan(token)))
+}
+
+/**
+ * A whitespace-tolerant matcher for one forbidden token, built from the token's **packed** form.
+ *
+ * The validator scans `packForApiScan(source)` for `packForApiScan(token)`, so anything that
+ * rewrites text to *avoid* that scan must match exactly the spellings that reach the packed form:
+ * every character of the *packed* token, in order, with any whitespace between any two of them.
+ * Packing the token first is load-bearing for `new Function(` — spelling the pattern from the raw
+ * token would make its space a *required* literal, so `newFunction(` would slip past (M4.5 review
+ * round 1). Case is handled by folding the *text* (`foldForScan`), not by the `i` flag: the flag's
+ * fold and `toLowerCase()`'s differ outside ASCII — `/k/i` does not match U+212A KELVIN SIGN,
+ * `'\u212A'.toLowerCase()` is `k` — and it is `toLowerCase()` the validator applies (M4.5 review
+ * round 5: a `.pptx` whose prose read `WebSoc\u212Aet` was defused by neither the importer nor the
+ * fallback and refused the whole deck).
+ */
+function tokenPattern(token: string): RegExp {
+  return new RegExp(
+    [...packForApiScan(token)]
+      .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('\\s*'),
+    'g',
+  )
+}
+
+const TOKEN_PATTERNS: readonly RegExp[] = FORBIDDEN_API_TOKENS.map(tokenPattern)
+
+/**
+ * `text` lowercased the way `packForApiScan` lowercases it, but **code unit for code unit**, so an
+ * index into the folded string is an index into the original.
+ *
+ * `toLowerCase()` on the whole string would not give that: `İ` (U+0130) lowercases to two code
+ * units, shifting every later index. A character whose lowercase is not exactly one code unit is
+ * kept as-is — it cannot be a letter of an ASCII token anyway, and the validator's fold of it puts a
+ * combining mark between the letters, so the validator does not see a token there either.
+ */
+export function foldForScan(text: string): string {
+  let out = ''
+  for (const char of text) {
+    const lower = char.toLowerCase()
+    out += lower.length === 1 ? lower : char
+  }
+  return out
+}
+
+/**
+ * The indices in `text` at which a forbidden-token match begins — the characters that must be
+ * written as numeric references to break the token.
+ *
+ * This is the one matcher for SL-S04's rule. Both writers of slide text consume it — the importer's
+ * `slideText` (prose from a `.pptx`) and Design Mode's text editor (prose the user typed) — so the
+ * rule has one list, one normalisation and one matcher, and a spelling the validator flags is a
+ * spelling both writers defuse.
+ *
+ * Every token is ASCII, so a break index always lands on a single-code-unit character and never
+ * splits a surrogate pair — a match can only start at a character that folds to an ASCII letter.
+ */
+export function forbiddenBreakPoints(text: string): ReadonlySet<number> {
+  const folded = foldForScan(text)
+  const breaks = new Set<number>()
+  for (const pattern of TOKEN_PATTERNS) {
+    pattern.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(folded)) !== null) {
+      breaks.add(match.index)
+      // Overlapping matches matter: `eval(` inside a longer run must still be found, so the scan
+      // resumes one character past the start rather than past the whole match.
+      pattern.lastIndex = match.index + 1
+    }
+  }
+  return breaks
 }
 
 function isElement(node: ChildNode): node is Element {
@@ -371,7 +456,7 @@ export function validateSlideContract(
   const issues: SlideValidationIssue[] = []
   const caps = new Set(capabilities)
   const css = styleText(html)
-  const cssPacked = css.replace(/\s+/g, '').toLowerCase()
+  const cssPacked = packForApiScan(css)
   const source = html
 
   // Parse once, up front: the subresource and geometry rules below are decided over the parse5 tree

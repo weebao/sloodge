@@ -25,15 +25,20 @@ export type MenuDelivery = 'renderer' | 'log'
  * main-process document store — the deck lives in `deckStore`, exactly as Present mode found in
  * M4.1). So export starts in the renderer: it gathers the wrapped slide HTML and the current index
  * and invokes `file:exportPdf` (M4.2) or `file:exportHtml` (M4.4), where main takes over the save
- * dialog and — for PDF — the offscreen print. The remaining File ids (`file.new`, `file.open`,
- * `file.export.pptx`) still have no consumer, and a channel that delivers actions no one handles
- * trains the next reader to think they are wired; each flips here when its milestone lands.
+ * dialog and — for PDF — the offscreen print. `file.open` joined them at M4.5: the renderer asks,
+ * main runs the native chooser and the read, and the renderer adopts the result. `file.new` still
+ * has no consumer, and a channel that delivers actions no one handles trains the next reader to
+ * think they are wired; it flips here when its milestone lands.
  */
 export function menuActionTarget(action: MenuAction): MenuDelivery {
   if (
     action === 'file.export.pdf' ||
     action === 'file.export.pptx' ||
     action === 'file.export.html' ||
+    // M4.5: File ▸ Open is renderer-initiated for the same reason export is — the renderer owns the
+    // live deck, so it is what adopts the opened document. Main still owns the native chooser and
+    // the read; the renderer only asks.
+    action === 'file.open' ||
     // M2.7: the Settings dialog is renderer-owned, so `Ctrl/⌘+,` and File ▸ Settings… both land on
     // the same `onOpenSettings` handler in `useMenuActions` rather than a second mechanism.
     action === 'app.settings'

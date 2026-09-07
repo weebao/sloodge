@@ -60,6 +60,11 @@ export function newAssetId(now: number = Date.now()): string {
   return `a_${createSlideId(now)}`
 }
 
+/** §1.2's fourth id space. Minted by PPTX import (M4.5), which derives a theme from the source. */
+export function newThemeId(now: number = Date.now()): string {
+  return `t_${createSlideId(now)}`
+}
+
 /**
  * A slide map that cannot be reached through `Object.prototype`. Every manifest this module
  * produces carries one, so a bare index would return `undefined` rather than a prototype member

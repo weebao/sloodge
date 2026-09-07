@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, shell } from 'electron'
 import { installAgentIpc } from './ipc/agent'
+import { installDocumentIpc } from './document/open-ipc'
 import { installExportIpc } from './export/install'
 import { installAppMenu } from './menu/appMenu'
 import { installPresentIpc } from './present/install'
@@ -95,6 +96,9 @@ if (!gotSingleInstanceLock) {
     // PDF export (M4.2): renders each slide over the same `slide://` registry in an offscreen window
     // and prints it, so export reuses the editor's secure sandbox rather than a weaker path.
     installExportIpc(slideRegistry)
+    // File ▸ Open (M4.5): main owns the native chooser and the read for .sloodge, .pptx and .potx,
+    // so a compromised renderer cannot turn the channel into an arbitrary-file read.
+    installDocumentIpc()
     app.on('before-quit', () => {
       void agentService.disposeAll()
     })
