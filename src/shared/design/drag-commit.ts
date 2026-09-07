@@ -20,6 +20,19 @@
  * the border-box width equals the measured rect width, and writing the absolute `nextRect` size
  * reproduces the box exactly whether or not the source previously declared a size.
  *
+ * ## The transform lock is enforced here, where the bytes are made (M3.6, round 3)
+ *
+ * An in-flow element with a transform `inspectTransform` cannot decompose — `matrix()`, a
+ * `rotate()` written before its `translate()` — moves *through* that transform, and rewriting the
+ * exact `translate()` where it stands sends a screen-space delta along the element's own tilted
+ * axis. The overlay's badge and withheld `pointerdown` are the UX of that rule; this is the rule.
+ * It lived only in the overlay through two review rounds and was found missing at the next entry
+ * point each time (the group anchor, then align/distribute, then a source edit landing mid-drag),
+ * so the X/Y edits are skipped **here** whenever they would go through an opaque transform. Width
+ * and height never touch the transform and still apply. A caller that produces a move through
+ * this function — single drag, group drag, arrange, whatever comes next — is safe by construction,
+ * and a member that is refused simply keeps its bytes while the others commit.
+ *
  * ## The re-derivation rule (§2.2) and why fields are applied one at a time
  *
  * The element is resolved from the **parent-owned** map keyed by the parent-tracked `slId` — never a
@@ -31,9 +44,15 @@
  */
 
 import { applyOps } from './patch'
-import { buildFieldOps, readPropertyValues, type PropertyField } from './property-model'
+import {
+  buildFieldOps,
+  movesThroughTransform,
+  readPropertyValues,
+  type PropertyField,
+} from './property-model'
 import { buildSlideMap } from './slide-map'
 import { geometryDelta } from './drag'
+import { readTransformShape } from './transform-commit'
 import type { SlRect } from './bridge-protocol'
 
 /** Parse the numeric part of a source length (`"120px"`, `"120"`, `"0"`), defaulting to 0. */
@@ -66,10 +85,19 @@ export function buildDragPatch(
   if (element === undefined) return source
   const values = readPropertyValues(source, element)
 
+  // The transform lock (see the header): a move that would be written through an opaque transform
+  // is refused; the size half of the gesture, which never touches the transform, still applies.
+  const moveRefused =
+    (delta.dx !== 0 || delta.dy !== 0) &&
+    movesThroughTransform(source, element) &&
+    !readTransformShape(source, element).editable
+
   // Ordered so a corner resize writes position before size; each entry is one field edit.
   const edits: (readonly [PropertyField, string])[] = []
-  if (delta.dx !== 0) edits.push(['x', String(Math.round(parseLength(values.x) + delta.dx))])
-  if (delta.dy !== 0) edits.push(['y', String(Math.round(parseLength(values.y) + delta.dy))])
+  if (!moveRefused) {
+    if (delta.dx !== 0) edits.push(['x', String(Math.round(parseLength(values.x) + delta.dx))])
+    if (delta.dy !== 0) edits.push(['y', String(Math.round(parseLength(values.y) + delta.dy))])
+  }
   if (delta.dw !== 0) edits.push(['width', String(Math.round(nextRect.width))])
   if (delta.dh !== 0) edits.push(['height', String(Math.round(nextRect.height))])
   if (edits.length === 0) return source

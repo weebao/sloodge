@@ -346,10 +346,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           nextRect: { ...start, x: start.x + dx, y: start.y + dy },
         }
       })
-      const patched = buildMultiElementPatch(slideId, current, edits)
+      const { source: patched, moved } = buildMultiElementPatch(slideId, current, edits)
       if (patched === current) return
       if (useDeckStore.getState().setSlideHtml(slideId, patched, anchor.slId, 'Move elements')) {
-        setSelections(target.map((hit) => shiftHit(hit, dx, dy)))
+        // Only what the pure layer actually moved is shifted: a member it refused (an opaque
+        // transform it would have had to write through) kept its bytes and keeps its box.
+        setSelections(target.map((hit) => (moved.has(hit.slId) ? shiftHit(hit, dx, dy) : hit)))
       }
     },
     [slideId, setSelections],
@@ -436,24 +438,32 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // Move is a separate question. On an element positioned with `left`/`top` a drag writes those and
   // never touches the transform (`buildDragPatch` → `positionsByOffsets`), so it stays available under
   // the lock — round-1 found `translateZ(0)`, the compositing idiom, had made such elements
-  // unmovable. An in-flow element moves *through* the transform, so there the refusal stands.
+  // unmovable. An in-flow element moves *through* the transform and is refused.
   //
-  // Decided over every member the gesture would move, not the anchor alone: a group drag commits
-  // one patch per member (`onCommitGroupMove`), and round 2 found an in-flow opaque member riding
-  // along inside a group whose anchor was fine — moved 40px down its tilt for a 40px drag right.
-  const memberMoveLock = useMemo<string | null>(() => {
+  // The refusal itself lives in `buildDragPatch`, where the bytes are made, so every entry point —
+  // this body drag, a group drag, align/distribute, a drag whose element turned opaque mid-gesture
+  // — is safe without consulting this. What is decided here is only the message and the cursor:
+  // counted over every member the gesture would move (round 2 found a locked member riding inside
+  // a group whose anchor was fine), the drag is withheld when *nothing* would move, and a group
+  // with some movable members still drags, its badge saying how many will stay.
+  const memberMoveLock = useMemo<{ count: number; reason: string | null }>(() => {
+    let count = 0
+    let reason: string | null = null
     for (const hit of selections) {
       const shape = shapeOf(hit.slId)
-      if (shape !== null && !shape.editable && !positionedOf(hit.slId)) return shape.reason
+      if (shape !== null && !shape.editable && !positionedOf(hit.slId)) {
+        count += 1
+        reason ??= shape.reason
+      }
     }
-    return null
+    return { count, reason }
   }, [selections, shapeOf, positionedOf])
-  const moveLocked = memberMoveLock !== null
+  const moveLocked = memberMoveLock.count > 0 && memberMoveLock.count === selections.length
   const lockBadge =
     transformLock !== null
       ? `Handles off — ${transformLock}`
-      : memberMoveLock !== null
-        ? `Move off — ${memberMoveLock}`
+      : memberMoveLock.reason !== null
+        ? `${String(memberMoveLock.count)} of ${String(selections.length)} won't move — ${memberMoveLock.reason}`
         : null
 
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide

@@ -107,3 +107,50 @@ describe('buildDragPatch — round-trips through the map', () => {
     expect(map.byId.get(slId)).toBeDefined()
   })
 })
+
+/**
+ * The transform lock, enforced where the bytes are made (M3.6 round 3). Every caller that produces
+ * a move through `buildDragPatch` — single drag, group drag, align/distribute, a gesture whose
+ * element turned opaque mid-drag — inherits it.
+ */
+describe('buildDragPatch — the transform lock', () => {
+  const IN_FLOW_OPAQUE =
+    '<div style="width:200px;height:100px;transform: rotate(90deg) translate(10px, 0)">x</div>'
+  const POSITIONED_OPAQUE =
+    '<div style="position:absolute;left:100px;top:50px;width:200px;height:80px;transform: translateZ(0)">x</div>'
+  const BOX: SlRect = { x: 0, y: 0, width: 200, height: 100 }
+
+  it('refuses a move that would be written through an opaque transform (unchanged by identity)', () => {
+    const slId = slIdOf('s', IN_FLOW_OPAQUE, 'div')
+    // Mutation guard: without the refusal this writes `rotate(90deg) translate(50px, 0)` — 40px
+    // down the element's tilt for a 40px drag right.
+    expect(buildDragPatch('s', IN_FLOW_OPAQUE, slId, BOX, { ...BOX, x: 40 })).toBe(IN_FLOW_OPAQUE)
+  })
+
+  it('still moves a left/top-positioned element under an opaque transform, transform byte-identical', () => {
+    const slId = slIdOf('s', POSITIONED_OPAQUE, 'div')
+    const patched = buildDragPatch('s', POSITIONED_OPAQUE, slId, START, { ...START, x: 140, y: 70 })
+    expect(patched).toContain('left: 140px')
+    expect(patched).toContain('top: 70px')
+    expect(patched).toContain('transform: translateZ(0)')
+  })
+
+  it('the size half still applies to an opaque element — width never touches the transform', () => {
+    const slId = slIdOf('s', IN_FLOW_OPAQUE, 'div')
+    const patched = buildDragPatch('s', IN_FLOW_OPAQUE, slId, BOX, { ...BOX, x: 10, width: 190 })
+    expect(patched).toContain('width: 190px')
+    expect(patched).toContain('transform: rotate(90deg) translate(10px, 0)')
+    expect(patched).not.toContain('translate(20px')
+  })
+
+  it('a left-only element is positioned by offsets: +40 lands at left: 140px (round-3 minor 2)', () => {
+    // Mutation guard: a reader deciding the channel by `top` alone reads x as null and writes
+    // `left: 40px` — a 60px jump backwards.
+    const html = '<div style="position:absolute;left:100px;width:10px;height:10px">x</div>'
+    const slId = slIdOf('s', html, 'div')
+    const rect: SlRect = { x: 100, y: 0, width: 10, height: 10 }
+    const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 140 })
+    expect(patched).toContain('left: 140px')
+    expect(patched).not.toContain('translate')
+  })
+})

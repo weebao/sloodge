@@ -50,7 +50,7 @@ describe('buildMultiElementPatch', () => {
         nextRect: { x: 10, y: 20, width: 60, height: 40 },
       },
     ]
-    const out = buildMultiElementPatch(SLIDE, HTML, edits)
+    const out = buildMultiElementPatch(SLIDE, HTML, edits).source
 
     // A did not move; B and C moved to left:10px. All three now declare left:10px.
     expect(out.match(/left:\s*10px/g)?.length).toBe(3)
@@ -69,11 +69,11 @@ describe('buildMultiElementPatch', () => {
         nextRect: { x: 10, y: 20, width: 100, height: 40 },
       },
     ]
-    expect(buildMultiElementPatch(SLIDE, HTML, edits)).toBe(HTML)
+    expect(buildMultiElementPatch(SLIDE, HTML, edits).source).toBe(HTML)
   })
 
   it('is a no-op for an empty edit list', () => {
-    expect(buildMultiElementPatch(SLIDE, HTML, [])).toBe(HTML)
+    expect(buildMultiElementPatch(SLIDE, HTML, []).source).toBe(HTML)
   })
 
   it('skips an unresolved sl-id without corrupting the others', () => {
@@ -82,8 +82,37 @@ describe('buildMultiElementPatch', () => {
       { slId: 'nope:999', startRect: rect(0), nextRect: rect(999) },
       { slId: b, startRect: rect(200), nextRect: rect(10) },
     ]
-    const out = buildMultiElementPatch(SLIDE, HTML, edits)
+    const out = buildMultiElementPatch(SLIDE, HTML, edits).source
     expect(out).toContain('class="b"')
     expect(out.match(/left:\s*10px/g)?.length).toBe(2) // A already at 10, B moved to 10
+  })
+})
+
+describe('buildMultiElementPatch — a member the transform lock refuses keeps its bytes', () => {
+  it('moves the positioned member, leaves the in-flow opaque one, and reports only the mover', () => {
+    const html =
+      '<div style="position:absolute;left:0;top:0;width:10px;height:10px">ok</div>' +
+      '<div style="transform: rotate(90deg) translate(10px, 0)">locked</div>'
+    const map = buildSlideMap(SLIDE, html)
+    const [ok, locked] = map.order as [string, string]
+    const edits: ElementMove[] = [
+      {
+        slId: ok,
+        startRect: { x: 0, y: 0, width: 10, height: 10 },
+        nextRect: { x: 40, y: 0, width: 10, height: 10 },
+      },
+      {
+        slId: locked,
+        startRect: { x: 0, y: 20, width: 100, height: 20 },
+        nextRect: { x: 40, y: 20, width: 100, height: 20 },
+      },
+    ]
+    const out = buildMultiElementPatch(SLIDE, html, edits)
+    // Round-3 major 1/2: the exact translate used to be rewritten in place, after the rotate, so a
+    // 40px drag right moved this member 40px down its tilt. Mutation guard: dropping the refusal in
+    // `buildDragPatch` writes `translate(50px, 0)` here.
+    expect(out.source).toContain('left: 40px')
+    expect(out.source).toContain('transform: rotate(90deg) translate(10px, 0)')
+    expect([...out.moved]).toEqual([ok])
   })
 })
