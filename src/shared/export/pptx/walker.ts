@@ -6,16 +6,43 @@
  *
  * ## The two structural rules (§3.2)
  *
- * - **Leaf-text rule.** Only elements with no element children contribute text. This prevents the
- *   classic double-render bug where a heading is emitted once for the `<h1>` and again for a nested
- *   `<span>`. (Its cost — text beside inline elements is dropped — is scored by `confidence.ts` until
- *   M4.8b replaces it with a run-level walk.)
+ * - **Block-root text rule (M4.8b).** Every block root — an element whose computed `display` is not
+ *   `inline` — that carries text becomes **one text box, with one run per text node** inside it, each
+ *   run in the computed style of its own parent element: `<p>a <strong>b</strong> c</p>` is one box
+ *   and three runs. A text node has exactly one block root, so nothing is emitted twice — the
+ *   guarantee the old leaf-text rule bought at the price of dropping the bare text beside an inline
+ *   element (research §1.3(c)). Nested blocks are their own boxes at their own rects; a `<br>` is a
+ *   hard line break inside the box.
  * - **Paint rule.** Any element that paints something of its own — a non-transparent background or a
  *   visible border — contributes a shape, whether or not it has children or text. Pure layout
  *   wrappers (flex/grid with no paint) are skipped; PowerPoint has no concept of them. (Until M4.8a
  *   this rule required children, so an empty `<div class="divider">` or `<hr>` vanished silently.)
  *
- * Emission order is `(zIndex, domIndex)` ascending, approximating paint order.
+ * Emission order is `(zIndex, domIndex)` ascending, approximating paint order — with one deliberate
+ * exception: an inline element that paints (a highlighted `<span>`) is emitted with its block root,
+ * *between* the root's own decoration and the root's text box, so its background sits under the
+ * paragraph's glyphs rather than over them.
+ *
+ * ## White space and text (M4.8b)
+ *
+ * HTML collapses white space and PowerPoint does not, so the walker applies CSS's white-space
+ * processing itself (`layOutInline`): runs of document white space collapse to one space under
+ * `white-space-collapse: collapse`, a collapsible space is dropped at the start of a line, after
+ * another collapsible space (across run boundaries), and at the end of a line; `pre` keeps every
+ * character and turns its newlines into line breaks; `pre-line` does both halves. A `<br>` at the very
+ * end of a block does not add a line, exactly as in Chromium. `text-transform` is applied afterwards,
+ * per run, with `capitalize` carrying the word boundary across run boundaries. The resulting box text
+ * equals the block's rendered `innerText`, which the fidelity oracle checks line by line.
+ *
+ * The box is the block's border box (measured), and its runs start at the block's **content box**:
+ * padding plus border width become the text shape's inset, so a padded pill's label lands where
+ * Chromium put it and PowerPoint wraps within the same width Chromium wrapped within. Line spacing is
+ * the block's computed `line-height` as a multiple of the block's font size; runs larger than the
+ * block's font get PowerPoint's proportional line height, as a unitless CSS line-height would give
+ * them — which is exact only for a unitless `line-height`; a length/em/% value over a larger inline
+ * run is mis-mapped by construction (60-export.md §3.3), and only the pixel step can see it.
+ * Nothing is auto-fitted: the box keeps Chromium's height and, where PowerPoint's line breaking
+ * differs, the text overflows rather than shrinks — the reflow gap the pixel step measures.
  *
  * ## Transforms (M4.8a)
  *
@@ -55,8 +82,18 @@ import {
   paintsImage,
   ROTATION_EPSILON_DEG,
 } from './confidence'
-import type { BorderSide, SlideNode, MeasureResult } from './node'
-import type { FillSpec, LineSpec, ShadowSpec, ShapeSpec, TextAlign, TextRunSpec } from './types'
+import { hasOwnText } from './node'
+import type { BorderSide, InlineItem, NodeStyle, RunStyle, SlideNode, MeasureResult } from './node'
+import type {
+  BoxInches,
+  FillSpec,
+  LineSpec,
+  ShadowSpec,
+  ShapeSpec,
+  TextAlign,
+  TextInset,
+  TextRunSpec,
+} from './types'
 
 /** The walker output: emitted shapes, the resolved slide background, and the honesty coverage metric. */
 export type WalkResult = {
@@ -255,33 +292,253 @@ function firstRadiusPx(borderRadius: string): number {
   return Number.isFinite(v) ? v : 0
 }
 
-function textRunFor(node: SlideNode, scale: number): TextRunSpec {
-  const s = node.style
+// --- Run-level text (M4.8b) ---------------------------------------------------------------------
+
+type TextItem = Extract<InlineItem, { kind: 'text' }>
+
+/** One run after white-space processing and `text-transform`; `text` may be '' only on an empty line. */
+export type LaidRun = {
+  text: string
+  style: RunStyle
+  opacity: number
+  href: string | null
+  /** A hard break (`<br>`, a preserved newline) precedes this run within its paragraph. */
+  lineBreakBefore: boolean
+}
+
+/** A paragraph: the runs between two nested-block boundaries, in order. */
+export type LaidParagraph = LaidRun[]
+
+/** A piece of one text node on one line: collapsible under `collapse`/`pre-line`, verbatim under `pre`. */
+type Segment = { text: string; collapsible: boolean; item: TextItem }
+
+const COLLAPSIBLE_RUN = /[ \t\n\r\f]+/g
+const SEGMENT_BREAK = /\r\n?|\n/
+
+/** Non-breaking, zero-width and other Unicode spaces are NOT collapsible; only the document white space is. */
+const LEADING_SPACES = /^ +/
+const TRAILING_SPACES = / +$/
+
+/**
+ * CSS Text §4.1 white-space processing over one line, after collapsing within each text node: a
+ * collapsible space at the start of the line, after another collapsible space (even one in the
+ * previous run), or at the end of the line is removed. Empty segments vanish.
+ */
+function trimLine(line: readonly Segment[]): Segment[] {
+  const out: Segment[] = []
+  for (const seg of line) {
+    let text = seg.text
+    if (seg.collapsible) {
+      const prev = out[out.length - 1]
+      if (prev === undefined || (prev.collapsible && prev.text.endsWith(' ')))
+        text = text.replace(LEADING_SPACES, '')
+    }
+    if (text === '') continue
+    out.push({ ...seg, text })
+  }
+  while (out.length > 0) {
+    const last = out[out.length - 1]!
+    if (!last.collapsible) break
+    const text = last.text.replace(TRAILING_SPACES, '')
+    if (text !== '') {
+      out[out.length - 1] = { ...last, text }
+      break
+    }
+    out.pop()
+  }
+  return out
+}
+
+/** A character inside a word for `capitalize`: letters, digits, and the apostrophes of "don't". */
+const WORD_CHAR = /[\p{L}\p{N}'’]/u
+
+/** `text-transform: capitalize` over one segment, given the character that precedes it on the line. */
+function capitalize(text: string, before: string): string {
+  let out = ''
+  let prev = before
+  for (const ch of text) {
+    out += prev === '' || !WORD_CHAR.test(prev) ? ch.toUpperCase() : ch
+    prev = ch
+  }
+  return out
+}
+
+/** `text-transform`, per segment, with the word boundary carried across runs on the same line. */
+function transformLine(line: readonly Segment[]): Segment[] {
+  let before = ''
+  return line.map((seg) => {
+    const mode = seg.item.style.textTransform
+    let text = seg.text
+    if (mode === 'uppercase') text = text.toUpperCase()
+    else if (mode === 'lowercase') text = text.toLowerCase()
+    else if (mode === 'capitalize') text = capitalize(text, before)
+    before = seg.text.slice(-1)
+    return { ...seg, text }
+  })
+}
+
+/** The style an empty line is emitted in: the block's own, so its height matches the block's font. */
+function runStyleOf(style: NodeStyle): RunStyle {
+  return {
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
+    textDecorationLine: style.textDecorationLine,
+    color: style.color,
+    textTransform: style.textTransform,
+    letterSpacing: style.letterSpacing,
+    textShadow: style.textShadow,
+  }
+}
+
+/**
+ * Lay out one block root's inline content into paragraphs of runs — see the module docstring for
+ * the white-space rules. `fallback` styles an empty line that no text node contributes to (the
+ * middle line of `a<br><br>b`). Returns no paragraph for content that is only formatting white space.
+ */
+export function layOutInline(items: readonly InlineItem[], fallback: RunStyle): LaidParagraph[] {
+  const paragraphs: LaidParagraph[] = []
+  let lines: Segment[][] = [[]]
+  let hardBreaks = 0
+  const flush = (): void => {
+    const trimmed = lines.map((line) => transformLine(trimLine(line)))
+    // A `<br>` (or preserved newline) at the very end of a block ends the last line without
+    // starting another, so a trailing empty line is Chromium's too and is dropped — but only one:
+    // `a<br><br>` does render an empty second line.
+    if (trimmed.length > 1 && trimmed[trimmed.length - 1]!.length === 0) trimmed.pop()
+    lines = [[]]
+    const breaks = hardBreaks
+    hardBreaks = 0
+    if (trimmed.every((line) => line.length === 0) && breaks === 0) return
+    const paragraph: LaidParagraph = []
+    trimmed.forEach((line, i) => {
+      if (line.length === 0) {
+        paragraph.push({
+          text: '',
+          style: fallback,
+          opacity: 1,
+          href: null,
+          lineBreakBefore: i > 0,
+        })
+        return
+      }
+      line.forEach((seg, j) => {
+        paragraph.push({
+          text: seg.text,
+          style: seg.item.style,
+          opacity: seg.item.opacity,
+          href: seg.item.href,
+          lineBreakBefore: i > 0 && j === 0,
+        })
+      })
+    })
+    paragraphs.push(paragraph)
+  }
+  for (const item of items) {
+    if (item.kind === 'block') {
+      flush()
+      continue
+    }
+    if (item.kind === 'box') continue
+    if (item.kind === 'br') {
+      lines.push([])
+      hardBreaks += 1
+      continue
+    }
+    if (item.whiteSpace === 'collapse') {
+      lines[lines.length - 1]!.push({
+        text: item.text.replace(COLLAPSIBLE_RUN, ' '),
+        collapsible: true,
+        item,
+      })
+      continue
+    }
+    // `pre` and `pre-line`: every segment break is a line break; `pre-line` still collapses the
+    // spaces and tabs within a segment.
+    item.text.split(SEGMENT_BREAK).forEach((piece, i) => {
+      if (i > 0) {
+        lines.push([])
+        hardBreaks += 1
+      }
+      const preserveBreaksOnly = item.whiteSpace === 'preserve-breaks'
+      lines[lines.length - 1]!.push({
+        text: preserveBreaksOnly ? piece.replace(/[ \t\f]+/g, ' ') : piece,
+        collapsible: preserveBreaksOnly,
+        item,
+      })
+    })
+  }
+  flush()
+  return paragraphs
+}
+
+/** The paragraphs a block root emits, or none when it carries no text. */
+function paragraphsOf(node: SlideNode): LaidParagraph[] {
+  if (!hasOwnText(node)) return []
+  return layOutInline(node.inlineContent, runStyleOf(node.style))
+}
+
+/**
+ * A block's text as the reader sees it, lines joined with `\n` — the string the fidelity oracle
+ * compares against the block's `innerText`, and the speaker-notes text layer.
+ */
+export function renderedBlockText(node: SlideNode): string {
+  return paragraphsOf(node)
+    .map((p) => p.map((r) => (r.lineBreakBefore ? `\n${r.text}` : r.text)).join(''))
+    .join('\n')
+}
+
+function runSpec(run: LaidRun, scale: number): TextRunSpec {
+  const s = run.style
+  const spec: TextRunSpec = { text: run.text }
   const weight = parseInt(s.fontWeight, 10)
-  const text = s.textTransform === 'uppercase' ? node.text.toUpperCase() : node.text
+  if (
+    Number.isFinite(weight) ? weight >= 600 : s.fontWeight === 'bold' || s.fontWeight === 'bolder'
+  )
+    spec.bold = true
+  if (s.fontStyle === 'italic' || s.fontStyle === 'oblique') spec.italic = true
+  if (s.textDecorationLine.includes('underline')) spec.underline = true
+  if (s.textDecorationLine.includes('line-through')) spec.strike = true
   const color = parseCssColor(s.color)
-  const run: TextRunSpec = { text }
-  if (Number.isFinite(weight) && weight >= 600) run.bold = true
-  else if (s.fontWeight === 'bold' || s.fontWeight === 'bolder') run.bold = true
-  if (s.fontStyle === 'italic' || s.fontStyle === 'oblique') run.italic = true
-  if (s.textDecorationLine.includes('underline')) run.underline = true
-  if (s.textDecorationLine.includes('line-through')) run.strike = true
   if (color !== null) {
-    run.color = color.hex
-    const transparency = alphaToTransparency(color.alpha * node.effectiveOpacity)
-    if (transparency > 0) run.transparency = transparency
+    spec.color = color.hex
+    const transparency = alphaToTransparency(color.alpha * run.opacity)
+    if (transparency > 0) spec.transparency = transparency
   }
   const family = firstFontFamily(s.fontFamily)
-  if (family !== '') run.fontFace = family
-  if (s.fontSize > 0) run.fontSize = pxToPoints(s.fontSize * scale)
+  if (family !== '') spec.fontFace = family
+  if (s.fontSize > 0) spec.fontSize = pxToPoints(s.fontSize * scale)
+  const letter = parseFloat(s.letterSpacing)
+  if (Number.isFinite(letter) && letter !== 0) spec.charSpacing = pxToPoints(letter * scale)
+  if (run.href !== null && run.href !== '') spec.hyperlink = run.href
+  if (run.lineBreakBefore) spec.lineBreakBefore = true
+  return spec
+}
+
+/** The runs of a block's paragraphs as writer specs; the list marker goes on the first run only. */
+function runSpecs(
+  node: SlideNode,
+  paragraphs: readonly LaidParagraph[],
+  scale: number,
+): TextRunSpec[] {
+  const out: TextRunSpec[] = []
+  paragraphs.forEach((paragraph, i) => {
+    paragraph.forEach((run, j) => {
+      const spec = runSpec(run, scale)
+      if (i > 0 && j === 0) spec.paragraphBreakBefore = true
+      out.push(spec)
+    })
+  })
   // `list-style: none` is how a chip/tag/nav row is built out of a `<ul>`; emitting a bullet there
-  // invents a glyph the reader never saw (review r2).
-  if (s.listStyleType !== 'none') {
-    if (node.listType === 'ol') run.bullet = { type: 'number' }
-    else if (node.listType === 'ul') run.bullet = true
+  // invents a glyph the reader never saw (review r2). Only the first paragraph carries the marker —
+  // Chromium draws one per `<li>`, not one per line.
+  const first = out[0]
+  if (first !== undefined && node.style.listStyleType !== 'none') {
+    if (node.listType === 'ol') first.bullet = { type: 'number' }
+    else if (node.listType === 'ul') first.bullet = true
   }
-  if (node.href !== null && node.href !== '') run.hyperlink = node.href
-  return run
+  return out
 }
 
 /** line-height as a multiple of font-size, or `undefined` for `normal` / unresolved. */
@@ -290,6 +547,25 @@ function lineSpacingMultiple(lineHeight: string, fontSize: number): number | und
   const px = parseFloat(lineHeight)
   if (!Number.isFinite(px) || px <= 0) return undefined
   return Math.round((px / fontSize) * 100) / 100
+}
+
+/** A computed length in px, or 0 for anything that is not a positive length. */
+function lengthPx(value: string): number {
+  const n = parseFloat(value)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** Padding plus border width per side, in points at the placed scale; `undefined` when all zero. */
+function textInset(style: NodeStyle, scale: number): TextInset | undefined {
+  const edge = (padding: string, border: BorderSide): number =>
+    pxToPoints((lengthPx(padding) + (border.style === 'none' ? 0 : lengthPx(border.width))) * scale)
+  const inset: TextInset = {
+    left: edge(style.paddingLeft, style.borderLeft),
+    top: edge(style.paddingTop, style.borderTop),
+    right: edge(style.paddingRight, style.borderRight),
+    bottom: edge(style.paddingBottom, style.borderBottom),
+  }
+  return inset.left > 0 || inset.top > 0 || inset.right > 0 || inset.bottom > 0 ? inset : undefined
 }
 
 /**
@@ -341,6 +617,84 @@ function radiusFraction(radiusPx: number, w: number, h: number): number {
   return radiusPx > 0 && shortSide > 0 ? Math.min(0.5, radiusPx / shortSide) : 0
 }
 
+/** Everything a node paints of its own, resolved once and shared by the text and the paint branches. */
+type Decoration = {
+  place: Placement
+  box: BoxInches
+  fill: FillSpec | null
+  line: LineSpec | null
+  edges: ShapeSpec[]
+  shadow: ShadowSpec | null
+  radius: number
+  /** False when the node paints a gradient/image the pure walk has no pixels for. */
+  covered: boolean
+}
+
+function decorationOf(node: SlideNode): Decoration {
+  const place = placement(node)
+  const opacity = node.effectiveOpacity
+  const sides = paintedSides(node, opacity)
+  const line = uniformLine(sides, place.scale)
+  return {
+    place,
+    box: boxToInches(place),
+    fill: toFill(node.style.backgroundColor, opacity),
+    line,
+    edges: line === null ? edgeRects(sides, place) : [],
+    shadow: toShadow(node.style.boxShadow, opacity),
+    radius: radiusFraction(firstRadiusPx(node.style.borderRadius), place.w, place.h),
+    covered: !paintsImage(node.style.backgroundImage),
+  }
+}
+
+/** The paint rule: a shape for anything that paints, leaf or not; nothing for a pure layout wrapper. */
+function paintShapes(d: Decoration): ShapeSpec[] {
+  if (d.fill === null && d.line === null && d.edges.length === 0) return []
+  const isEllipse = d.radius >= 0.5
+  const shape: Extract<ShapeSpec, { kind: 'rect' | 'roundRect' | 'ellipse' }> = {
+    kind: isEllipse ? 'ellipse' : d.radius > 0 ? 'roundRect' : 'rect',
+    box: d.box,
+  }
+  if (d.fill !== null) shape.fill = d.fill
+  if (d.line !== null) shape.line = d.line
+  if (d.shadow !== null) shape.shadow = d.shadow
+  if (!isEllipse && d.radius > 0) shape.rectRadius = d.radius
+  if (d.place.rotate !== undefined) shape.rotate = d.place.rotate
+  return [shape, ...d.edges]
+}
+
+/**
+ * The text box for a block root. `decorated` puts the block's own fill/outline/shadow/radius on the
+ * box itself; when an inline descendant paints, those went out as separate shapes beneath it and the
+ * text box is bare.
+ */
+function textShape(
+  node: SlideNode,
+  d: Decoration,
+  paragraphs: readonly LaidParagraph[],
+  decorated: boolean,
+): ShapeSpec {
+  const shape: Extract<ShapeSpec, { kind: 'text' }> = {
+    kind: 'text',
+    box: d.box,
+    runs: runSpecs(node, paragraphs, d.place.scale),
+    align: toAlign(node.style.textAlign),
+    valign: 'top',
+  }
+  if (decorated) {
+    if (d.fill !== null) shape.fill = d.fill
+    if (d.line !== null) shape.line = d.line
+    if (d.shadow !== null) shape.shadow = d.shadow
+    if (d.radius > 0) shape.rectRadius = d.radius
+  }
+  if (d.place.rotate !== undefined) shape.rotate = d.place.rotate
+  const spacing = lineSpacingMultiple(node.style.lineHeight, node.style.fontSize)
+  if (spacing !== undefined) shape.lineSpacingMultiple = spacing
+  const inset = textInset(node.style, d.place.scale)
+  if (inset !== undefined) shape.inset = inset
+  return shape
+}
+
 /**
  * Walk the measured nodes into shape specs. `body` supplies the slide background: a solid colour maps
  * to `slide.background`; a gradient/image is flagged (`bodyImage`) for the planner to supply as a
@@ -349,8 +703,16 @@ function radiusFraction(radiusPx: number, w: number, h: number): number {
 export function walkSlide(measure: MeasureResult): WalkResult {
   const { nodes, body } = measure
   const ordered = [...nodes].toSorted((a, b) => (a.z !== b.z ? a.z - b.z : a.domIndex - b.domIndex))
+  const inlinesOf = new Map<number, SlideNode[]>()
+  for (const n of ordered) {
+    if (n.inlineOf === null) continue
+    const list = inlinesOf.get(n.inlineOf)
+    if (list === undefined) inlinesOf.set(n.inlineOf, [n])
+    else list.push(n)
+  }
 
   const shapes: ShapeSpec[] = []
+  const emitted = new Set<SlideNode>()
   let contentArea = 0
   let coveredArea = 0
   const note = (node: SlideNode, covered: boolean): void => {
@@ -360,63 +722,47 @@ export function walkSlide(measure: MeasureResult): WalkResult {
   }
 
   for (const node of ordered) {
+    if (emitted.has(node)) continue
+    emitted.add(node)
     // Media the pure path cannot embed: counts as content, not covered → drags coverage down.
     if (node.tag === 'img' || node.tag === 'svg' || node.tag === 'canvas') {
       note(node, false)
       continue
     }
 
-    const place = placement(node)
-    const box = boxToInches(place)
-    const opacity = node.effectiveOpacity
-    const fill = toFill(node.style.backgroundColor, opacity)
-    const sides = paintedSides(node, opacity)
-    const line = uniformLine(sides, place.scale)
-    const edges = line === null ? edgeRects(sides, place) : []
-    const radius = radiusFraction(firstRadiusPx(node.style.borderRadius), place.w, place.h)
-    const shadow = toShadow(node.style.boxShadow, opacity)
-    // A gradient/image background paints pixels the pure walk does not have: the node's text and
-    // border still go out, but its area counts as uncovered (and the scorer deducts for it).
-    const covered = !paintsImage(node.style.backgroundImage)
+    const d = decorationOf(node)
+    const paragraphs = paragraphsOf(node)
 
-    if (node.isLeaf && node.text !== '') {
-      const spacing = lineSpacingMultiple(node.style.lineHeight, node.style.fontSize)
-      const letter = parseFloat(node.style.letterSpacing)
-      const shape: Extract<ShapeSpec, { kind: 'text' }> = {
-        kind: 'text',
-        box,
-        runs: [textRunFor(node, place.scale)],
-        align: toAlign(node.style.textAlign),
-        valign: 'top',
+    if (paragraphs.some((p) => p.some((r) => r.text !== ''))) {
+      // An inline descendant that paints — a highlighted span — must sit under this block's glyphs
+      // and over its background, so it is emitted here, between the two, rather than at its own
+      // (later) DOM position where it would cover the text.
+      const inlines = (inlinesOf.get(node.domIndex) ?? [])
+        .filter((n) => !emitted.has(n))
+        .map((n) => ({ node: n, decoration: decorationOf(n) }))
+        .filter((i) => paintShapes(i.decoration).length > 0)
+      if (inlines.length === 0) {
+        shapes.push(textShape(node, d, paragraphs, true), ...d.edges)
+      } else {
+        shapes.push(...paintShapes(d))
+        for (const inline of inlines) {
+          shapes.push(...paintShapes(inline.decoration))
+          emitted.add(inline.node)
+          note(inline.node, inline.decoration.covered)
+        }
+        shapes.push(textShape(node, d, paragraphs, false))
       }
-      if (fill !== null) shape.fill = fill
-      if (line !== null) shape.line = line
-      if (shadow !== null) shape.shadow = shadow
-      if (radius > 0) shape.rectRadius = radius
-      if (place.rotate !== undefined) shape.rotate = place.rotate
-      if (spacing !== undefined) shape.lineSpacingMultiple = spacing
-      if (Number.isFinite(letter) && letter !== 0)
-        shape.charSpacing = pxToPoints(letter * place.scale)
-      shapes.push(shape, ...edges)
-      note(node, covered)
+      note(node, d.covered)
       continue
     }
 
-    // Paint rule: a shape for anything that paints, leaf or not.
-    if (fill !== null || line !== null || edges.length > 0) {
-      const isEllipse = radius >= 0.5
-      const shape: Extract<ShapeSpec, { kind: 'rect' | 'roundRect' | 'ellipse' }> = {
-        kind: isEllipse ? 'ellipse' : radius > 0 ? 'roundRect' : 'rect',
-        box,
-      }
-      if (fill !== null) shape.fill = fill
-      if (line !== null) shape.line = line
-      if (shadow !== null) shape.shadow = shadow
-      if (!isEllipse && radius > 0) shape.rectRadius = radius
-      if (place.rotate !== undefined) shape.rotate = place.rotate
-      shapes.push(shape, ...edges)
-      note(node, covered)
-    } else if (!covered) {
+    const painted = paintShapes(d)
+    if (painted.length > 0) {
+      shapes.push(...painted)
+      note(node, d.covered)
+    } else if (!d.covered) {
+      // A gradient/image background paints pixels the pure walk does not have: its area counts as
+      // uncovered (and the scorer deducts for it).
       note(node, false)
     }
     // Pure layout wrappers contribute neither a shape nor content area — they are invisible in PPTX.
@@ -433,8 +779,8 @@ export function walkSlide(measure: MeasureResult): WalkResult {
 /** The slide's visible text, for the accessibility speaker-notes layer (§3.5). */
 export function slideTextForNotes(nodes: readonly SlideNode[]): string {
   return nodes
-    .filter((n) => n.isLeaf && n.text !== '')
-    .map((n) => n.text)
+    .map(renderedBlockText)
+    .filter((text) => text.trim() !== '')
     .join('\n')
     .trim()
 }

@@ -19,7 +19,7 @@ import {
   scoreSlide,
 } from '../../../../src/shared/export/pptx/confidence'
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
-import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint } from './_fixtures'
+import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint, textItem } from './_fixtures'
 
 /**
  * The confidence scorer (§3.4) — table-driven. Each signal asserts its exact deduction and cap, the
@@ -28,7 +28,7 @@ import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint } from './_fixture
  */
 describe('scoreSlide deductions', () => {
   it('a plain text slide scores 100', () => {
-    const nodes = [makeNode({ isLeaf: true, text: 'Hello', tag: 'h1' })]
+    const nodes = [makeNode({ text: 'Hello', tag: 'h1' })]
     expect(scoreSlide(makeMeasure(nodes)).score).toBe(100)
   })
 
@@ -91,7 +91,6 @@ describe('scoreSlide deductions', () => {
       y: 232,
       w: 200,
       h: 60,
-      isLeaf: true,
       text: '$4.2M',
       style: { color: 'rgb(255, 255, 255)' },
     })
@@ -119,7 +118,7 @@ describe('scoreSlide deductions', () => {
    * `filter` weight because nothing is missing — everything is the wrong colour.
    */
   it('scores a filter/blend/clip on a root element as recolouring the whole slide', () => {
-    const text = [makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })]
+    const text = [makeNode({ text: 'Hi', tag: 'h1' })]
     for (const paint of [
       makeRootPaint({ filter: 'invert(1)' }),
       makeRootPaint({ backdropFilter: 'blur(4px)' }),
@@ -139,7 +138,7 @@ describe('scoreSlide deductions', () => {
   })
 
   it("censuses the root elements too, not only body's descendants", () => {
-    const text = [makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })]
+    const text = [makeNode({ text: 'Hi', tag: 'h1' })]
     for (const key of ['body', 'root'] as const) {
       const { score, reasons } = scoreSlide(
         makeMeasure(text, { [key]: makeRootPaint({ unmodelledProperties: ['zoom'] }) }),
@@ -162,11 +161,9 @@ describe('scoreSlide deductions', () => {
   })
 
   it('deducts for multi-primitive SVG (forced rasterization), capped', () => {
-    const svg = makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 12 })
+    const svg = makeNode({ tag: 'svg', svgPrimitiveCount: 12 })
     expect(scoreSlide(makeMeasure([svg])).score).toBe(100 - SCORE_WEIGHTS.svgEach)
-    const many = Array.from({ length: 4 }, () =>
-      makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 5 }),
-    )
+    const many = Array.from({ length: 4 }, () => makeNode({ tag: 'svg', svgPrimitiveCount: 5 }))
     expect(scoreSlide(makeMeasure(many)).score).toBe(100 - SCORE_WEIGHTS.svgCap)
   })
 
@@ -174,26 +171,26 @@ describe('scoreSlide deductions', () => {
     expect(scoreSlide(makeMeasure([makeNode({ tag: 'img', src: 'x.png' })])).score).toBe(
       100 - SCORE_WEIGHTS.imageEach,
     )
-    expect(scoreSlide(makeMeasure([makeNode({ tag: 'canvas', isLeaf: false })])).score).toBe(
+    expect(scoreSlide(makeMeasure([makeNode({ tag: 'canvas' })])).score).toBe(
       100 - SCORE_WEIGHTS.canvas,
     )
   })
 
   it('deducts for a non-system font on text', () => {
-    const node = makeNode({ isLeaf: true, text: 'Hi', style: { fontFamily: 'Inter, sans-serif' } })
+    const node = makeNode({ text: 'Hi', style: { fontFamily: 'Inter, sans-serif' } })
     expect(scoreSlide(makeMeasure([node])).score).toBe(100 - SCORE_WEIGHTS.nonSystemFont)
   })
 
   it('deducts for overlapping text boxes', () => {
-    const a = makeNode({ isLeaf: true, text: 'A', x: 0, y: 0, w: 100, h: 100 })
-    const b = makeNode({ isLeaf: true, text: 'B', x: 10, y: 10, w: 100, h: 100 })
+    const a = makeNode({ text: 'A', x: 0, y: 0, w: 100, h: 100 })
+    const b = makeNode({ text: 'B', x: 10, y: 10, w: 100, h: 100 })
     expect(scoreSlide(makeMeasure([a, b])).score).toBe(100 - SCORE_WEIGHTS.overlapEach)
   })
 })
 
-describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', () => {
+describe('scoreSlide sees the body, and text flow (M4.8a, M4.8b)', () => {
   it('deducts for a gradient/image body background — the signal that used to be a 1 px² no-op', () => {
-    const measure = makeMeasure([makeNode({ isLeaf: true, text: 'Hi', tag: 'h1' })], {
+    const measure = makeMeasure([makeNode({ text: 'Hi', tag: 'h1' })], {
       body: makeRootPaint({ backgroundImage: 'linear-gradient(red, blue)' }),
     })
     const { score, reasons } = scoreSlide(measure)
@@ -203,13 +200,51 @@ describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', ()
     expect(paintsImage('none')).toBe(false)
   })
 
-  it('deducts heavily for bare text beside inline elements, below the auto threshold', () => {
-    const p = makeNode({ tag: 'p', isLeaf: false, bareTextCount: 3 })
-    const strong = makeNode({ tag: 'strong', isLeaf: true, text: 'enterprise expansion' })
-    const { score, reasons } = scoreSlide(makeMeasure([p, strong]))
-    expect(score).toBe(100 - SCORE_WEIGHTS.bareText)
+  it('no longer deducts for text beside inline elements: the run-level walk carries it (M4.8b)', () => {
+    // `<p>a <strong>b</strong> c</p>` measures as one block root with three text items.
+    const p = makeNode({
+      tag: 'p',
+      inlineContent: [
+        textItem('Growth was driven by '),
+        textItem('enterprise expansion', { fontWeight: '700' }),
+        textItem(' than forecast.'),
+      ],
+    })
+    const strong = makeNode({ tag: 'strong', inlineOf: p.domIndex })
+    expect(scoreSlide(makeMeasure([p, strong])).score).toBe(100)
+  })
+
+  it('deducts, below the auto threshold, for text that flows around an object PowerPoint cannot (M4.8b)', () => {
+    // `<p>Rate: <span class="pill">24%</span> up</p>`: the pill is its own box, and PowerPoint lays
+    // " up" out right after "Rate: " — on top of the pill.
+    const around = makeNode({
+      tag: 'p',
+      inlineContent: [textItem('Rate: '), { kind: 'box' }, textItem(' up')],
+    })
+    const { score, reasons } = scoreSlide(makeMeasure([around]))
+    expect(score).toBe(100 - SCORE_WEIGHTS.interruptedFlow)
     expect(score).toBeLessThan(PPTX_TIER_THRESHOLD)
-    expect(reasons.some((r) => r.includes('3 text fragment'))).toBe(true)
+    expect(reasons.some((r) => r.includes('flow around an inline object'))).toBe(true)
+    // Mixed content is the same defect vertically: text after a nested block lands under the
+    // previous paragraph, not under the block.
+    const mixed = makeNode({
+      tag: 'div',
+      inlineContent: [textItem('Intro'), { kind: 'block' }, textItem('Footer')],
+    })
+    expect(scoreSlide(makeMeasure([mixed])).score).toBe(100 - SCORE_WEIGHTS.interruptedFlow)
+    // An object AFTER all of the block's own text shifts nothing.
+    const trailing = makeNode({
+      tag: 'p',
+      inlineContent: [textItem('Status: '), { kind: 'box' }, textItem('  ')],
+    })
+    expect(scoreSlide(makeMeasure([trailing])).score).toBe(100)
+  })
+
+  it('deducts for a visible inline inside a hidden block, whose text no box carries (M4.8b)', () => {
+    const orphan = makeNode({ tag: 'span', orphanText: true })
+    const { score, reasons } = scoreSlide(makeMeasure([orphan]))
+    expect(score).toBe(100 - SCORE_WEIGHTS.orphanText)
+    expect(reasons.some((r) => r.includes('hidden block'))).toBe(true)
   })
 
   it('classifies an inherited skew as `other` (a rotated ancestor as a similarity)', () => {
@@ -232,7 +267,6 @@ describe('scoreSlide sees the body and the text the leaf rule drops (M4.8a)', ()
 
   it('deducts for a text-shadow, which has no run-level equivalent', () => {
     const node = makeNode({
-      isLeaf: true,
       text: 'Ghost',
       style: { textShadow: 'rgba(0,0,0,.6) 0px 4px 12px' },
     })
@@ -267,16 +301,15 @@ describe('un-modelled CSS properties fail toward raster', () => {
   })
 
   it('a slide using only modelled CSS still scores 100 — the census is not a blanket charge', () => {
-    expect(scoreSlide(makeMeasure([makeNode({ isLeaf: true, text: 'Hi' })])).score).toBe(100)
+    expect(scoreSlide(makeMeasure([makeNode({ text: 'Hi' })])).score).toBe(100)
   })
 })
 
 describe('text a leaf clips itself is not shipped whole', () => {
   it('deducts for a truncated leaf, and ignores sub-pixel line-box rounding', () => {
-    const clipped = makeNode({ isLeaf: true, text: 'Consolidated quarterly…', clippedTextPx: 400 })
+    const clipped = makeNode({ text: 'Consolidated quarterly…', clippedTextPx: 400 })
     expect(scoreSlide(makeMeasure([clipped])).score).toBe(100 - SCORE_WEIGHTS.clippedText)
     const rounding = makeNode({
-      isLeaf: true,
       text: 'Fits',
       clippedTextPx: CLIPPED_TEXT_MIN_PX - 1,
     })
@@ -514,7 +547,7 @@ describe('chooseTier', () => {
 
   it('a hard slide (animated SVG scene) routes to raster in auto; a plain slide stays structured', () => {
     const hard = [
-      makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 20 }),
+      makeNode({ tag: 'svg', svgPrimitiveCount: 20 }),
       makeNode({ style: { filter: 'blur(2px)' } }),
       makeNode({ style: { backgroundImage: 'radial-gradient(red, blue)' } }),
     ]
@@ -522,7 +555,7 @@ describe('chooseTier', () => {
     expect(hardScore.score).toBeLessThan(PPTX_TIER_THRESHOLD)
     expect(chooseTier(hardScore.score, 'auto', hardScore.hardBlocker)).toBe('raster')
 
-    const plain = [makeNode({ isLeaf: true, text: 'Title', tag: 'h1' })]
+    const plain = [makeNode({ text: 'Title', tag: 'h1' })]
     const plainScore = scoreSlide(makeMeasure(plain))
     expect(plainScore.score).toBeGreaterThanOrEqual(PPTX_TIER_THRESHOLD)
     expect(chooseTier(plainScore.score, 'auto', plainScore.hardBlocker)).toBe('structured')
@@ -533,10 +566,10 @@ describe('the raster threshold is pinned to concrete scores (not the constant)',
   // A slide computed at 71 — just ABOVE 70 — must stay structured. Mutating the threshold to 90
   // reds this (71 < 90 → raster). Score = 100 − 24 (2 inset shadows, capped) − 5 (rotation) = 71.
   const justAbove = [
-    makeNode({ tag: 'h1', isLeaf: true, text: 'Title' }),
-    makeNode({ isLeaf: false, style: { boxShadow: 'inset 0 0 4px rgb(0, 0, 0)' } }),
-    makeNode({ isLeaf: false, style: { boxShadow: 'inset 0 0 8px rgb(0, 0, 0)' } }),
-    makeNode({ isLeaf: false, style: { transform: 'matrix(0, 1, -1, 0, 0, 0)' } }),
+    makeNode({ tag: 'h1', text: 'Title' }),
+    makeNode({ style: { boxShadow: 'inset 0 0 4px rgb(0, 0, 0)' } }),
+    makeNode({ style: { boxShadow: 'inset 0 0 8px rgb(0, 0, 0)' } }),
+    makeNode({ style: { transform: 'matrix(0, 1, -1, 0, 0, 0)' } }),
   ]
 
   // A slide computed at 68 — just BELOW 70 — must route to raster. Mutating the threshold to 60
@@ -544,11 +577,10 @@ describe('the raster threshold is pinned to concrete scores (not the constant)',
   const justBelow = [
     makeNode({
       tag: 'h1',
-      isLeaf: true,
       text: 'Title',
       style: { textShadow: '0 2px 4px rgb(0, 0, 0)' },
     }),
-    makeNode({ isLeaf: false, style: { mixBlendMode: 'multiply' } }),
+    makeNode({ style: { mixBlendMode: 'multiply' } }),
   ]
 
   it('computes the straddling scores exactly (pins the scorer weights)', () => {

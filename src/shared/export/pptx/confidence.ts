@@ -42,6 +42,7 @@
  * on an element the effect is missing, on a root element every colour in the file is the wrong one.
  */
 
+import { hasOwnText, textItems } from './node'
 import type { MeasureResult, RootPaint, SlideNode, TransformSpec } from './node'
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../types'
 import type { SlideTier } from './types'
@@ -106,11 +107,18 @@ export const SCORE_WEIGHTS = {
    */
   rootPaint: 35,
   /**
-   * Text beside inline elements that no leaf owns (`<p>a <b>b</b> c</p>`) is dropped by the leaf-text
-   * rule. Missing words are unreadable output, and a high score would suppress the raster fallback
-   * that fixes it (M4.8a). M4.8b's run-level walk removes the loss and this deduction with it.
+   * A block's own text comes after an object in its flow that PowerPoint cannot flow around — an
+   * inline-block pill mid-sentence, an inline `<img>`, a float, a nested block between two runs of
+   * text (M4.8b). The object gets its own box at Chromium's position, but the text after it is
+   * laid out by PowerPoint as if the object were not there, so it lands on top of the object or
+   * short of where the reader saw it. Wrong placement, not plainer output.
    */
-  bareText: 35,
+  interruptedFlow: 35,
+  /**
+   * A visible inline element inside a `visibility: hidden` block (`visible` re-declared on the
+   * span): the block that would carry its text is not a node, so the words are dropped (M4.8b).
+   */
+  orphanText: 35,
   /** `::before`/`::after` that paint: no rect can be measured for them, so nothing is emitted. */
   pseudoElement: 35,
   /** `overflow: hidden|clip` with a descendant outside the box: PowerPoint cannot clip it. */
@@ -172,7 +180,8 @@ export const WRONG_CONSTRUCT_WEIGHTS = [
   'elementImageBackground',
   'clipPath',
   'transformOther',
-  'bareText',
+  'interruptedFlow',
+  'orphanText',
   'pseudoElement',
   'clippedOverflow',
   'clippedText',
@@ -385,6 +394,19 @@ function centreInside(n: SlideNode, box: SlideNode): boolean {
   return cx >= box.x && cx <= box.x + box.w && cy >= box.y && cy <= box.y + box.h
 }
 
+/**
+ * True when some of the block's own text comes after an atomic inline, a float, a hidden inline or
+ * a nested block in its content — the runs PowerPoint will place as if that object took no space.
+ */
+function flowInterrupted(node: SlideNode): boolean {
+  let objectSeen = false
+  for (const item of node.inlineContent) {
+    if (item.kind === 'box' || item.kind === 'block') objectSeen = true
+    else if (item.kind === 'text' && objectSeen && /[^ \t\n\r\f]/.test(item.text)) return true
+  }
+  return false
+}
+
 const isInsetShadow = (shadow: string): boolean => shadow !== 'none' && /inset/i.test(shadow)
 const isPresent = (v: string): boolean => v !== '' && v !== 'none'
 const sum = (nodes: readonly SlideNode[], f: (n: SlideNode) => number): number =>
@@ -427,7 +449,7 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   const gradientArea = sum(gradients, (n) => Math.max(0, n.w) * Math.max(0, n.h))
   if (gradients.length > 0) {
     const textOnGradient = nodes.some(
-      (n) => n.isLeaf && n.text !== '' && gradients.some((g) => centreInside(n, g)),
+      (n) => hasOwnText(n) && gradients.some((g) => centreInside(n, g)),
     )
     const area = ((100 * gradientArea) / SLIDE_AREA_PX).toFixed(1)
     deduct(
@@ -446,7 +468,8 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   )
 
   // --- Text shadows: no run-level equivalent emitted ---
-  if (nodes.some((n) => n.isLeaf && n.text !== '' && isPresent(n.style.textShadow)))
+  const runs = textItems(nodes)
+  if (runs.some((r) => isPresent(r.style.textShadow)))
     deduct(SCORE_WEIGHTS.textShadow, 'text-shadow')
 
   // --- Filters (no OOXML equivalent at all) ---
@@ -487,12 +510,12 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   const canvases = nodes.filter((n) => n.tag === 'canvas').length
   if (canvases > 0) deduct(SCORE_WEIGHTS.canvas, `${String(canvases)} <canvas>`)
 
-  // --- Non-system fonts on text nodes ---
-  if (nodes.some((n) => n.isLeaf && n.text !== '' && !isSystemFont(n.style.fontFamily)))
+  // --- Non-system fonts on text runs ---
+  if (runs.some((r) => !isSystemFont(r.style.fontFamily)))
     deduct(SCORE_WEIGHTS.nonSystemFont, 'non-system font (substitution risk)')
 
   // --- Overlapping text boxes (usually an effect we did not model) ---
-  const textNodes = nodes.filter((n) => n.isLeaf && n.text !== '')
+  const textNodes = nodes.filter(hasOwnText)
   let overlaps = 0
   for (let i = 0; i < textNodes.length; i += 1) {
     for (let j = i + 1; j < textNodes.length; j += 1) {
@@ -522,12 +545,20 @@ export function scoreSlide(measure: MeasureResult): SlideScore {
   if (rootOps.length > 0)
     deduct(SCORE_WEIGHTS.rootPaint, `${rootOps.join(', ')} — recolours the whole slide`)
 
-  // --- Text no leaf owns: dropped by the leaf-text rule, so the slide would lose words ---
-  const bare = sum(nodes, (n) => n.bareTextCount)
-  if (bare > 0)
+  // --- Text after an object in its own flow: PowerPoint lays the runs out as if it were absent ---
+  const interrupted = textNodes.filter(flowInterrupted).length
+  if (interrupted > 0)
     deduct(
-      SCORE_WEIGHTS.bareText,
-      `${String(bare)} text fragment(s) beside inline elements dropped`,
+      SCORE_WEIGHTS.interruptedFlow,
+      `${String(interrupted)} text block(s) flow around an inline object PowerPoint cannot`,
+    )
+
+  // --- Visible text whose block is hidden: no box carries it ---
+  const orphans = nodes.filter((n) => n.orphanText).length
+  if (orphans > 0)
+    deduct(
+      SCORE_WEIGHTS.orphanText,
+      `${String(orphans)} visible inline element(s) inside a hidden block — text dropped`,
     )
 
   // --- Painting pseudo-elements: unmeasurable, so nothing is emitted for them ---

@@ -1,8 +1,10 @@
 import type {
   BorderSide,
+  InlineItem,
   MeasureResult,
   NodeStyle,
   RootPaint,
+  RunStyle,
   SlideNode,
   TransformSpec,
 } from '../../../../src/shared/export/pptx/node'
@@ -45,6 +47,10 @@ export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
     borderRight: NO_BORDER,
     borderBottom: NO_BORDER,
     borderLeft: NO_BORDER,
+    paddingTop: '0px',
+    paddingRight: '0px',
+    paddingBottom: '0px',
+    paddingLeft: '0px',
     boxShadow: 'none',
     filter: 'none',
     backdropFilter: 'none',
@@ -62,13 +68,68 @@ export function makeStyle(overrides: Partial<NodeStyle> = {}): NodeStyle {
   }
 }
 
+/** The run style a text node inherits from a block styled `style` — what `getComputedStyle` reports on it. */
+export function runStyleOf(style: Partial<RunStyle> = {}): RunStyle {
+  const base = makeStyle()
+  return {
+    fontFamily: base.fontFamily,
+    fontSize: base.fontSize,
+    fontWeight: base.fontWeight,
+    fontStyle: base.fontStyle,
+    textDecorationLine: base.textDecorationLine,
+    color: base.color,
+    textTransform: base.textTransform,
+    letterSpacing: base.letterSpacing,
+    textShadow: base.textShadow,
+    ...style,
+  }
+}
+
+/** One text node of a block's inline content, verbatim, in the given (resolved) style. */
+export function textItem(
+  text: string,
+  style: Partial<RunStyle> = {},
+  extra: Partial<Omit<Extract<InlineItem, { kind: 'text' }>, 'kind' | 'text' | 'style'>> = {},
+): Extract<InlineItem, { kind: 'text' }> {
+  return {
+    kind: 'text',
+    text,
+    whiteSpace: 'collapse',
+    style: runStyleOf(style),
+    opacity: 1,
+    href: null,
+    ...extra,
+  }
+}
+
 let seq = 0
 
-/** A visible `<div>` leaf at (0,0,100,50) by default; override anything, including a partial `style`. */
+/**
+ * A visible `<div>` at (0,0,100,50) by default; override anything, including a partial `style`.
+ * `text` is a convenience for the common one-text-node block: it becomes the node's whole inline
+ * content, in the style the node itself carries — exactly what a childless `<h1>Title</h1>` measures as.
+ */
 export function makeNode(
-  overrides: Omit<Partial<SlideNode>, 'style'> & { style?: Partial<NodeStyle> } = {},
+  overrides: Omit<Partial<SlideNode>, 'style'> & { style?: Partial<NodeStyle>; text?: string } = {},
 ): SlideNode {
-  const { style, ...rest } = overrides
+  const { style, text, ...rest } = overrides
+  const nodeStyle = makeStyle(style)
+  const fromText: InlineItem[] =
+    text === undefined || text === ''
+      ? []
+      : [
+          textItem(text, {
+            fontFamily: nodeStyle.fontFamily,
+            fontSize: nodeStyle.fontSize,
+            fontWeight: nodeStyle.fontWeight,
+            fontStyle: nodeStyle.fontStyle,
+            textDecorationLine: nodeStyle.textDecorationLine,
+            color: nodeStyle.color,
+            textTransform: nodeStyle.textTransform,
+            letterSpacing: nodeStyle.letterSpacing,
+            textShadow: nodeStyle.textShadow,
+          }),
+        ]
   return {
     slId: null,
     tag: 'div',
@@ -78,22 +139,21 @@ export function makeNode(
     h: 50,
     z: 0,
     domIndex: seq++,
-    isLeaf: true,
-    text: '',
-    href: null,
+    inlineContent: fromText,
+    inlineOf: null,
+    orphanText: false,
     listType: null,
     svgPrimitiveCount: 0,
     src: null,
     layoutW: 100,
     layoutH: 50,
     ancestorTransforms: [],
-    bareTextCount: 0,
     effectiveOpacity: 1,
     paintedPseudoCount: 0,
     escapingDescendants: 0,
     clippedTextPx: 0,
     unmodelledProperties: [],
-    style: makeStyle(style),
+    style: nodeStyle,
     ...rest,
   }
 }

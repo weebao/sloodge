@@ -57,6 +57,13 @@ const rasterSlide: SlidePlan = {
   reasons: ['multi-primitive SVG(s)'],
 }
 
+/** Points → EMU, as pptxgenjs writes `<a:bodyPr>` insets. */
+const emu = (pt: number): string => String(Math.round(pt * 12700))
+
+/** The `ppt/media/*` parts of an unzipped package, in archive order. */
+const media = (files: Record<string, Uint8Array>): [string, Uint8Array][] =>
+  Object.entries(files).filter(([p]) => p.startsWith('ppt/media/'))
+
 async function build(plan: DeckPptxPlan): Promise<Record<string, Uint8Array>> {
   const bytes = await writeDeckPptx(plan)
   return unzipSync(bytes)
@@ -115,6 +122,162 @@ describe('writeDeckPptx (OPC validity)', () => {
     const xml = strFromU8(files['ppt/slides/slide1.xml']!)
     expect(xml).toContain(`rot="${String(346 * 60000)}"`)
     expect(xml).toContain(`rot="${String(3 * 60000)}"`)
+  })
+
+  it('writes one <a:r> per run with its own rPr, <a:br/> for a line break, a new <a:p> for a paragraph break (M4.8b)', async () => {
+    const runs: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 5, h: 1 },
+          runs: [
+            { text: 'Growth was driven by ', color: 'CBD5E1', fontSize: 15 },
+            {
+              text: 'enterprise expansion',
+              color: 'FDE68A',
+              fontSize: 15,
+              bold: true,
+              charSpacing: 1.5,
+            },
+            { text: 'second line', color: 'CBD5E1', fontSize: 15, lineBreakBefore: true },
+            { text: 'next paragraph', color: 'CBD5E1', fontSize: 15, paragraphBreakBefore: true },
+          ],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+      notes: '',
+      confidence: 100,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [runs] })
+    const xml = strFromU8(files['ppt/slides/slide1.xml']!)
+    const paragraphs = [...xml.matchAll(/<a:p>[\s\S]*?<\/a:p>/g)].map((m) => m[0])
+    expect(paragraphs).toHaveLength(2)
+    // Three runs in the first paragraph, each with its own <a:rPr>; the bold one alone is bold,
+    // and its letter spacing is a run property (`spc`), not a box property.
+    const first = [...paragraphs[0]!.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)].map((m) => m[1]!)
+    expect(first).toHaveLength(3)
+    expect(first.map((r) => /\bb="1"/.test(r))).toEqual([false, true, false])
+    expect(first.map((r) => /\bspc="150"/.test(r))).toEqual([false, true, false])
+    expect(first[0]).toContain('CBD5E1')
+    expect(first[1]).toContain('FDE68A')
+    // The soft break sits between run 2 and run 3, inside the same paragraph.
+    expect(paragraphs[0]).toMatch(/enterprise expansion<\/a:t><\/a:r><a:br\/><a:r>/)
+    expect(paragraphs[1]).toContain('next paragraph')
+    expect(paragraphs[1]).not.toContain('<a:br/>')
+    // Mutation: drop `softBreakBefore` from `runOptions` → no <a:br/>; drop the `breakLine`
+    // shift in `pptxRuns` → one paragraph.
+  })
+
+  it("writes exactly one <a:pPr> per paragraph, and it is the first run's — the bullet survives (M4.8b)", async () => {
+    // pptxgenjs emits a `<a:pPr>` before EVERY run; without the writer's normalization this
+    // three-run bullet carries `<a:buChar/>` then `<a:buNone/>` twice in one `<a:p>`.
+    const bulleted: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 5, h: 1 },
+          runs: [
+            { text: 'Sized ', bullet: true },
+            { text: 'bigger', fontSize: 25.5 },
+            { text: ' after it' },
+          ],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+      notes: '',
+      confidence: 100,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [bulleted] })
+    const xml = strFromU8(files['ppt/slides/slide1.xml']!)
+    const paragraphs = [...xml.matchAll(/<a:p>[\s\S]*?<\/a:p>/g)].map((m) => m[0])
+    expect(paragraphs).toHaveLength(1)
+    expect([...paragraphs[0]!.matchAll(/<a:pPr\b/g)]).toHaveLength(1)
+    expect(paragraphs[0]).toContain('<a:buChar')
+    expect(paragraphs[0]).not.toContain('<a:buNone/>')
+    expect([...paragraphs[0]!.matchAll(/<a:r>/g)]).toHaveLength(3)
+    // The package is still a whole package after the rewrite: every part survives it.
+    expect(Object.keys(files)).toEqual(
+      expect.arrayContaining(['[Content_Types].xml', 'ppt/presentation.xml']),
+    )
+    // Mutation: return `deck.write()` without `normalizeSlideParts` → 3 pPr, a buNone after the buChar.
+  })
+
+  it('writes the text inset into <a:bodyPr> — left/top/right/bottom, whatever order pptxgenjs reads its margin array in', async () => {
+    const padded: SlidePlan = {
+      tier: 'structured',
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 2, h: 1 },
+          runs: [{ text: 'Shipped' }],
+          align: 'left',
+          valign: 'top',
+          // Four DIFFERENT values, so a swapped side cannot pass.
+          inset: { left: 15, top: 7.5, right: 12, bottom: 3 },
+        },
+      ],
+      notes: '',
+      confidence: 100,
+      reasons: [],
+    }
+    const files = await build({ title: 'D', author: 'Sloodge', slides: [padded] })
+    const bodyPr = /<a:bodyPr\b[^>]*>/.exec(strFromU8(files['ppt/slides/slide1.xml']!))![0]
+    expect(bodyPr).toContain(`lIns="${emu(15)}"`)
+    expect(bodyPr).toContain(`tIns="${emu(7.5)}"`)
+    expect(bodyPr).toContain(`rIns="${emu(12)}"`)
+    expect(bodyPr).toContain(`bIns="${emu(3)}"`)
+    // Mutation: pass the array in CSS order [top, right, bottom, left] → lIns gets 7.5 pt.
+    const plain: SlidePlan = {
+      ...padded,
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 2, h: 1 },
+          runs: [{ text: 'Plain' }],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+    }
+    const plainXml = strFromU8(
+      (await build({ title: 'D', author: 'S', slides: [plain] }))['ppt/slides/slide1.xml']!,
+    )
+    expect(/<a:bodyPr\b[^>]*>/.exec(plainXml)![0]).toContain('lIns="0"')
+  })
+
+  it('keeps embedded pictures byte-identical whether or not a slide part was rewritten (r1)', async () => {
+    // Single-run boxes: no slide part changes, the package pptxgenjs wrote is returned as is.
+    const untouched = await build({
+      title: 'D',
+      author: 'S',
+      slides: [structuredSlide, rasterSlide],
+    })
+    // A multi-run box: the slide part is rewritten and the package re-zipped, media stored as-is.
+    const multi: SlidePlan = {
+      ...structuredSlide,
+      shapes: [
+        {
+          kind: 'text',
+          box: { x: 1, y: 1, w: 5, h: 1 },
+          runs: [{ text: 'a ' }, { text: 'b', bold: true }],
+          align: 'left',
+          valign: 'top',
+        },
+      ],
+    }
+    const rezipped = await build({ title: 'D', author: 'S', slides: [multi, rasterSlide] })
+    expect([...strFromU8(rezipped['ppt/slides/slide1.xml']!).matchAll(/<a:pPr\b/g)]).toHaveLength(1)
+    // Same picture in, same media parts out — names and bytes — on both paths.
+    expect(media(untouched).length).toBeGreaterThan(0)
+    expect(media(rezipped).map(([p]) => p)).toEqual(media(untouched).map(([p]) => p))
+    for (const [i, [, bytes]] of media(rezipped).entries())
+      expect(Buffer.from(bytes).equals(Buffer.from(media(untouched)[i]![1]))).toBe(true)
   })
 
   it('gives a text box with a radius roundRect geometry and forwards its border as a line', async () => {

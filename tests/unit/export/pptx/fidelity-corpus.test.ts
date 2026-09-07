@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 import { writeDeckPptx } from '../../../../src/main/export/pptx-writer'
 import { slideMeasurementScript } from '../../../../src/shared/export/pptx/node'
 import { planSlide } from '../../../../src/shared/export/pptx/plan'
+import { renderedBlockText } from '../../../../src/shared/export/pptx/walker'
 import type { PptxFidelity } from '../../../../src/shared/export/pptx/types'
 import {
   BOX_TOLERANCE_PCT,
@@ -14,11 +16,15 @@ import {
   type SlideAssessment,
 } from '../../../fidelity/lib/assess'
 import { CORPUS, recordedFileName, type RecordedSlide } from '../../../fidelity/lib/corpus'
-import { readbackPptx, type ReadbackSlide } from '../../../fidelity/lib/readback'
+import {
+  readbackPptx,
+  type ReadbackShape,
+  type ReadbackSlide,
+} from '../../../fidelity/lib/readback'
 import { groundTruthScript } from '../../../fidelity/lib/truth'
 
 /**
- * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 26-slide corpus.
+ * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 29-slide corpus.
  *
  * The inputs are recordings made by `tests/fidelity/harness.ts` from the *real* export window: the
  * measurement pass production consumed, and an independent ground truth (text nodes via `Range`,
@@ -48,7 +54,17 @@ import { groundTruthScript } from '../../../fidelity/lib/truth'
  * `view-transition-name` back into `LAYOUT_RESOLVED_PROPERTIES` reds the x18 case — it returns to
  * structured at 100 with an empty census — and so does widening that exemption from value-scoped to
  * whole-property. Emulating the pre-r2 walker is not a mutation but a fixture here: it is what the
- * two counterfactual cases below assert directly.
+ * two counterfactual cases below assert directly. From M4.8b: reverting `walkSlide` to one run per
+ * block (joining the runs) reds the `01` five-run case; dropping `layOutInline`'s cross-run space
+ * collapse reds the x19 rendered-line case (`"Growth was driven by enterprise expansion  and a"`);
+ * emitting the runs before the inline paint reds the x19 highlight-order case; dropping the text
+ * inset reds the `05` glyph-origin case (the pill label lands 18 px left of where Chromium drew it);
+ * dropping `interruptedFlow` from the scorer makes x20 a silent lie at 90. From M4.8b review r2:
+ * pairing the line-spacing check to the FIRST block at the rect rather than the most specific one
+ * reds x21 (the overlay's correct 2.5 reported as ≠ 1.50, a silent lie at 90); skipping the pairing
+ * altogether reds the `lineSpacingChecks` guard and the x19 counterfactual; stripping `<a:lnSpc>`
+ * from every paragraph after the first in `normalizeSlideParts` reds x20's second paragraph; and
+ * `shrinkText: true` or `wrap: false` in `pptx-writer.ts` each red 10 cases.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -109,7 +125,7 @@ async function assessAll(fidelity: PptxFidelity): Promise<SlideAssessment[]> {
 }
 
 /** The `.pptx` one corpus slide produces, for the cases that assert on emitted XML directly. */
-async function readbackOf(file: string, fidelity: PptxFidelity): Promise<ReadbackSlide> {
+async function deckBytes(file: string, fidelity: PptxFidelity): Promise<Uint8Array> {
   const recording = loadRecorded().find((r) => r.file === file)!
   const plan = planSlide({
     measure: recording.measure,
@@ -117,8 +133,28 @@ async function readbackOf(file: string, fidelity: PptxFidelity): Promise<Readbac
     rasterDataUrl: PNG,
     backgroundDataUrl: null,
   })
-  const bytes = await writeDeckPptx({ title: file, author: 'test', slides: [plan] })
-  return readbackPptx(bytes)[0]!
+  return writeDeckPptx({ title: file, author: 'test', slides: [plan] })
+}
+
+async function readbackOf(file: string, fidelity: PptxFidelity): Promise<ReadbackSlide> {
+  return readbackPptx(await deckBytes(file, fidelity))[0]!
+}
+
+/**
+ * The same package with its slide part rewritten — the negative control for the reader. A field the
+ * oracle only ever compares against its passing value cannot be shown to be read at all by a deck
+ * that carries that value; it can by one that carries the opposite (M4.8b r3).
+ */
+async function readbackOfRewritten(
+  file: string,
+  fidelity: PptxFidelity,
+  rewrite: (xml: string) => string,
+): Promise<ReadbackSlide> {
+  const parts = unzipSync(await deckBytes(file, fidelity))
+  const slide = 'ppt/slides/slide1.xml'
+  return readbackPptx(
+    zipSync({ ...parts, [slide]: strToU8(rewrite(strFromU8(parts[slide]!))) }),
+  )[0]!
 }
 
 /**
@@ -205,6 +241,7 @@ async function assessPreR2Walker(file: string): Promise<SlideAssessment> {
 
 const recorded = loadRecorded()
 const x1Readback = await readbackOf('x1-ghost-opacity.html', 'editable')
+const x19Readback = await readbackOf('x19-inline-runs.html', 'editable')
 const x4Readback = await readbackOf('x4-shadows.html', 'auto')
 const asOldExporter = await assessAsOldExporter()
 const auto = await assessAll('auto')
@@ -230,8 +267,13 @@ describe('fidelity corpus recordings', () => {
     }
   })
 
+  it('were produced by an oracle script that parses as JavaScript', () => {
+    // eslint-disable-next-line no-new-func
+    expect(() => new Function(`return ${groundTruthScript()}`)).not.toThrow()
+  })
+
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(26)
+    expect(recorded).toHaveLength(29)
     expect(summary.textTotal).toBeGreaterThan(40)
     expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
@@ -296,6 +338,243 @@ describe('§5.2 targets over the corpus', () => {
   it('text nodes are preserved verbatim in every structured auto slide (≥ 99% target)', () => {
     expect(summary.textTotal).toBeGreaterThan(0)
     expect(summary.textKept / summary.textTotal).toBeGreaterThanOrEqual(0.99)
+  })
+
+  /**
+   * Run-level text (M4.8b): one box per block, one run per text node, judged by the oracle's own
+   * rendered lines. `01` is research §1.3(c) — the slide that lost three of ten text nodes and
+   * scored 65; x19 is every run construct at once; x20 is the flow PowerPoint cannot reproduce.
+   */
+  describe('run-level text (M4.8b)', () => {
+    it('01: the note paragraph is ONE box with five runs, bold where the source is, in the inherited colour', async () => {
+      const slide = auto.find((a) => a.file === '01-title-body.html')!
+      expect(slide.tier).toBe('structured')
+      expect(slide.score).toBe(100)
+      expect(slide.textKept).toBe(slide.textTotal)
+      const emitted = await readbackOf('01-title-body.html', 'auto')
+      const note = emitted.shapes.filter((sh) => sh.text.includes('Growth was driven by'))
+      expect(note).toHaveLength(1)
+      expect(note[0]!.runs.map((r) => r.text)).toEqual([
+        'Growth was driven by ',
+        'enterprise expansion',
+        ' and a ',
+        'lower churn rate',
+        ' than forecast.',
+      ])
+      expect(note[0]!.runs.map((r) => r.bold)).toEqual([false, true, false, false, false])
+      expect(new Set(note[0]!.runs.map((r) => r.color))).toEqual(new Set(['CBD5E1']))
+      expect(note[0]!.lines).toEqual([
+        'Growth was driven by enterprise expansion and a lower churn rate than forecast.',
+      ])
+    })
+
+    it('x19: every run construct ships structured with nothing lost — spaces, breaks, pre, capitalize, nbsp', async () => {
+      const x19 = auto.find((a) => a.file === 'x19-inline-runs.html')!
+      expect(x19.tier).toBe('structured')
+      expect(x19.constructsLost).toEqual([])
+      expect(x19.textKept).toBe(x19.textTotal)
+      expect(x19.textTotal).toBeGreaterThanOrEqual(20)
+      const emitted = await readbackOf('x19-inline-runs.html', 'auto')
+      const lines = emitted.shapes.flatMap((sh) => sh.lines)
+      // Rendered lines, exactly: one space between runs, none doubled or eaten.
+      expect(lines).toContain(
+        'Growth was driven by enterprise expansion and a lower churn rate than forecast, with record retention in every region.',
+      )
+      // A <br> inside a bullet: two lines in one box, one marker.
+      const bullet = emitted.shapes.find((sh) => sh.text.startsWith('First line of a bullet'))!
+      expect(bullet.lines).toEqual(['First line of a bullet', 'second line of the same bullet'])
+      expect(bullet.bullets).toBe(1)
+      // Mixed sizes on one line are three runs of one box, each at its own size.
+      const sized = emitted.shapes.find((sh) => sh.text.startsWith('Sized bigger'))!
+      expect(sized.runs.map((r) => r.sizePt)).toEqual([16.5, 25.5, 16.5, 10.5, 16.5])
+      // `white-space: pre` keeps its indentation; `capitalize` matches Chromium's own casing.
+      expect(lines).toContain('    line two, indented four')
+      expect(lines).toContain("Capitalize Each Word Here, Don't Split Contractions")
+      // "even " + " " + "across": the collapsible space after another one is dropped across runs.
+      expect(lines).toContain(
+        'Non\u00a0breaking\u00a0spaces stay, and three spaces collapse, even across spans.',
+      )
+      // The inline highlight's rect is emitted BEFORE the paragraph's text box, so it sits under it.
+      const highlight = emitted.shapes.findIndex((sh) => sh.fill === 'FDE68A' && sh.text === '')
+      const paragraph = emitted.shapes.findIndex((sh) => sh.text.includes('record retention'))
+      expect(highlight).toBeGreaterThanOrEqual(0)
+      expect(highlight).toBeLessThan(paragraph)
+      // Decoration propagates without inheriting: the coloured span inside the underlined
+      // paragraph computes `text-decoration-line: none` and is drawn underlined. The measurement
+      // pass records the union and the run carries it.
+      const underlined = emitted.shapes.find((sh) =>
+        sh.text.startsWith('Underline on the paragraph'),
+      )!
+      expect(underlined.runs.map((r) => [r.text, r.underline, r.color])).toEqual([
+        ['Underline on the paragraph ', true, 'E2E8F0'],
+        ['reaches this coloured span', true, 'FB7185'],
+        [' too', true, 'E2E8F0'],
+      ])
+    })
+
+    it('x20: text that flows around an inline object is named and routed to raster, never a silent lie', () => {
+      const x20 = auto.find((a) => a.file === 'x20-inline-flow.html')!
+      expect(x20.tier).toBe('raster')
+      expect(x20.reasons.some((r) => r.includes('flow around an inline object'))).toBe(true)
+      const forced = editable.find((a) => a.file === 'x20-inline-flow.html')!
+      // Forced structured, the oracle sees the pill's words missing from the sentence's line.
+      expect(forced.textLinesWrong).toEqual([
+        '"Conversion moved to this quarter, up from the plan of nineteen."',
+      ])
+      expect(forced.silentLie).toBe(false)
+      // …while the text itself is all there: the pill is its own box.
+      expect(forced.textKept).toBe(forced.textTotal)
+    })
+
+    it('padded blocks start their runs on the content box: no glyph-origin loss anywhere structured', () => {
+      for (const a of [...auto, ...editable]) {
+        if (a.tier === 'structured') expect(a.glyphOriginWrong, a.file).toEqual([])
+      }
+      // The check is not vacuous: 05's pills, 07's note and x4's cards are all padded text blocks.
+      const pills = recorded.find((r) => r.file === '05-gradient-cards.html')!
+      expect(pills.truth.texts.filter((t) => t.text === 'Shipped')).toHaveLength(2)
+    })
+
+    it('line spacing is PLUMBED as the block ratio, every box top-anchored, wrapped, no autofit (r1/r2)', async () => {
+      // What this proves: the block's `line-height / font-size` (not a run's) reaches every
+      // paragraph's <a:lnSpc> unchanged, `normal` reaches none, and every box is `anchor="t"`,
+      // `wrap="square"`, autofit-free. What it cannot prove: that `spcPct` is the right PowerPoint
+      // spacing — the oracle reads the same two computed values the walker reads. See
+      // `TruthBlock.lineHeight` and the roadmap's line-pitch row.
+      for (const a of [...auto, ...editable]) {
+        if (a.tier === 'structured') expect(a.lineSpacingWrong, a.file).toEqual([])
+      }
+      // The check pairs and judges most structured text boxes; disabling the pairing reds this.
+      expect(summary.lineSpacingChecks).toBeGreaterThan(40)
+      // …and nothing is quietly skipped: a per-box refusal is invisible to that floor, so it is
+      // counted and asserted away. No rect in the corpus is ambiguous enough to refuse (r4).
+      expect(summary.lineSpacingRefused).toBe(0)
+      expect(summarize(editable).lineSpacingRefused).toBe(0)
+      // Not vacuous: x19's lead paragraph is `line-height: 1.5` over runs of one size, its second
+      // bullet `1.6` over 22/34/14 px runs, and its headline `normal`.
+      const x19 = await readbackOf('x19-inline-runs.html', 'auto')
+      const lead = x19.shapes.find((sh) => sh.text.startsWith('Growth was driven by'))!
+      const sized = x19.shapes.find((sh) => sh.text.startsWith('Sized bigger'))!
+      const headline = x19.shapes.find((sh) => sh.text === 'Run-level text in one box')!
+      expect([lead.lineSpacings, sized.lineSpacings, headline.lineSpacings]).toEqual([
+        [1.5],
+        [1.6],
+        [null],
+      ])
+      // Every emitted text box says top/wrap/no-autofit, positively, not just "nothing wrong".
+      expect(
+        new Set(
+          x19.shapes
+            .filter((sh) => sh.text !== '')
+            .map((sh) => `${String(sh.anchor)}|${String(sh.wrap)}|${String(sh.autofit)}`),
+        ),
+      ).toEqual(new Set(['t|square|false']))
+      // …and the ARITY of `lineSpacings`, which only a box with two `<a:p>` can show: reverting the
+      // reader to the first `<a:pPr>` alone passes every single-paragraph expectation above.
+      const twoParagraphs = (await readbackOf('x20-inline-flow.html', 'editable')).shapes.filter(
+        (sh) => sh.lineSpacings.length > 1,
+      )
+      expect(twoParagraphs).toHaveLength(1)
+      expect(twoParagraphs[0]!.lineSpacings).toEqual([1.5, 1.5])
+      // Mutations: `lineSpacingMultiple` → undefined, or +1, or `valign: 'bottom'` each red the
+      // corpus-wide assertion above through `constructsLost` and the silent-lie verdict.
+    })
+
+    it('the readback READS anchor, wrap and autofit out of the bodyPr rather than assuming them (r3)', async () => {
+      // The assertion above cannot see a reader that returns the passing constant — `wrap: 'square'`,
+      // `autofit: false`, `anchor: 't'` hard-coded each leave the whole suite green while silently
+      // re-opening the writer mutation they guard. The control is the same package with its bodyPr
+      // saying the opposite: only a reader that actually parses can report it.
+      const flipped = await readbackOfRewritten('x19-inline-runs.html', 'editable', (xml) =>
+        xml
+          .replaceAll('wrap="square"', 'wrap="none"')
+          .replaceAll('anchor="t">', 'anchor="b"><a:normAutofit/>'),
+      )
+      const boxes = flipped.shapes.filter((sh) => sh.text !== '')
+      expect(boxes.length).toBeGreaterThanOrEqual(8)
+      expect(
+        new Set(boxes.map((sh) => `${String(sh.anchor)}|${String(sh.wrap)}|${String(sh.autofit)}`)),
+      ).toEqual(new Set(['b|none|true']))
+    })
+
+    it('the line-spacing check CAN fire on this corpus: x19 with its spacing nulled or its anchor moved (r2)', () => {
+      // The counterfactual that pins the pairing, the way 05-uninset pins the glyph origin: the
+      // same recording, the emitted file altered as the r1 mutations would alter it.
+      const recording = recorded.find((r) => r.file === 'x19-inline-runs.html')!
+      const x19 = editable.find((a) => a.file === 'x19-inline-runs.html')!
+      expect(x19.lineSpacingChecks).toBeGreaterThanOrEqual(8)
+      const judge = (alter: (sh: ReadbackShape) => ReadbackShape): SlideAssessment =>
+        assessSlide({
+          corpus: CORPUS.find((c) => c.file === 'x19-inline-runs.html')!,
+          truth: recording.truth,
+          measure: recording.measure,
+          readback: { ...x19Readback, shapes: x19Readback.shapes.map(alter) },
+          tier: 'structured',
+          score: 100,
+          reasons: [],
+        })
+      const nulled = judge((sh) => ({ ...sh, lineSpacings: sh.lineSpacings.map(() => null) }))
+      expect(nulled.lineSpacingWrong.length).toBeGreaterThanOrEqual(3)
+      expect(nulled.silentLie).toBe(true)
+      const bottom = judge((sh) => ({ ...sh, anchor: 'b' }))
+      expect(bottom.lineSpacingWrong.filter((l) => l.includes('anchored b')).length).toBe(
+        x19.lineSpacingChecks,
+      )
+      const unwrapped = judge((sh) => ({ ...sh, wrap: 'none', autofit: true }))
+      expect(unwrapped.lineSpacingWrong.some((l) => l.includes('wrap none'))).toBe(true)
+      expect(unwrapped.lineSpacingWrong.some((l) => l.includes('autofit set'))).toBe(true)
+    })
+
+    it('x21: two text blocks at one rect export with their own spacing and are NOT reported as a lie (r2)', () => {
+      const x21 = auto.find((a) => a.file === 'x21-overlay-spacing.html')!
+      expect(x21.tier).toBe('structured')
+      expect(x21.score).toBeGreaterThanOrEqual(HIGH_CONFIDENCE)
+      expect(x21.constructsLost).toEqual([])
+      expect(x21.lineSpacingChecks).toBe(3)
+      // Mutation: pair to the first matching block → "Inner text on the overlay": 2.5 ≠ 1.50, silent lie.
+    })
+
+    it('05 with its insets stripped IS a silent lie: the pill labels sit 18 px off, boxes exact', async () => {
+      // The counterfactual the check exists for — the pre-M4.8b writer, which passed `margin: 0`
+      // on every text box. The box check reports 0.000 % and the text check 10/10; only the glyph
+      // origin sees it, and it must reach the verdict.
+      const recording = recorded.find((r) => r.file === '05-gradient-cards.html')!
+      const plan = planSlide({
+        measure: recording.measure,
+        fidelity: 'auto',
+        rasterDataUrl: PNG,
+        backgroundDataUrl: BG_PNG,
+      })
+      const uninset = plan.shapes.map((sh) => {
+        if (sh.kind !== 'text') return sh
+        const { inset: _inset, ...rest } = sh
+        return rest
+      })
+      const bytes = await writeDeckPptx({
+        title: '05',
+        author: 'test',
+        slides: [{ ...plan, shapes: uninset }],
+      })
+      const assessed = assessSlide({
+        corpus: CORPUS.find((c) => c.file === '05-gradient-cards.html')!,
+        truth: recording.truth,
+        measure: recording.measure,
+        readback: readbackPptx(bytes)[0]!,
+        tier: plan.tier,
+        score: plan.confidence,
+        reasons: plan.reasons,
+      })
+      expect(assessed.boxWorstPct).toBeLessThan(0.01)
+      expect(assessed.textKept).toBe(assessed.textTotal)
+      expect(assessed.glyphOriginWrong).toHaveLength(3)
+      expect(assessed.glyphOriginWrong[0]).toMatch(
+        /"Shipped" drawn at x=\d+\.\d, box text starts at x=/,
+      )
+      expect(
+        assessed.constructsLost.filter((c) => c.startsWith('glyph origin wrong')),
+      ).toHaveLength(3)
+      expect(assessed.silentLie).toBe(true)
+    })
   })
 
   /**
@@ -488,10 +767,12 @@ describe('§5.2 targets over the corpus', () => {
    * scorer-free exporter invents nothing. The old walker's losses are pinned by mutation instead,
    * one fix at a time (see the module docstring).
    */
-  it('the retroactive figure: with the scorer deleted, 14 of 26 slides are silent lies', () => {
+  it('the retroactive figure: with the scorer deleted, 14 of 29 slides are silent lies', () => {
+    // `01-title-body` left this list in M4.8b: the run-level walk carries its bare text, so even a
+    // scorer-free exporter loses nothing there. `x20-inline-flow` joined it — with the flow signal
+    // deleted, the sentence around its pill ships at 100 with the pill's words missing from it.
     const lying = asOldExporter.filter((a) => a.silentLie).map((a) => a.file)
     expect(lying).toEqual([
-      '01-title-body.html',
       'x1-ghost-opacity.html',
       'x2-gradient-panel.html',
       'x5-scale-skew-flip.html',
@@ -505,6 +786,7 @@ describe('§5.2 targets over the corpus', () => {
       'x15-content-url.html',
       'x16-gradient-hero.html',
       'x18-view-transition-name.html',
+      'x20-inline-flow.html',
     ])
     // …and the shipped pipeline, over the same corpus, lies about none.
     expect(summary.silentLies).toEqual([])
@@ -540,7 +822,7 @@ describe('§5.2 targets over the corpus', () => {
   it('never emits a visibility: collapse banner, which Chromium paints nowhere', async () => {
     const x14 = recorded.find((r) => r.file === 'x14-visibility-collapse.html')!
     const banner = 'COLLAPSED BANNER'
-    expect(x14.measure.nodes.some((n) => n.text.includes(banner))).toBe(false)
+    expect(x14.measure.nodes.some((n) => renderedBlockText(n).includes(banner))).toBe(false)
     expect(x14.truth.texts.some((t) => t.text.includes(banner))).toBe(false)
     // `editable` forces shapes, so this is the case a score could not have saved.
     const emitted = await readbackOf('x14-visibility-collapse.html', 'editable')
@@ -554,7 +836,7 @@ describe('§5.2 targets over the corpus', () => {
   it('never emits the text a content: url() replaced, and rasterizes instead', async () => {
     const x15 = recorded.find((r) => r.file === 'x15-content-url.html')!
     const phantom = 'PHANTOM TEXT'
-    expect(x15.measure.nodes.some((n) => n.text.includes(phantom))).toBe(false)
+    expect(x15.measure.nodes.some((n) => renderedBlockText(n).includes(phantom))).toBe(false)
     expect(x15.truth.texts.some((t) => t.text.includes(phantom))).toBe(false)
     const emitted = await readbackOf('x15-content-url.html', 'editable')
     expect(emitted.shapes.some((sh) => sh.text.includes(phantom))).toBe(false)
@@ -654,7 +936,7 @@ describe('§5.2 targets over the corpus', () => {
     it('the UA value on <html> is exempted, so no slide rasterizes for `root`', () => {
       // Chromium gives the document element `view-transition-name: root`, and the census baseline —
       // a detached <html> two shadow roots deep — computes `none`. Without the value-scoped
-      // exemption every one of the 26 slides would report it.
+      // exemption every one of the 26 slides then in the corpus would report it.
       const others = [...auto, ...editable].filter(
         (a) => a.file !== 'x18-view-transition-name.html',
       )
@@ -662,17 +944,5 @@ describe('§5.2 targets over the corpus', () => {
       for (const a of others)
         expect(a.unmodelledProperties, a.file).not.toContain('view-transition-name')
     })
-  })
-
-  it('01-title-body routes to raster in auto: its bare text beside <strong>/<em> would be dropped', () => {
-    // Interim until M4.8b emits run-level text. Before M4.8a this slide scored 100 and shipped with
-    // three fragments missing; the deduction exists so the raster fallback fires instead.
-    const title = auto.find((a) => a.file === '01-title-body.html')!
-    expect(title.tier).toBe('raster')
-    expect(title.reasons.some((r) => r.includes('text fragment'))).toBe(true)
-    // The loss is real, not hypothetical: forcing editable shows the three fragments gone.
-    const forced = editable.find((a) => a.file === '01-title-body.html')!
-    expect(forced.lostText).toHaveLength(3)
-    expect(forced.silentLie).toBe(false)
   })
 })

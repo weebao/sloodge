@@ -7,7 +7,13 @@ import {
 } from '../../../fidelity/lib/assess'
 import type { CorpusSlide } from '../../../fidelity/lib/corpus'
 import type { ReadbackShape, ReadbackSlide } from '../../../fidelity/lib/readback'
-import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from '../../../fidelity/lib/truth'
+import type {
+  GroundTruth,
+  TruthBlock,
+  TruthBox,
+  TruthRootPaint,
+  TruthText,
+} from '../../../fidelity/lib/truth'
 import { SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
 import { makeMeasure } from './_fixtures'
 
@@ -69,6 +75,13 @@ function shape(overrides: Partial<ReadbackShape> = {}): ReadbackShape {
     rot: 0,
     runs: [],
     text: '',
+    lines: [],
+    insetLeft: 0,
+    insetTop: 0,
+    anchor: 't',
+    wrap: 'square',
+    autofit: false,
+    lineSpacings: [null],
     fill: 'FF0000',
     fillOpacity: 1,
     line: null,
@@ -93,6 +106,7 @@ function truthText(text: string, overrides: Partial<TruthText> = {}): TruthText 
     fontWeight: '400',
     fontStyle: 'normal',
     textTransform: 'none',
+    textAlign: 'left',
     transform: 'none',
     rotate: 'none',
     scale: 'none',
@@ -114,10 +128,12 @@ function assess(
   boxes: TruthBox[],
   shapes: ReadbackShape[],
   texts: TruthText[] = [],
+  blocks: TruthBlock[] = [],
 ): SlideAssessment {
   const truth: GroundTruth = {
     texts,
     boxes,
+    blocks,
     pseudos: [],
     bodyBg: null,
     bodyBgImage: 'none',
@@ -249,6 +265,19 @@ describe('surplusShapes catches fabrication without being told what was fabricat
     expect(a.surplusShapes).toEqual([])
   })
 
+  it('is case-sensitive except for `capitalize`, whose casing the rendered-line check judges (r1)', () => {
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const shouted = shape({ runs: [{ ...run, text: 'QUIET WORDS' }], text: 'QUIET WORDS' })
+    // `text-transform: none` and a run in the wrong case: the node is lost, not matched loosely.
+    expect(assess([], [shouted], [truthText('quiet words')]).lostText).toEqual(['quiet words'])
+    // `capitalize` matches case-insensitively here; the exact casing is `textLinesWrong`'s.
+    const titled = shape({ runs: [{ ...run, text: 'Quiet Words' }], text: 'Quiet Words' })
+    expect(
+      assess([], [titled], [truthText('quiet words', { textTransform: 'capitalize' })]).lostText,
+    ).toEqual([])
+    // Mutation: widen `fold()` to every transform → the first assertion passes 'QUIET WORDS' as kept.
+  })
+
   it('matches an uppercased run against its untransformed source text', () => {
     const a = assess(
       [],
@@ -283,5 +312,159 @@ describe('surplusShapes catches fabrication without being told what was fabricat
   it('ignores a shape that paints nothing at all', () => {
     const a = assess([], [shape({ fill: null, line: null })])
     expect(a.surplusShapes).toEqual([])
+  })
+})
+
+describe('the line-spacing pairing picks the most specific block at the rect (M4.8b r2)', () => {
+  it('pairs an `inset: 0` overlay to its own block, not to the ancestor whose innerText contains it', () => {
+    // An `inset: 0` overlay with its own text shares its parent's rect, and the parent's innerText
+    // contains the overlay's line. First-match paired the overlay's box to the parent and reported
+    // a correct 2.5 as ≠ 1.50 — a silent lie the oracle manufactured.
+    const rect = { x: 72, y: 150, w: 600, h: 120 }
+    const parent: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Outer text on the card', 'Inner text on the overlay'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const overlay: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Inner text on the overlay'],
+      lineHeight: '50px',
+      fontSizePx: 20,
+    }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const outerBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Outer text on the card' }],
+      text: 'Outer text on the card',
+      lines: ['Outer text on the card'],
+      lineSpacings: [1.5],
+    })
+    const innerBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Inner text on the overlay' }],
+      text: 'Inner text on the overlay',
+      lines: ['Inner text on the overlay'],
+      lineSpacings: [2.5],
+    })
+    const correct = assess([], [outerBox, innerBox], [], [parent, overlay])
+    expect(correct.lineSpacingChecks).toBe(2)
+    expect(correct.lineSpacingWrong).toEqual([])
+    // The check still fires on a genuinely wrong overlay — and on a later paragraph (r2, MY1).
+    const wrong = assess(
+      [],
+      [outerBox, { ...innerBox, lineSpacings: [1.5] }],
+      [],
+      [parent, overlay],
+    )
+    expect(wrong.lineSpacingWrong).toEqual(['"Inner text on the overlay": line spacing 1.5 ≠ 2.50'])
+    const later = assess([], [{ ...outerBox, lineSpacings: [1.5, null] }], [], [parent])
+    expect(later.lineSpacingWrong).toEqual(['"Outer text on the card": line spacing null ≠ 1.50'])
+    // Mutation: pair to the first matching block → `correct.lineSpacingWrong` gains the 2.5 ≠ 1.50 entry.
+  })
+
+  it('refuses an ambiguous rect rather than guessing: same-rect siblings with identical text (r3)', () => {
+    // The stacked-layer text-stroke trick — two absolutely positioned siblings at one rect with the
+    // same words and different `line-height`. Neither block is more specific than the other, and
+    // whichever way the tie broke, one of the two correct boxes was reported as a lie. Refusing
+    // leaves both unjudged (and uncounted), which the `lineSpacingChecks` floor keeps honest.
+    const rect = { x: 100, y: 200, w: 400, h: 100 }
+    const block = (lineHeight: string): TruthBlock => ({
+      tag: 'div',
+      ...rect,
+      lines: ['Same words here'],
+      lineHeight,
+      fontSizePx: 20,
+    })
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const box = (spacing: number): ReadbackShape =>
+      shape({
+        ...rect,
+        fill: null,
+        runs: [{ ...run, text: 'Same words here' }],
+        text: 'Same words here',
+        lines: ['Same words here'],
+        lineSpacings: [spacing],
+      })
+    const a = assess([], [box(1.5), box(2.5)], [], [block('30px'), block('50px')])
+    expect(a.lineSpacingChecks).toBe(0)
+    expect(a.lineSpacingRefused).toBe(2)
+    expect(a.lineSpacingWrong).toEqual([])
+    // A refusal costs SPACING only. Anchor, wrap and autofit are properties of the emitted box, so
+    // they are still judged — behind the pairing, a refused rect came back a clean 100 while
+    // bottom-anchored, unwrapped and autofitted (r4).
+    const boxed = { ...box(1.5), anchor: 'b', wrap: 'none', autofit: true }
+    const b = assess([], [boxed], [], [block('30px'), block('50px')])
+    expect(b.lineSpacingChecks).toBe(0)
+    expect(b.lineSpacingWrong).toEqual([
+      '"Same words here": anchored b, not top',
+      '"Same words here": wrap none, not square',
+      '"Same words here": autofit set — PowerPoint may shrink the text',
+    ])
+    // Mutation: take `candidates[0]` without the uniqueness test → one box is judged against the
+    // other's block, `lineSpacingWrong` gains `"Same words here": line spacing 1.5 ≠ 2.50`.
+    // Mutation: move the three box checks back inside the pairing → `b.lineSpacingWrong` empties.
+  })
+
+  it('judges tied blocks that AGREE on line-height: ambiguity is disagreement, not duplication (r4)', () => {
+    // The natural form of the stacked-layer trick — two same-rect layers with the same words AND
+    // the same `line-height`. There is nothing to be ambiguous about: both blocks ask for 1.5.
+    // Refusing on the tie alone returned a clean 100 over a double-spaced box.
+    const rect = { x: 100, y: 200, w: 400, h: 100 }
+    const block: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Same words here'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const doubled = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Same words here' }],
+      text: 'Same words here',
+      lines: ['Same words here'],
+      lineSpacings: [3],
+    })
+    const a = assess([], [doubled], [], [block, { ...block }])
+    expect(a.lineSpacingRefused).toBe(0)
+    expect(a.lineSpacingChecks).toBe(1)
+    expect(a.lineSpacingWrong).toEqual(['"Same words here": line spacing 3 ≠ 1.50'])
+    // Mutation: refuse on the line-count tie alone → `lineSpacingWrong` empties and the box's
+    // tripled spacing goes unreported.
+  })
+
+  it('pairs on EVERY line of the box, so a descendant repeating its first line is not "more specific" (r3)', () => {
+    // An `inset: 0` overlay whose one line repeats the parent's opening line. `fewest lines` alone
+    // handed the parent's three-line box to the one-line overlay — the r2 failure reversed.
+    const rect = { x: 40, y: 60, w: 800, h: 240 }
+    const parent: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Headline', 'second', 'third'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const overlay: TruthBlock = { ...parent, lines: ['Headline'], lineHeight: '50px' }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const parentBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Headline second third' }],
+      text: 'Headline second third',
+      lines: ['Headline', 'second', 'third'],
+      lineSpacings: [1.5],
+    })
+    const a = assess([], [parentBox], [], [parent, overlay])
+    expect(a.lineSpacingChecks).toBe(1)
+    expect(a.lineSpacingWrong).toEqual([])
+    // Mutation: match on the first line alone → the overlay wins on line count and the parent's
+    // correct 1.5 is reported as ≠ 2.50, a silent lie.
   })
 })
