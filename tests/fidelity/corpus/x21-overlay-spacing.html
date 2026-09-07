@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* M4.8b r2: two text blocks at the SAME rect with different line-heights. The oracle's line-spacing
+     pairing took the first DOM block whose innerText contained the shape's first line — always the
+     ancestor for a same-rect nested block — and reported a correct export as a silent lie. */
+  body {
+    background: #ffffff;
+    color: #111827;
+    padding: 72px;
+  }
+  h1 {
+    font-size: 40px;
+    font-weight: 800;
+    margin-bottom: 32px;
+  }
+  .card {
+    position: relative;
+    width: 900px;
+    height: 320px;
+    background: #e5e7eb;
+    font-size: 20px;
+    line-height: 30px;
+    color: #1f2937;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    font-size: 20px;
+    line-height: 50px;
+    color: #b91c1c;
+    text-align: right;
+  }
+</style>
+<h1>Two text blocks at one rect</h1>
+<div class="card">
+  Outer text on the card
+  <div class="overlay">Inner text on the overlay</div>
+</div>

@@ -88,12 +88,12 @@ Two limitations of that audit are worth having in writing:
 
 ## Layout
 
-- `corpus/*.html` — 28 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
-  r1 against the finished exporter, `x7`–`x10` by r2, `x11`–`x16` by r3, `x17`/`x18` by r4, and
-  `x19`/`x20` by M4.8b. Every `x` slide reproduces a construct that once scored 85–100 while
-  vanishing from, or arriving wrong in, the `.pptx` — and `x14`/`x15` two that the `.pptx`
-  **invented**, a banner and a sentence that appear nowhere on screen. `x17`/`x18` are a pair: they
-  differ in one declaration, and only together do they show anything, since each on its own emits a
+- `corpus/*.html` — 29 fixture slides: `01`–`08` from the research (§0), `x1`–`x6` written by review
+  r1 against the finished exporter, `x7`–`x10` by r2, `x11`–`x16` by r3, `x17`/`x18` by r4,
+  `x19`/`x20` by M4.8b, and `x21` by its review r2. Every `x` slide reproduces a construct that once
+  scored 85–100 while vanishing from, or arriving wrong in, the `.pptx` — and `x14`/`x15` two that
+  the `.pptx` **invented**, a banner and a sentence that appear nowhere on screen. `x17`/`x18` are a
+  pair: they differ in one declaration, and only together do they show anything, since each on its own emits a
   shape list that looks correct. `x19` is every run-level text construct in one deck (bare text
   beside inline elements, mixed sizes on a line, a `<br>` in a bullet, `capitalize`, `pre`, a
   propagated underline, an inline highlight, non-breaking spaces) and must ship structured with
@@ -118,7 +118,18 @@ Two limitations of that audit are worth having in writing:
   has doubled, eaten or invented a space or a break (`textLinesWrong`). A second M4.8b check,
   `glyphOriginWrong`, compares where a start-aligned box's first run begins (`x` + `lIns`) with
   where Chromium drew that text node's first glyph: the box check proves the box, and a padded
-  pill's label sat at the pill's border edge for two milestones with every box exact.
+  pill's label sat at the pill's border edge for two milestones with every box exact. A third
+  M4.8b check, `lineSpacingWrong` (review r1/r2), reads each text box's `<a:lnSpc>` per paragraph,
+  `anchor`, `wrap` and autofit back and compares the spacing with the block's own
+  `line-height / font-size` recorded by the truth script, pairing box to block by rect and by a
+  rendered line — the **most specific** block at that rect, since a parent's `innerText` contains
+  its descendants' lines (an `inset: 0` overlay is `corpus/x21`). **This one is a plumbing
+  oracle, not an independent one**: it reads the same two computed values the walker reads, so it
+  proves the block's ratio reaches every paragraph unchanged and the box is top-anchored, wrapped
+  and autofit-free — and it cannot tell a unitless `1.5` from a `30px` line-height on a block with
+  a larger run, whose Chromium lines are 60 px and 37 px tall. The independent quantity, rendered
+  line pitch from `Range.getClientRects()`, is the roadmap's, for when a renderer can render the
+  other side of the comparison.
 - `lib/readback.ts` — the `.pptx` reader (EMU boxes, `rot`, runs, `<p:bg>`); python-pptx stand-in.
 - `lib/assess.ts` — the §5.2 targets as code; shared by the harness table and the vitest assertions.
   Every check but one runs **truth → file**, which by construction costs a fabricated shape nothing;

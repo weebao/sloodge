@@ -7,7 +7,13 @@ import {
 } from '../../../fidelity/lib/assess'
 import type { CorpusSlide } from '../../../fidelity/lib/corpus'
 import type { ReadbackShape, ReadbackSlide } from '../../../fidelity/lib/readback'
-import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from '../../../fidelity/lib/truth'
+import type {
+  GroundTruth,
+  TruthBlock,
+  TruthBox,
+  TruthRootPaint,
+  TruthText,
+} from '../../../fidelity/lib/truth'
 import { SLIDE_WIDTH_PX } from '../../../../src/shared/export/types'
 import { makeMeasure } from './_fixtures'
 
@@ -73,7 +79,9 @@ function shape(overrides: Partial<ReadbackShape> = {}): ReadbackShape {
     insetLeft: 0,
     insetTop: 0,
     anchor: 't',
-    lineSpacing: null,
+    wrap: 'square',
+    autofit: false,
+    lineSpacings: [null],
     fill: 'FF0000',
     fillOpacity: 1,
     line: null,
@@ -120,11 +128,12 @@ function assess(
   boxes: TruthBox[],
   shapes: ReadbackShape[],
   texts: TruthText[] = [],
+  blocks: TruthBlock[] = [],
 ): SlideAssessment {
   const truth: GroundTruth = {
     texts,
     boxes,
-    blocks: [],
+    blocks,
     pseudos: [],
     bodyBg: null,
     bodyBgImage: 'none',
@@ -303,5 +312,59 @@ describe('surplusShapes catches fabrication without being told what was fabricat
   it('ignores a shape that paints nothing at all', () => {
     const a = assess([], [shape({ fill: null, line: null })])
     expect(a.surplusShapes).toEqual([])
+  })
+})
+
+describe('the line-spacing pairing picks the most specific block at the rect (M4.8b r2)', () => {
+  it('pairs an `inset: 0` overlay to its own block, not to the ancestor whose innerText contains it', () => {
+    // An `inset: 0` overlay with its own text shares its parent's rect, and the parent's innerText
+    // contains the overlay's line. First-match paired the overlay's box to the parent and reported
+    // a correct 2.5 as ≠ 1.50 — a silent lie the oracle manufactured.
+    const rect = { x: 72, y: 150, w: 600, h: 120 }
+    const parent: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Outer text on the card', 'Inner text on the overlay'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const overlay: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Inner text on the overlay'],
+      lineHeight: '50px',
+      fontSizePx: 20,
+    }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const outerBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Outer text on the card' }],
+      text: 'Outer text on the card',
+      lines: ['Outer text on the card'],
+      lineSpacings: [1.5],
+    })
+    const innerBox = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Inner text on the overlay' }],
+      text: 'Inner text on the overlay',
+      lines: ['Inner text on the overlay'],
+      lineSpacings: [2.5],
+    })
+    const correct = assess([], [outerBox, innerBox], [], [parent, overlay])
+    expect(correct.lineSpacingChecks).toBe(2)
+    expect(correct.lineSpacingWrong).toEqual([])
+    // The check still fires on a genuinely wrong overlay — and on a later paragraph (r2, MY1).
+    const wrong = assess(
+      [],
+      [outerBox, { ...innerBox, lineSpacings: [1.5] }],
+      [],
+      [parent, overlay],
+    )
+    expect(wrong.lineSpacingWrong).toEqual(['"Inner text on the overlay": line spacing 1.5 ≠ 2.50'])
+    const later = assess([], [{ ...outerBox, lineSpacings: [1.5, null] }], [], [parent])
+    expect(later.lineSpacingWrong).toEqual(['"Outer text on the card": line spacing null ≠ 1.50'])
+    // Mutation: pair to the first matching block → `correct.lineSpacingWrong` gains the 2.5 ≠ 1.50 entry.
   })
 })

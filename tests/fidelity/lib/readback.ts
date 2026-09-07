@@ -48,11 +48,16 @@ export type ReadbackShape = {
   insetTop: number
   /** `<a:bodyPr anchor>`: `t`/`ctr`/`b`, or null when absent. */
   anchor: string | null
+  /** `<a:bodyPr wrap>`: `square` (wrap) or `none` (one line), or null when absent. */
+  wrap: string | null
+  /** True when `<a:bodyPr>` carries `<a:normAutofit>` or `<a:spAutoFit>` — PowerPoint may resize text or box. */
+  autofit: boolean
   /**
-   * The first paragraph's `<a:lnSpc><a:spcPct>` as a multiple (1.6 for `val="160000"`), or null
-   * when the paragraph has no line spacing — PowerPoint's single spacing (M4.8b r1).
+   * Each paragraph's `<a:lnSpc><a:spcPct>` as a multiple (1.6 for `val="160000"`), or null where
+   * the paragraph has none — PowerPoint's single spacing. One entry per `<a:p>` (M4.8b r2; r1 read
+   * the first paragraph only, so spacing stripped from every later paragraph went unseen).
    */
-  lineSpacing: number | null
+  lineSpacings: (number | null)[]
   fill: string | null
   /** Alpha of the shape fill, 0–1. */
   fillOpacity: number
@@ -115,11 +120,13 @@ function firstAlpha(xml: string): number {
   return m?.[1] === undefined ? 1 : parseInt(m[1], 10) / 100000
 }
 
-/** The first paragraph's percentage line spacing, as a multiple; null when it carries none. */
-function parseLineSpacing(txBody: string): number | null {
-  const pPr = /<a:pPr\b[\s\S]*?<\/a:pPr>/.exec(txBody)?.[0] ?? ''
-  const m = /<a:lnSpc><a:spcPct val="(\d+)"\/><\/a:lnSpc>/.exec(pPr)
-  return m?.[1] === undefined ? null : parseInt(m[1], 10) / 100000
+/** Every paragraph's percentage line spacing, as a multiple; null where a paragraph carries none. */
+function parseLineSpacings(txBody: string): (number | null)[] {
+  return [...txBody.matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)].map((p) => {
+    const pPr = /<a:pPr\b[\s\S]*?<\/a:pPr>/.exec(p[1] ?? '')?.[0] ?? ''
+    const m = /<a:lnSpc><a:spcPct val="(\d+)"\/><\/a:lnSpc>/.exec(pPr)
+    return m?.[1] === undefined ? null : parseInt(m[1], 10) / 100000
+  })
 }
 
 /** Visual lines: each `<a:p>` is one or more lines, split again at every `<a:br/>`. */
@@ -190,7 +197,9 @@ function parseShape(kind: 'sp' | 'pic', xml: string): ReadbackShape | null {
     insetLeft: emuAttrToPx(attr(bodyPr, 'lIns')),
     insetTop: emuAttrToPx(attr(bodyPr, 'tIns')),
     anchor: attr(bodyPr, 'anchor'),
-    lineSpacing: parseLineSpacing(txBody),
+    wrap: attr(bodyPr, 'wrap'),
+    autofit: /<a:normAutofit\b|<a:spAutoFit\b/.test(txBody),
+    lineSpacings: parseLineSpacings(txBody),
     fill: firstSrgb(spPrNoLine),
     fillOpacity: firstAlpha(spPrNoLine),
     line: ln === '' ? null : firstSrgb(ln),
