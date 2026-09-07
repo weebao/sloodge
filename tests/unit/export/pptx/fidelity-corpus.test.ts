@@ -446,6 +446,10 @@ describe('§5.2 targets over the corpus', () => {
       }
       // The check pairs and judges most structured text boxes; disabling the pairing reds this.
       expect(summary.lineSpacingChecks).toBeGreaterThan(40)
+      // …and nothing is quietly skipped: a per-box refusal is invisible to that floor, so it is
+      // counted and asserted away. No rect in the corpus is ambiguous enough to refuse (r4).
+      expect(summary.lineSpacingRefused).toBe(0)
+      expect(summarize(editable).lineSpacingRefused).toBe(0)
       // Not vacuous: x19's lead paragraph is `line-height: 1.5` over runs of one size, its second
       // bullet `1.6` over 22/34/14 px runs, and its headline `normal`.
       const x19 = await readbackOf('x19-inline-runs.html', 'auto')
