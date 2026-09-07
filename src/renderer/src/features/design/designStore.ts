@@ -87,6 +87,52 @@ export type DesignSnapshot = {
   readonly editing: string | null
   /** The refused edit to explain, or `null`. See `TextEditNotice`. */
   readonly notice: TextEditNotice | null
+  /**
+   * How many text sessions are holding the stage frame's document (M3.13): one per caret that is
+   * open or still being finished. `SlideCanvas` keeps the instrumented document while this is above
+   * zero, whatever `enabled` says.
+   *
+   * It exists for the way *out* of Design Mode. The toggle swaps every frame's document from the
+   * instrumented copy back to the raw slide — a new `slide://` URL, a navigation — while a caret
+   * open at that moment is being finished on a channel that outlives the overlay; the answer can
+   * only come from the document the caret is in, and a slide whose own JS stalled across the toggle
+   * answered a document already torn down (measured lost at 800 ms of stall). Holding the document
+   * until the session has answered or been given up on closes that.
+   *
+   * A count, and acquired by the session rather than by the toggle, for two reasons that are the
+   * same reason. The hold has to exist *before* the render that removes the overlay — that render
+   * is the one that would hand the stage the raw document, and a flag raised afterwards from the
+   * overlay's unmount is one render too late, minting a second URL instead of preventing the first;
+   * a session that holds from the moment it opens is always early enough. And it has to be **per
+   * session**: two sessions can be finishing on the same frame inside one 2 s window (toggle off
+   * under a stalled caret, on, a new caret, off again), and the first to settle must not release the
+   * document the second is still waiting on — a shared boolean did exactly that (round-1 review).
+   * `useTextEditing` acquires when a session opens and releases exactly its own, on whichever end
+   * the session meets.
+   */
+  readonly finishing: number
+  /**
+   * How many carets have been **asked for** on each element this launch, by `slId` (M3.13, round-2 review).
+   * `useTextEditing.beginEdit` counts one as it posts the `begin` — before the frame has answered —
+   * and a session remembers the count it was opened under.
+   *
+   * It exists so a session can tell it has been superseded when `editing` cannot yet say so. A
+   * finish that times out after Design Mode has come back must stay out of a newer caret on its own
+   * element (its `cancel` would end that caret). Checking `editing` covers a newer caret the frame
+   * has *answered*; but the frame is single-threaded and runs the parent's messages in posting
+   * order, and on a stalled frame — this milestone's own premise — the newer `begin` is queued
+   * behind the stale `commit`, unanswered, so the store still shows no caret when the timeout
+   * fires. What the stale session can know is whether a newer `begin` for its element has been
+   * *posted*, because that is the same order the frame will run them in: posted before the stale
+   * `cancel` means processed before it. Never reset — `OFF` leaves it alone, since the comparison
+   * that matters happens across the toggle.
+   *
+   * Asked *alongside* `editing`, never instead of it (round-3 review). A session the store opened
+   * directly — `beginEditing`, `useTextEditing`'s effect acquire site — pins this count without
+   * moving it, so it carries the same number a stale session on the same element already holds and
+   * the count cannot tell the two apart. The two checks cover disjoint orderings; both are asked.
+   */
+  readonly caretRequests: Readonly<Record<string, number>>
 }
 
 export type DesignState = DesignSnapshot & {
@@ -127,6 +173,15 @@ export type DesignState = DesignSnapshot & {
   endEditing: () => void
   /** Raise or dismiss the refused-edit notice. */
   setNotice: (notice: TextEditNotice | null) => void
+  /** A text session opened: hold the stage frame's document for it. See `finishing`. */
+  holdFinishing: () => void
+  /** That session ended — committed, refused, cancelled or given up on: release its hold. */
+  settleFinishing: () => void
+  /**
+   * A `begin` for `slId` is about to be posted. Returns the element's new request count — the
+   * generation the session opened by that `begin` belongs to. See `caretRequests`.
+   */
+  noteCaretRequest: (slId: string) => number
 }
 
 const CLEARED = { hover: null, selections: [], selection: null, editing: null } as const
@@ -134,9 +189,15 @@ const CLEARED = { hover: null, selections: [], selection: null, editing: null } 
 /**
  * What turning Design Mode off resets. `notice` is deliberately **not** in it: the refusal a toggle
  * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
- * user is owed for it.
+ * user is owed for it. `finishing` is not in it either: a caret open at the toggle is about to be
+ * finished on a channel that outlives the overlay, and its hold on the frame must survive the toggle.
+ * Nor is `caretRequests`: the session it lets a stale finish compare itself against is one opened
+ * *after* the toggle.
  */
-const OFF: Omit<DesignSnapshot, 'notice'> = { enabled: false, ...CLEARED }
+const OFF: Omit<DesignSnapshot, 'notice' | 'finishing' | 'caretRequests'> = {
+  enabled: false,
+  ...CLEARED,
+}
 
 /** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
 function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
@@ -148,6 +209,8 @@ function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
 export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
   notice: null,
+  finishing: 0,
+  caretRequests: {},
   // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
   enabled: true,
 
@@ -215,5 +278,19 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
 
   setNotice: (notice) => {
     set({ notice })
+  },
+
+  holdFinishing: () => {
+    set({ finishing: get().finishing + 1 })
+  },
+
+  settleFinishing: () => {
+    set({ finishing: Math.max(0, get().finishing - 1) })
+  },
+
+  noteCaretRequest: (slId) => {
+    const next = (get().caretRequests[slId] ?? 0) + 1
+    set({ caretRequests: { ...get().caretRequests, [slId]: next } })
+    return next
   },
 }))
