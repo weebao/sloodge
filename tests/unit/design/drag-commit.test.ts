@@ -127,6 +127,14 @@ describe('buildDragPatch — the transform lock', () => {
     expect(buildDragPatch('s', IN_FLOW_OPAQUE, slId, BOX, { ...BOX, x: 40 })).toBe(IN_FLOW_OPAQUE)
   })
 
+  it('refuses a purely VERTICAL move through an opaque transform too (round-4 minor 1)', () => {
+    // Both axes, one refusal. Mutation guard: a guard reading `delta.dx !== 0` alone survives every
+    // other fixture in this file — they all drag horizontally — and writes
+    // `rotate(90deg) translate(10px, 40px)` here, moving the element 40px LEFT for a 40px drag DOWN.
+    const slId = slIdOf('s', IN_FLOW_OPAQUE, 'div')
+    expect(buildDragPatch('s', IN_FLOW_OPAQUE, slId, BOX, { ...BOX, y: 40 })).toBe(IN_FLOW_OPAQUE)
+  })
+
   it('still moves a left/top-positioned element under an opaque transform, transform byte-identical', () => {
     const slId = slIdOf('s', POSITIONED_OPAQUE, 'div')
     const patched = buildDragPatch('s', POSITIONED_OPAQUE, slId, START, { ...START, x: 140, y: 70 })

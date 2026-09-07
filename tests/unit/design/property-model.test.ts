@@ -288,16 +288,27 @@ describe('buildFieldOps — position and size', () => {
     expect(values.y).toBe('8px')
   })
 
-  it('opaque, no translate: the new translate LEADS so it acts in parent space (round-2 major 1)', () => {
-    // `matrix(2, …)` doubles; a trailing translate would land at 80px on screen. Mutation guard:
-    // `out.push` in `replaceTranslate` reds here.
-    expect(edit('<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40')).toBe(
-      '<div style="transform: translate(40px, 0) matrix(2, 0, 0, 2, 0, 0)">x</div>',
-    )
+  it('opaque + in-flow: an X edit is REFUSED, not written through the transform (round-4 major)', () => {
+    // Round 2 made the new translate LEAD here (`translate(40px, 0) matrix(2, …)`) so it acted in
+    // parent space. Round 4 goes one further: the write does not happen at all, because the panel's
+    // X/Y inputs reach `buildFieldOps` without passing through the drag's gate, and on
+    // `rotate(90deg) translate(10px, 0)` the in-place rewrite moved the element 40px DOWN for a +40
+    // X edit. Mutation guard: dropping the `moveRefusal` line from `buildFieldOps` reds here.
+    const html = '<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>'
+    expect(edit(html, 0, 'x', '40')).toBe(html)
   })
 
-  it('opaque, exact translate present: reads both axes and an X edit keeps the author Y', () => {
-    // Mutation guard: `translateArgs` returning null for an opaque value reads 0/0 and zeroes 6px.
+  it('opaque + in-flow: a Y edit is refused too — both axes, one refusal', () => {
+    // The vertical half (round-4 minor 1): a Y edit under `rotate(90deg)` moves the element LEFT.
+    const html = '<div style="transform: rotate(90deg) translate(10px, 0)">x</div>'
+    expect(edit(html, 0, 'y', '40')).toBe(html)
+    expect(edit(html, 0, 'x', '40')).toBe(html)
+  })
+
+  it('opaque, exact translate present: still READ on both axes, so the disabled field shows them', () => {
+    // The write is refused but the value is not hidden — the panel shows `5px`/`6px` greyed out with
+    // the reason as its tooltip. Mutation guard: `translateArgs` returning null for an opaque value
+    // reads 0/0 here.
     const { source, element } = at(
       '<div style="transform: translate(5px, 6px) skew(3deg)">x</div>',
       0,
@@ -307,7 +318,17 @@ describe('buildFieldOps — position and size', () => {
     expect(values.y).toBe('6px')
     expect(
       edit('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>', 0, 'x', '40'),
-    ).toBe('<div style="transform: translate(40px, 6px) skew(3deg)">x</div>')
+    ).toBe('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>')
+  })
+
+  it('opaque but POSITIONED, or SVG: the write still lands — the refusal is narrow', () => {
+    // `moveRefusal` is `movesThroughTransform && !editable`, so neither of these is refused.
+    expect(
+      edit('<div style="left: 10px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="left: 40px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>')
+    expect(
+      edit('<svg><rect x="5" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="40" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>')
   })
 
   it('a top-only element is positioned by offsets: Y reads top, X reads null, X writes left', () => {

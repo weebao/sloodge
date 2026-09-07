@@ -40,6 +40,7 @@ import { buildElementContextBundle } from '../../../../shared/design/element-con
 import {
   buildFieldOps,
   readPropertyValues,
+  moveRefusal,
   resolveElement,
   type PropertyField,
 } from '../../../../shared/design/property-model'
@@ -160,6 +161,11 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
   const transformShape = element === null ? null : readTransformShape(map.source, element)
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
+  // Move is a different question from the flip (round-4 major): X/Y stay writable on a `left`/`top`
+  // element and on an SVG child even under an opaque transform, and are refused only where the edit
+  // would be written *through* one. `buildFieldOps` refuses it either way — this asks the same
+  // function so the field can say why instead of silently swallowing the number.
+  const moveLock = element === null ? null : moveRefusal(map.source, element)
 
   return (
     <section
@@ -196,6 +202,7 @@ export function PropertyPanel({ slide, inspect, picker }: PropertyPanelProps): J
             swatches={swatches}
             picker={resolvedPicker}
             transformLock={transformLock}
+            moveLock={moveLock}
           />
           <div className="mt-2">
             <button
@@ -221,6 +228,8 @@ interface PropertyFieldsProps {
   readonly picker: ColorPicker | null
   /** Why the transform buttons are off (an opaque `transform`, M3.6), or `null` when they work. */
   readonly transformLock: string | null
+  /** Why X/Y are off (the move would be written through an opaque `transform`), else `null`. */
+  readonly moveLock: string | null
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -232,6 +241,7 @@ function PropertyFields({
   swatches,
   picker,
   transformLock,
+  moveLock,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -318,12 +328,18 @@ function PropertyFields({
   )
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
-    const disabled = name === 'text' && textDisabled
+    const moveDisabled = moveLock !== null && (name === 'x' || name === 'y')
+    const disabled = (name === 'text' && textDisabled) || moveDisabled
     // A disabled field that says only "mixed" tells the user nothing about why they cannot type in
     // it, and this is the same element a double-click on the canvas also refuses (round-5 major 2).
-    const disabledHint = disabled
-      ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
-      : undefined
+    // X/Y carry the lock's own reason, the way Flip H/V below already does: `buildFieldOps` returns
+    // no ops for them, and a field that eats a typed number without a word is worse than one that
+    // is visibly off.
+    const disabledHint = moveDisabled
+      ? moveLock
+      : disabled
+        ? 'This element mixes text with other markup, so its text can’t be edited here yet.'
+        : undefined
     return (
       <label
         className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
@@ -335,7 +351,7 @@ function PropertyFields({
           data-testid={`prop-${name}`}
           value={draft[name]}
           disabled={disabled}
-          placeholder={disabled ? 'mixed content' : ''}
+          placeholder={disabled && !moveDisabled ? 'mixed content' : ''}
           title={disabledHint}
           inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined}
           onChange={handleChange}

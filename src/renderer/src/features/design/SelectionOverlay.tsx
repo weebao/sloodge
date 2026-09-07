@@ -112,7 +112,7 @@ import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
-import { movesThroughTransform } from '../../../../shared/design/property-model'
+import { moveRefusal } from '../../../../shared/design/property-model'
 import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
@@ -386,16 +386,16 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // full parses per token for the ordinary case of watching the agent write with something selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, shapeOf, movesThroughTransformOf } = useMemo<{
+  const { elementOf, shapeOf, moveRefusalOf } = useMemo<{
     elementOf: (slId: string) => ElementSpan | undefined
     shapeOf: (slId: string) => TransformShape | null
-    movesThroughTransformOf: (slId: string) => boolean
+    moveRefusalOf: (slId: string) => string | null
   }>(() => {
     if (source === undefined) {
       return {
         elementOf: () => undefined,
         shapeOf: () => null,
-        movesThroughTransformOf: () => false,
+        moveRefusalOf: () => null,
       }
     }
     let map: SlideMap | null = null
@@ -409,9 +409,9 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         const element = lookup(slId)
         return element === undefined ? null : readTransformShape(source, element)
       },
-      movesThroughTransformOf: (slId) => {
+      moveRefusalOf: (slId) => {
         const element = lookup(slId)
-        return element !== undefined && movesThroughTransform(source, element)
+        return element === undefined ? null : moveRefusal(source, element)
       },
     }
   }, [source, slideId])
@@ -445,27 +445,27 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // attributes, so it is never at risk either. Only an in-flow HTML element moves *through* the
   // transform, which is exactly `movesThroughTransform`.
   //
-  // The refusal itself lives in `buildDragPatch`, where the bytes are made, so every entry point —
-  // this body drag, a group drag, align/distribute, a drag whose element turned opaque mid-gesture
-  // — is safe without consulting this. What is decided here is only the message and the cursor, and
-  // it asks the writer's own predicate rather than a paraphrase of it: an earlier paraphrase
-  // (`!positionsByOffsets`) called an SVG rect locked that `buildDragPatch` moves cleanly, so the
-  // badge accused a move that would have succeeded. Counted over every member the gesture would move
-  // (round 2 found a locked member riding inside a group whose anchor was fine), the drag is withheld
-  // when *nothing* would move, and a group with some movable members still drags, its badge saying
-  // how many will stay.
+  // The refusal itself lives in `buildFieldOps` (`moveChannel`), where the bytes are made, so every
+  // entry point — this body drag, a group drag, align/distribute, the panel's X/Y inputs, a drag
+  // whose element turned opaque mid-gesture — is safe without consulting this. What is decided here
+  // is only the message and the cursor, and it calls the writer's own function rather than a
+  // paraphrase of it: an earlier paraphrase (`!positionsByOffsets`) called an SVG rect locked that
+  // the writer moves cleanly, so the badge accused a move that would have succeeded. Counted over
+  // every member the gesture would move (round 2 found a locked member riding inside a group whose
+  // anchor was fine), the drag is withheld when *nothing* would move, and a group with some movable
+  // members still drags, its badge saying how many will stay.
   const memberMoveLock = useMemo<{ count: number; reason: string | null }>(() => {
     let count = 0
     let reason: string | null = null
     for (const hit of selections) {
-      const shape = shapeOf(hit.slId)
-      if (shape !== null && !shape.editable && movesThroughTransformOf(hit.slId)) {
+      const refusal = moveRefusalOf(hit.slId)
+      if (refusal !== null) {
         count += 1
-        reason ??= shape.reason
+        reason ??= refusal
       }
     }
     return { count, reason }
-  }, [selections, shapeOf, movesThroughTransformOf])
+  }, [selections, moveRefusalOf])
   const moveLocked = memberMoveLock.count > 0 && memberMoveLock.count === selections.length
   const lockBadge =
     transformLock !== null

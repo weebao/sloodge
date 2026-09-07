@@ -479,6 +479,48 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(before)
   })
 
+  it('disables X and Y when the move would go through an opaque transform, with the reason (round-4 major)', () => {
+    // The overlay refuses the drag on this element and shows `Handles off — …`; the panel's X/Y
+    // inputs used to be live beside it and wrote `rotate(90deg) translate(50px, 0)` — a +40 X edit
+    // that moves the element 40px DOWN. Mutation guard: dropping the `moveRefusal` line from
+    // `buildFieldOps` makes the blur below commit and reds the byte-identity assertion; dropping
+    // `moveDisabled` from the panel reds the `disabled`/`title` assertions.
+    const html = '<h1 style="transform: rotate(90deg) translate(10px, 0)">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const x = screen.getByTestId('prop-x') as HTMLInputElement
+    const y = screen.getByTestId('prop-y') as HTMLInputElement
+    // The value is still shown — greyed out, not hidden.
+    expect(x.value).toBe('10px')
+    expect(x.disabled).toBe(true)
+    expect(x.title).toContain('translate() comes after rotate()')
+    expect(y.disabled).toBe(true)
+    // Width is a different question and stays live: it never touches the transform.
+    expect((screen.getByTestId('prop-width') as HTMLInputElement).disabled).toBe(false)
+    const depth = useDeckStore.getState().history.undoStack().length
+    fireEvent.change(x, { target: { value: '50' } })
+    fireEvent.blur(x)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(html)
+    expect(useDeckStore.getState().history.undoStack().length).toBe(depth) // no empty command
+  })
+
+  it('leaves X and Y live on a left/top element under the same opaque transform', () => {
+    // The refusal is narrow: a move written as `left`/`top` never touches the transform.
+    const html =
+      '<h1 style="position: absolute; left: 10px; transform: matrix(1, 0, 0, 1, 0, 0)">Hello</h1>'
+    useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
+    select()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const x = screen.getByTestId('prop-x') as HTMLInputElement
+    expect(x.disabled).toBe(false)
+    fireEvent.change(x, { target: { value: '50' } })
+    fireEvent.blur(x)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain('left: 50px')
+    expect(patched).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+  })
+
   it('flipping an element that holds text goes through and raises the mirrored-text notice', () => {
     select()
     render(<PropertyPanel slide={currentSlide()} />)
