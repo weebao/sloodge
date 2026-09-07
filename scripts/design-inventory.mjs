@@ -113,22 +113,34 @@ const TOKEN_NAMES = [...new Set([...themeNames('color'), ...RETIRED_TOKENS])].to
 const TOKEN_NAME = `(?:${TOKEN_NAMES.join('|')})`
 const PALETTE_NAME = '(?:white|black|[a-z]+-\\d{2,3})'
 const SPECIAL_NAME = '(?:transparent|current|inherit)'
+/** `/70`, `/[0.5]` or `/(--a)` — every alpha spelling Tailwind v4 accepts. */
+const ALPHA = '(?:/(?:\\d+|\\[[^\\]]+\\]|\\([^)]+\\)))'
 const COLOUR_PREFIX =
   '(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|decoration|from|to|via|divide|shadow)'
-const COLOUR_VALUE = `(?:${TOKEN_NAME}|${PALETTE_NAME}|${SPECIAL_NAME})(?:/\\d+)?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
+const COLOUR_VALUE = `(?:${TOKEN_NAME}|${PALETTE_NAME}|${SPECIAL_NAME})${ALPHA}?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
 /** Looks like a colour utility (a colour prefix, a dashed name, an optional alpha) — classified or not. */
-const COLOUR_SHAPED = new RegExp(`^${COLOUR_PREFIX}-[a-z][a-z0-9-]*(?:/\\d+)?$`)
-const PALETTE_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${PALETTE_NAME}(?:/\\d+)?$`)
-const ALPHA_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${TOKEN_NAME}/\\d+$`)
-/** Rule R3: the one alpha the canonical set permits. */
+/** Looks like a colour utility (colour prefix, dashed name, optional alpha) — classified or not. */
+const COLOUR_SHAPED = new RegExp(`^${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?$`)
+const PALETTE_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${PALETTE_NAME}${ALPHA}?$`)
+/** An alpha on a token or on the v4 `(--color-x)` shorthand; rule R3 permits only `hud-fg/70`. */
+const TOKEN_ALPHA = new RegExp(
+  `^${COLOUR_PREFIX}-(?:${TOKEN_NAME}|\\(--color-[a-z0-9-]+\\))${ALPHA}$`,
+)
 const ALPHA_ALLOWED = /^text-hud-fg\/70$/
 const ARBITRARY_UTILITY = /^-?[a-z][a-z0-9-]*-\[[^\]]+\]$/
+/** The v4 custom-property shorthand `bg-(--color-x)` is a token reference the census must see. */
+const PAREN_REF = new RegExp(`^${COLOUR_PREFIX}-\\(--color-([a-z0-9-]+)\\)${ALPHA}?$`)
+/** Utilities that share a colour prefix but set something else; never "unknown". */
+const NON_COLOUR_SPELLINGS =
+  /^(?:fill-none|stroke-none|bg-(?:none|cover|contain|auto|center|top|bottom|left|right|no-repeat|repeat(?:-[xy]|-round|-space)?|fixed|local|scroll|clip-[a-z]+|origin-[a-z]+|blend-[a-z-]+)|text-(?:nowrap|wrap|balance|pretty|ellipsis|clip|justify|start|end)|ring-inset|decoration-(?:wavy|dotted|dashed|solid|double|none|from-font|auto|\d+)|divide-(?:solid|dashed|dotted|double|none)|outline-(?:none|hidden)|border-(?:collapse|separate|hidden|none))$/
+
 const SPACING_NAMES = alt(themeNames('spacing'))
 const ARBITRARY = '\\[[^\\]]+\\]'
 
 /** Ordered: the first matching category wins, so colour outranks the width/style fallbacks. */
 const CATEGORIES = [
   ['colour', new RegExp(`^${COLOUR_PREFIX}-(${COLOUR_VALUE})$`)],
+  ['non-colour', NON_COLOUR_SPELLINGS],
   ['border-style', /^(?:border|outline)-(?:solid|dashed|dotted|double|none|hidden)$/],
   [
     'spacing',
@@ -205,9 +217,13 @@ const CATEGORIES = [
  * A chain of Tailwind variants (`dark:hover:`) in front of a utility. A fixed list, not `[a-z-]+:`,
  * so a CSS selector in a string (`button:not(…)`) is not mistaken for a variant.
  */
-const VARIANT_NAMES =
-  'dark|hover|focus|focus-visible|focus-within|active|disabled|enabled|placeholder|group-hover|group-focus|peer-checked|first|last|odd|even|checked|open|motion-reduce|motion-safe|print|before|after|sm|md|lg|xl|2xl'
-const VARIANT_PREFIX = new RegExp(`^((?:(?:${VARIANT_NAMES}):)+)(?=[a-z[-])`)
+/**
+ * A variant chain in front of a utility: `dark:`, `hover:`, `aria-pressed:`, `data-[state=open]:`,
+ * `rtl:` — any `name:`, `name-[…]:` or `name-(…):` chunk, so no spelling can hide a utility from a
+ * gate column. The variants *table* is fed only from tokens whose bare part classifies or is
+ * colour-shaped, which keeps CSS selectors inside strings (`button:not(…)`) out of it.
+ */
+const VARIANT_PREFIX = /^((?:[a-z][a-z0-9-]*(?:-\[[^\]]*\]|-\([^)]*\))?:)+)(?=[a-z[(-])/
 
 function classify(raw) {
   const variants = VARIANT_PREFIX.exec(raw)?.[1] ?? ''
@@ -287,22 +303,35 @@ function scan() {
       if (!isTsx) return
       // Split on everything that delimits a class inside a string or template literal — but not
       // on `:`, which joins a variant to its utility.
-      for (const token of text.split(/[\s'"`{}$;=<>?]+/)) {
+      for (const token of text.split(/[\s'"`{}$;<>?]+/)) {
         if (token === '') continue
         const variants = VARIANT_PREFIX.exec(token)?.[1] ?? ''
         const bare = token.slice(variants.length)
         const f = perFile.get(file) ?? emptyCounts()
         perFile.set(file, f)
-        for (const v of variants.split(':').filter(Boolean)) {
-          variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
-        }
-        if (variants.includes('dark:')) f.dark += 1
+        if (/(?:^|:)dark:/.test(variants)) f.dark += 1
         if (ARBITRARY_UTILITY.test(bare)) f.arbitrary += 1
         if (PALETTE_UTILITY.test(bare)) f.palette += 1
-        if (ALPHA_UTILITY.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
+        if (TOKEN_ALPHA.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
+        const paren = PAREN_REF.exec(bare)
+        if (paren !== null) {
+          // `bg-(--color-x)` bypasses the class census; it is still a reference to a token.
+          if (RETIRED_TOKENS.includes(paren[1])) f.legacy += 1
+          if (!known.has(paren[1])) {
+            f.unknown += 1
+            unknownSites.push({ file, line, token })
+          }
+          continue
+        }
         const hit = classify(token)
+        const colourShaped = COLOUR_SHAPED.test(bare)
+        if (hit !== null || colourShaped) {
+          for (const v of variants.split(':').filter(Boolean)) {
+            variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
+          }
+        }
         if (hit === null) {
-          if (COLOUR_SHAPED.test(bare)) {
+          if (colourShaped) {
             f.unknown += 1
             unknownSites.push({ file, line, token })
           }
@@ -316,7 +345,7 @@ function scan() {
         f.total += 1
         if (hit.category === 'colour') {
           f.colour += 1
-          if (RETIRED.test(hit.bare)) f.legacy += 1
+          if (RETIRED.test(hit.bare.replace(/\/.*$/, ''))) f.legacy += 1
         }
       }
     })
@@ -978,13 +1007,13 @@ const PROPOSED_LIGHT = `
   --color-pressed: oklch(0.905 0.004 286);
   --color-canvas: oklch(0.885 0 0);
   --color-line: oklch(0.905 0.004 286);
-  --color-line-strong: oklch(0.600 0.008 286);
+  --color-line-strong: oklch(0.6 0.008 286);
   --color-text: oklch(0.222 0.004 286);
   --color-text-muted: oklch(0.485 0.006 286);
   --color-accent: oklch(0.554 0.176 34.8);
-  --color-accent-soft: oklch(0.955 0.020 34.8);
+  --color-accent-soft: oklch(0.955 0.02 34.8);
   --color-on-fill: oklch(1 0 0);
-  --color-focus: oklch(0.600 0.180 34.8);
+  --color-focus: oklch(0.6 0.18 34.8);
   --color-danger: oklch(0.505 0.213 27.5);
   --color-danger-soft: oklch(0.971 0.013 17.4);
   --color-warning: oklch(0.473 0.137 46.2);
@@ -992,7 +1021,7 @@ const PROPOSED_LIGHT = `
   --color-success: oklch(0.448 0.119 151.3);
   --color-success-soft: oklch(0.982 0.018 155.8);
   --color-edit: oklch(0.546 0.245 262.9);
-  --color-guide: oklch(0.600 0.118 184.7);
+  --color-guide: oklch(0.6 0.118 184.7);
   --color-hud: oklch(0 0 0 / 0.7);
   --color-hud-strong: oklch(0 0 0 / 0.85);
   --color-hud-fg: oklch(1 0 0);
@@ -1005,17 +1034,17 @@ const PROPOSED_DARK = `
   --color-surface-sunken: oklch(0.215 0.006 286);
   --color-field: oklch(0.215 0.006 286);
   --color-hover: oklch(0.332 0.012 286);
-  --color-pressed: oklch(0.390 0.013 286);
-  --color-canvas: oklch(0.170 0 0);
+  --color-pressed: oklch(0.39 0.013 286);
+  --color-canvas: oklch(0.17 0 0);
   --color-line: oklch(0.332 0.012 286);
-  --color-line-strong: oklch(0.560 0.014 286);
+  --color-line-strong: oklch(0.56 0.014 286);
   --color-text: oklch(0.926 0.005 286);
   --color-text-muted: oklch(0.709 0.014 286);
-  --color-accent: oklch(0.670 0.176 34.8);
-  --color-accent-soft: oklch(0.330 0.055 34.8);
-  --color-on-fill: oklch(0.180 0.006 286);
+  --color-accent: oklch(0.67 0.176 34.8);
+  --color-accent-soft: oklch(0.33 0.055 34.8);
+  --color-on-fill: oklch(0.18 0.006 286);
   --color-danger: oklch(0.704 0.191 22.2);
-  --color-danger-soft: oklch(0.258 0.092 26.0);
+  --color-danger-soft: oklch(0.258 0.092 26);
   --color-warning: oklch(0.769 0.188 70.1);
   --color-warning-soft: oklch(0.279 0.077 45.6);
   --color-success: oklch(0.792 0.209 151.7);
@@ -1227,6 +1256,18 @@ const UTILITY_BLOCK = ['instant', 'fast', 'base', 'slow']
   )
   .join('\n')
 
+/**
+ * Re-indent a template-literal block to `pad`, preserving relative nesting. `.trim()` alone would
+ * strip only the first line's indent and leave the rest, emitting CSS whose first declaration sits
+ * two columns left of its siblings — and this output is pasted into `theme.css` verbatim.
+ */
+function indentBlock(text, pad) {
+  const lines = text.replace(/^\n+/, '').replace(/\s+$/, '').split('\n')
+  const widths = lines.filter((l) => l.trim() !== '').map((l) => /^ */.exec(l)[0].length)
+  const base = Math.min(...widths)
+  return lines.map((l) => (l.trim() === '' ? '' : pad + l.slice(base))).join('\n')
+}
+
 function emitTheme() {
   print(
     '/* Canonical design tokens — generated by `node scripts/design-inventory.mjs --emit-theme`.',
@@ -1239,18 +1280,18 @@ function emitTheme() {
   )
   print('@theme static {')
   print('  /* Colour roles — light */')
-  print(PROPOSED_LIGHT.trim().replace(/^/gm, '  '))
+  print(indentBlock(PROPOSED_LIGHT, '  '))
   print(SCALE_THEME.trimEnd())
   print('}')
   print()
   print(':root {')
-  print(ROOT_VARS.trim().replace(/^/gm, '  '))
+  print(indentBlock(ROOT_VARS, '  '))
   print('}')
   print()
   print('@media (prefers-color-scheme: dark) {')
   print('  :root {')
-  print(PROPOSED_DARK.trim().replace(/^/gm, '    '))
-  print(DARK_ROOT_EXTRA.trim().replace(/^/gm, '    '))
+  print(indentBlock(PROPOSED_DARK, '    '))
+  print(indentBlock(DARK_ROOT_EXTRA, '    '))
   print('  }')
   print('}')
   print()
@@ -1310,6 +1351,7 @@ const FORBIDDEN_UTILITIES = [
   'ease-in',
   'animate-pulse',
   'backdrop-blur',
+  'inset-shadow-sm',
 ]
 
 const loadStylesheet = (path) => ({
@@ -1338,22 +1380,68 @@ async function compileTheme(candidates) {
   return new Set(candidates.filter(emits))
 }
 
-/** Light declarations are everything before the dark media block; dark are everything after. */
+const asCss = (m) => [...m].map(([n, t]) => `--color-${n}: ${t};`).join('\n')
+
+/** Brace-aware bodies of every block opened by `opener` (a global regex ending in `{`). */
+function blockBodies(css, opener) {
+  const bodies = []
+  for (const m of css.matchAll(opener)) {
+    let depth = 0
+    let i = m.index + m[0].length - 1
+    const start = i + 1
+    for (; i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1
+      else if (css[i] === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    bodies.push(css.slice(start, i))
+  }
+  return bodies
+}
+
+/** How many times each `--color-<name>` is declared in `text`. */
+function colourDeclCounts(text) {
+  const counts = new Map()
+  for (const m of text.matchAll(/--color-([a-z0-9-]+)\s*:/g)) {
+    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * Where theme.css declares colours, read structurally rather than by position: light = inside any
+ * `@theme` / `@theme static` block, dark = inside any `prefers-color-scheme: dark` media block
+ * (however spaced), and everything else is a stray. Inside one block the last declaration wins,
+ * which is also what the cascade does — so a duplicate with the wrong value *first* is benign and
+ * a duplicate with the wrong value *last* is a byte mismatch.
+ */
 function themeColourBlocks() {
-  const css = readFileSync(THEME, 'utf8')
-  const cut = css.indexOf('@media (prefers-color-scheme: dark)')
-  const light = declaredColourText(cut === -1 ? css : css.slice(0, cut))
-  const dark = declaredColourText(cut === -1 ? '' : css.slice(cut))
-  return { light, dark }
+  const css = readFileSync(THEME, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const lightText = blockBodies(css, /@theme(?:\s+static)?\s*\{/g).join('\n')
+  const darkText = blockBodies(
+    css,
+    /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g,
+  ).join('\n')
+  const total = colourDeclCounts(css)
+  const inLight = colourDeclCounts(lightText)
+  const inDark = colourDeclCounts(darkText)
+  const stray = new Map()
+  for (const [name, n] of total) {
+    const outside = n - (inLight.get(name) ?? 0) - (inDark.get(name) ?? 0)
+    if (outside > 0) stray.set(name, outside)
+  }
+  return { light: declaredColourText(lightText), dark: declaredColourText(darkText), total, stray }
 }
 
 async function check(args) {
   const final = args.includes('--final')
-  const wanted = args.filter((a) => a !== '--final').map((a) => resolvePath(ROOT, a))
   const failures = []
   const fail = (msg) => failures.push(msg)
 
-  const { perFile, unknownSites, varRefs } = scan()
+  const { files, perFile, unknownSites, varRefs } = scan()
+  const scanned = new Set(files)
   const totals = totalsLine(perFile)
   print('# Design check (`scripts/design-inventory.mjs --check`)')
   print()
@@ -1371,6 +1459,35 @@ async function check(args) {
       `--final: ${String(totals.legacy)} references to retired tokens remain (utilities and var() consumers)`,
     )
   }
+
+  // Requested paths must be files the scan actually read; a directory expands to them. Anything
+  // else is "I could not check", which is a failure, never a pass.
+  const wanted = []
+  for (const arg of args.filter((a) => a !== '--final')) {
+    const path = resolvePath(ROOT, arg)
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      fail(`${arg}: no such file`)
+      continue
+    }
+    if (isDir) {
+      // Only the file types whose utilities are actually read, so a directory cannot smuggle in
+      // the `.ts` files a direct path is refused for and report them as all-zero rows.
+      const inside = files.filter((f) => f.startsWith(path + '/') && !f.endsWith('.ts'))
+      if (inside.length === 0) {
+        fail(`${arg}: directory contains no scanned renderer file (.tsx/.css)`)
+      }
+      wanted.push(...inside)
+    } else if (scanned.has(path) && !path.endsWith('.ts')) {
+      wanted.push(path)
+    } else if (path.endsWith('.ts')) {
+      fail(`${arg}: utilities in .ts files are not scanned — class strings belong in .tsx`)
+    } else {
+      fail(`${arg}: not a scanned renderer file (.tsx/.css under src/renderer/src)`)
+    }
+  }
   if (wanted.length > 0) {
     print()
     print('Requested files (every gate column must be 0):')
@@ -1385,22 +1502,29 @@ async function check(args) {
     }
   }
 
-  // The role block: absent (pre-M8b.2), partial (a failure), or landed and byte-checked.
+  // The role block: absent (pre-M8b.2), present-but-unreadable, partial, or landed and checked.
   const wantLight = declaredColourText(PROPOSED_LIGHT)
   const wantDark = declaredColourText(PROPOSED_DARK)
-  const { light, dark } = themeColourBlocks()
-  // `accent` and `accent-soft` pre-date the role block, so "landed" is judged on the other 25.
+  const { light, dark, total, stray } = themeColourBlocks()
   const newRoles = [...wantLight.keys()].filter((n) => n !== 'accent' && n !== 'accent-soft')
-  const landedCount = newRoles.filter((n) => light.has(n)).length
+  const anywhere = newRoles.filter((n) => (total.get(n) ?? 0) > 0)
+  const landed = newRoles.filter((n) => light.has(n))
   print()
-  if (landedCount === 0) {
+  for (const [name, n] of stray) {
+    if (wantLight.has(name) || RETIRED_TOKENS.includes(name)) {
+      fail(
+        `\`--color-${name}\` declared ${String(n)}× outside every @theme block and dark media block — an unlayered declaration beats @layer theme regardless of order`,
+      )
+    }
+  }
+  if (anywhere.length === 0) {
     print(
-      `Role block: not landed (0/${String(newRoles.length)} new role colours declared) — the theme-value, census and Tailwind gates apply after M8b.2.`,
+      `Role block: not landed (0/${String(newRoles.length)} new role colours declared anywhere in theme.css) — the theme-value, census and Tailwind gates apply after M8b.2.`,
     )
   } else {
-    if (landedCount < newRoles.length) {
+    if (landed.length < newRoles.length) {
       fail(
-        `role block partial: ${String(landedCount)}/${String(newRoles.length)} new role colours declared`,
+        `role block partial: ${String(landed.length)}/${String(newRoles.length)} new role colours read from @theme (missing: ${newRoles.filter((n) => !light.has(n)).join(', ')})`,
       )
     }
     let mismatches = 0
@@ -1426,28 +1550,31 @@ async function check(args) {
       `Role block: landed — ${String(wantLight.size + wantDark.size - mismatches)}/${String(wantLight.size + wantDark.size)} declarations byte-equal to the canonical values.`,
     )
     // Census over what theme.css actually declares, not over the script's constants.
-    const lightPalette = new Map(readColourVars(PROPOSED_LIGHT))
-    for (const [k, v] of readColourVars(
-      [...light].map(([n, t]) => `--color-${n}: ${t};`).join('\n'),
-    ))
-      lightPalette.set(k, v)
-    const darkPalette = new Map(lightPalette)
-    for (const [k, v] of readColourVars(PROPOSED_DARK)) darkPalette.set(k, v)
-    for (const [k, v] of readColourVars(
-      [...dark].map(([n, t]) => `--color-${n}: ${t};`).join('\n'),
-    ))
-      darkPalette.set(k, v)
-    print()
-    const failing = contrastTable(
-      'Census over the values theme.css declares',
-      PROPOSED_PAIRS,
-      makeResolver(lightPalette, new Map()),
-      makeResolver(darkPalette, new Map()),
-      (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
-      'role',
-    )
-    if (failing > 0)
-      fail(`${String(failing)} canonical pairs fail against the values theme.css declares`)
+    let palettes = null
+    try {
+      const lightPalette = new Map(readColourVars(PROPOSED_LIGHT))
+      for (const [k, v] of readColourVars(asCss(light))) lightPalette.set(k, v)
+      const darkPalette = new Map(lightPalette)
+      for (const [k, v] of readColourVars(PROPOSED_DARK)) darkPalette.set(k, v)
+      for (const [k, v] of readColourVars(asCss(dark))) darkPalette.set(k, v)
+      palettes = { lightPalette, darkPalette }
+    } catch (error) {
+      fail(`census skipped — ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (palettes !== null) {
+      print()
+      const failing = contrastTable(
+        'Census over the values theme.css declares',
+        PROPOSED_PAIRS,
+        makeResolver(palettes.lightPalette, new Map()),
+        makeResolver(palettes.darkPalette, new Map()),
+        (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
+        'role',
+      )
+      if (failing > 0) {
+        fail(`${String(failing)} canonical pairs fail against the values theme.css declares`)
+      }
+    }
 
     const emitted = await compileTheme([...REQUIRED_UTILITIES, ...FORBIDDEN_UTILITIES])
     const missing = REQUIRED_UTILITIES.filter((c) => !emitted.has(c))
@@ -1456,8 +1583,9 @@ async function check(args) {
       `Tailwind compile: ${String(REQUIRED_UTILITIES.length - missing.length)}/${String(REQUIRED_UTILITIES.length)} prescribed utilities emit; ${String(FORBIDDEN_UTILITIES.length - alive.length)}/${String(FORBIDDEN_UTILITIES.length)} reset-killed spellings stay dead.`,
     )
     for (const c of missing) fail(`prescribed utility \`${c}\` does not compile`)
-    for (const c of alive)
+    for (const c of alive) {
       fail(`default-scale spelling \`${c}\` still compiles — a \`--*: initial\` reset is missing`)
+    }
   }
 
   print()
@@ -1470,50 +1598,51 @@ async function check(args) {
   return 1
 }
 
-// ---------------------------------------------------------------------------------------------
-
 const mode = process.argv[2] ?? '--inventory'
-if (mode === '--contrast') {
-  const palette = currentPalette()
-  print('# Current palette')
-  print()
-  print('| token | hex | oklch |')
-  print('| --- | --- | --- |')
-  for (const [name, value] of readColourVars(readFileSync(THEME, 'utf8'))) {
-    print(`| \`${name}\` | ${toHex(value)} | ${fmtOklch(value)} |`)
+try {
+  if (mode === '--contrast') {
+    const palette = currentPalette()
+    print('# Current palette')
+    print()
+    print('| token | hex | oklch |')
+    print('| --- | --- | --- |')
+    for (const [name, value] of readColourVars(readFileSync(THEME, 'utf8'))) {
+      print(`| \`${name}\` | ${toHex(value)} | ${fmtOklch(value)} |`)
+    }
+    print()
+    print('Composite grounds used below (opaque results):')
+    print()
+    const resolve = makeResolver(palette, CURRENT_ALIASES)
+    for (const [alias, spec] of CURRENT_ALIASES) {
+      print(`- \`${alias}\` = ${spec} → ${toHex(resolve(alias))}`)
+    }
+    print()
+    contrastTable(
+      'Measured contrast — shipped renderer',
+      CURRENT_PAIRS,
+      resolve,
+      resolve,
+      (pair) =>
+        pair.light.join(' / ') === pair.dark.join(' / ')
+          ? `\`${pair.light.join('` on `')}\` (no dark variant)`
+          : `\`${pair.light.join('` on `')}\` · dark \`${pair.dark.join('` on `')}\``,
+      'sites',
+    )
+  } else if (mode === '--proposed') {
+    if (proposedReport() > 0) process.exitCode = 1
+  } else if (mode === '--emit-theme') {
+    emitTheme()
+  } else if (mode === '--check') {
+    process.exitCode = await check(process.argv.slice(3))
+  } else if (mode === '--inventory') {
+    inventory()
+  } else {
+    process.stderr.write(
+      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme or --check [--final] [file …]\n`,
+    )
+    process.exit(2)
   }
-  print()
-  print('Composite grounds used below (opaque results):')
-  print()
-  const resolve = makeResolver(palette, CURRENT_ALIASES)
-  for (const [alias, spec] of CURRENT_ALIASES) {
-    print(`- \`${alias}\` = ${spec} → ${toHex(resolve(alias))}`)
-  }
-  print()
-  contrastTable(
-    'Measured contrast — shipped renderer',
-    CURRENT_PAIRS,
-    resolve,
-    resolve,
-    (pair) =>
-      pair.light.join(' / ') === pair.dark.join(' / ')
-        ? `\`${pair.light.join('` on `')}\` (no dark variant)`
-        : `\`${pair.light.join('` on `')}\` · dark \`${pair.dark.join('` on `')}\``,
-    'sites',
-  )
-} else if (mode === '--proposed') {
-  if (proposedReport() > 0) process.exitCode = 1
-} else if (mode === '--emit-theme') {
-  emitTheme()
-} else if (mode === '--check') {
-  process.exitCode = await check(process.argv.slice(3))
-} else if (mode === '--inventory') {
-  inventory()
-} else {
-  process.stderr.write(
-    `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme or --check [--final] [file …]\n`,
-  )
-  process.exit(2)
+} finally {
+  // Flush whatever was reported before a throw, so a crash never discards the actionable lines.
+  process.stdout.write(out.join('\n') + '\n')
 }
-
-process.stdout.write(out.join('\n') + '\n')

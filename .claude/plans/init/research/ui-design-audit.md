@@ -186,10 +186,10 @@ without it: zoom percentage (`SlideCanvas.tsx:137`), dimensions and rotation lab
 Font stack is `'Segoe UI', system-ui, -apple-system, sans-serif` (`theme.css:34–39`) — M8b.0 §2.3
 covers the platform implication; unchanged.
 
-### 2.6 Borders and outlines — 15 width spellings, 2 styles
+### 2.6 Borders and outlines — 16 width spellings, 2 styles
 
 `border` (1px) ×42 with side variants ×14; `border-2` on the selection box and editing frame,
-`border-y-2`/`border-t-accent` for the drop indicator, `border-b-2` for the settings tab underline;
+`border-y-2`/`border-t-accent` for the drop indicator, `border-b-2` for the settings tab underline; `outline-offset-2` once (`DesignModeToggle.tsx:47`, the only offset focus ring);
 `outline outline-1` on the canvas slide (chosen over `border` so it does not affect layout —
 `SlideCanvas.tsx:123`, keep); `ring-1` on the selected thumbnail plus `ring-2 ring-offset-1` on its
 focus (`ThumbnailRail.tsx:159/167`) — the offset has no colour, resolves to Tailwind's `#fff`, and
@@ -260,7 +260,7 @@ that should not wait for M8b.2.
 | T1 | `amber-600` on `chrome` | **3.06** | 7.66 (`amber-500`) | `StatusBar.tsx:64/96` skills-fallback + budget-warn text, `BudgetTab.tsx:203/221` | `text-warning` — 6.83 / 7.65. Now: `text-amber-800 dark:text-amber-500` — 6.83 |
 | T2 | `white` on `amber-600` | **3.19** | **3.19** | `DesignNotice.tsx:57`, `SelectionOverlay.tsx:821` editing label | `bg-warning text-on-fill` — 7.13 / 8.77 (the editing label becomes `bg-edit text-on-fill` — 5.26 / 7.14). Now: `bg-amber-800` — 7.13 |
 | T3 | `chrome-muted/80` on the property panel | **3.70** | **4.31** | `PropertyPanel.tsx:170` element tag | `text-text-muted` (drop the `/80`) — 5.68 today, 6.14 on `surface` |
-| T4 | `accent` on `ink` | 4.96 | **3.17** | `ThumbnailRail.tsx:160` selected slide number, `:372` hover | dark `accent` = `oklch(0.670 0.176 34.8)` — 5.09 on `surface` |
+| T4 | `accent` on `ink` | 4.96 | **3.17** | `ThumbnailRail.tsx:160` selected slide number, `:372` hover | dark `accent` = `oklch(0.67 0.176 34.8)` — 5.09 on `surface` |
 | T5 | `accent` on `ink-alt` | 5.18 | **2.91** | `StatusBar.tsx:182` hover, `MenuTabStrip.tsx:13` (worked around with `dark:text-ink-fg`) | dark `accent` — 4.66 on `surface-raised`; the tab strip can then drop its fallback |
 | T6 | `chrome-muted` on the canvas mat | **4.34** | 7.19 | `SlideCanvas.tsx:158` empty-state caption | `canvas` lightened 0.870 → 0.885 gives 4.53; rule R5 additionally forbids muted text on the mat |
 
@@ -496,8 +496,8 @@ Work list:
 
 ### 4.10 Cross-cutting (belongs to M8b.2, not to a surface)
 
-- `theme.css`: line-height on `body` (`--text-ui--line-height` via `text-ui` on `#root`, or `line-height: 1.5` on `body`), and **migrate the `body` rule itself** — `body { background-color: var(--color-surface); color: var(--color-text) }` with the dark `body` block deleted (role tokens swap by mode). Those four `var(--color-shell-bg|shell-fg|ink|ink-fg)` references are consumers of retired tokens that live outside every utility scan; `--check` counts them (§10 rows 3 and 6).
-- `tests/unit/design/theme-tokens.test.ts:28`: `themeColourTokens` parses `/@theme\s*\{([\s\S]*?)\}/` — it does not match `@theme static {` and stops at the first `}`, so the `@keyframes working` inside the block truncates the token set. Observed: landing the `--emit-theme` block on `main` reds tests 1 and 2 of that file. M8b.2 updates the parser first (match `@theme(?:\s+static)?\s*\{` and read `--color-*` declarations across the file, as the script's `themeNames` does).
+- `theme.css`: line-height on `body` (`--text-ui--line-height` via `text-ui` on `#root`, or `line-height: 1.5` on `body`), and **migrate the `body` rule itself** — `body { background-color: var(--color-surface); color: var(--color-text) }` with the dark `body` block deleted (role tokens swap by mode). Those four `var(--color-shell-bg|shell-fg|ink|ink-fg)` references are consumers of retired tokens that live outside every utility scan; `--check` counts them (§10 rows 3 and 10).
+- `tests/unit/design/theme-tokens.test.ts:28`: `themeColourTokens` parses `/@theme\s*\{([\s\S]*?)\}/` — it reads only the **first** `@theme {` block, does not match `@theme static {`, and stops at the first `}`. Observed: with the `--emit-theme` block appended after the legacy block and `accent`/`accent-soft` still in the legacy block the test is **green** — and that is the dangerous case, because it never saw the role block and will treat every role utility as non-namespaced; remove the two `accent*` lines from the legacy block (as M8b.2 must, since the role block declares them) or let the role block replace the legacy one, and tests 1 and 2 go red. The parser change is required either way: match `@theme(?:\s+static)?\s*\{` brace-aware and read `--color-*` across every `@theme` block, as the script's `themeColourBlocks` does. M8b.2 lands it before the block.
 - `prefers-reduced-motion` block that reduces rather than removes (M8b.0 §5.5).
 - Z-index contract; focus ring utility; the primitives (§5.6).
 - `tests/unit/design/theme-tokens.test.ts:76`: the namespace assertion `['shell','chrome','accent','canvas','ink']` must grow to include the new namespaces — that test is the guard that will catch a typo in any new token name, so extend it in the same PR that adds the tokens.
@@ -547,7 +547,7 @@ Work list:
    guides `guide` (teal) so the warning amber and the future AI-pending violet
    (40-design-mode.md §"AI pending") each keep one meaning.
 7. **Accent unchanged in light; lifted in dark.** `#c43e1c` = `oklch(0.554 0.176 34.8)` stays. Dark
-   uses `oklch(0.670 0.176 34.8)` = `#ed6444` (M8b.0 §2.2's value, re-verified: 5.09 on `surface`,
+   uses `oklch(0.67 0.176 34.8)` = `#ed6444` (M8b.0 §2.2's value, re-verified: 5.09 on `surface`,
    4.66 on `surface-raised`). Because a lifted accent is too light for white text (3.23:1), **`on-fill`
    is a role token** — white in light, near-black in dark — and the same token is the text on every
    saturated fill (`accent`, `danger`, `warning`, `success`, `edit`): 5.19–7.13 light, 5.83–10.6 dark.
@@ -576,24 +576,24 @@ failures has a measured proposed counterpart: T1 → `warning` on `surface`; T2 
 | `surface-sunken` | `oklch(0.955 0.003 286)` `#f0f0f2` | `oklch(0.215 0.006 286)` `#19191c` | `chrome-alt` as a card fill |
 | `field` | `oklch(1 0 0)` `#ffffff` | `oklch(0.215 0.006 286)` `#19191c` | every input's `bg-white`/`bg-chrome` + `dark:bg-ink`/`ink-alt` |
 | `hover` | `oklch(0.945 0.003 286)` `#ececef` | `oklch(0.332 0.012 286)` `#35353c` | `hover:bg-chrome-alt`, `chrome-line/40`, `neutral-50/100` |
-| `pressed` | `oklch(0.905 0.004 286)` `#dfdfe2` | `oklch(0.390 0.013 286)` `#44444c` | `active:bg-chrome-line` |
-| `canvas` | `oklch(0.885 0 0)` `#d9d9d9` | `oklch(0.170 0 0)` `#0f0f0f` | `canvas-mat/25` over `shell-bg`; `dark:bg-black/40` |
+| `pressed` | `oklch(0.905 0.004 286)` `#dfdfe2` | `oklch(0.39 0.013 286)` `#44444c` | `active:bg-chrome-line` |
+| `canvas` | `oklch(0.885 0 0)` `#d9d9d9` | `oklch(0.17 0 0)` `#0f0f0f` | `canvas-mat/25` over `shell-bg`; `dark:bg-black/40` |
 | `line` | `oklch(0.905 0.004 286)` `#dfdfe2` | `oklch(0.332 0.012 286)` `#35353c` | `chrome-line` + `dark:ink-line` on dividers and decorative borders |
-| `line-strong` | `oklch(0.600 0.008 286)` `#808085` | `oklch(0.560 0.014 286)` `#73737d` | new — control borders, ≥ 3.22:1 on every ground |
+| `line-strong` | `oklch(0.6 0.008 286)` `#808085` | `oklch(0.56 0.014 286)` `#73737d` | new — control borders, ≥ 3.22:1 on every ground |
 | `text` | `oklch(0.222 0.004 286)` `#1b1b1d` | `oklch(0.926 0.005 286)` `#e6e6ea` | `shell-fg` + `dark:ink-fg`; `neutral-900` |
 | `text-muted` | `oklch(0.485 0.006 286)` `#5e5f62` | `oklch(0.709 0.014 286)` `#a0a0aa` | `chrome-muted` + `dark:ink-muted`; `neutral-500/600` |
-| `accent` | `oklch(0.554 0.176 34.8)` `#c43e1c` | `oklch(0.670 0.176 34.8)` `#ed6444` | `accent` (light value unchanged) |
-| `accent-soft` | `oklch(0.955 0.020 34.8)` `#fdece7` | `oklch(0.330 0.055 34.8)` `#4e2a22` | `accent/5`, `/10`, `/20` tints; the unused `accent-soft` |
-| `on-fill` | `oklch(1 0 0)` `#ffffff` | `oklch(0.180 0.006 286)` `#111114` | `text-white` on every filled button/label |
-| `focus` | `oklch(0.600 0.180 34.8)` `#d64c2a` | same | new — one ring; ≥ 3.03:1 on every ground in both modes |
+| `accent` | `oklch(0.554 0.176 34.8)` `#c43e1c` | `oklch(0.67 0.176 34.8)` `#ed6444` | `accent` (light value unchanged) |
+| `accent-soft` | `oklch(0.955 0.02 34.8)` `#fdece7` | `oklch(0.33 0.055 34.8)` `#4e2a22` | `accent/5`, `/10`, `/20` tints; the unused `accent-soft` |
+| `on-fill` | `oklch(1 0 0)` `#ffffff` | `oklch(0.18 0.006 286)` `#111114` | `text-white` on every filled button/label |
+| `focus` | `oklch(0.6 0.18 34.8)` `#d64c2a` | same | new — one ring; ≥ 3.03:1 on every ground in both modes |
 | `danger` | `oklch(0.505 0.213 27.5)` `#c10007` | `oklch(0.704 0.191 22.2)` `#ff6467` | `red-600/400/800/500` |
-| `danger-soft` | `oklch(0.971 0.013 17.4)` `#fef2f2` | `oklch(0.258 0.092 26.0)` `#460809` | `red-50/950` |
+| `danger-soft` | `oklch(0.971 0.013 17.4)` `#fef2f2` | `oklch(0.258 0.092 26)` `#460809` | `red-50/950` |
 | `warning` | `oklch(0.473 0.137 46.2)` `#973c00` | `oklch(0.769 0.188 70.1)` `#fe9a00` | `amber-600/500/900/200/800` |
 | `warning-soft` | `oklch(0.987 0.022 95.3)` `#fffbeb` | `oklch(0.279 0.077 45.6)` `#461901` | `amber-500/10`, `amber-50` |
 | `success` | `oklch(0.448 0.119 151.3)` `#026630` | `oklch(0.792 0.209 151.7)` `#05df72` | new |
 | `success-soft` | `oklch(0.982 0.018 155.8)` `#f0fdf4` | `oklch(0.266 0.065 152.9)` `#032e15` | new |
 | `edit` | `oklch(0.546 0.245 262.9)` `#165dfc` | `oklch(0.707 0.165 254.6)` `#50a2ff` | `amber-500`/`amber-600` on the editing frame and its label |
-| `guide` | `oklch(0.600 0.118 184.7)` `#009689` | `oklch(0.777 0.152 181.9)` `#00d5be` | `fuchsia-500` smart guides |
+| `guide` | `oklch(0.6 0.118 184.7)` `#009689` | `oklch(0.777 0.152 181.9)` `#00d5be` | `fuchsia-500` smart guides |
 | `hud` | `oklch(0 0 0 / 0.7)` | same | `black/70` |
 | `hud-strong` | `oklch(0 0 0 / 0.85)` | same | `hover:bg-black/85` — its own token because `hud/85` would *multiply* the 0.7 alpha down to 0.595 |
 | `hud-fg` | `oklch(1 0 0)` | same | `text-white` on HUD pills |
@@ -695,7 +695,7 @@ imperceptible side by side; the point is that it is chosen and shared with dark)
 `:root` variables, dark overrides and the eight `@utility` rules — from the same constants `--check`
 verifies against. M8b.2 pastes its output rather than transcribing §5.2 and §5.3; on a scratch
 `theme.css` with that output appended, `--check` reports `49/49 declarations byte-equal`, `63 pairs,
-0 failing`, `60/60 prescribed utilities emit; 13/13 reset-killed spellings stay dead`, `RESULT: pass`
+0 failing`, `60/60 prescribed utilities emit; 14/14 reset-killed spellings stay dead`, `RESULT: pass`
 (§10).
 
 Spacing scale itself: **unchanged** (M8b.0 §5.3). The allowed steps are Fluent's — `0.5 1 1.5 2 2.5
@@ -806,6 +806,24 @@ tokens before any surface adopts them, so declare the role block `@theme static 
 emitted CSS then carries the full role block, the PR is reviewable and diffable, and the dark
 overrides have something to override in the build that introduces them.
 
+### 5.8 The canonical strings are Prettier's normal form — both halves of M8b.2's DoD hold at once
+
+`--check` compares each declaration **byte for byte** against the canonical string, and `pnpm lint`
+runs `prettier --check .`, which formats `theme.css`. Those two are only compatible if the canonical
+values are already written the way Prettier writes them, so they are: Prettier strips trailing zeros
+in a decimal (`0.600` → `0.6`, `0.020` → `0.02`, `26.0` → `26`), and every canonical value here is in
+that form. Verified both directions on the landed tree: `--check` → `49/49 … RESULT: pass` **and**
+`prettier --check src/renderer/src/styles/theme.css` → `All matched files use Prettier code style!`.
+
+Before this was aligned the two gates were mutually unsatisfiable — a Prettier-clean `theme.css`
+scored `38/49`, `FAIL (11)` (`theme.css has oklch(0.6 0.008 286), canonical is oklch(0.600 0.008 286)`
+and ten more), so M8b.2 could satisfy its `--check` half or its `pnpm lint` half but never both.
+`--emit-theme` also emits the block already indented (2 spaces inside `@theme`, 4 inside the dark
+`:root`), so the paste is Prettier-clean as it lands. **M8b.2 must not re-wrap, re-space or
+re-round the emitted values** — byte-equality is the gate, and `--*: initial` resets and hue values
+are equally literal. If a value ever has to change, change it in `scripts/design-inventory.mjs`'s
+`PROPOSED_LIGHT`/`PROPOSED_DARK` and re-emit; never hand-edit `theme.css` to match.
+
 ---
 
 ## 6. Non-goals (carried from M8b.0 §8, plus what this audit adds)
@@ -896,37 +914,52 @@ migrated file, `bg-chrome` after retirement, `bg-surfce`, `bg-accent/10`, `leadi
 
 ## 10. Every gate this document prescribes — the command, the observed red, or "unguarded"
 
-Rule adopted after three review rounds found nine prose gates that could not detect their subject:
-**a gate with no runnable command and no demonstrated red is not a gate.** Every row below names the
-command, the mutation applied on `main@6c24af3` during this PR's verification, and the output that
-came back. Rows that need the role block name the command and the red observed on a scratch
-`theme.css` made by appending `--emit-theme`'s output and migrating `body` (the tree M8b.2 produces).
-Properties with no command are listed at the end as unguarded.
+Rule adopted after four review rounds: **a gate with no runnable command and no demonstrated red is
+not a gate, and a gate that cannot positively confirm its subject fails — it never passes.** `--check`
+therefore treats "not landed" as a pass only when no new role name appears *anywhere* in `theme.css`;
+a role declared where it cannot read it, a path it did not scan, a file type whose utilities it does
+not read, and a value it cannot parse are all failures with the reason printed.
 
-| # | Property | Command | Mutation → observed |
+Trees named below: **main** = `main@6c24af3`; **landed** = main with the two `accent*` lines removed
+from the legacy `@theme`, `--emit-theme`'s output appended, and `body` migrated; **E1** = the same
+without the `body` migration. Every output was produced by the stated command on the stated tree and
+the tree restored with `git checkout` afterwards.
+
+| # | Property | Command · tree | Mutation → observed |
 | --- | --- | --- | --- |
-| 1 | A colour utility names a token `theme.css` does not declare (second-segment typo) | `pnpm exec vitest run tests/unit/design/theme-tokens.test.ts` | `dark:bg-ink` → `dark:bg-ink-bg` at `ChatPanel.tsx:101` → `× every colour utility … names a declared token`, `ChatPanel.tsx:101 → ink-bg` |
-| 2 | A colour utility whose *name* is a typo or is not declared yet (`bg-surfce`; `bg-surface` before M8b.2) — row 1's test is namespace-scoped by design and passes both | `node scripts/design-inventory.mjs --check` | `bg-amber-600` → `bg-surfce` at `DesignNotice.tsx:57` → `Totals: … unknown 1`, `RESULT: FAIL (1)` — `unknown colour reference \`bg-surfce\` at features/design/DesignNotice.tsx:57`, exit 1 |
-| 3 | A `var(--color-*)` consumer in `.css`/`.ts`/`.tsx` names nothing declared or retired | `--check` | `theme.css:32` `var(--color-shell-bg)` → `var(--color-shell-bg-gone)` → `consumers: 5 (retired 3, undeclared 1)`, `FAIL (1)` — `unknown colour reference \`var(--color-shell-bg-gone)\` at styles/theme.css:32`, exit 1 |
-| 4 | A retired token is still referenced after its declaration is deleted | `--check --final`; from M8b.2 also the retired-token clause in row 1's test | delete the 12 declarations, renderer untouched → `--check --final`: `legacy 324`, `FAIL (1)` — `--final: 324 references to retired tokens remain (utilities and var() consumers)`, exit 1. The clause, built in review round 2, reds at exactly 324 sites on the same mutation while the shipped test stays green |
-| 5 | Per-PR presentation gate — a touched file has 0 `legacy`, `dark:`, arbitrary, palette, alpha, unknown | `--check <file …>` | `DesignNotice.tsx` today: `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|`, `FAIL (2)` — `arbitrary = 1`, `palette = 3` (it has not migrated). Append `dark:bg-surface-raised text-red-600 bg-accent/10 duration-[150ms] bg-surfce bg-chrome` to its class string → `\| 14 \| 6 \| 1 \| 1 \| 2 \| 4 \| 1 \| 2 \|`, `FAIL (8)`: `legacy = 1`, `dark = 1`, `arbitrary = 2` (the `duration-[150ms]` is on an unclassified utility and still counts), `palette = 4`, `alpha = 1`, `unknown = 2` (`dark:bg-surface-raised` is unknown until declared, `bg-surfce` always) |
-| 6 | Last-PR survivor gate — no reference to a retired token anywhere, `theme.css`'s `body` included | `--check --final` | on `main`: `legacy 328` (324 utilities + 4 `var()` in `theme.css:32/33/46/47`). On the scratch landed tree with `body` migrated: `legacy 324`, `FAIL (1)` — `--final: 324 references to retired tokens remain`; migrating one `bg-chrome` → 323 (review round 3) |
-| 7 | A typo in a role *declaration* | row 1's test, line 76 | declare `--color-surfce` → `+ "surfce"` (review round 3) |
-| 8 | The 27 role values landed byte-equal to the canonical strings | `--check` (block from `--emit-theme`) | landed: `Role block: landed — 49/49 declarations byte-equal to the canonical values`, `RESULT: pass`. Light `--color-text-muted` → `oklch(0.700 0.006 286)`: `48/49`, `FAIL (2)` — `light \`--color-text-muted\`: theme.css has \`oklch(0.700 0.006 286)\`, canonical is \`oklch(0.485 0.006 286)\`` |
-| 9 | The 63-pair census holds over the values `theme.css` actually declares (not the script's constants) | same run | same mutation → `**63 pairs, 6 failing in at least one mode.** Worst: #14 at 1.89:1`, `6 canonical pairs fail against the values theme.css declares` |
-| 10 | Reachability — every prescribed utility compiles on the installed Tailwind 4.3.3 | same run (`compile().build()` inside `--check`) | landed: `Tailwind compile: 60/60 prescribed utilities emit`. Delete `@utility z-dialog` → `59/60`, `FAIL (1)` — `prescribed utility \`z-dialog\` does not compile` |
-| 11 | The `--*: initial` resets stay in place | same run | delete `--text-*: initial` → `11/13 reset-killed spellings stay dead`, `FAIL (2)` — `default-scale spelling \`text-sm\` still compiles`, `\`text-lg\` still compiles` |
-| 12 | The role block is not half-landed | same run | 1–24 of the 25 new roles declared → `role block partial: n/25 new role colours declared` (by construction; `accent`/`accent-soft` pre-exist and are excluded from the count) |
-| 13 | M8b.1a's six one-line swaps | `--contrast` after editing the six pair specs | 25 → 21 failing with the documented after-ratios (review round 3). A calculator over specs, so the guard for the *source* is the existing `status-bar-meter` test plus review |
-| 14 | No behaviour change in a surface PR | the existing suite, unchanged | the suite is the guard; a PR that must edit a class-coupled test names the mutation |
+| 1 | A colour utility names a token `theme.css` does not declare (second-segment typo) | `pnpm exec vitest run tests/unit/design/theme-tokens.test.ts` · main | `dark:bg-ink` → `dark:bg-ink-bg` at `ChatPanel.tsx:101` → `× every colour utility … names a declared token`, `ChatPanel.tsx:101 → ink-bg` |
+| 2 | A colour utility whose *name* is a typo or not yet declared (`bg-surfce`; `bg-surface` before M8b.2) — row 1's test is namespace-scoped by design and passes both | `node scripts/design-inventory.mjs --check` · main | `bg-amber-600` → `bg-surfce` at `DesignNotice.tsx:57` → `Totals: … unknown 1`, `RESULT: FAIL (1)` — `unknown colour reference \`bg-surfce\` at features/design/DesignNotice.tsx:57`, exit 1 |
+| 3 | A `var(--color-*)` consumer in `.css`/`.ts`/`.tsx` names nothing declared or retired | `--check` · main | `theme.css:32` → `var(--color-shell-bg-gone)` → `consumers: 5 (retired 3, undeclared 1)`, `FAIL (1)` — `unknown colour reference \`var(--color-shell-bg-gone)\` at styles/theme.css:32` |
+| 4 | A retired token is still referenced after its declaration is deleted | `--check --final` · main and landed; from M8b.2 also the retired-token clause in row 1's test | delete the 12 declarations, renderer untouched — main: `legacy 328`, `FAIL (1)` — `--final: 328 references to retired tokens remain (utilities and var() consumers)`; landed: `legacy 324`, `--final: 324 references …`. The clause, built in review round 2, reds at exactly 324 `.tsx` sites on the same mutation |
+| 5 | Per-PR presentation gate — a touched file has 0 `legacy`, `dark:`, arbitrary, palette, alpha, unknown | `--check <file …>` · main | `DesignNotice.tsx` today: `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|`, `FAIL (2)` — `arbitrary = 1`, `palette = 3` (it has not migrated). Append `dark:bg-surface-raised text-red-600 bg-accent/10 duration-[150ms] bg-surfce bg-chrome` → `\| 14 \| 6 \| 1 \| 1 \| 2 \| 4 \| 1 \| 2 \|`, `FAIL (8)`: `legacy = 1`, `dark = 1`, `arbitrary = 2`, `palette = 4`, `alpha = 1`, `unknown = 2` |
+| 6 | Row 5 sees utilities behind **any** variant spelling | `--check DesignNotice.tsx` · main | append `aria-pressed:dark:bg-ink-alt data-selected:bg-chrome data-[state=open]:text-red-600 rtl:dark:bg-ink` → `\| 15 \| 7 \| 3 \| 2 \| 1 \| 4 \| 0 \| 0 \|`, `FAIL (4)` — `legacy = 3`, `dark = 2`, `palette = 4`; global `dark:` 180 → 182, `legacy` 328 → 331 |
+| 7 | Row 5 sees arbitrary alphas and the v4 `(--color-x)` shorthand | `--check DesignNotice.tsx` · main | append `bg-accent/[0.5] bg-(--color-shell-bg) text-shell-fg/(--a) bg-(--color-nope)` → `\| 13 \| 5 \| 2 \| 0 \| 1 \| 3 \| 2 \| 1 \|`, `FAIL (6)` — `unknown colour reference \`bg-(--color-nope)\``, `legacy = 2`, `alpha = 2`, `unknown = 1`; `legacy` 328 → 330 |
+| 8 | Row 5 does not cry wolf on colour-prefixed non-colour utilities | `--check DesignNotice.tsx` · main | append `fill-none bg-no-repeat text-nowrap ring-inset decoration-wavy` → row `\| 16 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|` — `unknown` stays 0, only the file's pre-existing `arbitrary = 1`, `palette = 3` fail |
+| 9 | `--check <path>` refuses what it did not scan | `--check` · main | `…/DesignNotise.tsx` → `FAIL (1)` — `no such file`; `…/features/design` (a directory) → expands to the **6 `.tsx` files** inside it and reports each row, `FAIL (21)`; `…/stores` (a directory holding only `.ts`) → `FAIL (1)` — `directory contains no scanned renderer file (.tsx/.css)`, *not* a row of zeros; `…/designStore.ts` → `FAIL (1)` — `utilities in .ts files are not scanned — class strings belong in .tsx` |
+| 10 | Last-PR survivor gate — no reference to a retired token anywhere, `theme.css`'s `body` and every variant/shorthand spelling included | `--check --final` · landed | `legacy 324`, `FAIL (1)` — `--final: 324 references to retired tokens remain`; append `data-selected:bg-chrome aria-pressed:dark:bg-ink-alt bg-(--color-chrome)` → `legacy 327`; migrate one `bg-chrome` → `323` |
+| 11 | A typo in a role *declaration* | row 1's test, line 76 · main | declare `--color-surfce` → `+ "surfce"` (review round 3) |
+| 12 | The role gates run whenever the block is present, whatever the file layout | `--check` · E1 and landed | E1 (block appended, `body` not migrated, the legacy dark `body` media block above it): `Role block: landed — 49/49 declarations byte-equal`, `63 pairs, 0 failing`, `60/60 prescribed utilities emit; 14/14 reset-killed spellings stay dead`, `RESULT: pass` — and `--check --final` on E1: `FAIL (1) — 328 references remain`. Landed + an unrelated `@media (prefers-color-scheme: dark) { :root { color-scheme: dark } }` above the block: identical `pass`. Media query written `prefers-color-scheme:dark` (no space): identical `pass` |
+| 13 | The 27 role values landed byte-equal to the canonical strings | `--check` · landed | light `--color-text-muted` → `oklch(0.7 0.006 286)`: `48/49`, `FAIL (2)` — `light \`--color-text-muted\`: theme.css has \`oklch(0.7 0.006 286)\`, canonical is \`oklch(0.485 0.006 286)\``. A second `--color-surface: oklch(0.7 0.006 286)` **after** the canonical one → `48/49`, `**63 pairs, 11 failing … Worst: #38 at 1.48:1**`, `FAIL (2)`; the same duplicate **before** it → `49/49`, `pass` — last-in-block wins, which is exactly what the cascade paints, so that case is benign, not a hole |
+| 14 | A role value the browser would paint that the block does not own | `--check` · landed | unlayered `:root { --color-text-muted: oklch(0.7 0.006 286) }` **before** `@theme static` → `FAIL (1)` — `\`--color-text-muted\` declared 1× outside every @theme block and dark media block — an unlayered declaration beats @layer theme regardless of order`; placed **after** the block → the identical failure, so the catch is structural, not a file-order accident |
+| 15 | A role value `--check` cannot parse is a structured failure, not a lost report | `--check` · landed | `rgb(103 103 108)` → exit 1, 556 bytes of report, `FAIL (2)` — the byte mismatch line plus `census skipped — unparseable colour: rgb(103 103 108)`; `OKLCH(…)` (case) → same two lines |
+| 16 | The 63-pair census holds over the values `theme.css` actually declares | `--check` · landed | row 13's `text-muted` mutation → `**63 pairs, 6 failing in at least one mode.** Worst: #14 at 1.89:1`, `6 canonical pairs fail against the values theme.css declares` |
+| 17 | Reachability — every prescribed utility compiles on Tailwind 4.3.3 | `--check` · landed | delete `@utility z-dialog` → `59/60`, `FAIL (1)` — `prescribed utility \`z-dialog\` does not compile` |
+| 18 | The `--*: initial` resets stay in place — all of them | `--check` · landed | delete `--text-*: initial` → `12/14`, `FAIL (2)` — `text-sm` / `text-lg` `still compiles`; delete `--inset-shadow-*: initial` → `13/14`, `FAIL (1)` — `inset-shadow-sm still compiles` |
+| 19 | The role block is not half-landed | `--check` · landed | delete the light `--color-guide` → `role block partial: 24/25 new role colours read from @theme (missing: guide)`, `light \`--color-guide\`: theme.css has \`(missing)\``, `prescribed utility \`bg-guide\` does not compile`, `FAIL (3)` |
+| 20 | M8b.1a's six one-line swaps | `--contrast` after editing the six pair specs · main | 25 → 21 failing with the documented after-ratios (review rounds 3 and 4). A calculator over specs — the guard for the *source* is the existing `status-bar-meter` test plus review |
+| 21 | No behaviour change in a surface PR | the existing suite, unchanged · main | the suite is the guard; a PR that must edit a class-coupled test names the mutation |
+| 22 | The canonical strings survive `pnpm lint` — byte-equality and Prettier agree (§5.8) | `--check` **and** `pnpm exec prettier --check src/renderer/src/styles/theme.css` · landed | both green on the landed tree: `49/49 … RESULT: pass` and `All matched files use Prettier code style!`. Mutation — run `prettier --write` over a `theme.css` carrying the pre-alignment values (`oklch(0.600 …)`): `38/49`, `FAIL (11)` — `theme.css has \`oklch(0.6 0.008 286)\`, canonical is \`oklch(0.600 0.008 286)\`` and ten more, i.e. the two halves of M8b.2's DoD were mutually unsatisfiable until the canonical values were written in Prettier's normal form |
 
-Observed once on the scratch landed tree and worth knowing before M8b.2: `pnpm exec vitest run
-tests/unit/design/theme-tokens.test.ts` reds tests 1 and 2 because its parser does not match `@theme
-static {` (§4.10) — the parser change lands in the same PR as the block.
+Observed on the landed tree and worth knowing before M8b.2: `pnpm exec vitest run
+tests/unit/design/theme-tokens.test.ts` reds tests 1 and 2 (`accent-soft` no longer in the first
+`@theme {` block, which is the only block its parser reads) — and it would be *green*, not red, if the
+`accent*` lines were left in the legacy block, because the parser never sees the role block at all
+(§4.10). The parser change lands in the same PR as the block.
 
 **Unguarded, by name:**
 
 - A visible focus ring on every primitive — no command until M8b.2 writes the RTL test (`:focus-visible` computed `outline-color` equals `--color-focus`; mutation: remove the class from one primitive).
 - Raw literals (`#hex`, `rgb()`, `oklch()`) in class strings or `style` props, and numeric `leading-N` / `duration-N` / `z-N` / `ease-linear` — nothing until M8b.4 (§9); the inventory lists raw literals but nothing fails on them.
-- `--check <files>` runs only when someone runs it; until M8b.4 turns it into a suite test, a regression after a surface migrates is caught by review, not by `pnpm test`.
+- `--check` runs only when someone runs it; until M8b.4 turns it into a suite test, a regression after a surface migrates is caught by review, not by `pnpm test`.
+- A `.ts` file that carries class strings — `--check` refuses the path rather than pretending to scan it, and a directory expands to the `.tsx`/`.css` files inside it only, so a `.ts` file cannot re-enter as a row of zeros; the utility census reads `.tsx` only.
 - R4–R6 (accent text never on `accent-soft`, muted text never on the mat, one focus-ring recipe), "no status by colour alone", and the reduced-motion block are review items — no gate claims them.
