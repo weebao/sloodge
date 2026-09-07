@@ -23,6 +23,7 @@ import {
   hasStaleTmp,
   type DeckBundle,
 } from '../../../src/main/document/store'
+import { readArchiveBytes } from '../../../src/main/document/archive'
 import { handRolledZip, type HandRolledEntry } from '../../support/hand-rolled-zip'
 
 const T0 = 1_770_000_000_000
@@ -941,8 +942,9 @@ function deckEntriesInOrder(bytes: Uint8Array): HandRolledEntry[] {
 describe('archive entry names are unique (r8)', () => {
   /**
    * The zip format lets a central directory list one name twice; OPC forbids it, and readers
-   * disagree about a violation — .NET's `ZipPackage` refuses the package, Python's `zipfile` warns
-   * and takes the last, fflate silently takes the last. Round 8 reproduced the consequence through
+   * disagree about a violation — .NET's `ZipPackage` refuses the package, Python's `zipfile`
+   * silently takes the last on read (it warns only on write), and so does fflate. Round 8
+   * reproduced the consequence through
    * the real import path: a 44-entry `.pptx` with `ppt/slides/slide1.xml` listed twice imported
    * with zero warnings, rendered the *second* copy, and a patched export then emitted 43 entries
    * while `verifyPassthrough` and M4.6's identity test both answered `ok` — because both compare
@@ -992,6 +994,27 @@ describe('archive entry names are unique (r8)', () => {
     if (result.ok) return
     expect(result.error.code).toBe('not-a-zip')
     expect(result.error.message).toContain('assets/')
+  })
+
+  it('refuses before a single member is inflated', async () => {
+    // The position of the check, not just its verdict. Moving the file-name check into
+    // `extractMembers` — after each member is inflated — reproduces the code, the message and the
+    // name every assertion above reads, so all of them stay green while the reader has started
+    // allocating from an archive it is about to refuse. The observer is the only thing that can see
+    // the difference: it fires per member as extraction starts, so an empty list is the pin.
+    const entries = deckEntriesInOrder(await packDeck(fixtureBundle()))
+    const started: string[] = []
+    const result = await readArchiveBytes(
+      handRolledZip([...entries, { name: MANIFEST_ENTRY, bytes: '{"formatVersion":1}' }]),
+      'duplicate-name.sloodge',
+      { observer: { onMemberStart: (name) => started.push(name) } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('not-a-zip')
+    // Asserted as a list rather than a count so a regression names the member it started on.
+    expect(started).toEqual([])
   })
 
   it('still reads the same hand-rolled archive when every name is unique', async () => {

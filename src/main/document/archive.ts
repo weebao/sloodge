@@ -687,8 +687,9 @@ export async function readArchiveBytes(
     // directory markers, so the answer to "what does this archive contain" is the archive's own.
     //
     // The zip format permits it and readers disagree about what it means: .NET's `ZipPackage`
-    // refuses the package, Python's `zipfile` warns and takes the last, fflate silently takes the
-    // last. That is the same parser-differential shape this reader already refuses for aliased
+    // refuses the package, Python's `zipfile` silently takes the last on read (it warns only when
+    // *writing* a duplicate), and fflate silently takes the last. That is the same
+    // parser-differential shape this reader already refuses for aliased
     // local headers, ZIP64 divergence and prototype-polluting keys, and the disagreement is worse
     // here because every downstream check is keyed by *name*: `verifyPassthrough` and M4.6's
     // identity test compare part-name sets, so a package that arrived with 44 entries and left with
