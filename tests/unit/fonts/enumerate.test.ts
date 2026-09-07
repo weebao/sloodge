@@ -107,6 +107,12 @@ describe('enumerateSystemFonts', () => {
       // interop and answers in ~0.5 s with the Windows host's families) and fails to spawn anywhere
       // else. Both outcomes must be well-formed: a rejected promise would leave the dropdown stuck on
       // "loading", and an unnormalised one would put OS-authored strings into slide CSS.
+      //
+      // **This test cannot see the enumerator fail, and must not be read as if it could.** `none`
+      // is a legitimate result on every host without `powershell.exe`, so a change that breaks the
+      // spawn outright — a UTF-8 `-EncodedCommand` payload, say — leaves it green (M3.10 review
+      // r14). What the spawn is actually handed is pinned in `enumerate-spawn.test.ts`, argument by
+      // argument; this one covers the shape of the answer, not the correctness of the question.
       const result = await enumerateSystemFonts('win32')
       expect(['powershell', 'none']).toContain(result.source)
       expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)

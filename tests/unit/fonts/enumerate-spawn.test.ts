@@ -124,7 +124,34 @@ describe('the font enumerator’s spawn options', () => {
     expect(call.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-EncodedCommand'])
     expect(call.args).toHaveLength(4)
 
+    // The payload, which is the half that does the work. Both the transport and the script are
+    // written out here as literals rather than imported from the module: decoding with the same
+    // constant the module encodes with would pin nothing, since a mutation moves both sides.
+    //
+    // `-EncodedCommand` takes **UTF-16LE** base64 and nothing else. Encoding the script as UTF-8
+    // instead is silent everywhere on this side — lint, types and the whole suite stay green — and
+    // total in production: real `powershell.exe` answers `Command failed`, the enumerator's own
+    // catch turns that into `{ families: [], source: 'none' }`, and every Windows user gets the
+    // system-only group with the milestone's feature simply gone (M3.10 review r14). Decoding a
+    // UTF-8 payload as UTF-16LE yields mojibake, so this reds.
+    const script = Buffer.from(call.args[3]!, 'base64').toString('utf16le')
+
+    // The module's own stated headline subtlety, and the one failure with no error anywhere:
+    // without it PowerShell writes the pipe in the console's OEM code page, a fifth of a stock
+    // Windows 11 family list is CJK or fullwidth, and the symptom is "the Japanese fonts are
+    // missing". Unpinnable behaviourally on a host with no non-ASCII family names, which is every
+    // host this suite runs on.
+    expect(script).toContain('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8')
+    expect(script).toBe(
+      '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;' +
+        'Add-Type -AssemblyName System.Drawing;' +
+        '(New-Object System.Drawing.Text.InstalledFontCollection).Families|ForEach-Object{$_.Name}',
+    )
+
     expect(call.options['windowsHide']).toBe(true)
+    // Without this the child's stdout arrives as a Buffer and the parser's `.split('\n')` throws
+    // into the catch — the same silent zero-families outcome as a bad payload.
+    expect(call.options['encoding']).toBe('utf8')
     expect(call.options['timeout']).toBe(ENUMERATE_TIMEOUT_MS)
     expect(call.options['maxBuffer']).toBe(MAX_OUTPUT_BYTES)
 
@@ -145,8 +172,13 @@ describe('the font enumerator’s spawn options', () => {
     expect(calls).toHaveLength(1)
     const call = calls[0]!
     expect(call.file).toBe('fc-list')
+    // `: family` is the format argument that makes fc-list print family names; `: file` prints
+    // paths, which `normalizeFontFamilies` then refuses wholesale for an empty dropdown and no
+    // error. Nothing else calls this branch on the real path, so the argv is pinned here or nowhere.
+    expect(call.args).toEqual([':', 'family'])
     expect(call.options['timeout']).toBe(ENUMERATE_TIMEOUT_MS)
     expect(call.options['maxBuffer']).toBe(MAX_OUTPUT_BYTES)
+    expect(call.options['encoding']).toBe('utf8')
   })
 
   it('spawns nothing at all on a platform with no enumerator', async () => {
