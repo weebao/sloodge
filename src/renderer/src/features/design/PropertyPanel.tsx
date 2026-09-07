@@ -122,7 +122,7 @@ export interface PropertyPanelProps {
  * **The Content field no longer arrives here carrying one.** M3.12 routes that field's write
  * through `textContentOp`, which breaks a token with a numeric character reference — the heading
  * renders as typed and the bytes hold no token — so the patched source this gate reads is already
- * clean and the refusal never fires for prose. That is M3.14's end state, shipped for the one field
+ * clean and the refusal never fires for prose. That is M3.17's end state, shipped for the one field
  * M3.12 touched; the remaining fields put their value in the style attribute verbatim, where
  * defusing is not available and refusing is still the answer.
  *

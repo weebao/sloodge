@@ -462,7 +462,7 @@ function type(field: string, value: string): void {
  * **Exercised on a CSS-value field, not on Text, and that is the point.** These tests typed
  * `localStorage` into the Content field until M3.12 landed: its fix routes that field's write
  * through `textContentOp`, which *defuses* a forbidden token into a numeric character reference
- * (`&#108;ocalStorage`) instead of letting the gate refuse it — the end state M3.14 prescribes for
+ * (`&#108;ocalStorage`) instead of letting the gate refuse it — the end state M3.17 prescribes for
  * prose, shipped early for the one field it covers. So Text no longer reaches this gate, and a
  * fixture that kept typing into it would be asserting a refusal that no longer happens; the last
  * test below pins the defusing instead, so this suite still notices if that write path regresses to

@@ -62,8 +62,12 @@ export interface EnumeratedFonts {
  */
 export const ENUMERATE_TIMEOUT_MS = 10_000
 
-/** ~341 names on a stock Windows host; 4 MB is far more than any real machine produces. */
-const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+/**
+ * ~341 names on a stock Windows host; 4 MB is far more than any real machine produces.
+ *
+ * @internal Exported for the spawn-options test, which pins the cap rather than restating it.
+ */
+export const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 /**
  * The PowerShell script, in readable form. Kept as a constant so what gets base64'd below is
@@ -81,7 +85,8 @@ const POWERSHELL_SCRIPT = [
  * These are the variables without which `powershell.exe` does not start or cannot load assemblies;
  * nothing about the user's shell, network or credentials is inherited.
  */
-const WINDOWS_ENV_ALLOW = [
+/** @internal Exported so the boundary test can assert this list is exactly what survives. */
+export const WINDOWS_ENV_ALLOW = [
   'SystemRoot',
   'windir',
   'SystemDrive',
@@ -97,7 +102,8 @@ const WINDOWS_ENV_ALLOW = [
   'USERPROFILE',
 ] as const
 
-function childEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/** @internal Exported as a test seam. Callers get this through `enumerateSystemFonts`. */
+export function childEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const name of WINDOWS_ENV_ALLOW) {
     const value = source[name]
