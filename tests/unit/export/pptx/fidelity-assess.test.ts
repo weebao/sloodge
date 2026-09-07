@@ -443,6 +443,19 @@ describe('the line-spacing pairing picks the most specific block at the rect (M4
     expect(b.lineSpacingRefused).toBe(0)
     expect(b.lineSpacingChecks).toBe(1)
     expect(b.lineSpacingWrong).toEqual(['"Same words here": line spacing 3 ≠ 1.50'])
+    // `normal` against a length is the predicate's other branch, and it IS a disagreement: one
+    // candidate wants no `<a:lnSpc>` at all and the other wants 1.5. It must refuse in either
+    // order, or a tolerance-only comparison sends the pairing back to guessing (r6).
+    const normal: TruthBlock = { ...block, lineHeight: 'normal' }
+    for (const blocks of [
+      [block, normal],
+      [normal, block],
+    ]) {
+      const c = assess([], [doubled], [], blocks)
+      expect(c.lineSpacingRefused).toBe(1)
+      expect(c.lineSpacingChecks).toBe(0)
+      expect(c.lineSpacingWrong).toEqual([])
+    }
     // Mutation: refuse on the line-count tie alone → `lineSpacingWrong` empties and the box's
     // tripled spacing goes unreported. Mutation: compare the tied spacings with `!==` instead of
     // the tolerance → the 29.999998px pair is refused and its tripled spacing goes unreported too.
