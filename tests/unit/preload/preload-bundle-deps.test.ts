@@ -526,7 +526,30 @@ function declaresUnderAnyName(declared: ReadonlySet<string>, name: string): bool
   return [...declared].some((id) => id.startsWith(name) && /^\d*$/.test(id.slice(name.length)))
 }
 
-const SCAN_NAMES = ['FORBIDDEN_API_TOKENS', 'packForApiScan', 'findForbiddenApiTokens']
+/**
+ * Every exported name of SL-S04's rule that `slide-contract.ts` re-exports rather than declares.
+ *
+ * `foldForScan` and `forbiddenBreakPoints` joined the first three when M4.5's matcher followed the
+ * token list into the leaf: `tokenPattern` calls `packForApiScan` and `TOKEN_PATTERNS` maps
+ * `FORBIDDEN_API_TOKENS`, so the matcher could not stay in `slide-contract.ts` without importing
+ * back the names the count below pins. They are in this list for the same reason the other three
+ * are — a second copy of the matcher in `slide-contract.ts` costs the preload nothing and would
+ * otherwise go unseen.
+ *
+ * Overlap with `tests/unit/import/slide-text-boundary.test.ts`, stated because it is partial rather
+ * than total. That file's definer pin already reds on a `function`/`const` copy of the matcher
+ * anywhere in `src/`, and its own docblock names the shape it cannot see: a copy hung off an object
+ * as a method. Measured — `const scan = { forbiddenBreakPoints() {…} }` in `slide-contract.ts`,
+ * called once: the definer pin stays 6/6 green, and the count below reds with
+ * `forbiddenBreakPoints: 2`. The two names are here for that shape.
+ */
+const SCAN_NAMES = [
+  'FORBIDDEN_API_TOKENS',
+  'packForApiScan',
+  'findForbiddenApiTokens',
+  'foldForScan',
+  'forbiddenBreakPoints',
+]
 
 /**
  * The other half of "the leaf is the single definition of SL-S04's scan" — the half the two checks
@@ -563,12 +586,15 @@ describe('the SL-S04 scan', () => {
     // `declared` reads module scope only, so a faithful copy nested inside the validator body, or
     // hung off an object as a method, is invisible to it — both reproduced with tsc silent (round
     // 7). Neither is invisible to a count: outside the import and re-export lines, slide-contract.ts
-    // names `findForbiddenApiTokens` exactly once — the SL-S04 call — and the other two never. A
-    // second legitimate call site would move this pin, deliberately.
+    // names `findForbiddenApiTokens` exactly once (the SL-S04 call) and `packForApiScan` exactly
+    // once (M4.5's `cssPacked`, which is not part of the matcher and stayed behind when the matcher
+    // moved to the leaf). A second legitimate call site would move this pin, deliberately.
     expect(Object.fromEntries(SCAN_NAMES.map((name) => [name, used.get(name) ?? 0]))).toEqual({
       FORBIDDEN_API_TOKENS: 0,
-      packForApiScan: 0,
+      packForApiScan: 1,
       findForbiddenApiTokens: 1,
+      foldForScan: 0,
+      forbiddenBreakPoints: 0,
     })
   })
 

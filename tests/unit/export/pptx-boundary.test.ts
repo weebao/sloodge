@@ -146,6 +146,12 @@ describe('pptxgenjs boundary', () => {
       domain: 'HTML-bundle export — HTML domain, its own rules',
       xml: false,
     },
+    'src/shared/fonts/family.ts': {
+      domain:
+        'readPickedFontFamily DECODES the entities an author wrote by hand, so the family dropdown ' +
+        'can show what is selected — HTML domain, and the only direction it goes is inward (M3.10)',
+      xml: false,
+    },
     'src/shared/import/pptx/rewrite.ts': {
       domain: "M4.6's OOXML splice — XML domain, must sanitize",
       xml: true,

@@ -22,11 +22,11 @@
  * normalisation, but built its own matcher on top of them with the RegExp `i` flag — whose case
  * fold disagrees with the validator's `toLowerCase()` on U+212A KELVIN SIGN — so `WebSocKet`
  * was flagged by the validator and missed by the defuser, and one word made a deck unopenable. The
- * matcher now lives in `slide-contract.ts` as `forbiddenBreakPoints`, beside the list and the
+ * matcher now lives in `forbidden-apis.ts` as `forbiddenBreakPoints`, beside the list and the
  * normalisation, and is the same function Design Mode's text editor uses.
  */
 
-import { forbiddenBreakPoints } from './slide-contract'
+import { forbiddenBreakPoints } from './forbidden-apis'
 
 export function escapeHtml(value: string): string {
   return value
