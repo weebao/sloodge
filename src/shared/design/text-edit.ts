@@ -51,13 +51,12 @@
  * source and refuses the edit if it gained a token the original did not have. That catches anything
  * neutralization missed, including a token formed across the boundary between the inserted text and
  * the surrounding source. Both the matcher (`forbiddenBreakPoints`) and the scan
- * (`findForbiddenApiTokens`) are one definition apiece — the scan in the dependency-free
- * `forbidden-apis.ts`, the matcher in `slide-contract.ts` — and the PPTX importer's `slideText`
- * (M4.5) defuses with the same matcher.
+ * (`findForbiddenApiTokens`) are `forbidden-apis.ts`'s, so there is exactly one definition of the
+ * rule in the codebase — the same matcher the PPTX importer's `slideText` (M4.5) defuses with, and
+ * neither module pulls in parse5 to reach it.
  */
 
-import { findForbiddenApiTokens } from '../document/forbidden-apis'
-import { forbiddenBreakPoints } from '../document/slide-contract'
+import { findForbiddenApiTokens, forbiddenBreakPoints } from '../document/forbidden-apis'
 import { applyOps, type SourceOp } from './patch'
 import { LEADING_NEWLINE_DROPPED } from './slide-map'
 import type { ElementSpan, SlideMap } from './types'

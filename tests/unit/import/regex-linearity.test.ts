@@ -22,7 +22,7 @@ import { parseAst, transformWithEsbuild } from 'vite'
  *
  * **It is a heuristic for that shape, not a linearity proof.** Blind spots, so that a green run is
  * not mistaken for an audit: `new RegExp(string)` and string-built `replace` patterns are
- * identifiers, not literals, and are never seen (`tokenPattern` in slide-contract.ts is one — it is
+ * identifiers, not literals, and are never seen (`tokenPattern` in forbidden-apis.ts is one — it is
  * literal-led and was timed by hand at ≤ 5 ms on 1 MiB hostile inputs); nested groups
  * (`((\s)|\t)*x`), an alternation whose first branch is anchored (`^a|\s*x`), any repeat that is not
  * the first atom (`a\s*b\s*c`), and flags (`y`) all pass. Conversely it names some linear patterns
@@ -36,6 +36,7 @@ const ARCHIVE_INPUT_MODULES = [
   'src/main/import/pptx-import.ts',
   'src/main/export/pptx-roundtrip.ts',
   'src/shared/document/slide-contract.ts',
+  'src/shared/document/forbidden-apis.ts',
   'src/shared/document/slide-text.ts',
 ]
 

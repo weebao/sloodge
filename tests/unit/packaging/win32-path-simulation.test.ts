@@ -50,8 +50,16 @@ function allTestFiles(dir = path.join(REPO_ROOT, 'tests', 'unit')): string[] {
 describe('win32 path simulation — the exclusion list', () => {
   it('is not empty, and does not silently cover the whole suite', () => {
     // A list that grew to include everything would make `pnpm test:win-paths` vacuously green.
+    //
+    // The ceiling is a fraction of the suite, not a constant. It was `< 30`, and two branches
+    // carrying one honest entry each — M4.5's and M3.10's — took the list from 28 to 30, so the
+    // second to rebase reds on a number that says nothing about either of them. That is a pin
+    // measuring the wrong thing: "covers the whole suite" is a ratio, and a constant one commit
+    // under it turns every unrelated merge into a false red and invites someone to bump it by one,
+    // which is how a vacuity guard dies. A quarter keeps the simulation running on at least three
+    // files in four, and no plausible batch of real-I/O tests crosses it by accident.
     expect(REAL_FILESYSTEM_TESTS.length).toBeGreaterThan(0)
-    expect(REAL_FILESYSTEM_TESTS.length).toBeLessThan(30)
+    expect(REAL_FILESYSTEM_TESTS.length).toBeLessThan(allTestFiles().length / 4)
   })
 
   it('names only files that exist', () => {
