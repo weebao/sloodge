@@ -373,9 +373,13 @@ const NEEDS_HEX_ESCAPE = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}\s]/u
  * parsed exactly); and `FangSong` is the exact family name of `simfang.ttf`, shipped with every
  * Windows since 7. Refusing it removed an installed font from the dropdown — a worse outcome than
  * the drops this set exists to prevent, because a dropped declaration is a bug and a missing row is
- * a font the user cannot pick at all. The keep-list in `family.test.ts` pins both names admitted.
+ * a font the user cannot pick at all. The keep-list in `family.test.ts` pins both names admitted,
+ * and the set's exact membership is pinned too, so the next word added here has to justify itself
+ * against the same two questions: which engine drops it, and which installed family it costs.
+ *
+ * @internal Exported as a test seam. Callers ask `isValidFontFamilyName`.
  */
-const GENERIC_FAMILY_WORDS: ReadonlySet<string> = new Set([
+export const GENERIC_FAMILY_WORDS: ReadonlySet<string> = new Set([
   'serif',
   'sans-serif',
   'monospace',

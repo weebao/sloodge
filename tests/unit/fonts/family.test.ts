@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  GENERIC_FAMILY_WORDS,
   MAX_FONT_FAMILY_NAME_LENGTH,
   MAX_SYSTEM_FONT_FAMILIES,
   SYSTEM_FONT_GROUP,
@@ -127,7 +128,14 @@ const DIGIT_LED_WORD_NAMES = [
   '000 Orange Fizz 2.0 TB',
 ]
 
-/** The generic words the validator refuses in first position; a composed value may not begin with one. */
+/**
+ * The bare `<generic-family>` keywords, written out rather than read from the module: the seven
+ * `<generic-complete>` words Chromium drops a declaration for, and the four `<generic-incomplete>`
+ * `ui-*` words Safari treats as generics. Nothing else in css-fonts-4 is a bare generic — `fangsong`,
+ * `kai`, `khmer-mul` and `nastaliq` exist only inside `generic()`, and `emoji` not at all — and round
+ * 9 was the cost of forgetting that: a word lifted from the spec's list into the set, and a stock
+ * Windows face gone from the dropdown. So the set is pinned to exactly this.
+ */
 const GENERIC_FAMILY_KEYWORDS: ReadonlySet<string> = new Set([
   'serif',
   'sans-serif',
@@ -425,11 +433,13 @@ describe('cssIdentFontFamily', () => {
     const survivors = normalizeFontFamilies([
       ...DIGIT_LED_WORD_NAMES,
       'Serif Gothic',
+      'Cursive Standard Italic',
       'Gothic Serif',
       'Fantasque Sans Mono',
       'FangSong',
     ])
     expect(survivors).not.toContain('Serif Gothic')
+    expect(survivors).not.toContain('Cursive Standard Italic')
     expect(survivors).toContain('Gothic Serif')
     expect(survivors).toContain('FangSong')
     expect(survivors).toHaveLength(DIGIT_LED_WORD_NAMES.length + 3)
@@ -580,11 +590,32 @@ describe('buildFontFamilyValue', () => {
       'system-ui Gothic',
       'ui-serif Pro',
       'ui-rounded Display',
+      // Three and four words too: a check keyed on the LAST space, or on two-word names only, is
+      // indistinguishable from the right one on the pairs above (round 10). All measured DROP.
+      'Serif Gothic Bold',
+      'Cursive Standard Italic',
+      'Math Sans Bold',
+      'Sans-Serif Gothic Bold Italic',
     ]) {
       expect(isValidFontFamilyName(name), name).toBe(false)
       expect(buildFontFamilyValue(name), name).toBeNull()
     }
     expect(normalizeFontFamilies(['Serif Gothic', 'Gothic Serif'])).toEqual(['Gothic Serif'])
+  })
+
+  it('is exactly the bare generics of css-fonts-4 — no more, so a font is never refused for a word that is not one', () => {
+    expect([...GENERIC_FAMILY_WORDS].toSorted()).toEqual([...GENERIC_FAMILY_KEYWORDS].toSorted())
+  })
+
+  it('keeps every word that is a generic only inside generic(), or in no spec at all', () => {
+    // Alone and as a first word. `KaiTi` and `Noto Nastaliq Urdu` are the stock faces nearby; the
+    // bare words themselves are what the set must not grow to include.
+    for (const word of ['fangsong', 'kai', 'khmer-mul', 'nastaliq', 'emoji']) {
+      for (const name of [word, `${word} Display`]) {
+        expect(isValidFontFamilyName(name), name).toBe(true)
+        expect(buildFontFamilyValue(name), name).toBe(`${name}, Segoe UI, system-ui, sans-serif`)
+      }
+    }
   })
 
   it('keeps a name that merely contains a keyword later, and the system-ui keyword itself', () => {
@@ -604,13 +635,19 @@ describe('buildFontFamilyValue', () => {
       'FangSong',
       'Fangsong Song',
       'Emoji One',
-      // A first word that merely *starts* with a generic is a family: a check that matched by prefix
-      // would lose `Serifa`, `Mathilde Script` and `Monospaced` (and nothing here noticed until
-      // round 9). `Fantasque Sans Mono` is the real-world case that motivates the exact match.
+      // A word that merely *starts* with a generic is a family. Two checks are exercised here and
+      // they see different names: the single words (`Serifa`, `Monospaced`) reach only the
+      // whole-name check, and the spaced ones (`Mathilde Script`, `Serifa Std`, `Monospaced Two`,
+      // `Cursiver Display`) only the first-word check — a prefix match in either reds here.
+      // `Fantasque Sans Mono` is the real-world face that motivates the exact match, though
+      // `fantasque` does not itself start with `fantasy`.
       'Fantasque Sans Mono',
       'Serifa',
-      'Mathilde Script',
       'Monospaced',
+      'Mathilde Script',
+      'Serifa Std',
+      'Monospaced Two',
+      'Cursiver Display',
     ]) {
       expect(isValidFontFamilyName(name), name).toBe(true)
       expect(buildFontFamilyValue(name), name).toBe(`${name}, Segoe UI, system-ui, sans-serif`)
