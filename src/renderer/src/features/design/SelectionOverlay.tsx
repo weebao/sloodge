@@ -439,11 +439,11 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // The panel fields, the keyboard and the AI path still reach it.
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
-  // Move is a separate question. On an element positioned with `left`/`top` a drag writes those and
-  // never touches the transform, so it stays available under the lock — round-1 found `translateZ(0)`,
-  // the compositing idiom, had made such elements unmovable — and an SVG child writes `x`/`y`
-  // attributes, so it is never at risk either. Only an in-flow HTML element moves *through* the
-  // transform, which is exactly `movesThroughTransform`.
+  // Move is a separate question, and `moveChannel` is the one that answers it: an element positioned
+  // with `left`/`top` writes those and never touches the transform, so it stays movable under the
+  // lock (round 1 found `translateZ(0)`, the compositing idiom, had made such elements unmovable),
+  // and an element whose transform decomposes moves by a parent-space leading translate. Only a
+  // transform that cannot be decomposed leaves no safe channel.
   //
   // The refusal itself lives in `buildFieldOps` (`moveChannel`), where the bytes are made, so every
   // entry point — this body drag, a group drag, align/distribute, the panel's X/Y inputs, a drag

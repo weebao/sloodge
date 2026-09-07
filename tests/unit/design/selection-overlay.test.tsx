@@ -569,6 +569,11 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     seed(LOCKED_IN_FLOW)
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
     expect(screen.getByTestId('design-selection').style.cursor).toBe('default')
+    // On a single element the badge must lead with `Handles off` — the grips and the rotation handle
+    // are off too, and the move is only the third thing this transform costs. Mutation guard:
+    // swapping the two arms of `lockBadge` renders `1 of 1 won't move — …` here and says nothing
+    // about the handles; no other fixture is both locked and in-flow, so nothing else sees it.
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain('Handles off')
     drag(screen.getByTestId('design-selection'), { x: 150, y: 150 }, { x: 200, y: 180 })
     expect(undoDepth()).toBe(0)
     expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED_IN_FLOW)
@@ -648,14 +653,15 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     expect(undoDepth()).toBe(0)
   })
 
-  it('an SVG member under an opaque transform is not accused: it moves by x/y attributes', () => {
-    // The badge asks `buildDragPatch`'s own predicate, not a paraphrase of it. A paraphrase that
-    // says "locked unless positioned by left/top" counts this rect locked, yet the writer moves it
-    // cleanly — the badge would accuse a move that succeeds. Mutation guard: `!positionsByOffsets`
-    // in place of `movesThroughTransform` reds here.
+  it('a ROTATED SVG member is not accused: the badge stays silent and it follows the pointer', () => {
+    // The badge asks the writer's own `moveRefusal`, not a paraphrase of it, so it must not accuse a
+    // move that succeeds — round 4 found a paraphrase (`!positionsByOffsets`) doing exactly that to
+    // every SVG child. The fixture is `rotate(30deg)`, not an identity matrix, so it can also tell
+    // "the transform is irrelevant" (round 5's major, which wrote `x="45"` here and left the rect
+    // behind the pointer) from "this transform happens to be harmless".
     const html =
       '<div style="position:absolute;left:0;top:0;width:10px;height:10px">a</div>' +
-      '<svg width="200" height="100"><rect x="5" y="5" width="20" height="20" style="transform: matrix(1, 0, 0, 1, 0, 0)"/></svg>'
+      '<svg width="200" height="100"><rect x="5" y="5" width="20" height="20" style="transform: rotate(30deg)"/></svg>'
     seed(html)
     const map = buildSlideMap(slideId, html)
     const rectId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
@@ -669,8 +675,8 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     drag(screen.getByTestId('design-group'), { x: 5, y: 5 }, { x: 45, y: 5 }, 3)
     expect(undoDepth()).toBe(1)
     const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
-    expect(patched).toContain('<rect x="45" y="5"')
-    expect(patched).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+    expect(patched).toContain('transform: translate(40px, 0) rotate(30deg)')
+    expect(patched).toContain('<rect x="5" y="5"')
     expect(useDesignStore.getState().selections[1]?.rect.x).toBe(45)
   })
 

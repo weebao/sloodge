@@ -322,14 +322,52 @@ describe('buildFieldOps — position and size', () => {
     ).toBe('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>')
   })
 
-  it('opaque but POSITIONED, or SVG: the write still lands — the refusal is narrow', () => {
-    // `moveRefusal` is `movesThroughTransform && !editable`, so neither of these is refused.
+  it('opaque but POSITIONED: the write still lands — left/top is resolved before the transform', () => {
     expect(
       edit('<div style="left: 10px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40'),
     ).toBe('<div style="left: 40px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>')
+  })
+
+  it('SVG with parent-aligned axes writes the x attribute', () => {
+    // No transform, and a pure translate, both leave the rect's own axes parallel to the parent's.
+    expect(edit('<svg><rect x="5"/></svg>', 1, 'x', '40')).toBe('<svg><rect x="40"/></svg>')
     expect(
-      edit('<svg><rect x="5" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>', 1, 'x', '40'),
-    ).toBe('<svg><rect x="40" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>')
+      edit('<svg><rect x="5" style="transform: translate(3px, 0)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="40" style="transform: translate(3px, 0)"/></svg>')
+  })
+
+  it('SVG under a ROTATE writes a parent-space translate, NOT the x attribute (round-5 major)', () => {
+    // An SVG `x` is geometry inside the element's own user space, so +40 on `x` under `rotate(30deg)`
+    // moves the rect ~34.6px right and ~20px DOWN — it does not follow the pointer. The leading
+    // translate `composeTransform` writes is applied last, in the parent's frame, so it does.
+    // Mutation guard: an unconditional `attr` arm writes `x="40"` here.
+    expect(edit('<svg><rect x="5" style="transform: rotate(30deg)"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="5" style="transform: translate(40px, 0) rotate(30deg)"/></svg>',
+    )
+  })
+
+  it('SVG under a SCALE writes a parent-space translate too — 40 user units would be 80px', () => {
+    expect(edit('<svg><rect x="5" style="transform: scale(2)"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="5" style="transform: translate(40px, 0) scale(2)"/></svg>',
+    )
+  })
+
+  it('SVG under an OPAQUE transform is refused: the matrix was never decomposed', () => {
+    // `matrix(2, …)` doubles, so writing `x="40"` lands 80px out — but the point is that we cannot
+    // tell a doubling matrix from the identity without decomposing it, so neither channel is known
+    // safe. Mutation guard: an unconditional `attr` arm writes `x="40"` here.
+    const html = '<svg><rect x="5" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>'
+    expect(edit(html, 1, 'x', '40')).toBe(html)
+  })
+
+  it('an SVG child that declares a stray `left` still writes its x attribute', () => {
+    // Mutation guard: testing `positionsByOffsets` before `isSvg` reads `10px` and writes
+    // `left: 40px`, which does nothing whatsoever to an SVG child.
+    const { source, element } = at('<svg><rect x="5" style="left: 10px"/></svg>', 1)
+    expect(readPropertyValues(source, element).x).toBe('5')
+    expect(edit('<svg><rect x="5" style="left: 10px"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="40" style="left: 10px"/></svg>',
+    )
   })
 
   it('a top-only element is positioned by offsets: Y reads top, X reads null, X writes left', () => {

@@ -103,24 +103,15 @@ function readTranslate(transform: string | null): { tx: string; ty: string } {
 
 /**
  * Whether the source positions the element with `left`/`top`. That is the channel X/Y edits and
- * drags write when it is there (§5.3), and it never touches the `transform` — which is why the
- * overlay keeps move available under a transform lock exactly when this holds.
+ * drags write when it is there (§5.3), and it never touches the `transform` — which is why move
+ * stays available under a transform lock exactly when this holds. Private: `moveChannel` is the
+ * only thing that should ever ask, so no consumer can rebuild a paraphrase of the rule out of it.
  */
-export function positionsByOffsets(source: string, element: ElementSpan): boolean {
+function positionsByOffsets(source: string, element: ElementSpan): boolean {
   return (
     readStyleProp(source, element, 'left') !== null ||
     readStyleProp(source, element, 'top') !== null
   )
-}
-
-/**
- * Whether an X/Y edit on this element is written **through its `transform`** — an HTML element not
- * positioned with `left`/`top` (an SVG element writes `x`/`y` attributes). This is the one channel a
- * geometry edit can corrupt on a transform the handles cannot decompose, so it is the predicate
- * `buildDragPatch` refuses on (see its header).
- */
-export function movesThroughTransform(source: string, element: ElementSpan): boolean {
-  return !isSvg(element) && !positionsByOffsets(source, element)
 }
 
 /**
@@ -129,17 +120,37 @@ export function movesThroughTransform(source: string, element: ElementSpan): boo
  * message**, so they cannot drift apart; four review rounds of this milestone were spent on sites
  * that each re-derived a paraphrase of it.
  *
- * - `attr` — an SVG element positions with `x`/`y` attributes; its `transform` is irrelevant.
- * - `offsets` — the source declares `left`/`top`; an edit writes those and never touches the
- *   `transform`. `translateZ(0)`, the compositing idiom, must not make an element unmovable.
- * - `translate` — an in-flow HTML element moves by rewriting its `translate()`, and
- *   `inspectTransform` could decompose the transform, so the rewrite is safe and composable.
- * - `refused` — the same, except the transform is one `inspectTransform` cannot decompose (a
- *   `matrix()`, a `rotate()` written before its `translate()`). Rewriting the exact `translate()`
- *   where it stands sends a screen-space delta along the element's own tilted axis: a +40 X edit
- *   under `rotate(90deg)` moves the element 40px *down*, a +40 Y edit moves it 40px *left*. The
- *   value is still readable — the panel shows it greyed with `reason` as the tooltip — but no
- *   write goes out. **This is the transform lock, and this arm is the whole of it.**
+ * The question every arm answers is the same one: **does adding the pointer's screen-space delta to
+ * this field actually move the element by that delta?**
+ *
+ * - `offsets` — the source declares `left`/`top`. Layout offsets are resolved *before* the
+ *   `transform` is painted, so they are parent-space whatever the transform says; `translateZ(0)`,
+ *   the compositing idiom, must not make an element unmovable.
+ * - `attr` — an SVG element's `x`/`y` presentation attributes. **Only when the transform leaves the
+ *   element's axes parent-aligned** (absent, or decomposable with `rotate === 0` and scale `1, 1`).
+ *   SVG is *not* the free pass an earlier version of this comment claimed: `x`/`y` are geometry
+ *   inside the element's own user space and the `transform` is what maps that space to the parent's,
+ *   so under `rotate(30deg)` a +40 write to `x` moves the rect ~34.6px right and ~20px **down**, and
+ *   under `scale(2)` it moves 80px. That is the same wrong-axis write `refused` exists to prevent —
+ *   HTML escapes it only because `left`/`top` are pre-transform and because a new `translate()` is
+ *   composed outermost.
+ * - `translate` — the element moves by rewriting its `translate()`, which `composeTransform` writes
+ *   **first** in the list and CSS therefore applies **last**, in the parent's frame. Reached by an
+ *   in-flow HTML element, and by an SVG element whose transform rotates or scales: there the
+ *   attribute channel is unsafe but the parent-space translate is exactly right, so the element
+ *   follows the pointer instead of being frozen by M3.6's own rotation handle.
+ * - `refused` — the transform is one `inspectTransform` cannot decompose (a `matrix()`, a `rotate()`
+ *   written before its `translate()`), so neither safe channel is available: the exact `translate()`
+ *   would be rewritten where it stands and send the delta along the element's tilted axis (a +40 X
+ *   edit under `rotate(90deg)` moves it 40px *down*, a +40 Y edit 40px *left*), and an SVG `x`/`y`
+ *   write cannot be shown parent-aligned because the matrix was never decomposed. The value is still
+ *   readable — the panel shows it greyed with `reason` as the tooltip — but no write goes out.
+ *   **This is the transform lock, and this arm is the whole of it.**
+ *
+ * Known gap, milestone-wide and not this function's to close: the whole M3.6 transform stack reads
+ * and writes the **style** `transform` only (`readTransformShape`, `buildRotatePatch`, `duplicate`),
+ * so an SVG element carrying the legacy `transform="rotate(30)"` *attribute* looks untransformed to
+ * every one of them, this included. See the M3.6 roadmap row.
  */
 export type MoveChannel =
   | { readonly kind: 'attr' }
@@ -148,12 +159,15 @@ export type MoveChannel =
   | { readonly kind: 'refused'; readonly reason: string }
 
 export function moveChannel(source: string, element: ElementSpan): MoveChannel {
-  if (isSvg(element)) return { kind: 'attr' }
-  if (positionsByOffsets(source, element)) return { kind: 'offsets' }
+  // `left`/`top` first: they are pre-transform, so they are safe before anything else is asked.
+  if (!isSvg(element) && positionsByOffsets(source, element)) return { kind: 'offsets' }
   const shape = readTransformShape(source, element)
-  return shape.editable
-    ? { kind: 'translate', parts: shape.parts }
-    : { kind: 'refused', reason: shape.reason }
+  if (!shape.editable) return { kind: 'refused', reason: shape.reason }
+  // The attribute channel is SVG-only and conditional; the translate channel serves everyone else,
+  // HTML in-flow and rotated/scaled SVG alike, because a leading translate is parent-space for both.
+  const { rotate, scale } = shape.parts
+  if (isSvg(element) && rotate === 0 && scale.sx === 1 && scale.sy === 1) return { kind: 'attr' }
+  return { kind: 'translate', parts: shape.parts }
 }
 
 /**
