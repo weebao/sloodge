@@ -112,7 +112,7 @@ import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
-import { positionsByOffsets } from '../../../../shared/design/property-model'
+import { movesThroughTransform } from '../../../../shared/design/property-model'
 import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
@@ -386,13 +386,17 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // full parses per token for the ordinary case of watching the agent write with something selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, shapeOf, positionedOf } = useMemo<{
+  const { elementOf, shapeOf, movesThroughTransformOf } = useMemo<{
     elementOf: (slId: string) => ElementSpan | undefined
     shapeOf: (slId: string) => TransformShape | null
-    positionedOf: (slId: string) => boolean
+    movesThroughTransformOf: (slId: string) => boolean
   }>(() => {
     if (source === undefined) {
-      return { elementOf: () => undefined, shapeOf: () => null, positionedOf: () => false }
+      return {
+        elementOf: () => undefined,
+        shapeOf: () => null,
+        movesThroughTransformOf: () => false,
+      }
     }
     let map: SlideMap | null = null
     const lookup = (slId: string): ElementSpan | undefined => {
@@ -405,9 +409,9 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         const element = lookup(slId)
         return element === undefined ? null : readTransformShape(source, element)
       },
-      positionedOf: (slId) => {
+      movesThroughTransformOf: (slId) => {
         const element = lookup(slId)
-        return element !== undefined && positionsByOffsets(source, element)
+        return element !== undefined && movesThroughTransform(source, element)
       },
     }
   }, [source, slideId])
@@ -436,28 +440,32 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
   // Move is a separate question. On an element positioned with `left`/`top` a drag writes those and
-  // never touches the transform (`buildDragPatch` → `positionsByOffsets`), so it stays available under
-  // the lock — round-1 found `translateZ(0)`, the compositing idiom, had made such elements
-  // unmovable. An in-flow element moves *through* the transform and is refused.
+  // never touches the transform, so it stays available under the lock — round-1 found `translateZ(0)`,
+  // the compositing idiom, had made such elements unmovable — and an SVG child writes `x`/`y`
+  // attributes, so it is never at risk either. Only an in-flow HTML element moves *through* the
+  // transform, which is exactly `movesThroughTransform`.
   //
   // The refusal itself lives in `buildDragPatch`, where the bytes are made, so every entry point —
   // this body drag, a group drag, align/distribute, a drag whose element turned opaque mid-gesture
-  // — is safe without consulting this. What is decided here is only the message and the cursor:
-  // counted over every member the gesture would move (round 2 found a locked member riding inside
-  // a group whose anchor was fine), the drag is withheld when *nothing* would move, and a group
-  // with some movable members still drags, its badge saying how many will stay.
+  // — is safe without consulting this. What is decided here is only the message and the cursor, and
+  // it asks the writer's own predicate rather than a paraphrase of it: an earlier paraphrase
+  // (`!positionsByOffsets`) called an SVG rect locked that `buildDragPatch` moves cleanly, so the
+  // badge accused a move that would have succeeded. Counted over every member the gesture would move
+  // (round 2 found a locked member riding inside a group whose anchor was fine), the drag is withheld
+  // when *nothing* would move, and a group with some movable members still drags, its badge saying
+  // how many will stay.
   const memberMoveLock = useMemo<{ count: number; reason: string | null }>(() => {
     let count = 0
     let reason: string | null = null
     for (const hit of selections) {
       const shape = shapeOf(hit.slId)
-      if (shape !== null && !shape.editable && !positionedOf(hit.slId)) {
+      if (shape !== null && !shape.editable && movesThroughTransformOf(hit.slId)) {
         count += 1
         reason ??= shape.reason
       }
     }
     return { count, reason }
-  }, [selections, shapeOf, positionedOf])
+  }, [selections, shapeOf, movesThroughTransformOf])
   const moveLocked = memberMoveLock.count > 0 && memberMoveLock.count === selections.length
   const lockBadge =
     transformLock !== null
