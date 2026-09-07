@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { applyOps } from '../../../src/shared/design/patch'
+import { MAX_TEXT_LENGTH, textEditBlock } from '../../../src/shared/design/text-edit'
 import { CORPUS } from './corpus'
 import {
   buildFieldOps,
@@ -248,6 +249,37 @@ describe('Content field round trip — read decoded, commit escaped, unchanged i
     expect(values.textBlock).toBe(block)
     expect(buildFieldOps(source, element, 'text', 'fetch("x")')).toEqual([])
     expect(applyOps(source, buildFieldOps(source, element, 'text', 'Changed'))).toBe(source)
+  })
+
+  /**
+   * The two places the panel gate deliberately diverges from the caret gate, pinned (round-4
+   * review): the 64 KiB cap is a frame-input guard and the panel is the documented way to edit an
+   * over-cap element; the one-DOM-node rule is about where the frame can put a caret, and the panel
+   * writes the one source span. Both stay editable here.
+   */
+  it('edits an element past MAX_TEXT_LENGTH — the panel is the way to edit an over-cap element', () => {
+    const long = 'a'.repeat(MAX_TEXT_LENGTH + 1)
+    const html = `<h1>${long}</h1>`
+    const { source, element } = at(html, 0)
+    expect(textEditBlock(element)).toBe('too-long')
+    const values = readPropertyValues(source, element)
+    expect(values.textBlock).toBeNull()
+    expect(values.text).toBe(long)
+    expect(edit(html, 0, 'text', 'short')).toBe('<h1>short</h1>')
+  })
+
+  it('edits a text-only element the adoption agency rendered as two nodes', () => {
+    const map = buildSlideMap('s', '<div><p><b>x</p><p>y</b></p></div>')
+    const bold = [...map.byId.values()].find((el) => el.tagName === 'b')!
+    expect(bold.textOnly).toBe(true)
+    expect(bold.minDomNodeCount).toBe(2)
+    expect(textEditBlock(bold)).toBe('mixed-content')
+    const values = readPropertyValues(map.source, bold)
+    expect(values.textBlock).toBeNull()
+    expect(values.text).toBe('x')
+    expect(applyOps(map.source, buildFieldOps(map.source, bold, 'text', 'z'))).toBe(
+      '<div><p><b>z</p><p>y</b></p></div>',
+    )
   })
 
   it('an empty element reads as "" and can be filled — emptied text stays retypable', () => {
