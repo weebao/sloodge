@@ -458,6 +458,16 @@ function type(field: string, value: string): void {
  * The panel's own gate, below the font composer. `family.ts` refuses a name whose declaration would
  * trip SL-S04, but that is one field's composer; this is the line every field's write passes
  * through, so it holds whatever the composer above it does.
+ *
+ * **Exercised on a CSS-value field, not on Text, and that is the point.** These tests typed
+ * `localStorage` into the Content field until M3.12 landed: its fix routes that field's write
+ * through `textContentOp`, which *defuses* a forbidden token into a numeric character reference
+ * (`&#108;ocalStorage`) instead of letting the gate refuse it — the end state M3.14 prescribes for
+ * prose, shipped early for the one field it covers. So Text no longer reaches this gate, and a
+ * fixture that kept typing into it would be asserting a refusal that no longer happens; the last
+ * test below pins the defusing instead, so this suite still notices if that write path regresses to
+ * a refusal or, worse, to writing the raw token. Every other field's value lands in the style
+ * attribute verbatim and is still gated here.
  */
 describe('the write gate', () => {
   /** Seed a source other than the shared one, and select its heading. */
@@ -479,7 +489,7 @@ describe('the write gate', () => {
     render(<Panel />)
     const before = undoDepth()
 
-    type('prop-text', 'localStorage')
+    type('prop-color', 'localStorage')
 
     expect(html()).toBe(SOURCE)
     expect(undoDepth()).toBe(before)
@@ -489,7 +499,7 @@ describe('the write gate', () => {
     // named field, named token, and announced rather than merely painted.
     const refusal = screen.getByTestId('prop-refusal')
     expect(refusal.getAttribute('role')).toBe('alert')
-    expect(refusal.textContent).toContain('Text not applied')
+    expect(refusal.textContent).toContain('Color not applied')
     expect(refusal.textContent).toContain('localStorage')
   })
 
@@ -500,7 +510,7 @@ describe('the write gate', () => {
     select()
     render(<Panel />)
 
-    type('prop-text', 'local storage')
+    type('prop-fontWeight', 'local storage')
 
     expect(html()).toBe(SOURCE)
     expect(screen.getByTestId('prop-refusal').textContent).toContain('spaces are ignored')
@@ -509,24 +519,38 @@ describe('the write gate', () => {
   it('drops the refusal as soon as the user edits again', () => {
     select()
     render(<Panel />)
-    type('prop-text', 'localStorage')
+    type('prop-color', 'localStorage')
     expect(screen.queryByTestId('prop-refusal')).not.toBeNull()
 
-    fireEvent.change(screen.getByTestId('prop-text'), { target: { value: 'a heading' } })
+    fireEvent.change(screen.getByTestId('prop-color'), { target: { value: '#222' } })
 
     expect(screen.queryByTestId('prop-refusal')).toBeNull()
   })
 
   it('still commits an edit that carries no forbidden token', () => {
-    // The control: the gate must block a token, not an edit. Note what it does block — SL-S04 packs
-    // whitespace out, so the prose `local storage` is `localStorage` to the contract and this write
-    // would produce a slide the validator rejects. Refusing it is the rule, not an over-reach.
+    // The control: the gate must block a token, not an edit.
     select()
     render(<Panel />)
 
-    type('prop-text', 'storing things locally is fine')
+    type('prop-color', '#222')
 
-    expect(html()).toContain('storing things locally is fine')
+    expect(html()).toContain('color: #222')
+    expect(screen.queryByTestId('prop-refusal')).toBeNull()
+  })
+
+  it('lets the Content field write prose the gate would refuse, defused rather than refused', () => {
+    // M3.12's write path, pinned from this side so the gate's scope stays honest: `local storage`
+    // is `localStorage` once SL-S04 packs the space out, and refusing it would cost the user a
+    // sentence. `textContentOp` breaks the token with a numeric character reference instead — the
+    // DOM decodes it back, so the heading reads exactly as typed while the bytes carry no token.
+    // Reds if that path regresses to a refusal (no text committed) or to writing the raw token.
+    select()
+    render(<Panel />)
+
+    type('prop-text', 'local storage')
+
+    expect(html()).toContain('&#108;ocal storage')
+    expect(html()).not.toContain('>local storage<')
     expect(screen.queryByTestId('prop-refusal')).toBeNull()
   })
 
