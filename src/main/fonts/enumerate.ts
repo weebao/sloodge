@@ -62,12 +62,8 @@ export interface EnumeratedFonts {
  */
 export const ENUMERATE_TIMEOUT_MS = 10_000
 
-/**
- * ~341 names on a stock Windows host; 4 MB is far more than any real machine produces.
- *
- * @internal Exported for the spawn-options test, which pins the cap rather than restating it.
- */
-export const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+/** ~341 names on a stock Windows host; 4 MB is far more than any real machine produces. */
+const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 /**
  * The PowerShell script, in readable form. Kept as a constant so what gets base64'd below is

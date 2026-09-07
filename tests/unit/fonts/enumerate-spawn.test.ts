@@ -56,6 +56,19 @@ function hostileSourceEnv(): NodeJS.ProcessEnv {
  */
 const calls: { file: string; args: readonly string[]; options: Record<string, unknown> }[] = []
 
+/**
+ * What each tool "prints", shaped so the branch's **parser** is observable and not just its argv.
+ *
+ * `fc-list : family` puts a font's aliases on one comma-separated line, which is the whole reason
+ * `parseFcListOutput` exists; PowerShell prints one name per line and never a comma. A stub with no
+ * comma in it makes the two parsers agree, so the linux branch could call the wrong one unnoticed
+ * (M3.10 review r15 — the real host loses 5 of its 12 families that way).
+ */
+const STUB_STDOUT: Readonly<Record<string, string>> = {
+  'powershell.exe': 'Arial\nGeorgia\n',
+  'fc-list': 'Arial\nGeorgia,Georgia Pro\n',
+}
+
 vi.mock('node:child_process', () => ({
   execFile: (
     file: string,
@@ -64,22 +77,43 @@ vi.mock('node:child_process', () => ({
     callback: (error: null, value: { stdout: string; stderr: string }) => void,
   ) => {
     calls.push({ file, args, options })
-    callback(null, { stdout: 'Arial\nGeorgia\n', stderr: '' })
+    callback(null, { stdout: STUB_STDOUT[file] ?? '', stderr: '' })
   },
 }))
 
-const {
-  childEnv,
-  WINDOWS_ENV_ALLOW,
-  MAX_OUTPUT_BYTES,
-  ENUMERATE_TIMEOUT_MS,
-  enumerateSystemFonts,
-} = await import('../../../src/main/fonts/enumerate')
+const { childEnv, WINDOWS_ENV_ALLOW, enumerateSystemFonts } =
+  await import('../../../src/main/fonts/enumerate')
 
 describe('the font enumerator’s child environment', () => {
   it('sanity: the fixture really does seed every hostile name', () => {
     const source = hostileSourceEnv()
     for (const name of HOSTILE) expect(source[name]).toBe('hostile-value')
+  })
+
+  /**
+   * The allow-list itself, written out — because every other assertion here compares the child's
+   * keys *against* `WINDOWS_ENV_ALLOW`, and a change to the constant moves both sides at once.
+   * Dropping `PATH` or `ProgramFiles` from it was green until this line existed (r15). The
+   * uncaught direction is the safe one — a shorter list leaks less — but "leaks less" and "starts
+   * at all" are different properties, and this is the one that says which names the spawn depends
+   * on. Adding a name is the direction that matters and reds here too.
+   */
+  it('is exactly the names powershell.exe needs to start and load System.Drawing', () => {
+    expect([...WINDOWS_ENV_ALLOW]).toEqual([
+      'SystemRoot',
+      'windir',
+      'SystemDrive',
+      'ComSpec',
+      'PATH',
+      'PATHEXT',
+      'TEMP',
+      'TMP',
+      'ProgramFiles',
+      'ProgramData',
+      'LOCALAPPDATA',
+      'APPDATA',
+      'USERPROFILE',
+    ])
   })
 
   /**
@@ -113,6 +147,7 @@ describe('the font enumerator’s spawn options', () => {
 
     const result = await enumerateSystemFonts('win32')
     expect(result.source).toBe('powershell')
+    expect(result.families).toEqual(['Arial', 'Georgia'])
 
     expect(calls).toHaveLength(1)
     const call = calls[0]!
@@ -134,6 +169,13 @@ describe('the font enumerator’s spawn options', () => {
     // catch turns that into `{ families: [], source: 'none' }`, and every Windows user gets the
     // system-only group with the milestone's feature simply gone (M3.10 review r14). Decoding a
     // UTF-8 payload as UTF-16LE yields mojibake, so this reds.
+    // Standard base64, not `base64url`. `Buffer.from(x, 'base64')` decodes both alphabets and
+    // tolerates missing padding, so decoding first and comparing the script would accept a
+    // `base64url` payload — which `powershell.exe` does not: it starts, prints its own usage text,
+    // and the enumerator hands 35 fragments of English prose to the dropdown, every one of which
+    // passes `isValidFontFamilyName` and reaches slide CSS (r15, measured: 515 families pristine,
+    // 35 mutated). Worse than a broken spawn, because the child *succeeds*. So the assertion is on
+    // the wire bytes, built here from the test's own literals.
     const script = Buffer.from(call.args[3]!, 'base64').toString('utf16le')
 
     // The module's own stated headline subtlety, and the one failure with no error anywhere:
@@ -142,18 +184,21 @@ describe('the font enumerator’s spawn options', () => {
     // missing". Unpinnable behaviourally on a host with no non-ASCII family names, which is every
     // host this suite runs on.
     expect(script).toContain('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8')
-    expect(script).toBe(
+
+    // Subsumes a `toBe` on the decoded script — it pins the payload *and* the transport — and is
+    // built from literals, so a change to `POWERSHELL_SCRIPT` cannot move both sides.
+    const EXPECTED_SCRIPT =
       '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;' +
-        'Add-Type -AssemblyName System.Drawing;' +
-        '(New-Object System.Drawing.Text.InstalledFontCollection).Families|ForEach-Object{$_.Name}',
-    )
+      'Add-Type -AssemblyName System.Drawing;' +
+      '(New-Object System.Drawing.Text.InstalledFontCollection).Families|ForEach-Object{$_.Name}'
+    expect(call.args[3]).toBe(Buffer.from(EXPECTED_SCRIPT, 'utf16le').toString('base64'))
 
     expect(call.options['windowsHide']).toBe(true)
     // Without this the child's stdout arrives as a Buffer and the parser's `.split('\n')` throws
     // into the catch — the same silent zero-families outcome as a bad payload.
     expect(call.options['encoding']).toBe('utf8')
-    expect(call.options['timeout']).toBe(ENUMERATE_TIMEOUT_MS)
-    expect(call.options['maxBuffer']).toBe(MAX_OUTPUT_BYTES)
+    expect(call.options['timeout']).toBe(10_000)
+    expect(call.options['maxBuffer']).toBe(4 * 1024 * 1024)
 
     // The env the child actually receives, not the one `childEnv` would build in isolation.
     const env = call.options['env'] as NodeJS.ProcessEnv
@@ -168,6 +213,12 @@ describe('the font enumerator’s spawn options', () => {
 
     const result = await enumerateSystemFonts('linux')
     expect(result.source).toBe('fc-list')
+    // Which parser the branch calls, not just which binary it spawns. `fc-list : family` puts a
+    // font's aliases on one comma-separated line; run through the PowerShell parser instead, the
+    // whole line is one name, `normalizeFontFamilies` rejects it, and the aliases are gone — 5 of
+    // this host's 12 real families (r15). The comma in the stub is what makes the two parsers
+    // disagree, and so is load-bearing.
+    expect(result.families).toEqual(['Arial', 'Georgia', 'Georgia Pro'])
 
     expect(calls).toHaveLength(1)
     const call = calls[0]!
@@ -176,8 +227,8 @@ describe('the font enumerator’s spawn options', () => {
     // paths, which `normalizeFontFamilies` then refuses wholesale for an empty dropdown and no
     // error. Nothing else calls this branch on the real path, so the argv is pinned here or nowhere.
     expect(call.args).toEqual([':', 'family'])
-    expect(call.options['timeout']).toBe(ENUMERATE_TIMEOUT_MS)
-    expect(call.options['maxBuffer']).toBe(MAX_OUTPUT_BYTES)
+    expect(call.options['timeout']).toBe(10_000)
+    expect(call.options['maxBuffer']).toBe(4 * 1024 * 1024)
     expect(call.options['encoding']).toBe('utf8')
   })
 
