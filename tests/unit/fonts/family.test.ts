@@ -473,6 +473,15 @@ describe('cssIdentFontFamily', () => {
     expect(cssIdentFontFamily('a\u2028b')).toBe('a\\2028 b')
   })
 
+  it('hex-escapes a format character, which the identifier range would otherwise admit', () => {
+    // The third and last non-redundant clause of `NEEDS_HEX_ESCAPE` (`\s` covers every `\p{Z}`
+    // clause). Unreachable through `buildFontFamilyValue` — no format character is in
+    // `FONT_FAMILY_NAME_PATTERN` — but dropping `\p{Cf}` would otherwise pass lint and the whole
+    // suite while writing a raw U+202E RIGHT-TO-LEFT OVERRIDE, U+00AD or U+200B-200F into a slide's
+    // style attribute.
+    expect(cssIdentFontFamily('A\u202EB')).toBe('A\\202e B')
+  })
+
   it('hex-escapes a lone surrogate, which the identifier range would otherwise admit', () => {
     // Unreachable through `buildFontFamilyValue`, which validates first — but this composer
     // advertises itself as safe on its own, and CSS calls every code point from U+0080 up an
