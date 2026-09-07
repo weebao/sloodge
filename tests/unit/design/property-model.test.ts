@@ -293,7 +293,8 @@ describe('buildFieldOps — position and size', () => {
     // parent space. Round 4 goes one further: the write does not happen at all, because the panel's
     // X/Y inputs reach `buildFieldOps` without passing through the drag's gate, and on
     // `rotate(90deg) translate(10px, 0)` the in-place rewrite moved the element 40px DOWN for a +40
-    // X edit. Mutation guard: dropping the `moveRefusal` line from `buildFieldOps` reds here.
+    // X edit. Mutation guard: restoring that write in `moveChannel`'s `refused` arm reds here
+    // with `translate(40px, 0) matrix(2, 0, 0, 2, 0, 0)`.
     const html = '<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>'
     expect(edit(html, 0, 'x', '40')).toBe(html)
   })

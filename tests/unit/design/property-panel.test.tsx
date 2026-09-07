@@ -482,9 +482,9 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
   it('disables X and Y when the move would go through an opaque transform, with the reason (round-4 major)', () => {
     // The overlay refuses the drag on this element and shows `Handles off — …`; the panel's X/Y
     // inputs used to be live beside it and wrote `rotate(90deg) translate(50px, 0)` — a +40 X edit
-    // that moves the element 40px DOWN. Mutation guard: dropping the `moveRefusal` line from
-    // `buildFieldOps` makes the blur below commit and reds the byte-identity assertion; dropping
-    // `moveDisabled` from the panel reds the `disabled`/`title` assertions.
+    // that moves the element 40px DOWN. Mutation guard: writing through the transform in
+    // `moveChannel`'s `refused` arm makes the blur below commit and reds the byte-identity
+    // assertion; `moveDisabled = false` reds the `disabled`/`title` assertions.
     const html = '<h1 style="transform: rotate(90deg) translate(10px, 0)">Hello</h1>'
     useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
     select()
