@@ -516,9 +516,11 @@ describe('§5.2 targets over the corpus', () => {
       const nulled = judge((sh) => ({ ...sh, lineSpacings: sh.lineSpacings.map(() => null) }))
       expect(nulled.lineSpacingWrong.length).toBeGreaterThanOrEqual(3)
       expect(nulled.silentLie).toBe(true)
+      // Anchor is judged on every text box, paired or not — so the expected count is the text
+      // boxes, not `lineSpacingChecks`, which counts only the ones whose SPACING found a block.
       const bottom = judge((sh) => ({ ...sh, anchor: 'b' }))
       expect(bottom.lineSpacingWrong.filter((l) => l.includes('anchored b')).length).toBe(
-        x19.lineSpacingChecks,
+        x19Readback.shapes.filter((sh) => sh.kind === 'sp' && sh.text !== '').length,
       )
       const unwrapped = judge((sh) => ({ ...sh, wrap: 'none', autofit: true }))
       expect(unwrapped.lineSpacingWrong.some((l) => l.includes('wrap none'))).toBe(true)

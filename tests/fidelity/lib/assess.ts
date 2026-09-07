@@ -101,6 +101,17 @@ export const GLYPH_ORIGIN_TOLERANCE_PX = 1
 /** Emitted line spacing vs the block's `line-height / font-size`; the walker rounds to 2 decimals. */
 export const LINE_SPACING_TOLERANCE = 0.01
 
+/** The spacing a block asks for: `null` is `line-height: normal`, i.e. no `<a:lnSpc>` at all. */
+const spacingOf = (b: TruthBlock): number | null =>
+  b.lineHeight === 'normal' || b.fontSizePx <= 0 ? null : parseFloat(b.lineHeight) / b.fontSizePx
+
+/**
+ * Whether two candidate blocks would judge a box differently — the same comparison the check itself
+ * makes, so a pair the check cannot tell apart is not called ambiguous (M4.8b r5).
+ */
+const disagrees = (a: number | null, b: number | null): boolean =>
+  a === null || b === null ? a !== b : Math.abs(a - b) > LINE_SPACING_TOLERANCE
+
 export type SlideAssessment = {
   file: string
   tier: SlideTier
@@ -157,8 +168,9 @@ export type SlideAssessment = {
    * later-paragraph-stripped multiple and any anchor/wrap/autofit change, not a wrong mapping.
    */
   lineSpacingWrong: string[]
-  /** Text boxes the check paired and judged — unpaired and ambiguous rects are skipped, so this
-   * is the vacuity guard for the all-clear above. */
+  /** Text boxes whose SPACING was paired to a block and judged — the vacuity guard for that half of
+   * the all-clear above; unpaired and ambiguous rects are skipped. Anchor, wrap and autofit need no
+   * block and are judged on every text box, so they are not counted here. */
   lineSpacingChecks: number
   /** Text boxes whose rect carried tied blocks asking for different spacing, so spacing went
    * unjudged. Nothing else can see a per-box skip; the corpus asserts this is 0. */
@@ -606,9 +618,6 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   const lineSpacingWrong: string[] = []
   let lineSpacingChecks = 0
   let lineSpacingRefused = 0
-  /** The spacing a block asks for: `null` is `line-height: normal`, i.e. no `<a:lnSpc>` at all. */
-  const spacingOf = (b: TruthBlock): number | null =>
-    b.lineHeight === 'normal' || b.fontSizePx <= 0 ? null : parseFloat(b.lineHeight) / b.fontSizePx
   for (const shape of readback.shapes) {
     if (shape.kind !== 'sp' || shape.text === '') continue
     const label = `"${shape.text.slice(0, 40)}"`
@@ -645,10 +654,11 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     // Where the fewest-lines winner is not unique — same-rect siblings with identical text — the
     // pair is refused rather than guessed. Only a genuine DISAGREEMENT is ambiguous: tied blocks
     // that ask for the same spacing decide it between them, so the stacked-layer trick at one
-    // line-height is still judged (r4). Refusals are counted because nothing else can see them.
+    // line-height is still judged (r4), and "the same" means the check's own tolerance, so a pair it
+    // could not tell apart is not called ambiguous (r5). Refusals are counted: nothing else sees them.
     if (
       candidates.some(
-        (c) => c.lines.length === block.lines.length && spacingOf(c) !== spacingOf(block),
+        (c) => c.lines.length === block.lines.length && disagrees(spacingOf(c), spacingOf(block)),
       )
     ) {
       lineSpacingRefused += 1
@@ -777,7 +787,7 @@ export type CorpusSummary = {
   sizeExact: number
   boxChecks: number
   boxWorstPct: number
-  /** Text boxes whose line spacing, anchor, wrap and autofit the oracle paired and judged. */
+  /** Text boxes whose line spacing the oracle paired to a block and judged. */
   lineSpacingChecks: number
   /** Text boxes whose rect was too ambiguous to judge spacing on. */
   lineSpacingRefused: number
@@ -835,7 +845,7 @@ export function formatSummary(label: string, s: CorpusSummary): string {
     `| Exact hex colour on preserved runs | ${pct(s.colorExact, s.colorTotal)} |`,
     `| Exact font size (±${String(SIZE_TOLERANCE_PT)} pt) on preserved runs | ${pct(s.sizeExact, s.colorTotal)} |`,
     `| Emitted box vs DOM box, worst (% of slide dimension, ${String(s.boxChecks)} boxes) | ${s.boxWorstPct.toFixed(4)}% |`,
-    `| Text boxes whose line spacing, anchor, wrap and autofit were judged (plumbing only) | ${String(s.lineSpacingChecks)} (${String(s.lineSpacingRefused)} rects too ambiguous to pair) |`,
+    `| Text boxes whose line spacing was paired and judged (plumbing only; anchor/wrap/autofit are judged on every text box) | ${String(s.lineSpacingChecks)} (${String(s.lineSpacingRefused)} rects too ambiguous to pair) |`,
     `| Painted boxes (background/border) carried by an emitted shape | ${pct(s.paintedKept, s.paintedTotal)} |`,
     `| Painting \`::before\`/\`::after\` in structured slides (unrepresentable) | ${String(s.pseudoTotal)} |`,
     `| Rotated elements carrying a correct \`rot\` (±${String(ROTATION_TOLERANCE_DEG)}°) | ${String(s.rotationsOk)}/${String(s.rotationsExpected)} |`,

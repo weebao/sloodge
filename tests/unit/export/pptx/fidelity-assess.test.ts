@@ -436,8 +436,16 @@ describe('the line-spacing pairing picks the most specific block at the rect (M4
     expect(a.lineSpacingRefused).toBe(0)
     expect(a.lineSpacingChecks).toBe(1)
     expect(a.lineSpacingWrong).toEqual(['"Same words here": line spacing 3 ≠ 1.50'])
+    // "The same" is the check's own tolerance, not exact equality: two blocks the check could not
+    // tell apart are not ambiguous either. 30px vs 29.999998px is 1e5 times finer than the 0.01 the
+    // comparison below uses, and both candidates judge this box identically (r5).
+    const b = assess([], [doubled], [], [block, { ...block, lineHeight: '29.999998px' }])
+    expect(b.lineSpacingRefused).toBe(0)
+    expect(b.lineSpacingChecks).toBe(1)
+    expect(b.lineSpacingWrong).toEqual(['"Same words here": line spacing 3 ≠ 1.50'])
     // Mutation: refuse on the line-count tie alone → `lineSpacingWrong` empties and the box's
-    // tripled spacing goes unreported.
+    // tripled spacing goes unreported. Mutation: compare the tied spacings with `!==` instead of
+    // the tolerance → the 29.999998px pair is refused and its tripled spacing goes unreported too.
   })
 
   it('pairs on EVERY line of the box, so a descendant repeating its first line is not "more specific" (r3)', () => {
