@@ -7,8 +7,10 @@
  * "holds code or metadata" while the caret said, correctly, that there is no text on it (M3.12
  * round-4 review) — the same drift the write core and the gate each had to be unified to remove.
  *
- * Surface-neutral wording, since the sentence is read in two places: it says what is wrong with the
- * element, not where the user is standing.
+ * Wording is surface-neutral wherever the sentence can be read in two places — it says what is
+ * wrong with the element, not where the user is standing. The exception is `too-long`, which names
+ * the panel on purpose: it is the one reason `textFieldBlock` narrows away, so only the caret ever
+ * raises it, and pointing at the surface that *can* edit the text is the whole content of it.
  */
 
 import type { TextEditBlock } from '../../../../shared/design/text-edit'
@@ -16,7 +18,7 @@ import type { TextEditBlock } from '../../../../shared/design/text-edit'
 /**
  * What to tell the user about an element whose text cannot be edited. Same voice as
  * `useTextEditing`'s `REFUSAL_NOTICE`, different tense: nothing was attempted yet, so each of these
- * says why *this* element cannot take a caret and, where there is one, where the text can be changed
+ * says why *this* element is not editable and, where there is one, where the text can be changed
  * instead.
  */
 export const BLOCK_NOTICE: Readonly<Record<TextEditBlock, string>> = {
