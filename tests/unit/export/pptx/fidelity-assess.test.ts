@@ -393,9 +393,51 @@ describe('the line-spacing pairing picks the most specific block at the rect (M4
       })
     const a = assess([], [box(1.5), box(2.5)], [], [block('30px'), block('50px')])
     expect(a.lineSpacingChecks).toBe(0)
+    expect(a.lineSpacingRefused).toBe(2)
     expect(a.lineSpacingWrong).toEqual([])
+    // A refusal costs SPACING only. Anchor, wrap and autofit are properties of the emitted box, so
+    // they are still judged — behind the pairing, a refused rect came back a clean 100 while
+    // bottom-anchored, unwrapped and autofitted (r4).
+    const boxed = { ...box(1.5), anchor: 'b', wrap: 'none', autofit: true }
+    const b = assess([], [boxed], [], [block('30px'), block('50px')])
+    expect(b.lineSpacingChecks).toBe(0)
+    expect(b.lineSpacingWrong).toEqual([
+      '"Same words here": anchored b, not top',
+      '"Same words here": wrap none, not square',
+      '"Same words here": autofit set — PowerPoint may shrink the text',
+    ])
     // Mutation: take `candidates[0]` without the uniqueness test → one box is judged against the
     // other's block, `lineSpacingWrong` gains `"Same words here": line spacing 1.5 ≠ 2.50`.
+    // Mutation: move the three box checks back inside the pairing → `b.lineSpacingWrong` empties.
+  })
+
+  it('judges tied blocks that AGREE on line-height: ambiguity is disagreement, not duplication (r4)', () => {
+    // The natural form of the stacked-layer trick — two same-rect layers with the same words AND
+    // the same `line-height`. There is nothing to be ambiguous about: both blocks ask for 1.5.
+    // Refusing on the tie alone returned a clean 100 over a double-spaced box.
+    const rect = { x: 100, y: 200, w: 400, h: 100 }
+    const block: TruthBlock = {
+      tag: 'div',
+      ...rect,
+      lines: ['Same words here'],
+      lineHeight: '30px',
+      fontSizePx: 20,
+    }
+    const run = { color: '000000', sizePt: 15, bold: false, underline: false, opacity: 1 }
+    const doubled = shape({
+      ...rect,
+      fill: null,
+      runs: [{ ...run, text: 'Same words here' }],
+      text: 'Same words here',
+      lines: ['Same words here'],
+      lineSpacings: [3],
+    })
+    const a = assess([], [doubled], [], [block, { ...block }])
+    expect(a.lineSpacingRefused).toBe(0)
+    expect(a.lineSpacingChecks).toBe(1)
+    expect(a.lineSpacingWrong).toEqual(['"Same words here": line spacing 3 ≠ 1.50'])
+    // Mutation: refuse on the line-count tie alone → `lineSpacingWrong` empties and the box's
+    // tripled spacing goes unreported.
   })
 
   it('pairs on EVERY line of the box, so a descendant repeating its first line is not "more specific" (r3)', () => {

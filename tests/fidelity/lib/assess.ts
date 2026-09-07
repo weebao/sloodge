@@ -76,7 +76,7 @@ import {
   type ReadbackShape,
   type ReadbackSlide,
 } from './readback'
-import type { GroundTruth, TruthBox, TruthRootPaint, TruthText } from './truth'
+import type { GroundTruth, TruthBlock, TruthBox, TruthRootPaint, TruthText } from './truth'
 
 /** A slide at or above this confidence is trusted to be structured; losing a construct here is the lie. */
 export const HIGH_CONFIDENCE = 90
@@ -160,6 +160,9 @@ export type SlideAssessment = {
   /** Text boxes the check paired and judged — unpaired and ambiguous rects are skipped, so this
    * is the vacuity guard for the all-clear above. */
   lineSpacingChecks: number
+  /** Text boxes whose rect carried tied blocks asking for different spacing, so spacing went
+   * unjudged. Nothing else can see a per-box skip; the corpus asserts this is 0. */
+  lineSpacingRefused: number
   /** Properties `properties.ts` claims neither to emit nor to score, as the measurement pass saw them. */
   unmodelledProperties: string[]
   /**
@@ -602,20 +605,34 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
   // block's line-height and font-size, paired by geometry and by a rendered line (M4.8b r1/r2) ---
   const lineSpacingWrong: string[] = []
   let lineSpacingChecks = 0
+  let lineSpacingRefused = 0
+  /** The spacing a block asks for: `null` is `line-height: normal`, i.e. no `<a:lnSpc>` at all. */
+  const spacingOf = (b: TruthBlock): number | null =>
+    b.lineHeight === 'normal' || b.fontSizePx <= 0 ? null : parseFloat(b.lineHeight) / b.fontSizePx
   for (const shape of readback.shapes) {
     if (shape.kind !== 'sp' || shape.text === '') continue
+    const label = `"${shape.text.slice(0, 40)}"`
+    // Anchor, wrap and autofit are properties of the emitted box alone. They need no block, so they
+    // are judged for EVERY text shape — behind the pairing they were skipped along with it, and a
+    // rect the pairing refused came back a clean 100 while bottom-anchored, unwrapped and
+    // autofitted (r4).
+    if (shape.anchor !== 't')
+      lineSpacingWrong.push(`${label}: anchored ${String(shape.anchor)}, not top`)
+    if (shape.wrap !== 'square')
+      lineSpacingWrong.push(`${label}: wrap ${String(shape.wrap)}, not square`)
+    if (shape.autofit)
+      lineSpacingWrong.push(`${label}: autofit set — PowerPoint may shrink the text`)
+
     const boxLines = shape.lines.filter((l) => l !== '')
     if (boxLines.length === 0) continue
-    // The MOST SPECIFIC block at this rect, or none at all. A parent's `innerText` contains every
-    // descendant's lines, so first match handed a same-rect nested block (an `inset: 0` overlay
-    // with its own text) to its ancestor and called a correct 2.5 a lie (r2). Two conditions
-    // narrow it, and `truth.blocks` holding only elements with own text is what makes them enough:
-    // an ancestor at one rect always has MORE lines than its text-bearing descendant, so a wrong
-    // pick needs the box's text duplicated in a second block there. Requiring EVERY line of the
-    // box — not just its first — rules out a descendant that merely repeats the box's opening
-    // line; and where the fewest-lines winner is not unique (same-rect siblings with identical
-    // text) the pair is refused rather than guessed, so an ambiguous rect goes unjudged instead of
-    // becoming a false silent lie (r3).
+    // Spacing needs the block, so it needs the MOST SPECIFIC block at this rect — or none at all. A
+    // parent's `innerText` contains every descendant's lines, so first match handed a same-rect
+    // nested block (an `inset: 0` overlay with its own text) to its ancestor and called a correct
+    // 2.5 a lie (r2). Two conditions narrow it, and `truth.blocks` holding only elements with own
+    // text is what makes them enough: an ancestor at one rect always has MORE lines than its
+    // text-bearing descendant, so a wrong pick needs the box's text duplicated in a second block
+    // there. Requiring EVERY line of the box — not just its first — rules out a descendant that
+    // merely repeats the box's opening line (r3).
     const candidates = truth.blocks
       .filter(
         (b) =>
@@ -624,13 +641,21 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
       )
       .toSorted((p, q) => p.lines.length - q.lines.length)
     const block = candidates[0]
-    if (block === undefined || candidates[1]?.lines.length === block.lines.length) continue
+    if (block === undefined) continue
+    // Where the fewest-lines winner is not unique — same-rect siblings with identical text — the
+    // pair is refused rather than guessed. Only a genuine DISAGREEMENT is ambiguous: tied blocks
+    // that ask for the same spacing decide it between them, so the stacked-layer trick at one
+    // line-height is still judged (r4). Refusals are counted because nothing else can see them.
+    if (
+      candidates.some(
+        (c) => c.lines.length === block.lines.length && spacingOf(c) !== spacingOf(block),
+      )
+    ) {
+      lineSpacingRefused += 1
+      continue
+    }
     lineSpacingChecks += 1
-    const want =
-      block.lineHeight === 'normal' || block.fontSizePx <= 0
-        ? null
-        : parseFloat(block.lineHeight) / block.fontSizePx
-    const label = `"${shape.text.slice(0, 40)}"`
+    const want = spacingOf(block)
     // Every paragraph of the box, not only the first: `paragraphBreakBefore` makes several routine.
     for (const got of shape.lineSpacings) {
       if (
@@ -640,12 +665,6 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
           `${label}: line spacing ${String(got)} ≠ ${want === null ? 'normal' : want.toFixed(2)}`,
         )
     }
-    if (shape.anchor !== 't')
-      lineSpacingWrong.push(`${label}: anchored ${String(shape.anchor)}, not top`)
-    if (shape.wrap !== 'square')
-      lineSpacingWrong.push(`${label}: wrap ${String(shape.wrap)}, not square`)
-    if (shape.autofit)
-      lineSpacingWrong.push(`${label}: autofit set — PowerPoint may shrink the text`)
   }
 
   // --- Text the browser cuts off but the file carries whole: PowerPoint has no clipping ---
@@ -734,6 +753,7 @@ export function assessSlide(args: AssessArgs): SlideAssessment {
     glyphOriginWrong,
     lineSpacingWrong,
     lineSpacingChecks,
+    lineSpacingRefused,
     unmodelledProperties,
     rootPaintOps,
     rotationsExpected: corpus.rotations.length,
@@ -759,6 +779,8 @@ export type CorpusSummary = {
   boxWorstPct: number
   /** Text boxes whose line spacing, anchor, wrap and autofit the oracle paired and judged. */
   lineSpacingChecks: number
+  /** Text boxes whose rect was too ambiguous to judge spacing on. */
+  lineSpacingRefused: number
   /** Over structured slides only, like the text row. */
   paintedTotal: number
   paintedKept: number
@@ -787,6 +809,7 @@ export function summarize(assessments: readonly SlideAssessment[]): CorpusSummar
     boxChecks: sum(assessments, (a) => a.boxChecks),
     boxWorstPct: Math.max(0, ...assessments.map((a) => a.boxWorstPct)),
     lineSpacingChecks: sum(assessments, (a) => a.lineSpacingChecks),
+    lineSpacingRefused: sum(assessments, (a) => a.lineSpacingRefused),
     paintedTotal: sum(structured, (a) => a.paintedTotal),
     paintedKept: sum(structured, (a) => a.paintedKept),
     pseudoTotal: sum(structured, (a) => a.pseudoTotal),
@@ -812,7 +835,7 @@ export function formatSummary(label: string, s: CorpusSummary): string {
     `| Exact hex colour on preserved runs | ${pct(s.colorExact, s.colorTotal)} |`,
     `| Exact font size (±${String(SIZE_TOLERANCE_PT)} pt) on preserved runs | ${pct(s.sizeExact, s.colorTotal)} |`,
     `| Emitted box vs DOM box, worst (% of slide dimension, ${String(s.boxChecks)} boxes) | ${s.boxWorstPct.toFixed(4)}% |`,
-    `| Text boxes whose line spacing, anchor, wrap and autofit were judged (plumbing only) | ${String(s.lineSpacingChecks)} |`,
+    `| Text boxes whose line spacing, anchor, wrap and autofit were judged (plumbing only) | ${String(s.lineSpacingChecks)} (${String(s.lineSpacingRefused)} rects too ambiguous to pair) |`,
     `| Painted boxes (background/border) carried by an emitted shape | ${pct(s.paintedKept, s.paintedTotal)} |`,
     `| Painting \`::before\`/\`::after\` in structured slides (unrepresentable) | ${String(s.pseudoTotal)} |`,
     `| Rotated elements carrying a correct \`rot\` (±${String(ROTATION_TOLERANCE_DEG)}°) | ${String(s.rotationsOk)}/${String(s.rotationsExpected)} |`,

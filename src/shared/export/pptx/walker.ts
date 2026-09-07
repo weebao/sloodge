@@ -40,7 +40,7 @@
  * the block's computed `line-height` as a multiple of the block's font size; runs larger than the
  * block's font get PowerPoint's proportional line height, as a unitless CSS line-height would give
  * them — which is exact only for a unitless `line-height`; a length/em/% value over a larger inline
- * run is mis-mapped by construction (60-export.md §3.4), and only the pixel step can see it.
+ * run is mis-mapped by construction (60-export.md §3.3), and only the pixel step can see it.
  * Nothing is auto-fitted: the box keeps Chromium's height and, where PowerPoint's line breaking
  * differs, the text overflows rather than shrinks — the reflow gap the pixel step measures.
  *
