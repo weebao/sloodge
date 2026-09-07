@@ -984,10 +984,20 @@ Content field is simply disabled, with a hint explaining why.
   Chromium: a WindowProxy keeps its identity across navigations, so it cannot tell the documents
   apart and does nothing about a document torn down before its stalled script can answer. A frame
   that still does not confirm the text within the timeout is now announced ("couldn’t confirm the
-  text you typed … wasn’t saved") instead of reverted in silence — unless a newer caret has opened
-  on that same element, in which case the stale session neither touches nor announces it. Accepted
-  edge: the hold is stage-wide, so a slide selected inside a pending window loads instrumented with
-  Design Mode off and is re-navigated once the hold clears — cosmetic, nothing stranded.
+  text you typed … wasn’t saved") instead of reverted in silence — unless a newer caret has since
+  been **asked for** on that same element, in which case the stale session neither touches nor
+  announces it. Asked for, not opened (round-2 review): the frame runs the parent's messages in
+  posting order, so under the very stall this closes the newer `begin` is queued behind the stale
+  `commit` and `designStore.editing` cannot yet show it, while the frame will open that caret and
+  then run the stale `cancel` on it; `designStore.caretRequests` counts each element's requests as
+  they are posted, and a session compares the count it opened under. What the newer caret then
+  opens on is the text the stale session left in the element, which is what it commits — nothing
+  is lost, so nothing is said. Accepted edges: the hold is stage-wide, so a slide selected inside a
+  pending window loads instrumented with Design Mode off and is re-navigated once the hold clears
+  (cosmetic, nothing stranded); a slide switch inside the window drops the announcement before it
+  is shown, since a notice belongs to its slide (M3.14); and a stale `revert` that reaches the frame
+  behind another element's `begin` has nothing to rewind, because the frame keeps one `lastEnded`
+  slot and clears it on any `begin` (M3.15).
 - **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
   quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
   characters live only in the frame's DOM until the session ends. This is consistent with the app

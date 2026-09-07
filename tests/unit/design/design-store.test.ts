@@ -25,6 +25,7 @@ beforeEach(() => {
     selections: [],
     notice: null,
     finishing: 0,
+    caretRequests: {},
   })
 })
 
@@ -241,6 +242,20 @@ describe('text-edit sessions (M3.11)', () => {
     useDesignStore.getState().settleFinishing()
     useDesignStore.getState().settleFinishing()
     expect(useDesignStore.getState().finishing).toBe(0)
+  })
+
+  // M3.13, round-2 review: a stale finish judges itself superseded by the *request* for a newer caret on its
+  // element, which is posted before the frame can answer it — so the count is per element, moves as
+  // the request goes out, and survives the toggle like `finishing` does.
+  it('counts caret requests per element, and the toggle leaves them alone', () => {
+    expect(useDesignStore.getState().noteCaretRequest(HIT.slId)).toBe(1)
+    expect(useDesignStore.getState().noteCaretRequest(HIT.slId)).toBe(2)
+    expect(useDesignStore.getState().noteCaretRequest(HIT2.slId)).toBe(1)
+    expect(useDesignStore.getState().caretRequests).toEqual({ [HIT.slId]: 2, [HIT2.slId]: 1 })
+
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().caretRequests).toEqual({ [HIT.slId]: 2, [HIT2.slId]: 1 })
   })
 
   it('endEditing is idempotent', () => {

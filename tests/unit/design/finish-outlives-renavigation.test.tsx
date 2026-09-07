@@ -47,7 +47,6 @@ const NOW = 1_700_000_000_000
 
 let slideId = ''
 let h1Id = ''
-let pId = ''
 
 /** The canvas as the shell mounts it, subscribed to the deck so a commit re-renders it. */
 function Canvas(): JSX.Element {
@@ -107,18 +106,22 @@ function postedActions(frame: HTMLIFrameElement): string[] {
   return windowOf(frame).posted.map((m) => (m as { payload: { action: string } }).payload.action)
 }
 
-/** Open a session on the <h1> (or `slId`), as the overlay does once the frame confirms a `begin`. */
-function openSession(slId = h1Id): void {
+/**
+ * Open a session on the <h1> in the store, as the overlay does once the frame confirms a `begin`.
+ * This is the hook's *effect* acquire site; the app's own path — `beginEdit`'s reply — is exercised
+ * in `finish-frame-order.test.tsx` against the real frame script.
+ */
+function openSession(): void {
   act(() => {
     useDesignStore.getState().setSelection({
-      slId,
+      slId: h1Id,
       tag: 'h1',
       id: null,
       classes: [],
       rect: { x: 0, y: 0, width: 1, height: 1 },
       ancestors: [],
     })
-    useDesignStore.getState().beginEditing(slId)
+    useDesignStore.getState().beginEditing(h1Id)
   })
 }
 
@@ -152,7 +155,6 @@ beforeEach(() => {
   slideId = useDeckStore.getState().currentSlideId!
   const map = buildSlideMap(slideId, currentHtml())
   h1Id = [...map.byId.values()].find((el) => el.tagName === 'h1')!.slId
-  pId = [...map.byId.values()].find((el) => el.tagName === 'p')!.slId
   useDesignStore.setState({
     enabled: true,
     hover: null,
@@ -331,60 +333,8 @@ describe('Design Mode off with a caret open, under a stalled slide (M3.13)', () 
     expect(frame.getAttribute('src')).not.toBe(srcAtPin)
   })
 
-  /**
-   * Round-1 review, major 2. A finish that times out after Design Mode came back must not reach
-   * into a caret a newer session has opened on the same element — no `cancel`/`revert` into the
-   * live caret, and no "wasn't saved" about a session that is not the user's.
-   */
-  it('a stale finish does not cancel, revert or announce over a live caret on the same element', () => {
-    const frame = activeFrame()
-    act(() => {
-      useDesignStore.getState().setEnabled(false)
-    })
-    act(() => {
-      vi.advanceTimersByTime(200)
-    })
-    act(() => {
-      useDesignStore.getState().setEnabled(true)
-    })
-    openSession()
-    expect(useDesignStore.getState().editing).toBe(h1Id)
-
-    act(() => {
-      vi.advanceTimersByTime(FINISH_TIMEOUT_MS)
-    })
-
-    expect(postedActions(frame)).toEqual(['commit'])
-    expect(useDesignStore.getState().editing).toBe(h1Id)
-    expect(useDesignStore.getState().notice).toBeNull()
-    // The stale session released its own hold; the live one still holds.
-    expect(useDesignStore.getState().finishing).toBe(1)
-  })
-
-  it('a stale finish still puts back and announces when the live caret is on another element', () => {
-    const frame = activeFrame()
-    act(() => {
-      useDesignStore.getState().setEnabled(false)
-    })
-    act(() => {
-      vi.advanceTimersByTime(200)
-    })
-    act(() => {
-      useDesignStore.getState().setEnabled(true)
-    })
-    openSession(pId)
-
-    act(() => {
-      vi.advanceTimersByTime(FINISH_TIMEOUT_MS)
-    })
-
-    // `cancel` for an element that is not the frame's open session is inert in the frame, and
-    // `revert` only ever touches the element the stale session ended on — so the live caret on the
-    // <p> is untouched and the <h1>'s loss is reported.
-    const posted = windowOf(frame).posted as { payload: { action: string; slId: string } }[]
-    expect(posted.map((m) => m.payload.action)).toEqual(['commit', 'cancel', 'revert'])
-    expect(posted.every((m) => m.payload.slId === h1Id)).toBe(true)
-    expect(useDesignStore.getState().editing).toBe(pId)
-    expect(screen.getByTestId('design-notice').textContent).toMatch(/couldn’t confirm/)
-  })
+  // A stale finish meeting a newer caret on its element is pinned in `finish-frame-order.test.tsx`,
+  // against the real frame script: the ordering it needs — the newer `begin` queued behind the
+  // stale `commit` — is one the frame double here cannot produce, and the ordering this file could
+  // write into the store (the newer caret answered first) is one a single-threaded frame cannot.
 })

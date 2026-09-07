@@ -151,9 +151,12 @@
  * document from the new — and the loss was never a mis-attributed answer, it was a document torn
  * down before its stalled script could answer at all. What remains is a frame that does not answer
  * within `FINISH_TIMEOUT_MS`, and that is no longer silent: the element is put back **and** the
- * notice says the text was not saved — unless a newer session has since opened a caret on that very
- * element, in which case the stale session touches nothing (its `cancel` would end the live caret)
- * and says nothing (what the user is typing is not lost).
+ * notice says the text was not saved — unless a newer caret has since been *asked for* on that very
+ * element, in which case the stale session touches nothing (its `cancel` would end that caret) and
+ * says nothing (what is under the user's cursor is not lost). "Asked for", not "opened": the frame
+ * runs the parent's messages in posting order, so on a stalled frame the newer `begin` sits queued
+ * behind the stale `commit` and the store cannot yet show it — `designStore.caretRequests` is what
+ * the session compares itself against (round-2 review).
  *
  * ## The untrusted-text rule
  *
@@ -219,6 +222,17 @@ const UNANSWERED_NOTICE =
   'The slide couldn’t confirm the text you typed, so it wasn’t saved and the element was left as it was.'
 
 /**
+ * An open session: its channel to the frame its caret is in, and which caret request on its element
+ * it answers to (`designStore.caretRequests` at the moment it was pinned). A later request on the
+ * same element moves the count, and that is how a session that outlived the overlay learns it has
+ * been superseded — see `commitText`.
+ */
+interface Session {
+  readonly frame: PinnedEdit
+  readonly generation: number
+}
+
+/**
  * End a caret from the parent: take the `contenteditable` away and put the element back to the text
  * the session opened with. Both actions, always, because the parent cannot know which of the frame's
  * two states it is talking to.
@@ -237,9 +251,9 @@ const UNANSWERED_NOTICE =
  * `cancel` just restored and writes the same value. It is the one-two `commitText` already sends for
  * a refused commit.
  */
-function endFrameCaret(session: PinnedEdit | null): void {
-  session?.send('cancel')
-  session?.send('revert')
+function endFrameCaret(session: Session | null): void {
+  session?.frame.send('cancel')
+  session?.frame.send('revert')
 }
 
 /** The Edit-menu label for a committed text edit, trimmed so the menu stays readable. */
@@ -267,9 +281,9 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   // Read through a ref inside callbacks that outlive a render (the frame's event can arrive at any
   // time), so a stale closure can never commit against the wrong session.
   const editingRef = useRef(editing)
-  // The open session's sender, pinned to the frame the caret is actually in. Set when the frame
-  // confirms a `begin` and cleared by every path that ends the session.
-  const sessionFrameRef = useRef<PinnedEdit | null>(null)
+  // The open session, pinned to the frame the caret is actually in. Set when the frame confirms a
+  // `begin` and cleared by every path that ends the session.
+  const sessionRef = useRef<Session | null>(null)
   // Whether this hook's session holds the stage frame's document (`designStore.finishing`). One
   // hook has at most one session, so one flag makes acquire and release idempotent: a session
   // releases exactly once, on whichever end it meets, and never another session's hold.
@@ -297,8 +311,11 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     // while `editing` is still set. Pinning there would bind an open session to the *incoming*
     // frame, and the slide switch that follows would cancel the caret on a frame that never had one
     // — the round-5 blocker, from the other end.
-    if (previous === null && editing !== null && sessionFrameRef.current === null) {
-      sessionFrameRef.current = pinEdit(editing)
+    if (previous === null && editing !== null && sessionRef.current === null) {
+      sessionRef.current = {
+        frame: pinEdit(editing),
+        generation: useDesignStore.getState().caretRequests[editing] ?? 0,
+      }
       holdFrame()
     }
     // The store closed the session behind this hook's back — `setSelection` of another element, a
@@ -306,8 +323,8 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
     // disagree about whether a caret exists. Every end this hook performs itself nulls the ref
     // *before* the store, so those never arrive here with `previous` set.
     if (previous === null || editing !== null) return
-    endFrameCaret(sessionFrameRef.current)
-    sessionFrameRef.current = null
+    endFrameCaret(sessionRef.current)
+    sessionRef.current = null
     releaseFrame()
   }, [editing, pinEdit, holdFrame, releaseFrame])
 
@@ -328,7 +345,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   /** Close the session in the store. For the paths where the frame has already ended its own. */
   const dropSession = useCallback((): void => {
     editingRef.current = null
-    sessionFrameRef.current = null
+    sessionRef.current = null
     endEditing()
   }, [endEditing])
 
@@ -339,7 +356,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    * to — see `pinEdit`, and see `endFrameCaret` for why ending one takes two messages.
    */
   const cancelSession = useCallback((): void => {
-    endFrameCaret(sessionFrameRef.current)
+    endFrameCaret(sessionRef.current)
     dropSession()
     releaseFrame()
   }, [dropSession, releaseFrame])
@@ -362,6 +379,10 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
         return false
       }
       pendingRef.current = slId
+      // Counted as the `begin` is posted, not when the frame answers: a session that outlived the
+      // overlay and is about to time out has to be able to see this request while the frame still
+      // has it queued — see `commitText`.
+      const generation = useDesignStore.getState().noteCaretRequest(slId)
       // The frame this caret will live in, captured before the request rather than in the reply —
       // the same frame `requestEdit` is about to address, whatever the bridge is bound to later.
       const session = pinEdit(slId)
@@ -395,7 +416,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
           session.send('cancel')
           return
         }
-        sessionFrameRef.current = session
+        sessionRef.current = { frame: session, generation }
         holdFrame()
         editingRef.current = slId
         beginEditing(slId)
@@ -412,17 +433,23 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
    * `text === null` is a finishing session whose frame did not confirm the text (`PinnedEdit.finish`):
    * it is gone, its script is dead, or it answered that the element is. Nothing can be written, so
    * the element is put back rather than left showing text no document contains (round-6) — and the
-   * loss is announced (M3.13). Unless a newer session has since opened a caret on the same element:
-   * this one's `cancel` would end that live caret and its `revert` overwrite what is being typed, and
+   * loss is announced (M3.13). Unless a newer caret has since been asked for on the same element:
+   * this one's `cancel` would end that caret and its `revert` overwrite what is being typed, and
    * "wasn't saved" would be said about text that is right there under the user's cursor — so a
-   * superseded session touches nothing and says nothing (round-1 review). Another element's caret is
-   * unaffected either way: the frame ignores a `cancel` for an element that is not its open session,
-   * and `revert` only ever reaches the element this session ended on.
+   * superseded session touches nothing and says nothing (round-1 review). Superseded is judged on
+   * the request, not on `editing`: the frame runs the parent's messages in posting order, and on a
+   * stalled frame the newer `begin` is still queued behind this session's `commit` when the timeout
+   * fires — the store shows no caret, yet the frame will open one and then run this `cancel` on it
+   * (round-2 review). A `begin` posted before this session's `cancel` is a `begin` the frame runs
+   * before it, and `designStore.caretRequests` records exactly that order. Another element's caret
+   * is unaffected either way: the frame ignores a `cancel` for an element that is not its open
+   * session, and `revert` only ever reaches the element this session ended on.
    */
   const commitText = useCallback(
-    (slId: string, text: string | null, session: PinnedEdit | null): void => {
+    (slId: string, text: string | null, session: Session | null): void => {
       if (text === null) {
-        if (useDesignStore.getState().editing === slId) return
+        const requests = useDesignStore.getState().caretRequests[slId] ?? 0
+        if (session !== null && requests !== session.generation) return
         endFrameCaret(session)
         setNotice(UNANSWERED_NOTICE)
         return
@@ -435,7 +462,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       // Refused. The frame is still showing the value that was turned down, so put it back before
       // anything else can make the mismatch look like a save — see the header.
       if (outcome.kind === 'refused') {
-        session?.send('revert')
+        session?.frame.send('revert')
         setNotice(REFUSAL_NOTICE[outcome.reason])
         return
       }
@@ -450,7 +477,7 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
       // element is dropped here, before it can reach the source map.
       if (editingRef.current !== payload.slId) return
       // Read before the drop clears it: a refusal has to reach the frame this session was in.
-      const session = sessionFrameRef.current
+      const session = sessionRef.current
       dropSession()
       releaseFrame()
       commitText(payload.slId, payload.text, session)
@@ -474,15 +501,18 @@ export function useTextEditing(options: TextEditingOptions): TextEditingApi {
   useEffect(() => {
     return () => {
       const slId = editingRef.current
-      const session = sessionFrameRef.current
+      const session = sessionRef.current
       if (slId !== null) dropSession()
       if (slId === null || session === null) {
-        // Nothing to wait for, so nothing may hold the frame. (A session the store opened in the
-        // same batch as the toggle was never pinned here and never held; the release is a no-op.)
+        // Nothing to wait for, so nothing may hold the frame. Usually there is no hold to release —
+        // a session the store opened in the same batch as the toggle was never pinned here — but
+        // this is also the backstop: every exit above releases its own hold, and should one ever
+        // end a session without doing so, the count would stay inflated only until this unmount.
+        // `holdingRef` makes the release exactly one either way.
         releaseFrame()
         return
       }
-      session.finish((text) => {
+      session.frame.finish((text) => {
         // Settled, whichever way: this session's hold on the frame goes. Released *before* the
         // commit so a commit that throws cannot leave the frame held; React batches the release and
         // the deck write into one render either way.

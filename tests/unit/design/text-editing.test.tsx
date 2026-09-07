@@ -88,6 +88,11 @@ function currentHtml(): string {
   return getSlideHtml(useDeckStore.getState().slideHtml, slideId) ?? ''
 }
 
+/** How many text sessions hold the stage frame's document (M3.13). */
+function finishing(): number {
+  return useDesignStore.getState().finishing
+}
+
 function undoDepth(): number {
   return useDeckStore.getState().history.summary().undoDepth
 }
@@ -363,6 +368,8 @@ beforeEach(() => {
     selection: null,
     editing: null,
     notice: null,
+    finishing: 0,
+    caretRequests: {},
   })
 })
 
@@ -1517,5 +1524,87 @@ describe('useTextEditing — a caret that will not open says why (round-5)', () 
     open(harness, idOfClass('title'))
     expect(noticeText()).toBeNull()
     expect(harness.result.current.editing).toBe(idOfClass('title'))
+  })
+})
+
+/**
+ * M3.13, round-2 review. The hold on the stage frame is acquired when the frame confirms the caret — on
+ * `beginEdit`'s reply, the app's path — and released by every exit *while the hook is still
+ * mounted*. The unmount cleanup releases unconditionally, so a release missing from any one exit
+ * is invisible to a test that only looks after the overlay is gone: these look before.
+ */
+describe('useTextEditing — the frame hold is acquired on the reply and released on every exit', () => {
+  it('is acquired when the frame confirms the caret, and once only', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    expect(finishing()).toBe(0)
+    open(harness, id)
+    expect(finishing()).toBe(1)
+
+    // A second double-click on the element being edited re-asks the frame, which reopens the same
+    // caret; the session still holds exactly once.
+    open(harness, id)
+    expect(useDesignStore.getState().editing).toBe(id)
+    expect(finishing()).toBe(1)
+  })
+
+  it('is not acquired for a caret the frame declines', () => {
+    const harness = mount(true, () => false)
+    open(harness, idOfClass('title'))
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(finishing()).toBe(0)
+  })
+
+  it('is released when the store closes the session (another element selected)', () => {
+    const harness = mount()
+    open(harness, idOfClass('title'))
+    act(() => {
+      select(idOfClass('mixed'))
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(finishing()).toBe(0)
+  })
+
+  it('is released when the frame commits the session', () => {
+    const harness = mount()
+    const id = idOfClass('title')
+    open(harness, id)
+    frameEnd(harness, { slId: id, text: 'New title' })
+    expect(currentHtml()).toContain('New title')
+    expect(finishing()).toBe(0)
+  })
+
+  it('is released when the slide switches under the session', () => {
+    const harness = mountSwitchable()
+    const id = idOfClass('title')
+    act(() => {
+      select(id)
+      harness.result.current.beginEdit(id)
+    })
+    expect(finishing()).toBe(1)
+    harness.switchTo('some-other-slide')
+    expect(finishing()).toBe(0)
+  })
+
+  it('is released when the bytes change under the session', () => {
+    const harness = mount()
+    open(harness, idOfClass('title'))
+    act(() => {
+      useDeckStore
+        .getState()
+        .setSlideHtml(slideId, SLIDE_HTML.replace('Old title', 'Panel title'), 'x', 'Panel edit')
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(finishing()).toBe(0)
+  })
+
+  it('is released when the frame announces a fresh document', () => {
+    const harness = mount()
+    open(harness, idOfClass('title'))
+    act(() => {
+      harness.result.current.onFrameReady()
+    })
+    expect(useDesignStore.getState().editing).toBeNull()
+    expect(finishing()).toBe(0)
   })
 })

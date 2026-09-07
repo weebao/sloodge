@@ -111,6 +111,23 @@ export type DesignSnapshot = {
    * the session meets.
    */
   readonly finishing: number
+  /**
+   * How many carets have been **asked for** on each element this launch, by `slId` (M3.13, round-2 review).
+   * `useTextEditing.beginEdit` counts one as it posts the `begin` — before the frame has answered —
+   * and a session remembers the count it was opened under.
+   *
+   * It exists so a session can tell it has been superseded when `editing` cannot yet say so. A
+   * finish that times out after Design Mode has come back must stay out of a newer caret on its own
+   * element (its `cancel` would end that caret). Checking `editing` covers a newer caret the frame
+   * has *answered*; but the frame is single-threaded and runs the parent's messages in posting
+   * order, and on a stalled frame — this milestone's own premise — the newer `begin` is queued
+   * behind the stale `commit`, unanswered, so the store still shows no caret when the timeout
+   * fires. What the stale session can know is whether a newer `begin` for its element has been
+   * *posted*, because that is the same order the frame will run them in: posted before the stale
+   * `cancel` means processed before it. Never reset — `OFF` leaves it alone, since the comparison
+   * that matters happens across the toggle.
+   */
+  readonly caretRequests: Readonly<Record<string, number>>
 }
 
 export type DesignState = DesignSnapshot & {
@@ -155,6 +172,11 @@ export type DesignState = DesignSnapshot & {
   holdFinishing: () => void
   /** That session ended — committed, refused, cancelled or given up on: release its hold. */
   settleFinishing: () => void
+  /**
+   * A `begin` for `slId` is about to be posted. Returns the element's new request count — the
+   * generation the session opened by that `begin` belongs to. See `caretRequests`.
+   */
+  noteCaretRequest: (slId: string) => number
 }
 
 const CLEARED = { hover: null, selections: [], selection: null, editing: null } as const
@@ -164,8 +186,13 @@ const CLEARED = { hover: null, selections: [], selection: null, editing: null } 
  * can cause is decided a moment after the toggle, and clearing here would erase the explanation the
  * user is owed for it. `finishing` is not in it either: a caret open at the toggle is about to be
  * finished on a channel that outlives the overlay, and its hold on the frame must survive the toggle.
+ * Nor is `caretRequests`: the session it lets a stale finish compare itself against is one opened
+ * *after* the toggle.
  */
-const OFF: Omit<DesignSnapshot, 'notice' | 'finishing'> = { enabled: false, ...CLEARED }
+const OFF: Omit<DesignSnapshot, 'notice' | 'finishing' | 'caretRequests'> = {
+  enabled: false,
+  ...CLEARED,
+}
 
 /** De-duplicate a hit list by `slId`, keeping each id's **last** occurrence (freshest geometry). */
 function dedupeBySlId(hits: readonly SlHit[]): SlHit[] {
@@ -178,6 +205,7 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
   ...OFF,
   notice: null,
   finishing: 0,
+  caretRequests: {},
   // Edit-first: the app opens with Design Mode on. See the note on `DesignSnapshot.enabled`.
   enabled: true,
 
@@ -253,5 +281,11 @@ export const useDesignStore = createStore<DesignState>((set, get) => ({
 
   settleFinishing: () => {
     set({ finishing: Math.max(0, get().finishing - 1) })
+  },
+
+  noteCaretRequest: (slId) => {
+    const next = (get().caretRequests[slId] ?? 0) + 1
+    set({ caretRequests: { ...get().caretRequests, [slId]: next } })
+    return next
   },
 }))
