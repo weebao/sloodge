@@ -28,24 +28,32 @@ citations as historical.
 
 | Measure | Value |
 | --- | --- |
-| Files scanned | 71 (`src/renderer/src/**/*.{ts,tsx,css}`); 23 `.tsx` files carry all the chrome |
-| Colour utilities | **83 distinct spellings, 482 uses** — for what the canonical set expresses as 27 role tokens |
+| Files scanned | 73 (`src/renderer/src/**/*.{ts,tsx,css}`); 25 `.tsx` files carry all the chrome |
+| Colour utilities | **87 distinct spellings, 488 uses** — for what the canonical set expresses as 27 role tokens |
 | Distinct greys | **21 achromatic values** (12 theme neutrals + `white` + `black` + 7 `neutral-*` steps), spelled **34 ways** once alpha variants are counted, doing the work of 11 neutral roles |
 | "Raised surface" | spelled 3 ways: `bg-white` ×15, `bg-chrome` ×7, `bg-neutral-*`; paired with `dark:bg-ink` ×9 **and** `dark:bg-ink-alt` ×15 |
-| `dark:` classes | **180** — every one a place light and dark can drift, and 10 places where they have (§2.1) |
-| References to the 12 tokens that retire | **328** — 324 utilities in `.tsx` plus 4 `var(--color-*)` consumers in `theme.css`'s own `body` rule (`theme.css:32/33/46/47`), which no utility scan sees |
+| `dark:` classes | **183** — every one a place light and dark can drift, and 10 places where they have (§2.1) |
+| References to the 14 tokens that retire | **332** — 328 utilities in `.tsx` plus 4 `var(--color-*)` consumers in `theme.css`'s own `body` rule (`theme.css:40/41/54/55`), which no utility scan sees |
 | Spacing utilities | 65 distinct, 255 uses; 27 margin nudges across 14 spellings; exactly one off-grid value (`-mb-px`) |
-| Arbitrary values | **104 in class strings**: 92 font sizes (`text-[11px]` ×27, `[12px]` ×35, `[13px]` ×27, `[15px]` ×2, `[9px]` ×1), 10 sizes, 1 shadow, 1 `accent-[var(…)]` |
+| Arbitrary values | **105 in class strings**: 92 font sizes (`text-[11px]` ×27, `[12px]` ×35, `[13px]` ×27, `[15px]` ×2, `[9px]` ×1), 10 sizes, 1 shadow, 1 `accent-[var(…)]` |
 | Type scale | two incompatible ones: px in 20 files, rem (`text-xs/sm/lg`) in `ExportPptxDialog.tsx`; `body` has **no line-height** |
 | Radius | 6 spellings → 4 real values; `rounded` and `rounded-sm` are the same 4px |
 | Shadow | 5 spellings, none dark-adjusted (black-alpha shadows on a `#1f1f22` ground) |
 | Motion | 4 utilities, 14 uses; no `ease-*`, no motion token, `prefers-reduced-motion` absent from the renderer |
 | Focus | `outline-none` ×5; only 2 of those restore a `focus-visible` ring |
 | Contrast pairs measured | **80** (light and dark each) — **25 fail** in at least one mode: 6 text pairs, 19 UI-component pairs |
-| Worst text ratio | **3.06:1** — `amber-600` warning text at 11–12px on `chrome` (`StatusBar.tsx:64/96`, `BudgetTab.tsx:203/221`) |
+| Worst text ratio | **3.06:1** — `amber-600` warning text at 11–12px on `chrome` (`StatusBar.tsx:82/114`, `BudgetTab.tsx:203/221`) |
 | Worst dark-only text | **2.91:1** — `accent` on `ink-alt` (`StatusBar.tsx:182` hover); 2.36:1 for the `✦` glyph that has no `dark:` variant (`DesignModeToggle.tsx:49`) |
 | Worst UI ratio | **1.00:1** — credential fields whose fill equals the panel fill (`AuthTab.tsx:193/245`), identified only by a 1.24:1 hairline |
 | Canonical set, verified | 27 colour roles × 2 modes, 63 pairs measured, **0 failures** — and every one of the 25 current failures maps to a measured pair (§5.2); every token reachable from a Tailwind utility (probe in §5.7) |
+
+Measured on 73 files: 488 colour uses, 183 `dark:`, 105 arbitrary, 99 palette, 332 retired-token references.
+
+That line is not decoration: `node scripts/design-inventory.mjs --verify-doc` regenerates it and
+demands a byte match, then re-resolves every `file:line` this document cites against the tree in
+front of it (§10 row 23). **Run it before executing any part of this audit.** This document is a
+measurement and `main` moves under it — M4.5 shifted every anchor in the files it touched and landed
+two tokens whose names collide with canonical roles, and that was found by hand, a review round late.
 
 What changed since M8b.0's inventory (2026-09-03): PR #47 fixed `dark:bg-ink-bg` (the property
 panel now uses `dark:bg-ink`); M3.11 moved the Design Mode switch out of `FormatBar` into its own
@@ -60,7 +68,7 @@ text that is the worst text failure in the app. Counts below supersede M8b.0 §2
 Each table names the spellings, the counts, and — where several spellings paint the same thing — which
 one wins. Full site lists are in the script output; representative sites are cited here.
 
-### 2.1 Colour — 83 spellings, 482 uses
+### 2.1 Colour — 87 spellings, 488 uses
 
 **Theme tokens in use** (all 14 declared in `theme.css`; hex, no OKLCH):
 
@@ -167,7 +175,7 @@ shadow on the same element" pattern every source in M8b.0 §4.2 rejects.
 | `text-[9px]` | 1 | thumbnail placeholder (`ThumbnailPreview.tsx:81`) — below `better-typography`'s 12px floor, on text the user is meant to read |
 
 92 of 102 size utilities are arbitrary px; the rem scale appears only in the PPTX dialog. `body` sets
-`font-size: 13px` and **no `line-height`** (`theme.css:31–42`), so the whole app inherits the UA's
+`font-size: 13px` and **no `line-height`** (`theme.css:39–50`), so the whole app inherits the UA's
 `normal` (≈1.2 for Segoe UI) — under `better-typography`'s 1.4 floor for anything that wraps, which
 chat bubbles and settings copy do. `leading-4` (16px) is hand-set on six 11px labels, `leading-none`
 on four, `leading-relaxed` once (`ChatPanel.tsx:215`), `leading-tight` once.
@@ -257,9 +265,9 @@ that should not wait for M8b.2.
 
 | # | Pair | Light | Dark | Sites | Replacement |
 | --- | --- | --- | --- | --- | --- |
-| T1 | `amber-600` on `chrome` | **3.06** | 7.66 (`amber-500`) | `StatusBar.tsx:64/96` skills-fallback + budget-warn text, `BudgetTab.tsx:203/221` | `text-warning` — 6.83 / 7.65. Now: `text-amber-800 dark:text-amber-500` — 6.83 |
+| T1 | `amber-600` on `chrome` | **3.06** | 7.66 (`amber-500`) | `StatusBar.tsx:82/114` skills-fallback + budget-warn text, `BudgetTab.tsx:203/221` | `text-warning` — 6.83 / 7.65. Now: `text-amber-800 dark:text-amber-500` — 6.83 |
 | T2 | `white` on `amber-600` | **3.19** | **3.19** | `DesignNotice.tsx:57`, `SelectionOverlay.tsx:821` editing label | `bg-warning text-on-fill` — 7.13 / 8.77 (the editing label becomes `bg-edit text-on-fill` — 5.26 / 7.14). Now: `bg-amber-800` — 7.13 |
-| T3 | `chrome-muted/80` on the property panel | **3.70** | **4.31** | `PropertyPanel.tsx:170` element tag | `text-text-muted` (drop the `/80`) — 5.68 today, 6.14 on `surface` |
+| T3 | `chrome-muted/80` on the property panel | **3.70** | **4.31** | `PropertyPanel.tsx:172` element tag | `text-text-muted` (drop the `/80`) — 5.68 today, 6.14 on `surface` |
 | T4 | `accent` on `ink` | 4.96 | **3.17** | `ThumbnailRail.tsx:160` selected slide number, `:372` hover | dark `accent` = `oklch(0.67 0.176 34.8)` — 5.09 on `surface` |
 | T5 | `accent` on `ink-alt` | 5.18 | **2.91** | `StatusBar.tsx:182` hover, `MenuTabStrip.tsx:13` (worked around with `dark:text-ink-fg`) | dark `accent` — 4.66 on `surface-raised`; the tab strip can then drop its fallback |
 | T6 | `chrome-muted` on the canvas mat | **4.34** | 7.19 | `SlideCanvas.tsx:158` empty-state caption | `canvas` lightened 0.870 → 0.885 gives 4.53; rule R5 additionally forbids muted text on the mat |
@@ -611,7 +619,7 @@ imperceptible side by side; the point is that it is chosen and shared with dark)
 
 **Rules the pairs table assumes** (M8b.4 can lint R1–R3; R4–R6 are review items):
 
-- **R1** A role token never carries a `dark:` variant. `dark:` on a colour utility is a finding once its surface has migrated.
+- **R1** A role token never carries a `dark:` variant. `dark:` on a colour utility is a finding once its surface has migrated. **One carve-out until then:** M4.5's `text-danger`/`text-warning` at `StatusBar.tsx:203–204` *must* keep `dark:text-danger-dark`/`dark:text-warning-dark`, because `semantic-contrast.test.ts` asserts exactly that pairing (§5.9). The status-bar PR (§7 row 7) is the one that removes both the twins and the assertion, in the same commit.
 - **R2** Palette colours (`red-*`, `amber-*`, `neutral-*`, `fuchsia-*`, …) do not appear in components; `white`/`black` only through `hud`, `scrim`, `on-fill`.
 - **R3** Alpha on a token (`accent/10`) is not a way to invent a colour; the one permitted alpha is `hud-fg/70` (secondary HUD text, 5.17:1 measured); the HUD hover is the `hud-strong` token, never `hud/85`.
 - **R4** `accent` text never sits on `accent-soft` (3.87 in dark); an accent *icon or border* may (≥ 3.87).
@@ -700,6 +708,30 @@ verifies against. M8b.2 pastes its output rather than transcribing §5.2 and §5
 
 Spacing scale itself: **unchanged** (M8b.0 §5.3). The allowed steps are Fluent's — `0.5 1 1.5 2 2.5
 3 4 5 6 8` (2–32px). `px-3`/`py-1`/`gap-2` remain the workhorses. What goes is S1's margins.
+
+### 5.9 M4.5's semantic tokens — the collision, and who resolves it
+
+PR #63 added four tokens to the legacy `@theme`: `--color-danger` and `--color-warning` (light-only
+values) plus `--color-danger-dark` and `--color-warning-dark`, the mode-bound twins that make them
+readable on `ink`. Two of those names — `danger`, `warning` — are canonical role names, so the role
+block **replaces** them exactly as it replaces `accent`/`accent-soft`; their canonical values are
+mode-swapping, declared once in `@theme static` and overridden in the dark `:root`. The twins have
+no canonical counterpart and **retire with the other twelve** (14 retired tokens, not 12).
+
+Two consequences the fan-out must not discover on its own:
+
+1. `--check`'s "has the role block landed?" quorum ignores the four pre-existing role names, so two
+   coincidentally-named legacy declarations cannot flip an unmigrated tree into post-M8b.2 mode
+   (§10 row 24). Their *values* are still byte-checked once the block lands.
+2. **`semantic-contrast.test.ts` is a fourth class-coupled test**, alongside `slide-canvas-dock`,
+   `thumbnail-rail` and `status-bar-meter`. Its usage half asserts that every `text-danger` /
+   `text-warning` carries a `dark:` twin — which R1 forbids once the role tokens land, since the
+   value then swaps in `:root` and the twin would pin a dark value in light mode. Its values half
+   reads hex out of the first `@theme` block and will not find the canonical `oklch()`. The **§7 row
+   7 status-bar PR owns both halves**: it drops the two twins, replaces the usage assertion with one
+   that forbids a `dark:` twin on a role token, and re-points the values half at the 63-pair census
+   (`--check`), recording the mutation as §7 requires. Until that PR lands, the twins stay and R1's
+   carve-out applies.
 
 ### 5.4 Migration map — old spelling → canonical
 
@@ -860,7 +892,7 @@ one agent and one PR; the work list is the numbered list in §4.
 
 Rows 1–4 can start the moment M8b.2 merges; 5–9 have no dependency on each other either — the order
 is priority, not sequencing. Every PR: before/after PNG + GIF in the body, presentation-only diff,
-tests unchanged and green except where §4 names a class-coupled assertion (`slide-canvas-dock`,
+tests unchanged and green except where §4 names a class-coupled assertion (`semantic-contrast` — §5.9, `slide-canvas-dock`,
 `thumbnail-rail`, `status-bar-meter`), and `node scripts/design-inventory.mjs --check <files touched>`
 printing `RESULT: pass` — its six gate columns (`legacy`, `dark:`, arbitrary, palette, alpha,
 unknown) are counted on every utility-shaped token, classified or not, so a `dark:bg-surface-raised`,
@@ -879,9 +911,9 @@ One-line palette swaps that should not wait for M8b.2, grouped as **M8b.1a** in 
 | `DesignModeToggle.tsx:49` | `✦` glyph has no `dark:` variant | 2.36 | `text-chrome-muted dark:text-ink-muted` | 5.81 |
 | `FormatBar.tsx:16` | `dark:hover:bg-ink-alt` on an `ink-alt` row | 1.00 | `dark:hover:bg-ink-line` | 1.24 (matches `DesignModeToggle`) |
 | `ArrangeBar.tsx:20` | same, over the `ink-alt/95` bar | 1.00 | `dark:hover:bg-ink-line` | 1.24 |
-| `StatusBar.tsx:64/96`, `BudgetTab.tsx:203/221` | `text-amber-600` at 11–12px | 3.06 | `text-amber-800` | 6.83 |
+| `StatusBar.tsx:82/114`, `BudgetTab.tsx:203/221` | `text-amber-600` at 11–12px | 3.06 | `text-amber-800` | 6.83 |
 | `DesignNotice.tsx:57`, `SelectionOverlay.tsx:821` | white on `amber-600` | 3.19 | `bg-amber-800` | 7.13 |
-| `PropertyPanel.tsx:170` | `text-chrome-muted/80` | 3.70 / 4.31 | drop `/80` | 5.68 / 5.88 |
+| `PropertyPanel.tsx:172` | `text-chrome-muted/80` | 3.70 / 4.31 | drop `/80` | 5.68 / 5.88 |
 
 Each is one token in one class string; the `status-bar-meter` test matches `/amber/` and stays green.
 `--contrast` is a calculator over the pair specs written in the script, not a source scanner, so it
@@ -931,25 +963,27 @@ the tree restored with `git checkout` afterwards.
 | --- | --- | --- | --- |
 | 1 | A colour utility names a token `theme.css` does not declare (second-segment typo) | `pnpm exec vitest run tests/unit/design/theme-tokens.test.ts` · main | `dark:bg-ink` → `dark:bg-ink-bg` at `ChatPanel.tsx:101` → `× every colour utility … names a declared token`, `ChatPanel.tsx:101 → ink-bg` |
 | 2 | A colour utility whose *name* is a typo or not yet declared (`bg-surfce`; `bg-surface` before M8b.2) — row 1's test is namespace-scoped by design and passes both | `node scripts/design-inventory.mjs --check` · main | `bg-amber-600` → `bg-surfce` at `DesignNotice.tsx:57` → `Totals: … unknown 1`, `RESULT: FAIL (1)` — `unknown colour reference \`bg-surfce\` at features/design/DesignNotice.tsx:57`, exit 1 |
-| 3 | A `var(--color-*)` consumer in `.css`/`.ts`/`.tsx` names nothing declared or retired | `--check` · main | `theme.css:32` → `var(--color-shell-bg-gone)` → `consumers: 5 (retired 3, undeclared 1)`, `FAIL (1)` — `unknown colour reference \`var(--color-shell-bg-gone)\` at styles/theme.css:32` |
-| 4 | A retired token is still referenced after its declaration is deleted | `--check --final` · main and landed; from M8b.2 also the retired-token clause in row 1's test | delete the 12 declarations, renderer untouched — main: `legacy 328`, `FAIL (1)` — `--final: 328 references to retired tokens remain (utilities and var() consumers)`; landed: `legacy 324`, `--final: 324 references …`. The clause, built in review round 2, reds at exactly 324 `.tsx` sites on the same mutation |
+| 3 | A `var(--color-*)` consumer in `.css`/`.ts`/`.tsx` names nothing declared or retired | `--check` · main | `theme.css:40` → `var(--color-shell-bg-gone)` → `consumers: 5 (retired 3, undeclared 1)`, `FAIL (1)` — `unknown colour reference \`var(--color-shell-bg-gone)\` at styles/theme.css:40` |
+| 4 | A retired token is still referenced after its declaration is deleted | `--check --final` · main and landed; from M8b.2 also the retired-token clause in row 1's test | delete the 14 declarations, renderer untouched — main: `legacy 332`, `FAIL (1)` — `--final: 332 references to retired tokens remain (utilities and var() consumers)`; landed: `legacy 328`, `--final: 328 references …`. The clause, built in review round 2, reds at exactly 328 `.tsx` sites on the same mutation |
 | 5 | Per-PR presentation gate — a touched file has 0 `legacy`, `dark:`, arbitrary, palette, alpha, unknown | `--check <file …>` · main | `DesignNotice.tsx` today: `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|`, `FAIL (2)` — `arbitrary = 1`, `palette = 3` (it has not migrated). Append `dark:bg-surface-raised text-red-600 bg-accent/10 duration-[150ms] bg-surfce bg-chrome` → `\| 14 \| 6 \| 1 \| 1 \| 2 \| 4 \| 1 \| 2 \|`, `FAIL (8)`: `legacy = 1`, `dark = 1`, `arbitrary = 2`, `palette = 4`, `alpha = 1`, `unknown = 2` |
-| 6 | Row 5 sees utilities behind **any** variant spelling | `--check DesignNotice.tsx` · main | append `aria-pressed:dark:bg-ink-alt data-selected:bg-chrome data-[state=open]:text-red-600 rtl:dark:bg-ink` → `\| 15 \| 7 \| 3 \| 2 \| 1 \| 4 \| 0 \| 0 \|`, `FAIL (4)` — `legacy = 3`, `dark = 2`, `palette = 4`; global `dark:` 180 → 182, `legacy` 328 → 331. The chunk shapes a *name list* cannot reach are counted too, each appended alone (baseline `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|`): `[&_svg]:text-chrome-muted`, `[&:hover]:bg-chrome`, `*:bg-chrome`, `@md:bg-chrome`, `@max-lg:bg-chrome`, `caret-chrome-muted` and `[@media(prefers-color-scheme:dark)]:bg-ink` each → `\| 12 \| 4 \| 1 \| 0 \| 1 \| 3 \| 0 \| 0 \|` (`legacy = 1`); `**:text-red-600` → `\| 12 \| 4 \| 0 \| 0 \| 1 \| 4 \| 0 \| 0 \|` (`palette = 4`); `dark:*:bg-ink` and `dark:[&_svg]:bg-ink` → `\| 12 \| 4 \| 1 \| 1 \| 1 \| 3 \| 0 \| 0 \|` (both `legacy` **and** `dark`, since `dark:` is read off the raw token). `[&>*]:text-red-600` splits on `>` and lands as `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 1 \|` — `unknown = 1`, the fail-loud path for a chain the grammar cannot consume, not a silent zero |
-| 7 | Row 5 sees arbitrary alphas and the v4 `(--color-x)` shorthand | `--check DesignNotice.tsx` · main | append `bg-accent/[0.5] bg-(--color-shell-bg) text-shell-fg/(--a) bg-(--color-nope)` → `\| 13 \| 5 \| 2 \| 0 \| 1 \| 3 \| 2 \| 1 \|`, `FAIL (6)` — `unknown colour reference \`bg-(--color-nope)\``, `legacy = 2`, `alpha = 2`, `unknown = 1`; `legacy` 328 → 330 |
+| 6 | Row 5 sees utilities behind **any** variant spelling | `--check DesignNotice.tsx` · main | append `aria-pressed:dark:bg-ink-alt data-selected:bg-chrome data-[state=open]:text-red-600 rtl:dark:bg-ink` → `\| 15 \| 7 \| 3 \| 2 \| 1 \| 4 \| 0 \| 0 \|`, `FAIL (4)` — `legacy = 3`, `dark = 2`, `palette = 4`; global `dark:` 183 → 185, `legacy` 332 → 335. The chunk shapes a *name list* cannot reach are counted too, each appended alone (baseline `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|`): `[&_svg]:text-chrome-muted`, `[&:hover]:bg-chrome`, `*:bg-chrome`, `@md:bg-chrome`, `@max-lg:bg-chrome`, `caret-chrome-muted` and `[@media(prefers-color-scheme:dark)]:bg-ink` each → `\| 12 \| 4 \| 1 \| 0 \| 1 \| 3 \| 0 \| 0 \|` (`legacy = 1`); `**:text-red-600` → `\| 12 \| 4 \| 0 \| 0 \| 1 \| 4 \| 0 \| 0 \|` (`palette = 4`); `dark:*:bg-ink` and `dark:[&_svg]:bg-ink` → `\| 12 \| 4 \| 1 \| 1 \| 1 \| 3 \| 0 \| 0 \|` (both `legacy` **and** `dark`, since `dark:` is read off the raw token). `[&>*]:text-red-600` and `[&>*]:bg-[#fff]` both split on `>` and land as `\| 11 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 1 \|` — `unknown = 1`, the fail-loud path for a chain the grammar cannot consume, not a silent zero. **Tailwind's important modifier** is counted on either side: `bg-chrome!` and `!bg-chrome` → `legacy = 1`; `text-red-600!` → `palette = 4`; `bg-accent/10!` → `alpha = 1`; `duration-[150ms]!` → `arbitrary = 2`; `hover:bg-chrome/50!` → `legacy = 1` **and** `alpha = 1`; `dark:bg-ink!` → `legacy = 1` and `dark = 1` (all six were byte-identical to baseline before this round). **Digit-leading chunks** resolve instead of crying wolf: `2xl:bg-accent` and `@2xl:bg-accent` → `\| 12 \| 4 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|` with `unknown` 0 (they reported a *canonical* token as an unknown colour before), `2xl:bg-chrome-alt` → `legacy = 1`. And the column must **not** move on code that merely contains the word: inserting `const PALETTE = { light: 1, dark: 2 }`, `type Mode = { dark: boolean }` or `const x = { 'dark': 3 }` leaves the row at baseline, while `const c = "dark:bg-ink"` on the same line number gives `legacy = 1`, `dark = 1` |
+| 7 | Row 5 sees arbitrary alphas and the v4 `(--color-x)` shorthand | `--check DesignNotice.tsx` · main | append `bg-accent/[0.5] bg-(--color-shell-bg) text-shell-fg/(--a) bg-(--color-nope)` → `\| 13 \| 5 \| 2 \| 0 \| 1 \| 3 \| 2 \| 1 \|`, `FAIL (6)` — `unknown colour reference \`bg-(--color-nope)\``, `legacy = 2`, `alpha = 2`, `unknown = 1`; `legacy` 332 → 334 |
 | 8 | Row 5 does not cry wolf on colour-prefixed non-colour utilities | `--check DesignNotice.tsx` · main | append `fill-none bg-no-repeat text-nowrap ring-inset decoration-wavy` → row `\| 16 \| 3 \| 0 \| 0 \| 1 \| 3 \| 0 \| 0 \|` — `unknown` stays 0, only the file's pre-existing `arbitrary = 1`, `palette = 3` fail |
 | 9 | `--check <path>` refuses what it did not scan | `--check` · main | `…/DesignNotise.tsx` → `FAIL (1)` — `no such file`; `…/features/design` (a directory) → expands to the **6 `.tsx` files** inside it and reports each row, `FAIL (21)`; `…/stores` (a directory holding only `.ts`) → `FAIL (1)` — `directory contains no scanned renderer file (.tsx/.css)`, *not* a row of zeros; `src/renderer/src/features/design/designStore.ts` → `FAIL (1)` — `utilities in .ts files are not scanned — class strings belong in .tsx` (the path is written in full because `…/stores/designStore.ts` does not exist and gives `no such file` instead) |
-| 10 | Last-PR survivor gate — no reference to a retired token anywhere, `theme.css`'s `body` and every variant/shorthand spelling included | `--check --final` · landed | `legacy 324`, `FAIL (1)` — `--final: 324 references to retired tokens remain`; append `data-selected:bg-chrome aria-pressed:dark:bg-ink-alt bg-(--color-chrome)` → `legacy 327`; migrate one `bg-chrome` → `323` |
+| 10 | Last-PR survivor gate — no reference to a retired token anywhere, `theme.css`'s `body` and every variant/shorthand spelling included | `--check --final` · landed | `legacy 328`, `FAIL (1)` — `--final: 328 references to retired tokens remain`; append `data-selected:bg-chrome aria-pressed:dark:bg-ink-alt bg-(--color-chrome)` → `legacy 331`; migrate one `bg-chrome` → `327` |
 | 11 | A typo in a role *declaration* | row 1's test, line 76 · main | declare `--color-surfce` → `+ "surfce"` (review round 3) |
-| 12 | The role gates run whenever the block is present, whatever the file layout | `--check` · E1 and landed | E1 (block appended, `body` not migrated, the legacy dark `body` media block above it): `Role block: landed — 49/49 declarations byte-equal`, `63 pairs, 0 failing`, `60/60 prescribed utilities emit; 14/14 reset-killed spellings stay dead`, `RESULT: pass` — and `--check --final` on E1: `FAIL (1) — 328 references remain`. Landed + an unrelated `@media (prefers-color-scheme: dark) { :root { color-scheme: dark } }` above the block: identical `pass`. Media query written `prefers-color-scheme:dark` (no space): identical `pass`. Both openers must sit at the **top level**: wrapping the dark block in `@supports (nonsense-prop: 1) { … }` (which the browser never applies) → `FAIL (23)` led by `` `@media (prefers-color-scheme: dark)` is nested inside another at-rule — its declarations may never apply ``; a benign `@supports (color: oklch(0 0 0))` wrapper fails identically, because the prescribed layout is the unwrapped block `--emit-theme` emits (§5.8) and a gate cannot confirm a subject the browser may skip |
+| 12 | The role gates run whenever the block is present, whatever the file layout | `--check` · E1 and landed | E1 (block appended, `body` not migrated, the legacy dark `body` media block above it): `Role block: landed — 49/49 declarations byte-equal`, `63 pairs, 0 failing`, `60/60 prescribed utilities emit; 14/14 reset-killed spellings stay dead`, `RESULT: pass` — and `--check --final` on E1: `FAIL (1) — 332 references remain`. Landed + an unrelated `@media (prefers-color-scheme: dark) { :root { color-scheme: dark } }` above the block: identical `pass`. Media query written `prefers-color-scheme:dark` (no space): identical `pass`. Both openers must sit at the **top level**: wrapping the dark block in `@supports (nonsense-prop: 1) { … }` (which the browser never applies) → `FAIL (23)` led by `` `@media (prefers-color-scheme: dark)` is nested inside another at-rule — its declarations may never apply ``; a benign `@supports (color: oklch(0 0 0))` wrapper fails identically, because the prescribed layout is the unwrapped block `--emit-theme` emits (§5.8) and a gate cannot confirm a subject the browser may skip |
 | 13 | The 27 role values landed byte-equal to the canonical strings | `--check` · landed | light `--color-text-muted` → `oklch(0.7 0.006 286)`: `48/49`, `FAIL (2)` — `light \`--color-text-muted\`: theme.css has \`oklch(0.7 0.006 286)\`, canonical is \`oklch(0.485 0.006 286)\``. A second `--color-surface: oklch(0.7 0.006 286)` **after** the canonical one → `48/49`, `**63 pairs, 11 failing … Worst: #38 at 1.48:1**`, `FAIL (2)`; the same duplicate **before** it → `49/49`, `pass` — last-in-block wins, which is exactly what the cascade paints, so that case is benign, not a hole |
 | 14 | A role value the browser would paint that the block does not own | `--check` · landed | unlayered `:root { --color-text-muted: oklch(0.7 0.006 286) }` **before** `@theme static` → `FAIL (1)` — `\`--color-text-muted\` declared 1× outside every @theme block and dark media block — an unlayered declaration beats @layer theme regardless of order`; placed **after** the block → the identical failure, so the catch is structural, not a file-order accident |
 | 15 | A role value `--check` cannot parse is a structured failure, not a lost report | `--check` · landed | `rgb(103 103 108)` → exit 1, 556 bytes of report, `FAIL (2)` — the byte mismatch line plus `census skipped — unparseable colour: rgb(103 103 108)`; `OKLCH(…)` (case) → same two lines |
 | 16 | The 63-pair census holds over the values `theme.css` actually declares | `--check` · landed | row 13's `text-muted` mutation → `**63 pairs, 6 failing in at least one mode.** Worst: #14 at 1.89:1`, `6 canonical pairs fail against the values theme.css declares` |
 | 17 | Reachability — every prescribed utility compiles on Tailwind 4.3.3 | `--check` · landed | delete `@utility z-dialog` → `59/60`, `FAIL (1)` — `prescribed utility \`z-dialog\` does not compile` |
 | 18 | The `--*: initial` resets stay in place — all of them | `--check` · landed | delete `--text-*: initial` → `12/14`, `FAIL (2)` — `text-sm` / `text-lg` `still compiles`; delete `--inset-shadow-*: initial` → `13/14`, `FAIL (1)` — `inset-shadow-sm still compiles` |
-| 19 | The role block is not half-landed | `--check` · landed | delete the light `--color-guide` → `role block partial: 24/25 new role colours read from @theme (missing: guide)`, `light \`--color-guide\`: theme.css has \`(missing)\``, `prescribed utility \`bg-guide\` does not compile`, `FAIL (3)` |
+| 19 | The role block is not half-landed | `--check` · landed | delete the light `--color-guide` → `role block partial: 22/23 new role colours read from @theme (missing: guide)`, `light \`--color-guide\`: theme.css has \`(missing)\``, `prescribed utility \`bg-guide\` does not compile`, `FAIL (3)` |
 | 20 | M8b.1a's six one-line swaps | `--contrast` after editing the six pair specs · main | 25 → 21 failing with the documented after-ratios (review rounds 3 and 4). A calculator over specs — the guard for the *source* is the existing `status-bar-meter` test plus review |
 | 21 | No behaviour change in a surface PR | the existing suite, unchanged · main | the suite is the guard; a PR that must edit a class-coupled test names the mutation |
+| 23 | The audit still describes the tree it is executed against | `node scripts/design-inventory.mjs --verify-doc` · main | today: `RESULT: pass — §1 matches the tree and every cited line still exists`, 231 citations resolved. Mutation — restore §1's pre-rebase counts (`Measured on 71 files: 482 colour uses`) → `FAIL (1)`, printing `recorded:` and `measured:` side by side. This is the gate that was missing when M4.5 moved `main` under this document: §1 read `482`/`328` and `StatusBar.tsx:82/114` for a round after they stopped being true |
+| 24 | A legacy declaration whose name collides with a canonical role does not fake a landed block | `--check` · main | `theme.css` declares M4.5's `--color-danger`/`--color-warning`, two canonical role names, on a tree where M8b.2 has not happened → `Role block: not landed (0/23 …)`, `RESULT: pass` (before the quorum ignored the four pre-existing role names this printed `landed — 0/49`, `role block partial: 2/25`, `9/60`, `0/14`, `RESULT: FAIL (115)` on an unmutated tree). It still reds on a genuinely partial block: add `--color-surface`/`--color-guide` to the legacy block → `role block partial: 2/23 new role colours read from @theme (missing: surface-raised, …)`, `light \`--color-surface\`: theme.css has \`#eeeeee\``, `FAIL (114)` |
 | 22 | The canonical strings survive `pnpm lint` — byte-equality and Prettier agree (§5.8) | `--check` **and** `pnpm exec prettier --check src/renderer/src/styles/theme.css` · landed | both green on the landed tree: `49/49 … RESULT: pass` and `All matched files use Prettier code style!`. Mutation — run `prettier --write` over a `theme.css` carrying the pre-alignment values (`oklch(0.600 …)`): `38/49`, `FAIL (11)` — `theme.css has \`oklch(0.6 0.008 286)\`, canonical is \`oklch(0.600 0.008 286)\`` and ten more, i.e. the two halves of M8b.2's DoD were mutually unsatisfiable until the canonical values were written in Prettier's normal form |
 
 Observed on the landed tree and worth knowing before M8b.2: `pnpm exec vitest run
@@ -963,6 +997,6 @@ tests/unit/design/theme-tokens.test.ts` reds tests 1 and 2 (`accent-soft` no lon
 - A visible focus ring on every primitive — no command until M8b.2 writes the RTL test (`:focus-visible` computed `outline-color` equals `--color-focus`; mutation: remove the class from one primitive).
 - Raw literals (`#hex`, `rgb()`, `oklch()`) in class strings or `style` props, and numeric `leading-N` / `duration-N` / `z-N` / `ease-linear` — nothing until M8b.4 (§9); the inventory lists raw literals but nothing fails on them.
 - `--check` runs only when someone runs it; until M8b.4 turns it into a suite test, a regression after a surface migrates is caught by review, not by `pnpm test`.
-- **Variant spellings the chunk grammar still does not reach.** `--check` parses Tailwind v4's chunk shapes — `name`, `name-[…]`, `name-(…)`, `name/alias`, `[&_svg]`, `*`, `**`, `@md`, `@[400px]` — and a chain it cannot consume in front of a colour-shaped utility is counted `unknown` rather than skipped, so the failure mode is a red with an imprecise reason, never a silent zero. Two known limits: a variant containing a character the token splitter treats as a delimiter (`[&>*]:`, because of the `>`) is split and reported as `unknown` on the fragment rather than attributed to the file's `legacy`/`palette` column; and an arbitrary variant that *means* dark without spelling it `dark:` (`[@media(prefers-color-scheme:dark)]:bg-ink`) moves `legacy` but not the `dark:` column, so R1 is enforced there by review, not by the gate.
+- **Variant spellings the chunk grammar still does not reach.** `--check` parses Tailwind v4's chunk shapes — `name`, `name-[…]`, `name-(…)`, `name/alias`, `[&_svg]`, `*`, `**`, `@md`, `@[400px]` — and a chain it cannot consume in front of a colour-shaped utility is counted `unknown` rather than skipped, so the failure mode is a red with an imprecise reason, never a silent zero. Tailwind's important modifier is stripped on either side, so `bg-chrome!` and `!bg-chrome` count like the bare utility. Two known limits remain: a variant containing a character the token splitter treats as a delimiter (`[&>*]:`, because of the `>`) is split and reported as `unknown` on the fragment rather than attributed to the file's `legacy`/`palette` column — a red with an imprecise reason, for both the token-named and the arbitrary-valued tail; and an arbitrary variant that *means* dark without spelling it `dark:` (`[@media(prefers-color-scheme:dark)]:bg-ink`) moves `legacy` but not the `dark:` column, so R1 is enforced there by review, not by the gate.
 - A `.ts` file that carries class strings — `--check` refuses the path rather than pretending to scan it, and a directory expands to the `.tsx`/`.css` files inside it only, so a `.ts` file cannot re-enter as a row of zeros; the utility census reads `.tsx` only.
 - R4–R6 (accent text never on `accent-soft`, muted text never on the mat, one focus-ring recipe), "no status by colour alone", and the reduced-motion block are review items — no gate claims them.

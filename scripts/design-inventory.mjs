@@ -97,7 +97,17 @@ const RETIRED_TOKENS = [
   'ink-line',
   'ink-fg',
   'ink-muted',
+  'danger-dark',
+  'warning-dark',
 ]
+/**
+ * Canonical role names that `theme.css` already declares with a legacy value, so the role block
+ * *replaces* them rather than adding them. They are excluded from the "has the block landed?"
+ * quorum — otherwise a couple of coincidentally-named legacy declarations flip the whole check into
+ * post-M8b.2 mode on a tree where M8b.2 has not happened (M4.5 shipped `danger`/`warning` and did
+ * exactly that). Their *values* are still byte-checked once the block lands.
+ */
+const PRE_EXISTING_ROLES = new Set(['accent', 'accent-soft', 'danger', 'warning'])
 const RETIRED = new RegExp(`-(?:${RETIRED_TOKENS.join('|')})(?:/\\d+)?$`)
 
 const alt = (names) => names.map((n) => `|${n}`).join('')
@@ -220,7 +230,7 @@ const CATEGORIES = [
  * failed to enumerate, which is how round 4's fix still missed `[&_svg]:`, `*:` and `@md:`.
  */
 const VARIANT_CHUNK =
-  '(?:\\*{1,2}|\\[[^\\]]*\\]|@\\[[^\\]]*\\]|@?[a-z][a-z0-9-]*(?:-(?:\\[[^\\]]*\\]|\\([^)]*\\)))?(?:/[a-z0-9-]+)?)'
+  '(?:\\*{1,2}|\\[[^\\]]*\\]|@\\[[^\\]]*\\]|@?[a-z0-9][a-z0-9-]*(?:-(?:\\[[^\\]]*\\]|\\([^)]*\\)))?(?:/[a-z0-9-]+)?)'
 /**
  * A variant chain in front of a utility, so no spelling can hide a utility from a gate column. The
  * variants *table* is fed only from tokens whose bare part classifies or is colour-shaped, which
@@ -230,13 +240,29 @@ const VARIANT_CHUNK =
 const VARIANT_PREFIX = new RegExp(`^((?:${VARIANT_CHUNK}:)+)(?=[a-z[(-])`)
 /**
  * A token whose variant chain this grammar did not fully consume but which still ends in something
- * colour-shaped — `--check` must fail on it rather than skip it, per §10's fail-loud rule.
+ * colour- or arbitrary-shaped — `--check` must fail on it rather than skip it, per §10's fail-loud
+ * rule. Both tails are covered, so the `[&>*]:` family is uniformly `unknown` and never a silent
+ * zero, whether it names a token (`[&>*]:text-red-600`) or an arbitrary value (`[&>*]:bg-[#fff]`).
  */
-const UNPARSED_VARIANT = new RegExp(`:${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?$`)
+const UNPARSED_VARIANT = new RegExp(
+  `:(?:${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?|-?[a-z][a-z0-9-]*-\\[[^\\]]+\\])$`,
+)
+/**
+ * Tailwind's important modifier, which it accepts on either side (`bg-chrome!`, `!bg-chrome`) and
+ * which every column test would otherwise drop on the floor, since they are all `$`-anchored.
+ */
+const stripImportant = (bare) => bare.replace(/^!/, '').replace(/!$/, '')
+/**
+ * A real `dark:` variant chunk — at the head of a chain or after another chunk, and followed by
+ * something a utility can start with. Read off the raw token so an unparsed leading chunk cannot
+ * zero it, but not a bare substring: `{ light: 1, dark: 2 }` splits to the token `dark:`, which is
+ * an object key and must not move the column.
+ */
+const DARK_VARIANT = /(?:^|[:!])dark:(?=[a-z0-9[(*@!-])/
 
 function classify(raw) {
   const variants = VARIANT_PREFIX.exec(raw)?.[1] ?? ''
-  const bare = raw.slice(variants.length)
+  const bare = stripImportant(raw.slice(variants.length))
   for (const [category, pattern] of CATEGORIES) {
     if (pattern.test(bare)) return { category, bare, variants }
   }
@@ -315,10 +341,10 @@ function scan() {
       for (const token of text.split(/[\s'"`{}$;<>?]+/)) {
         if (token === '') continue
         const variants = VARIANT_PREFIX.exec(token)?.[1] ?? ''
-        const bare = token.slice(variants.length)
+        const bare = stripImportant(token.slice(variants.length))
         const f = perFile.get(file) ?? emptyCounts()
         perFile.set(file, f)
-        if (token.includes('dark:')) f.dark += 1
+        if (DARK_VARIANT.test(token)) f.dark += 1
         if (ARBITRARY_UTILITY.test(bare)) f.arbitrary += 1
         if (PALETTE_UTILITY.test(bare)) f.palette += 1
         if (TOKEN_ALPHA.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
@@ -1426,6 +1452,13 @@ function blockBodies(css, opener) {
   return bodies
 }
 
+/** The bodies of the blocks that sit at the top level, joined. */
+const topLevelText = (blocks) =>
+  blocks
+    .filter((b) => b.depth === 0)
+    .map((b) => b.text)
+    .join('\n')
+
 /** How many times each `--color-<name>` is declared in `text`. */
 function colourDeclCounts(text) {
   const counts = new Map()
@@ -1454,13 +1487,8 @@ function themeColourBlocks() {
     ...lightBlocks.filter((b) => b.depth > 0).map(() => '@theme'),
     ...darkBlocks.filter((b) => b.depth > 0).map(() => '@media (prefers-color-scheme: dark)'),
   ]
-  const top = (blocks) =>
-    blocks
-      .filter((b) => b.depth === 0)
-      .map((b) => b.text)
-      .join('\n')
-  const lightText = top(lightBlocks)
-  const darkText = top(darkBlocks)
+  const lightText = topLevelText(lightBlocks)
+  const darkText = topLevelText(darkBlocks)
   // Declarations inside a nested block are accounted for by the `nested` failure; they are not
   // also unlayered strays, and saying so would bury the real cause under 22 wrong lines.
   const nestedText = [...lightBlocks, ...darkBlocks]
@@ -1557,7 +1585,7 @@ async function check(args) {
   const wantLight = declaredColourText(PROPOSED_LIGHT)
   const wantDark = declaredColourText(PROPOSED_DARK)
   const { light, dark, total, stray, nested } = themeColourBlocks()
-  const newRoles = [...wantLight.keys()].filter((n) => n !== 'accent' && n !== 'accent-soft')
+  const newRoles = [...wantLight.keys()].filter((n) => !PRE_EXISTING_ROLES.has(n))
   const anywhere = newRoles.filter((n) => (total.get(n) ?? 0) > 0)
   const landed = newRoles.filter((n) => light.has(n))
   print()
@@ -1654,6 +1682,77 @@ async function check(args) {
   return 1
 }
 
+const AUDIT = join(ROOT, '.claude', 'plans', 'init', 'research', 'ui-design-audit.md')
+
+/** The one line §1 carries verbatim; `--verify-doc` regenerates it and demands a byte match. */
+function freshnessLine(files, totals) {
+  return `Measured on ${String(files.length)} files: ${String(totals.colour)} colour uses, ${String(totals.dark)} \`dark:\`, ${String(totals.arbitrary)} arbitrary, ${String(totals.palette)} palette, ${String(totals.legacy)} retired-token references.`
+}
+
+/**
+ * The staleness gate. This document is a *measurement* of a tree, and `main` moves under it: M4.5
+ * landed two colour tokens whose names collide with canonical roles and shifted every `file:line`
+ * in the files it touched, which silently invalidated a third of the citations here — a whole
+ * review round was spent discovering that by hand. So an agent runs `--verify-doc` before executing
+ * any part of this audit.
+ *
+ * Two exact checks, no heuristics: §1's freshness line must byte-match what the scanner measures
+ * now, and every `file:line` the document cites must still be inside that file. Deliberately NOT
+ * checked: whether the utility named beside a citation is on that source line — §5.4's migration
+ * rows name the token a line should *become*, so that test cannot tell a stale citation from a
+ * prescription and would fail closed on correct text.
+ */
+function verifyDoc() {
+  const doc = readFileSync(AUDIT, 'utf8')
+  const problems = []
+  print('# Audit freshness (`scripts/design-inventory.mjs --verify-doc`)')
+  print()
+
+  const { files, perFile } = scan()
+  const totals = totalsLine(perFile)
+  const line = freshnessLine(files, totals)
+  print(`Measured: ${line}`)
+  print()
+  if (!doc.includes(line)) {
+    const recorded = /^Measured on .*$/m.exec(doc)?.[0] ?? '(no freshness line in §1)'
+    problems.push(`§1's freshness line is stale.\n  recorded: ${recorded}\n  measured: ${line}`)
+  }
+
+  const byBase = new Map()
+  for (const f of files) {
+    const base = f.slice(f.lastIndexOf('/') + 1)
+    byBase.set(base, (byBase.get(base) ?? []).concat(f))
+  }
+  let checked = 0
+  doc.split('\n').forEach((text, i) => {
+    for (const m of text.matchAll(/([A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:\/\d+)*)/g)) {
+      const candidates = byBase.get(m[1]) ?? []
+      if (candidates.length !== 1) continue
+      const lines = readFileSync(candidates[0], 'utf8').split('\n').length
+      for (const n of m[2].split('/')) {
+        checked += 1
+        if (Number(n) < 1 || Number(n) > lines) {
+          problems.push(
+            `${relative(ROOT, AUDIT)}:${String(i + 1)} — \`${m[1]}:${n}\` is past the end of the file (${String(lines)} lines)`,
+          )
+        }
+      }
+    }
+  })
+  print(`Resolved ${String(checked)} \`file:line\` citations against the tree.`)
+  print()
+  for (const p2 of problems) print(`- ${p2}`)
+  print()
+  if (problems.length > 0) {
+    print(
+      `RESULT: FAIL (${String(problems.length)}) — the audit no longer describes this tree; re-derive its numbers before executing it.`,
+    )
+    return 1
+  }
+  print('RESULT: pass — §1 matches the tree and every cited line still exists.')
+  return 0
+}
+
 const mode = process.argv[2] ?? '--inventory'
 try {
   if (mode === '--contrast') {
@@ -1690,11 +1789,13 @@ try {
     emitTheme()
   } else if (mode === '--check') {
     process.exitCode = await check(process.argv.slice(3))
+  } else if (mode === '--verify-doc') {
+    process.exitCode = verifyDoc()
   } else if (mode === '--inventory') {
     inventory()
   } else {
     process.stderr.write(
-      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme or --check [--final] [file …]\n`,
+      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme, --verify-doc or --check [--final] [file …]\n`,
     )
     process.exit(2)
   }
