@@ -41,6 +41,7 @@ import { findForbiddenApiTokens } from '../../../../shared/document/forbidden-ap
 import {
   buildFieldOps,
   readPropertyValues,
+  moveRefusal,
   resolveElement,
   type PropertyField,
   type TextFieldBlock,
@@ -226,6 +227,11 @@ export function PropertyPanel({
   const transformShape = element === null ? null : readTransformShape(map.source, element)
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
+  // Move is a different question from the flip (round-4 major): X/Y stay writable on a `left`/`top`
+  // element and on an SVG child even under an opaque transform, and are refused only where the edit
+  // would be written *through* one. `buildFieldOps` refuses it either way — this asks the same
+  // function so the field can say why instead of silently swallowing the number.
+  const moveLock = element === null ? null : moveRefusal(map.source, element)
 
   return (
     <section
@@ -264,6 +270,7 @@ export function PropertyPanel({
             fontFocus={fontFocus}
             {...(loadFonts !== undefined ? { loadFonts } : {})}
             transformLock={transformLock}
+            moveLock={moveLock}
           />
           <div className="mt-2">
             <button
@@ -291,6 +298,8 @@ interface PropertyFieldsProps {
   readonly fontFocus: RefObject<boolean>
   /** Why the transform buttons are off (an opaque `transform`, M3.6), or `null` when they work. */
   readonly transformLock: string | null
+  /** Why X/Y are off (the move would be written through an opaque `transform`), else `null`. */
+  readonly moveLock: string | null
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -317,6 +326,7 @@ function PropertyFields({
   loadFonts,
   fontFocus,
   transformLock,
+  moveLock,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -431,7 +441,11 @@ function PropertyFields({
 
   const field = (name: PropertyField, grow: boolean): JSX.Element => {
     const block = name === 'text' ? textBlock : null
-    const disabled = block !== null
+    // X/Y carry the transform lock's own reason, the way Flip H/V below already does:
+    // `buildFieldOps` returns no ops for them, and a field that eats a typed number without a word
+    // is worse than one that is visibly off. Disjoint from `block`, which is the Content field's.
+    const moveDisabled = moveLock !== null && (name === 'x' || name === 'y')
+    const disabled = block !== null || moveDisabled
     // One prop set for both controls, so the disabled state and its hint cannot drift between
     // the textarea and the inputs; only the control-specific props differ below.
     const common = {
@@ -444,7 +458,7 @@ function PropertyFields({
       // The caret's own sentence for the same reason (`textBlockNotice.ts`): a disabled field that
       // says only "mixed" tells the user nothing (M3.11 round-5), and a second table over the same
       // reasons drifted (M3.12 round-4).
-      title: block === null ? undefined : BLOCK_NOTICE[block],
+      title: moveDisabled ? moveLock : block === null ? undefined : BLOCK_NOTICE[block],
       onChange: handleChange,
       onBlur: handleBlur,
       onKeyDown: handleKeyDown,

@@ -20,18 +20,17 @@
  * the border-box width equals the measured rect width, and writing the absolute `nextRect` size
  * reproduces the box exactly whether or not the source previously declared a size.
  *
- * ## The transform lock is enforced here, where the bytes are made (M3.6, round 3)
+ * ## The transform lock is inherited here, not re-derived (M3.6, rounds 3-4)
  *
- * An in-flow element with a transform `inspectTransform` cannot decompose — `matrix()`, a
- * `rotate()` written before its `translate()` — moves *through* that transform, and rewriting the
- * exact `translate()` where it stands sends a screen-space delta along the element's own tilted
- * axis. The overlay's badge and withheld `pointerdown` are the UX of that rule; this is the rule.
- * It lived only in the overlay through two review rounds and was found missing at the next entry
- * point each time (the group anchor, then align/distribute, then a source edit landing mid-drag),
- * so the X/Y edits are skipped **here** whenever they would go through an opaque transform. Width
- * and height never touch the transform and still apply. A caller that produces a move through
- * this function — single drag, group drag, arrange, whatever comes next — is safe by construction,
- * and a member that is refused simply keeps its bytes while the others commit.
+ * An in-flow element with a transform `inspectTransform` cannot decompose moves *through* that
+ * transform, and a move written that way travels along the element's own tilted axis. That move is
+ * refused in `buildFieldOps` (`moveChannel`'s `refused` arm), the function that writes the bytes;
+ * this one does nothing about it and needs to do nothing about it. The X/Y steps below simply
+ * produce no ops on a locked element, so `current` stays the identical `source` string — already
+ * what "commit nothing" means here — while the width/height steps, which never touch the
+ * `transform`, still apply. Round 3 put the refusal in *this* function and round 4 found the
+ * panel's X/Y inputs reaching `buildFieldOps` without passing through it. One level down, a caller
+ * cannot reopen it; a member that is refused keeps its bytes while the others commit.
  *
  * ## The re-derivation rule (§2.2) and why fields are applied one at a time
  *
@@ -44,15 +43,9 @@
  */
 
 import { applyOps } from './patch'
-import {
-  buildFieldOps,
-  movesThroughTransform,
-  readPropertyValues,
-  type PropertyField,
-} from './property-model'
+import { buildFieldOps, readPropertyValues, type PropertyField } from './property-model'
 import { buildSlideMap } from './slide-map'
 import { geometryDelta } from './drag'
-import { readTransformShape } from './transform-commit'
 import type { SlRect } from './bridge-protocol'
 
 /** Parse the numeric part of a source length (`"120px"`, `"120"`, `"0"`), defaulting to 0. */
@@ -85,19 +78,12 @@ export function buildDragPatch(
   if (element === undefined) return source
   const values = readPropertyValues(source, element)
 
-  // The transform lock (see the header): a move that would be written through an opaque transform
-  // is refused; the size half of the gesture, which never touches the transform, still applies.
-  const moveRefused =
-    (delta.dx !== 0 || delta.dy !== 0) &&
-    movesThroughTransform(source, element) &&
-    !readTransformShape(source, element).editable
-
-  // Ordered so a corner resize writes position before size; each entry is one field edit.
+  // Ordered so a corner resize writes position before size; each entry is one field edit. X and Y
+  // are pushed unconditionally: `buildFieldOps` refuses the ones the transform lock forbids (see
+  // the header), so a refused element falls through the loop below with `current` untouched.
   const edits: (readonly [PropertyField, string])[] = []
-  if (!moveRefused) {
-    if (delta.dx !== 0) edits.push(['x', String(Math.round(parseLength(values.x) + delta.dx))])
-    if (delta.dy !== 0) edits.push(['y', String(Math.round(parseLength(values.y) + delta.dy))])
-  }
+  if (delta.dx !== 0) edits.push(['x', String(Math.round(parseLength(values.x) + delta.dx))])
+  if (delta.dy !== 0) edits.push(['y', String(Math.round(parseLength(values.y) + delta.dy))])
   if (delta.dw !== 0) edits.push(['width', String(Math.round(nextRect.width))])
   if (delta.dh !== 0) edits.push(['height', String(Math.round(nextRect.height))])
   if (edits.length === 0) return source
