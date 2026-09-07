@@ -151,17 +151,38 @@ describe('buildDragPatch — the transform lock', () => {
     expect(patched).not.toContain('translate(20px')
   })
 
-  it('an SVG element writes x/y attributes, so an opaque transform never refuses its move', () => {
-    // Mutation guard: refusing on `!positionsByOffsets` alone (dropping the `isSvg` half of
-    // `movesThroughTransform`) freezes every transformed SVG child.
+  it('an untransformed SVG element moves by its x/y attributes', () => {
+    const html = '<svg><rect x="5" y="5" width="20" height="20"/></svg>'
+    const map = buildSlideMap('s', html)
+    const slId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
+    const rect: SlRect = { x: 5, y: 5, width: 20, height: 20 }
+    expect(buildDragPatch('s', html, slId, rect, { ...rect, x: 45 })).toContain(
+      '<rect x="45" y="5"',
+    )
+  })
+
+  it('a ROTATED SVG element moves by a parent-space translate, so it follows the pointer', () => {
+    // Round-5 major: `x` is geometry inside the rect's own user space, so a +40 screen drag written
+    // to `x` travels along the rect's 30° axis (~34.6 right, ~20 down). Mutation guard: an
+    // unconditional `attr` arm writes `x="45"` here and the rect leaves the pointer behind.
     const html =
-      '<svg><rect x="5" y="5" width="20" height="20" style="transform: matrix(1, 0, 0, 1, 0, 0)"/></svg>'
+      '<svg><rect x="5" y="5" width="20" height="20" style="transform: rotate(30deg)"/></svg>'
     const map = buildSlideMap('s', html)
     const slId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
     const rect: SlRect = { x: 5, y: 5, width: 20, height: 20 }
     const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 45 })
-    expect(patched).toContain('<rect x="45" y="5"')
-    expect(patched).toContain('transform: matrix(1, 0, 0, 1, 0, 0)')
+    expect(patched).toContain('transform: translate(40px, 0) rotate(30deg)')
+    expect(patched).toContain('<rect x="5" y="5"')
+  })
+
+  it('an SVG element under an OPAQUE transform is refused like any other', () => {
+    // A matrix we never decomposed could be a doubling one, under which `x` +40 lands 80px out.
+    const html =
+      '<svg><rect x="5" y="5" width="20" height="20" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>'
+    const map = buildSlideMap('s', html)
+    const slId = [...map.byId.values()].find((span) => span.tagName === 'rect')!.slId
+    const rect: SlRect = { x: 5, y: 5, width: 20, height: 20 }
+    expect(buildDragPatch('s', html, slId, rect, { ...rect, x: 45 })).toBe(html)
   })
 
   it('a left-only element is positioned by offsets: +40 lands at left: 140px (round-3 minor 2)', () => {
