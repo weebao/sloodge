@@ -1,0 +1,1805 @@
+#!/usr/bin/env node
+/**
+ * Design inventory and gates for the renderer (M8b.1). Prints Markdown to stdout.
+ *
+ * Every number in `.claude/plans/init/research/ui-design-audit.md` is reproducible from source:
+ *
+ *   node scripts/design-inventory.mjs               # utility + literal inventory, with file:line
+ *   node scripts/design-inventory.mjs --contrast    # WCAG ratios for every fg/bg pair the app renders
+ *   node scripts/design-inventory.mjs --proposed    # the same check over the canonical token set (exit 1 on a failing pair)
+ *   node scripts/design-inventory.mjs --emit-theme  # the canonical @theme block M8b.2 pastes into theme.css
+ *   node scripts/design-inventory.mjs --check [--final] [file …]
+ *       # the gates (audit §10): no unknown colour utility or var(--color-*) consumer anywhere; the
+ *       # named files at 0 legacy / dark: / arbitrary / palette / alpha / unknown; once the role
+ *       # block has landed, theme.css byte-equal to the canonical values, the 63-pair census over
+ *       # the values theme.css actually declares, and a Tailwind compile in which every prescribed
+ *       # utility emits and every reset-killed spelling does not. --final also requires legacy 0.
+ *       # Exit 1 on any failure, 2 on an unknown flag.
+ *
+ * Utilities are read from `.tsx` string literals only: the `.ts` files hold no chrome, and their
+ * strings (`'transition'`, `'border-color'`) would otherwise read as classes. Raw colour and px
+ * literals are read from `.ts`, `.tsx` and `.css`. Comments are stripped first so prose that quotes
+ * a class (`w-[188px]` in ThumbnailPreview's header) is not counted as a use.
+ */
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve as resolvePath } from 'node:path'
+
+const ROOT = process.cwd()
+const RENDERER = join(ROOT, 'src', 'renderer', 'src')
+const THEME = join(RENDERER, 'styles', 'theme.css')
+const TAILWIND_THEME = join(ROOT, 'node_modules', 'tailwindcss', 'theme.css')
+
+const out = []
+const print = (line = '') => out.push(line)
+
+// ---------------------------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------------------------
+
+function walk(dir) {
+  const files = []
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) files.push(...walk(full))
+    else if (/\.(ts|tsx|css)$/.test(entry)) files.push(full)
+  }
+  return files.toSorted()
+}
+
+const stripComments = (source) =>
+  source
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+
+const short = (file) => relative(RENDERER, file)
+
+// ---------------------------------------------------------------------------------------------
+// Utility classification
+// ---------------------------------------------------------------------------------------------
+
+const THEME_CSS = readFileSync(THEME, 'utf8')
+
+/**
+ * Names declared under one `@theme` namespace in theme.css: `--text-ui` → `ui`. The
+ * `--text-ui--line-height` companion collapses onto `ui`; `--radius-*: initial` resets are skipped.
+ * The classifier is built from these at start-up so it follows the theme: a role colour or a named
+ * radius is counted from the day it is declared, not from the day someone edits this file.
+ */
+function themeNames(prefix) {
+  const names = new Set()
+  for (const m of THEME_CSS.matchAll(
+    new RegExp(`--${prefix}-([a-z0-9-]+?)(?:--[a-z-]+)?\\s*:`, 'g'),
+  )) {
+    names.add(m[1])
+  }
+  return [...names]
+}
+
+/** Utilities theme.css defines with `@utility` — durations and z-index are not v4 namespaces. */
+const UTILITY_NAMES = [...THEME_CSS.matchAll(/@utility\s+([a-z0-9-]+)/g)].map((m) => m[1])
+
+/**
+ * The 12 mode-bound tokens M8b.3 retires (audit §5.4). Their namespaces stay in the classifier
+ * after the declarations are deleted, so a `bg-chrome` that outlives `--color-chrome` is still
+ * counted and still shows in the `legacy` column — the blindness `theme-tokens.test.ts` has by
+ * design (it derives its namespaces from what is declared) must not be repeated here.
+ */
+const RETIRED_TOKENS = [
+  'shell-bg',
+  'shell-fg',
+  'chrome',
+  'chrome-alt',
+  'chrome-line',
+  'chrome-muted',
+  'canvas-mat',
+  'ink',
+  'ink-alt',
+  'ink-line',
+  'ink-fg',
+  'ink-muted',
+  'danger-dark',
+  'warning-dark',
+]
+/**
+ * Canonical role names that `theme.css` already declares with a legacy value, so the role block
+ * *replaces* them rather than adding them. They are excluded from the "has the block landed?"
+ * quorum — otherwise a couple of coincidentally-named legacy declarations flip the whole check into
+ * post-M8b.2 mode on a tree where M8b.2 has not happened (M4.5 shipped `danger`/`warning` and did
+ * exactly that). Their *values* are still byte-checked once the block lands.
+ */
+const PRE_EXISTING_ROLES = new Set(['accent', 'accent-soft', 'danger', 'warning'])
+const RETIRED = new RegExp(`-(?:${RETIRED_TOKENS.join('|')})(?:/\\d+)?$`)
+
+const alt = (names) => names.map((n) => `|${n}`).join('')
+
+/**
+ * Colour token names the classifier accepts: what theme.css declares plus the 12 retired names.
+ * Matched exactly (longest first), not by namespace — so `bg-surface-rased` and `bg-surfce` are
+ * both *unknown*, never silently accepted as a colour.
+ */
+const TOKEN_NAMES = [...new Set([...themeNames('color'), ...RETIRED_TOKENS])].toSorted(
+  (a, b) => b.length - a.length,
+)
+const TOKEN_NAME = `(?:${TOKEN_NAMES.join('|')})`
+const PALETTE_NAME = '(?:white|black|[a-z]+-\\d{2,3})'
+const SPECIAL_NAME = '(?:transparent|current|inherit)'
+/** `/70`, `/[0.5]` or `/(--a)` — every alpha spelling Tailwind v4 accepts. */
+const ALPHA = '(?:/(?:\\d+|\\[[^\\]]+\\]|\\([^)]+\\)))'
+const COLOUR_PREFIX =
+  '(?:bg|text|border(?:-[tbrlxyse])?|outline|ring|ring-offset|fill|stroke|placeholder|accent|caret|decoration|from|to|via|divide|shadow)'
+const COLOUR_VALUE = `(?:${TOKEN_NAME}|${PALETTE_NAME}|${SPECIAL_NAME})${ALPHA}?|\\[(?:#|rgb|oklch|hsl|var)[^\\]]*\\]`
+/** Looks like a colour utility (colour prefix, dashed name, optional alpha) — classified or not. */
+const COLOUR_SHAPED = new RegExp(`^${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?$`)
+const PALETTE_UTILITY = new RegExp(`^${COLOUR_PREFIX}-${PALETTE_NAME}${ALPHA}?$`)
+/** An alpha on a token or on the v4 `(--color-x)` shorthand; rule R3 permits only `hud-fg/70`. */
+const TOKEN_ALPHA = new RegExp(
+  `^${COLOUR_PREFIX}-(?:${TOKEN_NAME}|\\(--color-[a-z0-9-]+\\))${ALPHA}$`,
+)
+const ALPHA_ALLOWED = /^text-hud-fg\/70$/
+const ARBITRARY_UTILITY = /^-?[a-z][a-z0-9-]*-\[[^\]]+\]$/
+/** The v4 custom-property shorthand `bg-(--color-x)` is a token reference the census must see. */
+const PAREN_REF = new RegExp(`^${COLOUR_PREFIX}-\\(--color-([a-z0-9-]+)\\)${ALPHA}?$`)
+/** Utilities that share a colour prefix but set something else; never "unknown". */
+const NON_COLOUR_SPELLINGS =
+  /^(?:fill-none|stroke-none|bg-(?:none|cover|contain|auto|center|top|bottom|left|right|no-repeat|repeat(?:-[xy]|-round|-space)?|fixed|local|scroll|clip-[a-z]+|origin-[a-z]+|blend-[a-z-]+)|text-(?:nowrap|wrap|balance|pretty|ellipsis|clip|justify|start|end)|ring-inset|decoration-(?:wavy|dotted|dashed|solid|double|none|from-font|auto|\d+)|divide-(?:solid|dashed|dotted|double|none)|outline-(?:none|hidden)|border-(?:collapse|separate|hidden|none))$/
+
+const SPACING_NAMES = alt(themeNames('spacing'))
+const ARBITRARY = '\\[[^\\]]+\\]'
+
+/** Ordered: the first matching category wins, so colour outranks the width/style fallbacks. */
+const CATEGORIES = [
+  ['colour', new RegExp(`^${COLOUR_PREFIX}-(${COLOUR_VALUE})$`)],
+  ['non-colour', NON_COLOUR_SPELLINGS],
+  ['border-style', /^(?:border|outline)-(?:solid|dashed|dotted|double|none|hidden)$/],
+  [
+    'spacing',
+    new RegExp(
+      `^-?(?:p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap|gap-x|gap-y|space-x|space-y|inset|inset-x|inset-y|top|right|bottom|left)-(?:\\d+(?:\\.\\d+)?|px|auto|${ARBITRARY}${SPACING_NAMES})$`,
+    ),
+  ],
+  [
+    'size',
+    new RegExp(
+      `^(?:w|h|min-w|max-w|min-h|max-h|size)-(?:\\d+(?:\\.\\d+)?|px|auto|full|screen|fit|\\d+/\\d+|${ARBITRARY}${SPACING_NAMES})$`,
+    ),
+  ],
+  [
+    'radius',
+    new RegExp(
+      `^rounded(?:-(?:t|b|l|r|tl|tr|bl|br|s|e|ss|se|es|ee))?(?:-(?:none|xs|sm|md|lg|xl|2xl|3xl|full|${ARBITRARY}${alt(themeNames('radius'))}))?$`,
+    ),
+  ],
+  [
+    'shadow',
+    new RegExp(
+      `^shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|none|inner|${ARBITRARY}${alt(themeNames('shadow'))}))?$`,
+    ),
+  ],
+  [
+    'font-size',
+    new RegExp(`^text-(?:xs|sm|base|lg|xl|\\dxl|${ARBITRARY}${alt(themeNames('text'))})$`),
+  ],
+  [
+    'font-weight',
+    new RegExp(
+      `^font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black${alt(themeNames('font-weight'))})$`,
+    ),
+  ],
+  [
+    'leading',
+    new RegExp(
+      `^leading-(?:none|tight|snug|normal|relaxed|loose|\\d+|${ARBITRARY}${alt(themeNames('leading'))})$`,
+    ),
+  ],
+  [
+    'tracking',
+    new RegExp(
+      `^tracking-(?:tighter|tight|normal|wide|wider|widest|${ARBITRARY}${alt(themeNames('tracking'))})$`,
+    ),
+  ],
+  [
+    'type-style',
+    /^(?:uppercase|lowercase|capitalize|normal-case|italic|not-italic|tabular-nums|font-mono|font-serif|font-sans|underline|line-through|truncate|whitespace-[a-z-]+|text-(?:left|center|right))$/,
+  ],
+  [
+    'border-width',
+    /^(?:border|outline|ring|ring-offset|outline-offset|divide-[xy])(?:-[tbrlxyse])?(?:-(?:0|1|2|4|8|px|\[[^\]]+\]))?$/,
+  ],
+  [
+    'motion',
+    new RegExp(
+      `^(?:transition(?:-(?:all|colors|opacity|shadow|transform|none))?|duration-\\d+|ease-(?:in|out|in-out|linear${alt(themeNames('ease'))})|delay-\\d+|animate-[a-z-]+${alt(UTILITY_NAMES.filter((n) => n.startsWith('duration-')))})$`,
+    ),
+  ],
+  ['opacity', /^opacity-\d+$/],
+  [
+    'z-index',
+    new RegExp(
+      `^z-(?:\\d+|auto|${ARBITRARY}${alt(UTILITY_NAMES.filter((n) => n.startsWith('z-')).map((n) => n.slice(2)))})$`,
+    ),
+  ],
+  ['effect', /^(?:backdrop-blur(?:-[a-z0-9]+)?|blur-[a-z0-9]+)$/],
+  ['cursor', /^cursor-[a-z-]+$/],
+]
+
+/**
+ * One chunk of a variant chain, as Tailwind v4 actually spells them — a named variant
+ * (`dark`, `hover`, `aria-pressed`, `group-hover/item`) with an optional `-[…]` / `-(…)` argument,
+ * the arbitrary variant `[&_svg]` / `[&:hover]`, the child and descendant variants `*` and `**`,
+ * or a container query `@md` / `@max-lg` / `@[400px]`. A name list would go blind to whatever it
+ * failed to enumerate, which is how round 4's fix still missed `[&_svg]:`, `*:` and `@md:`.
+ */
+const VARIANT_CHUNK =
+  '(?:\\*{1,2}|\\[[^\\]]*\\]|@\\[[^\\]]*\\]|@?[a-z0-9][a-z0-9-]*(?:-(?:\\[[^\\]]*\\]|\\([^)]*\\)))?(?:/[a-z0-9-]+)?)'
+/**
+ * A variant chain in front of a utility, so no spelling can hide a utility from a gate column. The
+ * variants *table* is fed only from tokens whose bare part classifies or is colour-shaped, which
+ * keeps CSS selectors inside strings (`button:not(…)`) out of it; and a chain this grammar cannot
+ * parse does not silently vanish — `scan` counts the token as `unknown` (see `UNPARSED_VARIANT`).
+ */
+const VARIANT_PREFIX = new RegExp(`^((?:${VARIANT_CHUNK}:)+)(?=[a-z[(-])`)
+/**
+ * A token whose variant chain this grammar did not fully consume but which still ends in something
+ * colour- or arbitrary-shaped — `--check` must fail on it rather than skip it, per §10's fail-loud
+ * rule. Both tails are covered, so the `[&>*]:` family is uniformly `unknown` and never a silent
+ * zero, whether it names a token (`[&>*]:text-red-600`) or an arbitrary value (`[&>*]:bg-[#fff]`).
+ */
+const UNPARSED_VARIANT = new RegExp(
+  `:(?:${COLOUR_PREFIX}-[a-z][a-z0-9-]*${ALPHA}?|-?[a-z][a-z0-9-]*-\\[[^\\]]+\\])$`,
+)
+/**
+ * Tailwind's important modifier, which it accepts on either side (`bg-chrome!`, `!bg-chrome`) and
+ * which every column test would otherwise drop on the floor, since they are all `$`-anchored.
+ */
+const stripImportant = (bare) => bare.replace(/^!/, '').replace(/!$/, '')
+/**
+ * A real `dark:` variant chunk — at the head of a chain or after another chunk, and followed by
+ * something a utility can start with. Read off the raw token so an unparsed leading chunk cannot
+ * zero it, but not a bare substring: `{ light: 1, dark: 2 }` splits to the token `dark:`, which is
+ * an object key and must not move the column.
+ */
+const DARK_VARIANT = /(?:^|[:!])dark:(?=[a-z0-9[(*@!-])/
+
+function classify(raw) {
+  const variants = VARIANT_PREFIX.exec(raw)?.[1] ?? ''
+  const bare = stripImportant(raw.slice(variants.length))
+  for (const [category, pattern] of CATEGORIES) {
+    if (pattern.test(bare)) return { category, bare, variants }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------------------------
+
+const emptyCounts = () => ({
+  total: 0,
+  colour: 0,
+  legacy: 0,
+  dark: 0,
+  arbitrary: 0,
+  palette: 0,
+  alpha: 0,
+  unknown: 0,
+})
+
+/**
+ * One pass over the renderer. Utilities come from `.tsx`; `var(--color-*)` consumers from every
+ * file including `theme.css` itself, because the `body` rule there is a consumer no utility scan
+ * can see. The six gate columns (`legacy`, `dark:`, `arbitrary`, `palette`, `alpha`, `unknown`) are
+ * counted on every utility-shaped token *before* classification, so a token the classifier does
+ * not know still moves the column — the classifier decides categories, never whether a gate sees.
+ */
+function scan() {
+  const files = walk(RENDERER)
+  /** category → bare utility → [{ file, line, variants }] */
+  const byCategory = new Map()
+  /** variant prefix → count */
+  const variantCounts = new Map()
+  const literals = [] // { file, line, text }
+  const pxLiterals = []
+  const perFile = new Map()
+  const unknownSites = [] // { file, line, token }
+  const varRefs = [] // { file, line, name, legacy, unknown }
+  const known = new Set(TOKEN_NAMES)
+
+  for (const file of files) {
+    const source = stripComments(readFileSync(file, 'utf8'))
+    const lines = source.split('\n')
+    const isTsx = file.endsWith('.tsx')
+    const isCss = file.endsWith('.css')
+
+    lines.forEach((text, i) => {
+      const line = i + 1
+      for (const m of text.matchAll(
+        /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|oklch\([^)]*\)|hsla?\([^)]*\)/g,
+      )) {
+        literals.push({ file, line, text: m[0] })
+      }
+      if (!isCss) {
+        for (const m of text.matchAll(/['"`][^'"`]*?\b(\d+(?:\.\d+)?px)\b[^'"`]*?['"`]/g)) {
+          pxLiterals.push({ file, line, text: m[1] })
+        }
+      }
+      for (const m of text.matchAll(/var\(--color-([a-z0-9-]+)/g)) {
+        const name = m[1]
+        const legacy = RETIRED_TOKENS.includes(name)
+        const unknown = !known.has(name)
+        varRefs.push({ file, line, name, legacy, unknown })
+        const f = perFile.get(file) ?? emptyCounts()
+        perFile.set(file, f)
+        if (legacy) f.legacy += 1
+        if (unknown) {
+          f.unknown += 1
+          unknownSites.push({ file, line, token: `var(--color-${name})` })
+        }
+      }
+      if (!isTsx) return
+      // Split on everything that delimits a class inside a string or template literal — but not
+      // on `:`, which joins a variant to its utility.
+      for (const token of text.split(/[\s'"`{}$;<>?]+/)) {
+        if (token === '') continue
+        const variants = VARIANT_PREFIX.exec(token)?.[1] ?? ''
+        const bare = stripImportant(token.slice(variants.length))
+        const f = perFile.get(file) ?? emptyCounts()
+        perFile.set(file, f)
+        if (DARK_VARIANT.test(token)) f.dark += 1
+        if (ARBITRARY_UTILITY.test(bare)) f.arbitrary += 1
+        if (PALETTE_UTILITY.test(bare)) f.palette += 1
+        if (TOKEN_ALPHA.test(bare) && !ALPHA_ALLOWED.test(bare)) f.alpha += 1
+        const paren = PAREN_REF.exec(bare)
+        if (paren !== null) {
+          // `bg-(--color-x)` bypasses the class census; it is still a reference to a token.
+          if (RETIRED_TOKENS.includes(paren[1])) f.legacy += 1
+          if (!known.has(paren[1])) {
+            f.unknown += 1
+            unknownSites.push({ file, line, token })
+          }
+          continue
+        }
+        if (bare.includes(':') && UNPARSED_VARIANT.test(bare)) {
+          f.unknown += 1
+          unknownSites.push({ file, line, token })
+          continue
+        }
+        const hit = classify(token)
+        const colourShaped = COLOUR_SHAPED.test(bare)
+        if (hit !== null || colourShaped) {
+          for (const v of variants.split(':').filter(Boolean)) {
+            variantCounts.set(v, (variantCounts.get(v) ?? 0) + 1)
+          }
+        }
+        if (hit === null) {
+          if (colourShaped) {
+            f.unknown += 1
+            unknownSites.push({ file, line, token })
+          }
+          continue
+        }
+        const bucket = byCategory.get(hit.category) ?? new Map()
+        byCategory.set(hit.category, bucket)
+        const sites = bucket.get(hit.bare) ?? []
+        sites.push({ file, line, variants: hit.variants })
+        bucket.set(hit.bare, sites)
+        f.total += 1
+        if (hit.category === 'colour') {
+          f.colour += 1
+          if (RETIRED.test(hit.bare.replace(/\/.*$/, ''))) f.legacy += 1
+        }
+      }
+    })
+  }
+  return { files, byCategory, variantCounts, literals, pxLiterals, perFile, unknownSites, varRefs }
+}
+
+const COLUMNS = ['colour', 'legacy', 'dark', 'arbitrary', 'palette', 'alpha', 'unknown']
+const totalsLine = (perFile) => {
+  const totals = Object.fromEntries(COLUMNS.map((k) => [k, 0]))
+  for (const f of perFile.values()) for (const k of COLUMNS) totals[k] += f[k]
+  return totals
+}
+const perFileRow = (file, f) =>
+  `| ${short(file)} | ${String(f.total)} | ${COLUMNS.map((k) => String(f[k])).join(' | ')} |`
+const PER_FILE_HEADER = [
+  '| file | utilities | colour | legacy | `dark:` | arbitrary | palette | alpha | unknown |',
+  '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+]
+const formatTotals = (t) =>
+  `Totals: colour ${String(t.colour)}, legacy ${String(t.legacy)}, \`dark:\` ${String(t.dark)}, arbitrary ${String(t.arbitrary)}, palette ${String(t.palette)}, alpha ${String(t.alpha)}, unknown ${String(t.unknown)}.`
+
+function inventory() {
+  const { files, byCategory, variantCounts, literals, pxLiterals, perFile, unknownSites, varRefs } =
+    scan()
+
+  print('# Design inventory (generated by `scripts/design-inventory.mjs`)')
+  print()
+  print(`Scanned ${String(files.length)} files under \`src/renderer/src\`.`)
+  print()
+
+  const order = [
+    'colour',
+    'spacing',
+    'size',
+    'radius',
+    'shadow',
+    'font-size',
+    'font-weight',
+    'leading',
+    'tracking',
+    'type-style',
+    'border-width',
+    'border-style',
+    'motion',
+    'opacity',
+    'z-index',
+    'effect',
+    'cursor',
+  ]
+  for (const category of order) {
+    const bucket = byCategory.get(category)
+    if (!bucket) continue
+    const rows = [...bucket.entries()].toSorted((a, b) => b[1].length - a[1].length)
+    const total = rows.reduce((n, [, s]) => n + s.length, 0)
+    print(`## ${category} — ${String(rows.length)} distinct, ${String(total)} uses`)
+    print()
+    print('| utility | uses | sites |')
+    print('| --- | --- | --- |')
+    for (const [bare, sites] of rows) {
+      const cites = [...new Set(sites.map((s) => `${short(s.file)}:${String(s.line)}`))]
+      const shown =
+        cites.slice(0, 8).join(', ') + (cites.length > 8 ? ` +${String(cites.length - 8)}` : '')
+      print(`| \`${bare}\` | ${String(sites.length)} | ${shown} |`)
+    }
+    print()
+  }
+
+  print('## variants')
+  print()
+  print('| variant | uses |')
+  print('| --- | --- |')
+  for (const [v, n] of [...variantCounts.entries()].toSorted((a, b) => b[1] - a[1])) {
+    print(`| \`${v}:\` | ${String(n)} |`)
+  }
+  print()
+
+  print('## raw colour literals')
+  print()
+  for (const l of literals) print(`- \`${l.text}\` — ${short(l.file)}:${String(l.line)}`)
+  print()
+  print('## px literals inside strings')
+  print()
+  for (const l of pxLiterals) print(`- \`${l.text}\` — ${short(l.file)}:${String(l.line)}`)
+  print()
+
+  print('## var(--color-*) consumers')
+  print()
+  for (const r of varRefs) {
+    print(
+      `- \`var(--color-${r.name})\` — ${short(r.file)}:${String(r.line)}${r.legacy ? ' (retired)' : ''}${r.unknown ? ' (**undeclared**)' : ''}`,
+    )
+  }
+  print()
+  print('## unknown colour utilities')
+  print()
+  print(
+    unknownSites.length === 0
+      ? 'none — every colour-shaped utility names a declared token, a retired token, or a palette colour.'
+      : unknownSites.map((u) => `- \`${u.token}\` — ${short(u.file)}:${String(u.line)}`).join('\n'),
+  )
+  print()
+  print('## per file')
+  print()
+  print(
+    'Gate columns, each counted on every utility-shaped token whether or not it is classified: `legacy` = the 12 retired tokens (utilities and `var()` consumers); `dark:` = any `dark:` variant; `arbitrary` = any `-[…]` value; `palette` = a Tailwind palette colour or bare `white`/`black`; `alpha` = an `/N` suffix on a token other than `hud-fg/70`; `unknown` = a colour-shaped utility or `var(--color-*)` that names nothing declared or retired.',
+  )
+  print()
+  for (const h of PER_FILE_HEADER) print(h)
+  for (const [file, f] of [...perFile.entries()].toSorted((a, b) => b[1].total - a[1].total)) {
+    print(perFileRow(file, f))
+  }
+  print()
+  print(formatTotals(totalsLine(perFile)))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Colour maths (sRGB / OKLCH / WCAG 2.1)
+// ---------------------------------------------------------------------------------------------
+
+function hexToRgb(hex) {
+  let h = hex.slice(1)
+  if (h.length === 3 || h.length === 4) h = [...h].map((c) => c + c).join('')
+  const n = Number.parseInt(h.slice(0, 6), 16)
+  const a = h.length === 8 ? Number.parseInt(h.slice(6, 8), 16) / 255 : 1
+  return { r: ((n >> 16) & 255) / 255, g: ((n >> 8) & 255) / 255, b: (n & 255) / 255, a }
+}
+
+const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+const toGamma = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)
+const clamp01 = (c) => Math.min(1, Math.max(0, c))
+
+function oklchToRgb(L, C, H, a = 1) {
+  const h = (H * Math.PI) / 180
+  const A = C * Math.cos(h)
+  const B = C * Math.sin(h)
+  const lp = L + 0.3963377774 * A + 0.2158037573 * B
+  const mp = L - 0.1055613458 * A - 0.0638541728 * B
+  const sp = L - 0.0894841775 * A - 1.291485548 * B
+  const l = lp ** 3
+  const m = mp ** 3
+  const s = sp ** 3
+  const lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+  const lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+  const lb = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+  return { r: clamp01(toGamma(lr)), g: clamp01(toGamma(lg)), b: clamp01(toGamma(lb)), a }
+}
+
+function rgbToOklch({ r, g, b }) {
+  const lr = toLinear(r)
+  const lg = toLinear(g)
+  const lb = toLinear(b)
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb)
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb)
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb)
+  const L = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s
+  const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s
+  const B = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+  const C = Math.hypot(A, B)
+  const H = ((Math.atan2(B, A) * 180) / Math.PI + 360) % 360
+  return { L, C, H }
+}
+
+function parseColour(text) {
+  const t = text.trim()
+  if (t.startsWith('#')) return hexToRgb(t)
+  const m = /^oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+|none)\s*(?:\/\s*([\d.]+)(%?))?\)$/.exec(t)
+  if (m) {
+    const L = Number(m[1]) / (m[2] === '%' ? 100 : 1)
+    const H = m[4] === 'none' ? 0 : Number(m[4])
+    const a = m[5] === undefined ? 1 : Number(m[5]) / (m[6] === '%' ? 100 : 1)
+    return oklchToRgb(L, Number(m[3]), H, a)
+  }
+  throw new Error(`unparseable colour: ${text}`)
+}
+
+const toHex = ({ r, g, b }) =>
+  '#' +
+  [r, g, b]
+    .map((c) =>
+      Math.round(c * 255)
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')
+
+const fmtOklch = (rgb) => {
+  const { L, C, H } = rgbToOklch(rgb)
+  return `oklch(${L.toFixed(3)} ${C.toFixed(3)} ${C < 0.0005 ? '—' : H.toFixed(1)})`
+}
+
+function luminance({ r, g, b }) {
+  return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b)
+}
+
+function contrast(a, b) {
+  const la = luminance(a)
+  const lb = luminance(b)
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
+function over(top, alpha, bottom) {
+  const a = alpha * top.a
+  return {
+    r: top.r * a + bottom.r * (1 - a),
+    g: top.g * a + bottom.g * (1 - a),
+    b: top.b * a + bottom.b * (1 - a),
+    a: 1,
+  }
+}
+
+/** `--color-<name>: <value>` declarations from a CSS file, in order. */
+function readColourVars(css) {
+  const vars = new Map()
+  for (const m of css.matchAll(/--color-([a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+    vars.set(m[1], parseColour(m[2]))
+  }
+  return vars
+}
+
+/**
+ * Resolves a layer spec such as `chrome-muted/80 over shell-bg/95 over canvas`, right to left:
+ * the last layer must be opaque (or an alias that resolves to one), each earlier layer is
+ * composited over the result.
+ */
+function makeResolver(palette, aliases) {
+  const resolve = (spec) => {
+    const layers = spec.split(' over ').map((s) => s.trim())
+    let colour = null
+    for (let i = layers.length - 1; i >= 0; i -= 1) {
+      const layer = layers[i]
+      if (aliases.has(layer)) {
+        const resolved = resolve(aliases.get(layer))
+        colour = colour === null ? resolved : over(resolved, 1, colour)
+        continue
+      }
+      const m = /^([a-z0-9-]+)(?:\/(\d+))?$/.exec(layer)
+      if (!m || !palette.has(m[1])) throw new Error(`unknown colour "${layer}" in "${spec}"`)
+      const base = palette.get(m[1])
+      const alpha = m[2] === undefined ? 1 : Number(m[2]) / 100
+      colour = colour === null ? { ...base, a: 1 } : over(base, alpha, colour)
+    }
+    return colour
+  }
+  return resolve
+}
+
+const THRESHOLD = { text: 4.5, ui: 3, state: null, disabled: null, decor: null }
+
+function contrastTable(title, pairs, resolveLight, resolveDark, describePair, lastColumn) {
+  const ratio = (resolve, [fg, bg]) => contrast(resolve(`${fg} over ${bg}`), resolve(bg))
+  print(`## ${title}`)
+  print()
+  print(
+    'Kinds: `text` needs 4.5:1 (WCAG 1.4.3, all chrome text is under 18.66px bold), `ui` needs 3:1 (1.4.11), `state` is a hover/pressed fill against its rest colour (no WCAG floor; reported because an invisible hover is a defect), `disabled` and `decor` are exempt and reported for completeness.',
+  )
+  print()
+  print(`| # | kind | pair | light | dark | verdict | ${lastColumn} |`)
+  print('| --- | --- | --- | --- | --- | --- | --- |')
+  let failures = 0
+  let worst = { ratio: Infinity }
+  pairs.forEach((pair, i) => {
+    const rl = ratio(resolveLight, pair.light)
+    const rd = ratio(resolveDark, pair.dark)
+    const floor = THRESHOLD[pair.kind]
+    const failL = floor !== null && rl < floor
+    const failD = floor !== null && rd < floor
+    const verdict =
+      floor === null
+        ? '—'
+        : failL && failD
+          ? '**fail both**'
+          : failL
+            ? '**fail light**'
+            : failD
+              ? '**fail dark**'
+              : 'pass'
+    if (failL || failD) {
+      failures += 1
+      const r = Math.min(failL ? rl : Infinity, failD ? rd : Infinity)
+      if (r < worst.ratio) worst = { ratio: r, n: i + 1 }
+    }
+    print(
+      `| ${String(i + 1)} | ${pair.kind} | ${describePair(pair)} | ${rl.toFixed(2)} | ${rd.toFixed(2)} | ${verdict} | ${pair.sites} |`,
+    )
+  })
+  print()
+  print(
+    `**${String(pairs.length)} pairs, ${String(failures)} failing in at least one mode.**` +
+      (worst.n === undefined ? '' : ` Worst: #${String(worst.n)} at ${worst.ratio.toFixed(2)}:1.`),
+  )
+  print()
+  return failures
+}
+
+// ---------------------------------------------------------------------------------------------
+// Current palette + the pairs the shipped renderer draws
+// ---------------------------------------------------------------------------------------------
+
+function currentPalette() {
+  const palette = readColourVars(readFileSync(TAILWIND_THEME, 'utf8'))
+  for (const [k, v] of readColourVars(readFileSync(THEME, 'utf8'))) palette.set(k, v)
+  return palette
+}
+
+/** Composite grounds the chrome actually sits on; see the audit §3 for the derivations. */
+const CURRENT_ALIASES = new Map([
+  ['canvas.light', 'canvas-mat/25 over shell-bg'], // SlideCanvas.tsx:96
+  ['canvas.dark', 'black/40 over ink'],
+  ['panel.light', 'shell-bg/95 over canvas.light'], // PropertyPanel.tsx:165
+  ['panel.dark', 'ink-alt/95 over canvas.dark'],
+  ['scrim.light', 'black/40 over shell-bg'], // SettingsDialog.tsx:134, ExportPptxDialog.tsx:61
+  ['scrim.dark', 'black/40 over ink'],
+  ['hud.light', 'black/70 over white'], // pills over a white slide — SlideCanvas.tsx:137
+  ['hud.dark', 'black/70 over ink-alt'],
+  ['present', 'black/70 over black'], // PresentControls.tsx:47 over the black stage
+  ['arrange.light', 'white/95 over white'], // ArrangeBar.tsx:145 floats over the slide
+  ['arrange.dark', 'ink-alt/95 over ink-alt'],
+])
+
+const p = (kind, light, dark, sites) => ({ kind, light, dark, sites })
+
+const CURRENT_PAIRS = [
+  // -- body text on each ground ------------------------------------------------------------
+  p('text', ['shell-fg', 'shell-bg'], ['ink-fg', 'ink'], 'AppShell:163'),
+  p(
+    'text',
+    ['shell-fg', 'white'],
+    ['ink-fg', 'ink-alt'],
+    'AppShell:170, FormatBar:16/45, DesignModeToggle:47, StatusBar:182, ChatPanel:141/257, SlideContextMenu:169, BudgetTab:279',
+  ),
+  p(
+    'text',
+    ['shell-fg', 'chrome'],
+    ['ink-fg', 'ink'],
+    'SettingsDialog:151/175/200/222/253/267, AuthTab:167/193/221/245/251, BudgetTab:184/228/252/285, ChatPanel:187',
+  ),
+  p('text', ['shell-fg', 'chrome-alt'], ['ink-fg', 'ink-alt'], 'AuthTab:136/176'),
+  p('text', ['shell-fg', 'white'], ['ink-fg', 'ink'], 'PropertyPanel:334 (field)'),
+  p('text', ['shell-fg', 'panel.light'], ['ink-fg', 'panel.dark'], 'PropertyPanel:363/371/379'),
+  p('text', ['shell-fg', 'canvas.light'], ['ink-fg', 'canvas.dark'], 'SlideCanvas:157'),
+  p('text', ['chrome-muted', 'canvas.light'], ['ink-muted', 'canvas.dark'], 'SlideCanvas:158'),
+  p('text', ['shell-fg', 'arrange.light'], ['ink-fg', 'arrange.dark'], 'ArrangeBar:20'),
+  p(
+    'text',
+    ['shell-fg', 'accent/10 over panel.light'],
+    ['ink-fg', 'accent/10 over panel.dark'],
+    'PropertyPanel:198',
+  ),
+  p(
+    'text',
+    ['shell-fg', 'accent/10 over chrome'],
+    ['ink-fg', 'accent/10 over ink'],
+    'ChatPanel:148',
+  ),
+  p('text', ['shell-fg', 'accent/5 over chrome'], ['ink-fg', 'accent/5 over ink'], 'ChatPanel:305'),
+  p(
+    'text',
+    ['shell-fg', 'amber-500/10 over chrome'],
+    ['ink-fg', 'amber-500/10 over ink'],
+    'BudgetTab:242',
+  ),
+  // -- muted text --------------------------------------------------------------------------
+  p(
+    'text',
+    ['chrome-muted', 'chrome'],
+    ['ink-muted', 'ink'],
+    'MenuTabStrip:17, ThumbnailRail:160/335/372, ChatPanel:103/125/165/176/212/215/249, StatusBar:162, SettingsDialog:176/206/247/256/269/272, AuthTab:171/210/225/262/269, BudgetTab:210/268/290/300',
+  ),
+  p(
+    'text',
+    ['chrome-muted', 'white'],
+    ['ink-muted', 'ink-alt'],
+    'ThumbnailPreview:81 (9px), ChatPanel:141 placeholder/258/272/281, ArrangeBar:147',
+  ),
+  p('text', ['chrome-muted', 'chrome-alt'], ['ink-muted', 'ink-alt'], 'AuthTab:132/140'),
+  p(
+    'text',
+    ['chrome-muted', 'panel.light'],
+    ['ink-muted', 'panel.dark'],
+    'PropertyPanel:167/177/182/321/358, ColorControls:172',
+  ),
+  p(
+    'text',
+    ['chrome-muted/80', 'panel.light'],
+    ['ink-muted/80', 'panel.dark'],
+    'PropertyPanel:170',
+  ),
+  p(
+    'text',
+    ['chrome-muted', 'chrome-line/40 over white'],
+    ['ink-muted', 'ink-line/60 over ink-alt'],
+    'ChatPanel:289',
+  ),
+  p('text', ['chrome-muted', 'chrome-line'], ['ink-muted', 'ink-line'], 'DesignModeToggle:57'),
+  // -- accent as text ----------------------------------------------------------------------
+  p(
+    'text',
+    ['accent', 'white'],
+    ['ink-fg', 'ink-alt'],
+    'MenuTabStrip:13 (dark falls back to ink-fg)',
+  ),
+  p(
+    'text',
+    ['accent', 'chrome'],
+    ['accent', 'ink'],
+    'ThumbnailRail:160 selected number, :372 hover',
+  ),
+  p('text', ['accent', 'white'], ['accent', 'ink-alt'], 'StatusBar:182 hover:text-accent'),
+  p(
+    'text',
+    ['white', 'accent'],
+    ['white', 'accent'],
+    'DesignModeToggle:57, ChatPanel:198/225/313, SettingsDialog:213, AuthTab:199, SlideContextMenu:169 hover, SelectionOverlay:778/820',
+  ),
+  // -- semantic text -----------------------------------------------------------------------
+  p(
+    'text',
+    ['white', 'amber-600'],
+    ['white', 'amber-600'],
+    'DesignNotice:57, SelectionOverlay:821',
+  ),
+  p('text', ['white', 'red-600'], ['white', 'red-600'], 'BudgetTab:259'),
+  p(
+    'text',
+    ['red-600', 'chrome'],
+    ['red-400', 'ink'],
+    'StatusBar:64/94, AuthTab:148, BudgetTab:215/295',
+  ),
+  p('text', ['amber-600', 'chrome'], ['amber-500', 'ink'], 'StatusBar:64/96, BudgetTab:203/221'),
+  p(
+    'text',
+    ['amber-900', 'amber-500/10 over chrome'],
+    ['amber-200', 'amber-500/10 over ink'],
+    'AuthTab:157',
+  ),
+  p('text', ['red-800', 'red-50'], ['red-200', 'red-950'], 'ChatPanel:235'),
+  // -- HUD / present -----------------------------------------------------------------------
+  p(
+    'text',
+    ['white', 'hud.light'],
+    ['white', 'hud.dark'],
+    'SlideCanvas:137, SelectionOverlay:834/889/907',
+  ),
+  p('text', ['white', 'present'], ['white', 'present'], 'PresentControls:47/77'),
+  p('text', ['white/90', 'present'], ['white/90', 'present'], 'PresentControls:69'),
+  // -- PPTX dialog (no dark treatment at all) ----------------------------------------------
+  p('text', ['neutral-900', 'white'], ['neutral-900', 'white'], 'ExportPptxDialog:72/95'),
+  p('text', ['neutral-500', 'white'], ['neutral-500', 'white'], 'ExportPptxDialog:75/96'),
+  p('text', ['neutral-600', 'white'], ['neutral-600', 'white'], 'ExportPptxDialog:111'),
+  p('text', ['white', 'neutral-900'], ['white', 'neutral-900'], 'ExportPptxDialog:118'),
+  p('text', ['amber-800', 'amber-50'], ['amber-800', 'amber-50'], 'ExportPptxDialog:102'),
+  // -- UI components: borders that identify a control (1.4.11) ------------------------------
+  p(
+    'ui',
+    ['chrome-line', 'white'],
+    ['ink-line', 'ink-alt'],
+    'FormatBar:45 select, DesignModeToggle:47, StatusBar:182, ChatPanel:141 composer, BudgetTab:279, ColorControls:182',
+  ),
+  p(
+    'ui',
+    ['chrome-line', 'chrome'],
+    ['ink-line', 'ink'],
+    'ThumbnailRail:168/372, ChatPanel:165/187, AuthTab:128/193/245/251, BudgetTab:252/285, SettingsDialog:222',
+  ),
+  p(
+    'ui',
+    ['chrome-line', 'panel.light'],
+    ['ink-line', 'panel.dark'],
+    'PropertyPanel:334/363/371/379, ColorControls:96/182/190',
+  ),
+  p('ui', ['chrome-line', 'arrange.light'], ['ink-line', 'arrange.dark'], 'ArrangeBar:145'),
+  p(
+    'ui',
+    ['chrome-line', 'canvas.light'],
+    ['ink-line', 'canvas.dark'],
+    'SlideCanvas:123 slide outline',
+  ),
+  p('ui', ['neutral-200', 'white'], ['neutral-200', 'white'], 'ExportPptxDialog:84'),
+  // -- field fills against their panel (1.4.11: is the field identifiable at all?) ---------
+  p('ui', ['chrome', 'chrome'], ['ink', 'ink'], 'AuthTab:193/245 field fill = panel fill'),
+  p('ui', ['white', 'chrome'], ['ink-alt', 'ink'], 'ChatPanel:141, BudgetTab:279 field fill'),
+  p('ui', ['white', 'panel.light'], ['ink', 'panel.dark'], 'PropertyPanel:334 field fill'),
+  // -- accent as a UI colour (rings, focus, indicators, handles) ----------------------------
+  p(
+    'ui',
+    ['accent', 'chrome'],
+    ['accent', 'ink'],
+    'ThumbnailRail:159 focus ring, :167 selected ring, :148 drop indicator, SettingsDialog:175 tab underline',
+  ),
+  p(
+    'ui',
+    ['accent', 'white'],
+    ['accent', 'ink-alt'],
+    'DesignModeToggle:47 focus outline, ChatPanel:141 focus border',
+  ),
+  p('ui', ['accent', 'white'], ['accent', 'ink'], 'PropertyPanel:334 focus border'),
+  p(
+    'ui',
+    ['accent/60 over panel.light', 'panel.light'],
+    ['accent/60 over panel.dark', 'panel.dark'],
+    'PropertyPanel:198 border',
+  ),
+  p(
+    'ui',
+    ['accent/50 over chrome', 'chrome'],
+    ['accent/50 over ink', 'ink'],
+    'ChatPanel:148 border',
+  ),
+  p(
+    'ui',
+    ['accent/40 over chrome', 'chrome'],
+    ['accent/40 over ink', 'ink'],
+    'ChatPanel:305 border',
+  ),
+  p(
+    'ui',
+    ['accent', 'white'],
+    ['accent', 'white'],
+    'SelectionOverlay:849/867 handle border on white fill',
+  ),
+  p(
+    'ui',
+    ['chrome-muted', 'white'],
+    ['chrome-muted', 'ink-alt'],
+    'DesignModeToggle:49 ✦ glyph, no dark variant',
+  ),
+  p('ui', ['accent', 'white'], ['accent', 'ink-alt'], 'DesignModeToggle:49 ✦ glyph when enabled'),
+  p(
+    'ui',
+    ['chrome-muted', 'accent/10 over chrome'],
+    ['ink-muted', 'accent/10 over ink'],
+    'ChatPanel:156 chip ×',
+  ),
+  // -- semantic UI -------------------------------------------------------------------------
+  p(
+    'ui',
+    ['amber-500/50 over chrome', 'chrome'],
+    ['amber-500/50 over ink', 'ink'],
+    'AuthTab:157 border',
+  ),
+  p(
+    'ui',
+    ['amber-500/60 over chrome', 'chrome'],
+    ['amber-500/60 over ink', 'ink'],
+    'BudgetTab:242 border',
+  ),
+  p('ui', ['red-300', 'chrome'], ['red-800', 'ink'], 'ChatPanel:235 border'),
+  p(
+    'ui',
+    ['amber-500', 'white'],
+    ['amber-500', 'white'],
+    'SelectionOverlay:814 editing frame on a white slide',
+  ),
+  p(
+    'ui',
+    ['fuchsia-500', 'white'],
+    ['fuchsia-500', 'white'],
+    'SelectionOverlay:790 smart guide on a white slide',
+  ),
+  // -- hover / pressed fills against the rest colour ----------------------------------------
+  p(
+    'state',
+    ['chrome-alt', 'white'],
+    ['ink-alt', 'ink-alt'],
+    'FormatBar:16 hover on the toolbar row',
+  ),
+  p('state', ['chrome-alt', 'arrange.light'], ['ink-alt', 'arrange.dark'], 'ArrangeBar:20 hover'),
+  p('state', ['chrome-alt', 'white'], ['ink-line', 'ink-alt'], 'DesignModeToggle:47 hover'),
+  p('state', ['chrome-line', 'white'], ['chrome-line', 'white'], 'FormatBar:16 active (no dark)'),
+  p(
+    'state',
+    ['chrome-line/40 over chrome', 'chrome'],
+    ['chrome', 'chrome'],
+    'ChatPanel:187 hover (no dark)',
+  ),
+  p(
+    'state',
+    ['white/15 over present', 'present'],
+    ['white/15 over present', 'present'],
+    'PresentControls:56/65/77 hover',
+  ),
+  p('state', ['neutral-50', 'white'], ['neutral-50', 'white'], 'ExportPptxDialog:84 hover'),
+  p('state', ['neutral-100', 'white'], ['neutral-100', 'white'], 'ExportPptxDialog:111 hover'),
+  // -- disabled (exempt) -------------------------------------------------------------------
+  p(
+    'disabled',
+    ['shell-fg/40', 'arrange.light'],
+    ['ink-fg/40', 'arrange.dark'],
+    'ArrangeBar:20 disabled:opacity-40',
+  ),
+  p(
+    'disabled',
+    ['shell-fg/50', 'white'],
+    ['ink-fg/50', 'ink'],
+    'PropertyPanel:334 disabled:opacity-50',
+  ),
+  p(
+    'disabled',
+    ['white', 'accent/50 over chrome'],
+    ['white', 'accent/50 over ink'],
+    'AuthTab:199 disabled:opacity-50',
+  ),
+  p(
+    'disabled',
+    ['white', 'accent/40 over chrome'],
+    ['white', 'accent/40 over ink'],
+    'ChatPanel:198 disabled:opacity-40',
+  ),
+  p(
+    'disabled',
+    ['white/30', 'present'],
+    ['white/30', 'present'],
+    'PresentControls:56 disabled:opacity-30',
+  ),
+  p(
+    'disabled',
+    ['chrome-muted', 'white'],
+    ['ink-muted', 'ink-alt'],
+    'SlideContextMenu:169 disabled',
+  ),
+  // -- decorative (aria-hidden) -------------------------------------------------------------
+  p(
+    'decor',
+    ['chrome-line', 'white'],
+    ['ink-line', 'ink-alt'],
+    'FormatBar:41, ArrangeBar:150/164 dividers',
+  ),
+  p(
+    'decor',
+    ['chrome-line', 'chrome'],
+    ['ink-line', 'ink'],
+    'StatusBar:55/167/174 dividers, :132 budget track',
+  ),
+  p(
+    'decor',
+    ['accent', 'chrome-line'],
+    ['accent', 'ink-line'],
+    'StatusBar:134 budget fill vs track',
+  ),
+  p(
+    'decor',
+    ['chrome-line', 'scrim.light'],
+    ['ink-line', 'scrim.dark'],
+    'SettingsDialog:146 dialog border',
+  ),
+]
+
+// ---------------------------------------------------------------------------------------------
+// Proposed (canonical) palette — audit §5. Values are the ones the document publishes.
+// ---------------------------------------------------------------------------------------------
+
+const PROPOSED_LIGHT = `
+  --color-surface: oklch(0.985 0.002 286);
+  --color-surface-raised: oklch(1 0 0);
+  --color-surface-sunken: oklch(0.955 0.003 286);
+  --color-field: oklch(1 0 0);
+  --color-hover: oklch(0.945 0.003 286);
+  --color-pressed: oklch(0.905 0.004 286);
+  --color-canvas: oklch(0.885 0 0);
+  --color-line: oklch(0.905 0.004 286);
+  --color-line-strong: oklch(0.6 0.008 286);
+  --color-text: oklch(0.222 0.004 286);
+  --color-text-muted: oklch(0.485 0.006 286);
+  --color-accent: oklch(0.554 0.176 34.8);
+  --color-accent-soft: oklch(0.955 0.02 34.8);
+  --color-on-fill: oklch(1 0 0);
+  --color-focus: oklch(0.6 0.18 34.8);
+  --color-danger: oklch(0.505 0.213 27.5);
+  --color-danger-soft: oklch(0.971 0.013 17.4);
+  --color-warning: oklch(0.473 0.137 46.2);
+  --color-warning-soft: oklch(0.987 0.022 95.3);
+  --color-success: oklch(0.448 0.119 151.3);
+  --color-success-soft: oklch(0.982 0.018 155.8);
+  --color-edit: oklch(0.546 0.245 262.9);
+  --color-guide: oklch(0.6 0.118 184.7);
+  --color-hud: oklch(0 0 0 / 0.7);
+  --color-hud-strong: oklch(0 0 0 / 0.85);
+  --color-hud-fg: oklch(1 0 0);
+  --color-scrim: oklch(0 0 0 / 0.4);
+`
+
+const PROPOSED_DARK = `
+  --color-surface: oklch(0.241 0.006 286);
+  --color-surface-raised: oklch(0.271 0.009 286);
+  --color-surface-sunken: oklch(0.215 0.006 286);
+  --color-field: oklch(0.215 0.006 286);
+  --color-hover: oklch(0.332 0.012 286);
+  --color-pressed: oklch(0.39 0.013 286);
+  --color-canvas: oklch(0.17 0 0);
+  --color-line: oklch(0.332 0.012 286);
+  --color-line-strong: oklch(0.56 0.014 286);
+  --color-text: oklch(0.926 0.005 286);
+  --color-text-muted: oklch(0.709 0.014 286);
+  --color-accent: oklch(0.67 0.176 34.8);
+  --color-accent-soft: oklch(0.33 0.055 34.8);
+  --color-on-fill: oklch(0.18 0.006 286);
+  --color-danger: oklch(0.704 0.191 22.2);
+  --color-danger-soft: oklch(0.258 0.092 26);
+  --color-warning: oklch(0.769 0.188 70.1);
+  --color-warning-soft: oklch(0.279 0.077 45.6);
+  --color-success: oklch(0.792 0.209 151.7);
+  --color-success-soft: oklch(0.266 0.065 152.9);
+  --color-edit: oklch(0.707 0.165 254.6);
+  --color-guide: oklch(0.777 0.152 181.9);
+`
+
+const q = (kind, fg, bg, sites) => p(kind, [fg, bg], [fg, bg], sites)
+
+const PROPOSED_PAIRS = [
+  q('text', 'text', 'surface', 'body on rail / chat / status bar / dialogs'),
+  q('text', 'text', 'surface-raised', 'body on toolbar row, menus, bubbles'),
+  q('text', 'text', 'surface-sunken', 'body on cards / code'),
+  q('text', 'text', 'field', 'input values'),
+  q('text', 'text', 'hover', 'button label on hover fill'),
+  q('text', 'text', 'pressed', 'button label on pressed fill'),
+  q('text', 'text', 'canvas', 'empty-state title on the mat'),
+  q('text', 'text', 'accent-soft', 'label on a tinted chip'),
+  q('text', 'text-muted', 'surface', 'captions, headings, status text'),
+  q('text', 'text-muted', 'surface-raised', 'placeholders, bubble labels'),
+  q('text', 'text-muted', 'surface-sunken', 'card captions'),
+  q('text', 'text-muted', 'field', 'placeholder text'),
+  q('text', 'text-muted', 'hover', 'muted label on hover fill'),
+  q('text', 'text-muted', 'canvas', 'empty-state caption on the mat'),
+  q('text', 'accent', 'surface', 'selected slide number, links'),
+  q('text', 'accent', 'surface-raised', 'Home tab label'),
+  q(
+    'ui',
+    'accent',
+    'accent-soft',
+    'accent icon or border on the tint (never accent text — rule R4)',
+  ),
+  q('text', 'on-fill', 'accent', 'filled buttons, user bubble, overlay labels'),
+  q('text', 'on-fill', 'warning', 'DesignNotice, editing label'),
+  q('text', 'on-fill', 'success', 'filled success chip'),
+  q('text', 'on-fill', 'edit', 'editing-frame label'),
+  q('text', 'danger', 'surface', 'error lines'),
+  q('text', 'danger', 'surface-raised', 'error lines on raised'),
+  q('text', 'danger', 'danger-soft', 'error bubble text'),
+  q('text', 'on-fill', 'danger', 'destructive filled button'),
+  q('text', 'warning', 'surface', 'budget warn, skills fallback'),
+  q('text', 'warning', 'surface-raised', 'warning on raised'),
+  q('text', 'warning', 'warning-soft', 'warning notice text'),
+  q('text', 'success', 'surface', 'saved / ok lines'),
+  q('text', 'success', 'success-soft', 'success notice text'),
+  q('text', 'hud-fg', 'hud over surface-raised', 'zoom pill, overlay dimension label'),
+  q('text', 'hud-fg', 'hud over canvas', 'HUD over the mat'),
+  q('text', 'hud-fg', 'hud-strong over surface-raised', 'HUD pill on hover'),
+  q('text', 'hud-fg/70', 'hud over surface-raised', 'secondary HUD text (breadcrumb parents)'),
+  q('text', 'text', 'danger-soft', 'Notice body on a danger tint'),
+  q('text', 'text', 'warning-soft', 'Notice body on a warning tint'),
+  q('text', 'text', 'success-soft', 'Notice body on a success tint'),
+  q('ui', 'line-strong', 'surface', 'control border on panels'),
+  q('ui', 'line-strong', 'surface-raised', 'control border on the toolbar row'),
+  q('ui', 'line-strong', 'field', 'input border vs its own fill'),
+  q('ui', 'line-strong', 'surface-sunken', 'control border in a card'),
+  q('ui', 'focus', 'surface', 'focus ring on panels'),
+  q('ui', 'focus', 'surface-raised', 'focus ring on the toolbar row'),
+  q('ui', 'focus', 'field', 'focus ring on inputs'),
+  q('ui', 'focus', 'canvas', 'focus ring on the canvas'),
+  q('ui', 'accent', 'surface', 'selected ring, tab underline, drop indicator'),
+  q('ui', 'accent', 'surface-raised', 'handles / selection box over a white slide'),
+  q('ui', 'accent', 'field', 'accent border on a field'),
+  q('ui', 'edit', 'surface-raised', 'editing frame over a white slide'),
+  q('ui', 'guide', 'surface-raised', 'smart guide over a white slide'),
+  q('ui', 'danger', 'surface', 'danger border / icon'),
+  q('ui', 'warning', 'surface', 'warning border / icon'),
+  q('ui', 'success', 'surface', 'success border / icon'),
+  q(
+    'state',
+    'field',
+    'surface',
+    'field fill vs panel — the line-strong border identifies the field (pairs 30–33)',
+  ),
+  q('state', 'field', 'surface-raised', 'field fill vs toolbar row — identified by its border'),
+  q('state', 'hover', 'surface', 'hover fill on a panel'),
+  q('state', 'hover', 'surface-raised', 'hover fill on the toolbar row'),
+  q('state', 'pressed', 'hover', 'pressed vs hover'),
+  q('state', 'surface-sunken', 'surface', 'well vs panel'),
+  q('state', 'surface-raised', 'surface', 'raised vs panel'),
+  q('decor', 'line', 'surface', 'hairline on a panel'),
+  q('decor', 'line', 'surface-raised', 'hairline on the toolbar row'),
+  q('decor', 'line', 'canvas', 'slide outline on the mat'),
+]
+
+/** `--color-<name>: <value>` as written, for the declared-vs-rendered table. */
+const declaredColourText = (css) =>
+  new Map([...css.matchAll(/--color-([a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]))
+
+function proposedReport() {
+  const light = readColourVars(PROPOSED_LIGHT)
+  const dark = new Map(light)
+  for (const [k, v] of readColourVars(PROPOSED_DARK)) dark.set(k, v)
+  const lightText = declaredColourText(PROPOSED_LIGHT)
+  const darkText = declaredColourText(PROPOSED_DARK)
+  print('# Canonical token set — declared values, rendered sRGB, measured contrast')
+  print()
+  print(
+    'The declared column is the string theme.css must carry (M8b.2 compares against it byte for byte). The hex column is what the browser paints — a few Tailwind-derived semantic steps sit just outside sRGB and are clipped, so a hex round-tripped back to OKLCH will not equal the declaration at three decimals.',
+  )
+  print()
+  print('| token | light (declared) | hex | dark (declared) | hex |')
+  print('| --- | --- | --- | --- | --- |')
+  const hex = (c) => (c.a < 1 ? '—' : toHex(c))
+  for (const name of light.keys()) {
+    const d = darkText.get(name)
+    print(
+      `| \`${name}\` | \`${lightText.get(name)}\` | ${hex(light.get(name))} | ${d === undefined ? '(same)' : `\`${d}\``} | ${d === undefined ? '' : hex(dark.get(name))} |`,
+    )
+  }
+  print()
+  return contrastTable(
+    'Proposed pairs',
+    PROPOSED_PAIRS,
+    makeResolver(light, new Map()),
+    makeResolver(dark, new Map()),
+    (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
+    'role',
+  )
+}
+
+// ---------------------------------------------------------------------------------------------
+// The canonical theme block (audit §5.3) — `--emit-theme` prints it, `--check` verifies it landed
+// ---------------------------------------------------------------------------------------------
+
+const SCALE_THEME = `
+  /* Spacing — Tailwind's 4px base is the unit; these name the dimensions that recur. */
+  --spacing-control: 1.75rem;
+  --spacing-rail: 11.75rem;
+  --spacing-chat: 20rem;
+  --spacing-inspector: 16rem;
+
+  /* Radius — ceiling 8px; concentric: outer = inner + padding. */
+  --radius-*: initial;
+  --radius-control: 0.25rem;
+  --radius-panel: 0.375rem;
+  --radius-overlay: 0.5rem;
+
+  /* Elevation — ring + key; colours live in :root so dark can raise them. */
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --shadow-raised: 0 0 0 1px var(--shadow-ring), 0 1px 2px var(--shadow-key);
+  --shadow-floating: 0 0 0 1px var(--shadow-ring), 0 4px 12px var(--shadow-key);
+  --shadow-overlay: 0 0 0 1px var(--shadow-ring), 0 16px 40px var(--shadow-key);
+
+  /* Type — four sizes, line-heights on the 4px grid. */
+  --text-*: initial;
+  --text-caption: 11px;
+  --text-caption--line-height: calc(16 / 11);
+  --text-ui-sm: 12px;
+  --text-ui-sm--line-height: calc(16 / 12);
+  --text-ui: 13px;
+  --text-ui--line-height: calc(20 / 13);
+  --text-title: 15px;
+  --text-title--line-height: calc(20 / 15);
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-*: initial;
+  --tracking-caps: 0.04em;
+  --leading-*: initial;
+  --leading-none: 1;
+
+  /* Motion — instant in, eased out; ease-in ceases to exist. */
+  --ease-*: initial;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: var(--ease-out);
+  --animate-*: initial;
+  --animate-working: working 900ms var(--ease-in-out) infinite;
+  @keyframes working {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  /* Blur — the two HUDs. */
+  --blur-*: initial;
+  --blur-hud: 8px;
+`
+
+const ROOT_VARS = `
+  --shadow-ring: oklch(0 0 0 / 0.05);
+  --shadow-key: oklch(0 0 0 / 0.1);
+  --duration-instant: 0ms;
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 260ms;
+  --z-panel: 10;
+  --z-menu: 40;
+  --z-dialog: 50;
+  --z-present: 60;
+`
+
+const DARK_ROOT_EXTRA = `
+  --shadow-ring: oklch(0 0 0 / 0.55);
+  --shadow-key: oklch(0 0 0 / 0.5);
+`
+
+const UTILITY_BLOCK = ['instant', 'fast', 'base', 'slow']
+  .map((d) => `@utility duration-${d} {\n  transition-duration: var(--duration-${d});\n}`)
+  .concat(
+    ['panel', 'menu', 'dialog', 'present'].map(
+      (z) => `@utility z-${z} {\n  z-index: var(--z-${z});\n}`,
+    ),
+  )
+  .join('\n')
+
+/**
+ * Re-indent a template-literal block to `pad`, preserving relative nesting. `.trim()` alone would
+ * strip only the first line's indent and leave the rest, emitting CSS whose first declaration sits
+ * two columns left of its siblings — and this output is pasted into `theme.css` verbatim.
+ */
+function indentBlock(text, pad) {
+  const lines = text.replace(/^\n+/, '').replace(/\s+$/, '').split('\n')
+  const widths = lines.filter((l) => l.trim() !== '').map((l) => /^ */.exec(l)[0].length)
+  const base = Math.min(...widths)
+  return lines.map((l) => (l.trim() === '' ? '' : pad + l.slice(base))).join('\n')
+}
+
+function emitTheme() {
+  print(
+    '/* Canonical design tokens — generated by `node scripts/design-inventory.mjs --emit-theme`.',
+  )
+  print(
+    '   Role colours are declared once with their light value; dark redefines only what changes.',
+  )
+  print(
+    '   `static` so the whole block is emitted before any surface consumes a token (audit §5.7). */',
+  )
+  print('@theme static {')
+  print('  /* Colour roles — light */')
+  print(indentBlock(PROPOSED_LIGHT, '  '))
+  print(SCALE_THEME.trimEnd())
+  print('}')
+  print()
+  print(':root {')
+  print(indentBlock(ROOT_VARS, '  '))
+  print('}')
+  print()
+  print('@media (prefers-color-scheme: dark) {')
+  print('  :root {')
+  print(indentBlock(PROPOSED_DARK, '    '))
+  print(indentBlock(DARK_ROOT_EXTRA, '    '))
+  print('  }')
+  print('}')
+  print()
+  print(UTILITY_BLOCK)
+}
+
+/** Utilities the audit prescribes; every one must emit once the block has landed. */
+const REQUIRED_UTILITIES = [
+  ...[...declaredColourText(PROPOSED_LIGHT).keys()].map((n) => `bg-${n}`),
+  'text-on-fill',
+  'outline-focus',
+  'w-rail',
+  'w-chat',
+  'h-inspector',
+  'h-control',
+  'w-control',
+  'rounded-control',
+  'rounded-panel',
+  'rounded-overlay',
+  'shadow-raised',
+  'shadow-floating',
+  'shadow-overlay',
+  'text-caption',
+  'text-ui-sm',
+  'text-ui',
+  'text-title',
+  'font-medium',
+  'font-semibold',
+  'tracking-caps',
+  'leading-none',
+  'ease-out',
+  'ease-in-out',
+  'animate-working',
+  'backdrop-blur-hud',
+  'duration-instant',
+  'duration-fast',
+  'duration-base',
+  'duration-slow',
+  'z-panel',
+  'z-menu',
+  'z-dialog',
+  'z-present',
+]
+
+/** Default-scale spellings the `--*: initial` resets must have killed (audit §5.1 principle 5). */
+const FORBIDDEN_UTILITIES = [
+  'rounded',
+  'rounded-md',
+  'rounded-lg',
+  'shadow-md',
+  'shadow-xl',
+  'text-sm',
+  'text-lg',
+  'font-bold',
+  'tracking-wide',
+  'leading-tight',
+  'ease-in',
+  'animate-pulse',
+  'backdrop-blur',
+  'inset-shadow-sm',
+]
+
+const loadStylesheet = (path) => ({
+  path,
+  base: dirname(path),
+  content: readFileSync(path, 'utf8'),
+})
+
+/** Compiles theme.css through the installed Tailwind and reports which candidates emit a rule. */
+async function compileTheme(candidates) {
+  const { compile } = await import('tailwindcss')
+  const twRoot = join(ROOT, 'node_modules', 'tailwindcss')
+  const compiled = await compile(readFileSync(THEME, 'utf8'), {
+    base: dirname(THEME),
+    loadStylesheet: async (id, base) => {
+      if (id === 'tailwindcss') return loadStylesheet(join(twRoot, 'index.css'))
+      if (id.startsWith('tailwindcss/')) {
+        return loadStylesheet(join(twRoot, id.slice('tailwindcss/'.length)))
+      }
+      return loadStylesheet(resolvePath(base, id))
+    },
+  })
+  const css = compiled.build(candidates)
+  const emits = (c) =>
+    new RegExp(`\\.${c.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(?![\\w-])`).test(css)
+  return new Set(candidates.filter(emits))
+}
+
+const asCss = (m) => [...m].map(([n, t]) => `--color-${n}: ${t};`).join('\n')
+
+/**
+ * Brace-aware bodies of every block opened by `opener` (a global regex ending in `{`), each with
+ * the brace depth it was opened at. Depth matters: a block nested inside another at-rule may never
+ * apply at runtime (`@supports (nonsense-prop: 1) { @media … }`), so a caller that needs to know
+ * its declarations are live must reject anything but depth 0.
+ */
+function blockBodies(css, opener) {
+  const bodies = []
+  let outer = 0
+  let cursor = 0
+  for (const m of css.matchAll(opener)) {
+    for (; cursor < m.index; cursor += 1) {
+      if (css[cursor] === '{') outer += 1
+      else if (css[cursor] === '}') outer -= 1
+    }
+    let depth = 0
+    let i = m.index + m[0].length - 1
+    const start = i + 1
+    for (; i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1
+      else if (css[i] === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    bodies.push({ text: css.slice(start, i), depth: outer })
+  }
+  return bodies
+}
+
+/** The bodies of the blocks that sit at the top level, joined. */
+const topLevelText = (blocks) =>
+  blocks
+    .filter((b) => b.depth === 0)
+    .map((b) => b.text)
+    .join('\n')
+
+/** How many times each `--color-<name>` is declared in `text`. */
+function colourDeclCounts(text) {
+  const counts = new Map()
+  for (const m of text.matchAll(/--color-([a-z0-9-]+)\s*:/g)) {
+    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * Where theme.css declares colours, read structurally rather than by position: light = inside any
+ * `@theme` / `@theme static` block, dark = inside any `prefers-color-scheme: dark` media block
+ * (however spaced), and everything else is a stray. Inside one block the last declaration wins,
+ * which is also what the cascade does — so a duplicate with the wrong value *first* is benign and
+ * a duplicate with the wrong value *last* is a byte mismatch.
+ *
+ * Both openers must sit at the top level. A block nested inside another at-rule is reported as
+ * `nested` rather than read: `@supports (nonsense-prop: 1) { @media (prefers-color-scheme: dark) …`
+ * parses perfectly and applies nothing, and a gate cannot confirm a subject the browser may skip.
+ */
+function themeColourBlocks() {
+  const css = readFileSync(THEME, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const lightBlocks = blockBodies(css, /@theme(?:\s+static)?\s*\{/g)
+  const darkBlocks = blockBodies(css, /@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{/g)
+  const nested = [
+    ...lightBlocks.filter((b) => b.depth > 0).map(() => '@theme'),
+    ...darkBlocks.filter((b) => b.depth > 0).map(() => '@media (prefers-color-scheme: dark)'),
+  ]
+  const lightText = topLevelText(lightBlocks)
+  const darkText = topLevelText(darkBlocks)
+  // Declarations inside a nested block are accounted for by the `nested` failure; they are not
+  // also unlayered strays, and saying so would bury the real cause under 22 wrong lines.
+  const nestedText = [...lightBlocks, ...darkBlocks]
+    .filter((b) => b.depth > 0)
+    .map((b) => b.text)
+    .join('\n')
+  const total = colourDeclCounts(css)
+  const inLight = colourDeclCounts(lightText)
+  const inDark = colourDeclCounts(darkText)
+  const inNested = colourDeclCounts(nestedText)
+  const stray = new Map()
+  for (const [name, n] of total) {
+    const outside =
+      n - (inLight.get(name) ?? 0) - (inDark.get(name) ?? 0) - (inNested.get(name) ?? 0)
+    if (outside > 0) stray.set(name, outside)
+  }
+  return {
+    light: declaredColourText(lightText),
+    dark: declaredColourText(darkText),
+    total,
+    stray,
+    nested,
+  }
+}
+
+async function check(args) {
+  const final = args.includes('--final')
+  const failures = []
+  const fail = (msg) => failures.push(msg)
+
+  const { files, perFile, unknownSites, varRefs } = scan()
+  const scanned = new Set(files)
+  const totals = totalsLine(perFile)
+  print('# Design check (`scripts/design-inventory.mjs --check`)')
+  print()
+  print(formatTotals(totals))
+  print()
+  for (const u of unknownSites) {
+    fail(`unknown colour reference \`${u.token}\` at ${short(u.file)}:${String(u.line)}`)
+  }
+  const legacyVars = varRefs.filter((r) => r.legacy)
+  print(
+    `\`var(--color-*)\` consumers: ${String(varRefs.length)} (retired ${String(legacyVars.length)}, undeclared ${String(varRefs.filter((r) => r.unknown).length)}).`,
+  )
+  if (final && totals.legacy > 0) {
+    fail(
+      `--final: ${String(totals.legacy)} references to retired tokens remain (utilities and var() consumers)`,
+    )
+  }
+
+  // Requested paths must be files the scan actually read; a directory expands to them. Anything
+  // else is "I could not check", which is a failure, never a pass.
+  const wanted = []
+  for (const arg of args.filter((a) => a !== '--final')) {
+    const path = resolvePath(ROOT, arg)
+    let isDir = false
+    try {
+      isDir = statSync(path).isDirectory()
+    } catch {
+      fail(`${arg}: no such file`)
+      continue
+    }
+    if (isDir) {
+      // Only the file types whose utilities are actually read, so a directory cannot smuggle in
+      // the `.ts` files a direct path is refused for and report them as all-zero rows.
+      const inside = files.filter((f) => f.startsWith(path + '/') && !f.endsWith('.ts'))
+      if (inside.length === 0) {
+        fail(`${arg}: directory contains no scanned renderer file (.tsx/.css)`)
+      }
+      wanted.push(...inside)
+    } else if (scanned.has(path) && !path.endsWith('.ts')) {
+      wanted.push(path)
+    } else if (path.endsWith('.ts')) {
+      fail(`${arg}: utilities in .ts files are not scanned — class strings belong in .tsx`)
+    } else {
+      fail(`${arg}: not a scanned renderer file (.tsx/.css under src/renderer/src)`)
+    }
+  }
+  if (wanted.length > 0) {
+    print()
+    print('Requested files (every gate column must be 0):')
+    print()
+    for (const h of PER_FILE_HEADER) print(h)
+    for (const file of wanted) {
+      const f = perFile.get(file) ?? emptyCounts()
+      print(perFileRow(file, f))
+      for (const k of COLUMNS) {
+        if (k !== 'colour' && f[k] > 0) fail(`${short(file)}: ${k} = ${String(f[k])}`)
+      }
+    }
+  }
+
+  // The role block: absent (pre-M8b.2), present-but-unreadable, partial, or landed and checked.
+  const wantLight = declaredColourText(PROPOSED_LIGHT)
+  const wantDark = declaredColourText(PROPOSED_DARK)
+  const { light, dark, total, stray, nested } = themeColourBlocks()
+  const newRoles = [...wantLight.keys()].filter((n) => !PRE_EXISTING_ROLES.has(n))
+  const anywhere = newRoles.filter((n) => (total.get(n) ?? 0) > 0)
+  const landed = newRoles.filter((n) => light.has(n))
+  print()
+  for (const opener of nested) {
+    fail(
+      `\`${opener}\` is nested inside another at-rule — its declarations may never apply; the prescribed layout is a top-level block (paste \`--emit-theme\`'s output unwrapped, audit §5.8)`,
+    )
+  }
+  for (const [name, n] of stray) {
+    if (wantLight.has(name) || RETIRED_TOKENS.includes(name)) {
+      fail(
+        `\`--color-${name}\` declared ${String(n)}× outside every @theme block and dark media block — an unlayered declaration beats @layer theme regardless of order`,
+      )
+    }
+  }
+  if (anywhere.length === 0) {
+    print(
+      `Role block: not landed (0/${String(newRoles.length)} new role colours declared anywhere in theme.css) — the theme-value, census and Tailwind gates apply after M8b.2.`,
+    )
+  } else {
+    if (landed.length < newRoles.length) {
+      fail(
+        `role block partial: ${String(landed.length)}/${String(newRoles.length)} new role colours read from @theme (missing: ${newRoles.filter((n) => !light.has(n)).join(', ')})`,
+      )
+    }
+    let mismatches = 0
+    for (const [name, want] of wantLight) {
+      const got = light.get(name)
+      if (got !== want) {
+        mismatches += 1
+        fail(
+          `light \`--color-${name}\`: theme.css has \`${got ?? '(missing)'}\`, canonical is \`${want}\``,
+        )
+      }
+    }
+    for (const [name, want] of wantDark) {
+      const got = dark.get(name)
+      if (got !== want) {
+        mismatches += 1
+        fail(
+          `dark \`--color-${name}\`: theme.css has \`${got ?? '(missing)'}\`, canonical is \`${want}\``,
+        )
+      }
+    }
+    print(
+      `Role block: landed — ${String(wantLight.size + wantDark.size - mismatches)}/${String(wantLight.size + wantDark.size)} declarations byte-equal to the canonical values.`,
+    )
+    // Census over what theme.css actually declares, not over the script's constants.
+    let palettes = null
+    try {
+      const lightPalette = new Map(readColourVars(PROPOSED_LIGHT))
+      for (const [k, v] of readColourVars(asCss(light))) lightPalette.set(k, v)
+      const darkPalette = new Map(lightPalette)
+      for (const [k, v] of readColourVars(PROPOSED_DARK)) darkPalette.set(k, v)
+      for (const [k, v] of readColourVars(asCss(dark))) darkPalette.set(k, v)
+      palettes = { lightPalette, darkPalette }
+    } catch (error) {
+      fail(`census skipped — ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (palettes !== null) {
+      print()
+      const failing = contrastTable(
+        'Census over the values theme.css declares',
+        PROPOSED_PAIRS,
+        makeResolver(palettes.lightPalette, new Map()),
+        makeResolver(palettes.darkPalette, new Map()),
+        (pair) => `\`${pair.light[0]}\` on \`${pair.light[1]}\``,
+        'role',
+      )
+      if (failing > 0) {
+        fail(`${String(failing)} canonical pairs fail against the values theme.css declares`)
+      }
+    }
+
+    const emitted = await compileTheme([...REQUIRED_UTILITIES, ...FORBIDDEN_UTILITIES])
+    const missing = REQUIRED_UTILITIES.filter((c) => !emitted.has(c))
+    const alive = FORBIDDEN_UTILITIES.filter((c) => emitted.has(c))
+    print(
+      `Tailwind compile: ${String(REQUIRED_UTILITIES.length - missing.length)}/${String(REQUIRED_UTILITIES.length)} prescribed utilities emit; ${String(FORBIDDEN_UTILITIES.length - alive.length)}/${String(FORBIDDEN_UTILITIES.length)} reset-killed spellings stay dead.`,
+    )
+    for (const c of missing) fail(`prescribed utility \`${c}\` does not compile`)
+    for (const c of alive) {
+      fail(`default-scale spelling \`${c}\` still compiles — a \`--*: initial\` reset is missing`)
+    }
+  }
+
+  print()
+  if (failures.length === 0) {
+    print('RESULT: pass')
+    return 0
+  }
+  print(`RESULT: FAIL (${String(failures.length)})`)
+  for (const f of failures) print(`- ${f}`)
+  return 1
+}
+
+const AUDIT = join(ROOT, '.claude', 'plans', 'init', 'research', 'ui-design-audit.md')
+
+/** The one line §1 carries verbatim; `--verify-doc` regenerates it and demands a byte match. */
+function freshnessLine(files, totals) {
+  return `Measured on ${String(files.length)} files: ${String(totals.colour)} colour uses, ${String(totals.dark)} \`dark:\`, ${String(totals.arbitrary)} arbitrary, ${String(totals.palette)} palette, ${String(totals.legacy)} retired-token references.`
+}
+
+/**
+ * The staleness gate. This document is a *measurement* of a tree, and `main` moves under it: M4.5
+ * landed two colour tokens whose names collide with canonical roles and shifted every `file:line`
+ * in the files it touched, which silently invalidated a third of the citations here — a whole
+ * review round was spent discovering that by hand. So an agent runs `--verify-doc` before executing
+ * any part of this audit.
+ *
+ * Two exact checks, no heuristics: §1's freshness line must byte-match what the scanner measures
+ * now, and every `file:line` the document cites must still be inside that file. Deliberately NOT
+ * checked: whether the utility named beside a citation is on that source line — §5.4's migration
+ * rows name the token a line should *become*, so that test cannot tell a stale citation from a
+ * prescription and would fail closed on correct text.
+ */
+function verifyDoc() {
+  const doc = readFileSync(AUDIT, 'utf8')
+  const problems = []
+  print('# Audit freshness (`scripts/design-inventory.mjs --verify-doc`)')
+  print()
+
+  const { files, perFile } = scan()
+  const totals = totalsLine(perFile)
+  const line = freshnessLine(files, totals)
+  print(`Measured: ${line}`)
+  print()
+  if (!doc.includes(line)) {
+    const recorded = /^Measured on .*$/m.exec(doc)?.[0] ?? '(no freshness line in §1)'
+    problems.push(`§1's freshness line is stale.\n  recorded: ${recorded}\n  measured: ${line}`)
+  }
+
+  const byBase = new Map()
+  for (const f of files) {
+    const base = f.slice(f.lastIndexOf('/') + 1)
+    byBase.set(base, (byBase.get(base) ?? []).concat(f))
+  }
+  let checked = 0
+  doc.split('\n').forEach((text, i) => {
+    for (const m of text.matchAll(/([A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:\/\d+)*)/g)) {
+      const candidates = byBase.get(m[1]) ?? []
+      if (candidates.length !== 1) continue
+      const lines = readFileSync(candidates[0], 'utf8').split('\n').length
+      for (const n of m[2].split('/')) {
+        checked += 1
+        if (Number(n) < 1 || Number(n) > lines) {
+          problems.push(
+            `${relative(ROOT, AUDIT)}:${String(i + 1)} — \`${m[1]}:${n}\` is past the end of the file (${String(lines)} lines)`,
+          )
+        }
+      }
+    }
+  })
+  print(`Resolved ${String(checked)} \`file:line\` citations against the tree.`)
+  print()
+  for (const p2 of problems) print(`- ${p2}`)
+  print()
+  if (problems.length > 0) {
+    print(
+      `RESULT: FAIL (${String(problems.length)}) — the audit no longer describes this tree; re-derive its numbers before executing it.`,
+    )
+    return 1
+  }
+  print('RESULT: pass — §1 matches the tree and every cited line still exists.')
+  return 0
+}
+
+const mode = process.argv[2] ?? '--inventory'
+try {
+  if (mode === '--contrast') {
+    const palette = currentPalette()
+    print('# Current palette')
+    print()
+    print('| token | hex | oklch |')
+    print('| --- | --- | --- |')
+    for (const [name, value] of readColourVars(readFileSync(THEME, 'utf8'))) {
+      print(`| \`${name}\` | ${toHex(value)} | ${fmtOklch(value)} |`)
+    }
+    print()
+    print('Composite grounds used below (opaque results):')
+    print()
+    const resolve = makeResolver(palette, CURRENT_ALIASES)
+    for (const [alias, spec] of CURRENT_ALIASES) {
+      print(`- \`${alias}\` = ${spec} → ${toHex(resolve(alias))}`)
+    }
+    print()
+    contrastTable(
+      'Measured contrast — shipped renderer',
+      CURRENT_PAIRS,
+      resolve,
+      resolve,
+      (pair) =>
+        pair.light.join(' / ') === pair.dark.join(' / ')
+          ? `\`${pair.light.join('` on `')}\` (no dark variant)`
+          : `\`${pair.light.join('` on `')}\` · dark \`${pair.dark.join('` on `')}\``,
+      'sites',
+    )
+  } else if (mode === '--proposed') {
+    if (proposedReport() > 0) process.exitCode = 1
+  } else if (mode === '--emit-theme') {
+    emitTheme()
+  } else if (mode === '--check') {
+    process.exitCode = await check(process.argv.slice(3))
+  } else if (mode === '--verify-doc') {
+    process.exitCode = verifyDoc()
+  } else if (mode === '--inventory') {
+    inventory()
+  } else {
+    process.stderr.write(
+      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme, --verify-doc or --check [--final] [file …]\n`,
+    )
+    process.exit(2)
+  }
+} finally {
+  // Flush whatever was reported before a throw, so a crash never discards the actionable lines.
+  process.stdout.write(out.join('\n') + '\n')
+}
