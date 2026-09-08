@@ -142,11 +142,15 @@ interface Probe {
  * through the module under test would make every assertion below tautological, which is the shape
  * M3.10 review r15 rejected.
  */
-async function probe(file: string, args: readonly string[]): Promise<Probe> {
+async function probe(
+  file: string,
+  args: readonly string[],
+  budgetMs: number = PROBE_TIMEOUT_MS,
+): Promise<Probe> {
   const startedAt = Date.now()
   try {
     const { stdout } = await promisify(execFile)(file, [...args], {
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: budgetMs,
       maxBuffer: 4 * 1024 * 1024,
       encoding: 'utf8',
     })
@@ -186,6 +190,37 @@ function failAsTooTight(tool: string, probed: Probe): never {
   )
 }
 
+/**
+ * How much slower than its warm cost the tool is allowed to be on a cold host before the budget is
+ * judged too tight. The release job's kill at 10 s against a ~0.5 s warm cost is the only datum we
+ * have for that ratio, and it bounds it from below only — so this is a floor on the headroom, not a
+ * model of the cold path.
+ */
+const COLD_HEADROOM = 30
+
+/**
+ * Pin the timeout's MAGNITUDE, not its literal.
+ *
+ * `enumerate-spawn.test.ts` asserts `ENUMERATE_TIMEOUT_MS` equals 45000, which reds if the constant
+ * changes but says nothing about whether 45000 is enough — it is an echo of the number, and the
+ * 10 s budget that shipped this defect would have passed exactly the same shape of assertion. This
+ * measures what the tool really costs on this host and demands the budget clear it by
+ * `COLD_HEADROOM`, so a revert to 10 s reds here on any machine where the tool works.
+ *
+ * Keyed to the WARM cost deliberately: a ratio against a cold first load would vary with whatever
+ * the host had already JIT-compiled, and would red spuriously on the very slow runner it exists to
+ * protect.
+ */
+async function expectTimeoutHeadroom(tool: string, warm: Probe): Promise<void> {
+  if (warm.stdout === null) return // the second run could not complete; branch 3 owns that case
+  expect(
+    ENUMERATE_TIMEOUT_MS,
+    `${tool} costs ${warm.ms} ms warm on this host, so ENUMERATE_TIMEOUT_MS ` +
+      `(${ENUMERATE_TIMEOUT_MS} ms) leaves under ${COLD_HEADROOM}x for a cold first load — the ` +
+      `shape of the failure that shipped with a 10 s budget against a ~0.5 s warm cost`,
+  ).toBeGreaterThan(warm.ms * COLD_HEADROOM)
+}
+
 /** The invariants every result must satisfy, whichever branch produced it. */
 function expectWellFormed(result: { families: readonly string[] }): void {
   expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
@@ -195,6 +230,34 @@ function expectWellFormed(result: { families: readonly string[] }): void {
   // Idempotent under normalisation: already sorted, deduped and allow-listed.
   expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
 }
+
+/**
+ * The probe's own discriminator, pinned.
+ *
+ * Everything below turns on `timedOut`: it is what separates "this host cannot run the tool", where
+ * `none` is the required answer, from "the tool works but is slower than the budget", which is a
+ * finding. Review round 1 showed the check is load-bearing and was pinned by nothing — forcing
+ * `timedOut` to false made a completely dead feature report nine passing tests.
+ *
+ * Node's `execFile` is what makes `killed` the right discriminator: a timeout kill sets
+ * `killed: true` with `SIGTERM`, while ENOENT, a non-zero exit and a maxBuffer overflow all leave
+ * it falsy. Both directions are asserted, with the platform's own binary rather than a font tool,
+ * so this runs everywhere.
+ */
+describe('the probe that decides which branch the real-run tests take', () => {
+  it('reports a timeout kill as timedOut, and a missing binary as not', async () => {
+    const slow = await probe(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], 300)
+    expect(slow.stdout).toBeNull()
+    expect(
+      slow.timedOut,
+      'a tool killed by the budget must be distinguishable from one that cannot run',
+    ).toBe(true)
+
+    const missing = await probe('sloodge-no-such-binary-exists', ['--version'], 5_000)
+    expect(missing.stdout).toBeNull()
+    expect(missing.timedOut, 'a binary that does not exist has not timed out').toBe(false)
+  })
+})
 
 describe('enumerateSystemFonts', () => {
   it('returns the empty list on a platform it cannot enumerate, without throwing', async () => {
@@ -221,6 +284,8 @@ describe('enumerateSystemFonts', () => {
         return
       }
       if (probed.ms > ENUMERATE_TIMEOUT_MS) failAsTooTight('fc-list', probed)
+      // A second run, now warm, pins the budget's magnitude rather than its literal.
+      await expectTimeoutHeadroom('fc-list', await probe('fc-list', [':', 'family']))
 
       const stdout = probed.stdout
       expect(result.source).toBe('fc-list')
@@ -294,6 +359,17 @@ describe('enumerateSystemFonts', () => {
       if (probed.ms > ENUMERATE_TIMEOUT_MS) {
         failAsTooTight('the powershell.exe font query', probed)
       }
+      // A second run, now that the assembly is loaded, pins the budget's magnitude rather than its
+      // literal — `probed.ms` above is the COLD number, which is what branch 3b compares.
+      await expectTimeoutHeadroom(
+        'the powershell.exe font query',
+        await probe('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-EncodedCommand',
+          Buffer.from(SCRIPT, 'utf16le').toString('base64'),
+        ]),
+      )
 
       // Branch 2: the host can do the work inside the budget, so the enumerator has no excuse for
       // an empty list. A broken `-EncodedCommand` payload lands in the catch and reports `none`,
