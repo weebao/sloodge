@@ -116,6 +116,25 @@ export function resolveElement(map: SlideMap, slId: string): ElementSpan | null 
 /** SVG elements whose geometry is expressed as `width`/`height` attributes (§5.2). */
 const SVG_SIZED_TAGS: ReadonlySet<string> = new Set(['rect', 'image', 'img'])
 
+/**
+ * SVG elements whose *position* is expressed as `x`/`y` presentation attributes — the move channel's
+ * half of `SVG_SIZED_TAGS`, and gated for the same reason. Most SVG elements have no `x`/`y`
+ * geometry at all: `<circle>`/`<ellipse>` position by `cx`/`cy`, `<path>` by `d`,
+ * `<polygon>`/`<polyline>` by `points`, `<line>` by `x1`/`y1`, `<g>` by its own transform. Writing
+ * `x` on one of those adds an attribute the renderer ignores — the shape does not move, but the
+ * gesture still spends an undo entry and the overlay still advances its stored box, so the picture
+ * and the document disagree until the next re-measure. Everything outside this set falls through to
+ * the `translate` arm, which moves any SVG element correctly in its parent's frame.
+ */
+const SVG_XY_TAGS: ReadonlySet<string> = new Set([
+  'rect',
+  'image',
+  'svg',
+  'text',
+  'use',
+  'foreignObject',
+])
+
 function isSvg(element: ElementSpan): boolean {
   return element.ns === 'svg'
 }
@@ -165,8 +184,11 @@ function positionsByOffsets(source: string, element: ElementSpan): boolean {
  * - `offsets` — the source declares `left`/`top`. Layout offsets are resolved *before* the
  *   `transform` is painted, so they are parent-space whatever the transform says; `translateZ(0)`,
  *   the compositing idiom, must not make an element unmovable.
- * - `attr` — an SVG element's `x`/`y` presentation attributes. **Only when the transform leaves the
- *   element's axes parent-aligned** (absent, or decomposable with `rotate === 0` and scale `1, 1`).
+ * - `attr` — an SVG element's `x`/`y` presentation attributes. **Only when the element actually has
+ *   that geometry** (`SVG_XY_TAGS` — a `<circle>` positions by `cx`/`cy`, a `<path>` by `d`, a `<g>`
+ *   by its own transform, so an `x` written on any of them is an attribute nothing reads) **and only
+ *   when the transform leaves the element's axes parent-aligned** (absent, or decomposable with
+ *   `rotate === 0` and scale `1, 1`).
  *   SVG is *not* the free pass an earlier version of this comment claimed: `x`/`y` are geometry
  *   inside the element's own user space and the `transform` is what maps that space to the parent's,
  *   so under `rotate(30deg)` a +40 write to `x` moves the rect ~34.6px right and ~20px **down**, and
@@ -205,7 +227,15 @@ export function moveChannel(source: string, element: ElementSpan): MoveChannel {
   // The attribute channel is SVG-only and conditional; the translate channel serves everyone else,
   // HTML in-flow and rotated/scaled SVG alike, because a leading translate is parent-space for both.
   const { rotate, scale } = shape.parts
-  if (isSvg(element) && rotate === 0 && scale.sx === 1 && scale.sy === 1) return { kind: 'attr' }
+  if (
+    isSvg(element) &&
+    SVG_XY_TAGS.has(element.tagName) &&
+    rotate === 0 &&
+    scale.sx === 1 &&
+    scale.sy === 1
+  ) {
+    return { kind: 'attr' }
+  }
   return { kind: 'translate', parts: shape.parts }
 }
 

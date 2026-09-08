@@ -657,6 +657,12 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
     expect(y.disabled).toBe(true)
     // Width is a different question and stays live: it never touches the transform.
     expect((screen.getByTestId('prop-width') as HTMLInputElement).disabled).toBe(false)
+    // …and the reason stays on the two fields it is about. A sentence explaining a move, hovering
+    // over W, H, Size, Weight and the Content box, describes a lock that does not apply to them.
+    // Mutation guard: `title: block === null ? (moveLock ?? undefined) : …` reds every line here.
+    for (const name of ['width', 'height', 'fontSize', 'fontWeight', 'text']) {
+      expect((screen.getByTestId(`prop-${name}`) as HTMLElement).title).toBe('')
+    }
     const depth = useDeckStore.getState().history.undoStack().length
     fireEvent.change(x, { target: { value: '50' } })
     fireEvent.blur(x)

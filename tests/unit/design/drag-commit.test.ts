@@ -175,6 +175,26 @@ describe('buildDragPatch — the transform lock', () => {
     expect(patched).toContain('<rect x="5" y="5"')
   })
 
+  it('a drag on an SVG shape with no x/y geometry moves it, and writes no junk attribute (round-6 major)', () => {
+    // A `<circle>` positions by `cx`/`cy`, a `<path>` by `d`, a `<g>` by its own transform — so a
+    // drag written to `x`/`y` adds an attribute the renderer ignores: the shape stays put while the
+    // gesture spends an undo entry and the overlay advances its stored box, and the picture and the
+    // document disagree. The parent-space translate moves all three. Mutation guard: dropping the
+    // `SVG_XY_TAGS` conjunct writes `<circle x="40" …>` here and the circle never leaves the origin.
+    for (const [tag, html] of [
+      ['circle', '<svg><circle cx="10" cy="10" r="10"/></svg>'],
+      ['path', '<svg><path d="M0 0 L20 20"/></svg>'],
+      ['g', '<svg><g><rect x="0" y="0" width="20" height="20"/></g></svg>'],
+    ] as const) {
+      const slId = slIdOf('s', html, tag)
+      const rect: SlRect = { x: 0, y: 0, width: 20, height: 20 }
+      const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 40, y: 25 })
+      expect(patched).toContain('transform: translate(40px, 25px)')
+      expect(patched).not.toContain('x="40"')
+      expect(patched).not.toContain('y="25"')
+    }
+  })
+
   it('an SVG element under an OPAQUE transform is refused like any other', () => {
     // A matrix we never decomposed could be a doubling one, under which `x` +40 lands 80px out.
     const html =

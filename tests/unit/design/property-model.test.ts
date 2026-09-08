@@ -532,6 +532,68 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
+  it('a NON-uniform scale pins both axes of the scale test — scale(1, 2) is not scale(2)', () => {
+    // The uniform `scale(2)` above leaves either conjunct of `scale.sx === 1 && scale.sy === 1`
+    // free to be dropped: it pins the pair, not each half. `scale(1, 2)` is the shape a designer
+    // gets from stretching a rect vertically, and it separates them — under it a `y="40"` write is
+    // 40 units in a doubled user space, i.e. 80px on screen, while X is untouched and would still
+    // be safe by the attribute channel. Mutation guard: dropping `scale.sy === 1` reds the first
+    // pair, dropping `scale.sx === 1` reds the second.
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(1, 2)"/></svg>', 1, 'y', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(0, 40px) scale(1, 2)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(1, 2)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(40px, 0) scale(1, 2)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(2, 1)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(40px, 0) scale(2, 1)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(2, 1)"/></svg>', 1, 'y', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(0, 40px) scale(2, 1)"/></svg>')
+  })
+
+  it('an SVG element with no x/y geometry moves by a translate, not a junk attribute (round-6 major)', () => {
+    // `<circle>` positions by `cx`/`cy`, `<path>` by `d`, `<g>` by its own transform. The x/y
+    // attribute channel is `<rect>`'s (and `<image>`/`<text>`/`<use>`/`<foreignObject>`'s); writing
+    // `x="40"` on any of these three adds an attribute nothing reads, so the shape does not move
+    // while the gesture still spends an undo entry. Mutation guard: dropping the `SVG_XY_TAGS`
+    // conjunct from `moveChannel`'s `attr` arm writes `<circle x="40" cx="50" …>` here.
+    expect(edit('<svg><circle cx="50" cy="50" r="10"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><circle style="transform: translate(40px, 0)" cx="50" cy="50" r="10"/></svg>',
+    )
+    expect(edit('<svg><path d="M0 0 L10 10"/></svg>', 1, 'y', '40')).toBe(
+      '<svg><path style="transform: translate(0, 40px)" d="M0 0 L10 10"/></svg>',
+    )
+    expect(edit('<svg><g><rect x="1"/></g></svg>', 1, 'x', '40')).toBe(
+      '<svg><g style="transform: translate(40px, 0)"><rect x="1"/></g></svg>',
+    )
+    // …and the reader agrees with the writer: the field the panel shows is the translate, not a
+    // `null` from an attribute that was never going to be there.
+    const { source, element } = at(
+      '<svg><circle cx="50" cy="50" style="transform: translate(7px, 8px)"/></svg>',
+      1,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('7px')
+    expect(values.y).toBe('8px')
+  })
+
+  it("the x/y attribute channel is still <rect>/<image>/<text>/<use>'s — the gate is a set, not a ban", () => {
+    // The other half of the tag gate: an element that DOES position by x/y keeps the attribute
+    // channel. Mutation guard: an empty `SVG_XY_TAGS` reds every line here.
+    expect(edit('<svg><rect x="5"/></svg>', 1, 'x', '40')).toBe('<svg><rect x="40"/></svg>')
+    expect(edit('<svg><image x="5" href="a.png"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><image x="40" href="a.png"/></svg>',
+    )
+    expect(edit('<svg><text x="5" y="5">hi</text></svg>', 1, 'y', '40')).toBe(
+      '<svg><text x="5" y="40">hi</text></svg>',
+    )
+    expect(edit('<svg><use x="5" href="#a"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><use x="40" href="#a"/></svg>',
+    )
+  })
+
   it('SVG under an OPAQUE transform is refused: the matrix was never decomposed', () => {
     // `matrix(2, …)` doubles, so writing `x="40"` lands 80px out — but the point is that we cannot
     // tell a doubling matrix from the identity without decomposing it, so neither channel is known
