@@ -38,7 +38,8 @@
  *
  * The clone is a single insertion at the original's `outer.end` — a pure insertion, no deletion — so
  * every span the map holds for another element is either before the insertion point (unchanged) or
- * after it (shifted uniformly, and the caller rebuilds the map against the new source anyway). No
+ * after it (shifted uniformly, and the caller rebuilds the map against the new source anyway). The
+ * freshening then rewrites only attribute values whose start tag lies inside the inserted range. No
  * author byte is rewritten; the original subtree's source is reproduced verbatim in the clone apart
  * from the freshened ids and the offset nudge.
  */
@@ -46,7 +47,7 @@
 import { applyOps, readStyleProp, setStyleProp, type SourceOp } from './patch'
 import { buildSlideMap } from './slide-map'
 import { SL_ID_ATTR } from './slide-map'
-import { addTranslateOffset } from './transform'
+import { composeTransform, inspectTransform, withTranslateOffset } from './transform'
 import type { SlideMap } from './types'
 
 /** A visible offset for the clone, in frame px — PowerPoint nudges a paste down-and-right. */
@@ -65,6 +66,12 @@ export interface DuplicateResult {
    * find the clone's fresh `slId` (which cannot be known before re-parsing; see the header).
    */
   readonly cloneStart: number
+  /**
+   * Why the clone sits exactly over the original instead of `offset` away — see `nudgeTransform` —
+   * or `null` when it was nudged. Phrased for the notice, so the caller explains the actual cause
+   * rather than reporting a shifted box the clone never got.
+   */
+  readonly declined: string | null
 }
 
 /** Every author-written `id` and `data-sl-id` value anywhere in the slide — the collision set. */
@@ -178,28 +185,42 @@ function uniquify(base: string, taken: Set<string>): string {
 }
 
 /**
- * Rewrite every author `id`/`data-sl-id` in `cloneText` to a fresh value, then nudge the clone's
- * root by `offset`. Parses the clone as its own fragment so the rewrites are anchored to real
- * attribute-value spans (never a blind text replace that could hit element content).
+ * Rewrite every author `id`/`data-sl-id` of the clone — the elements whose start tag lies in
+ * `[start, end)` of `source` — to a fresh value, and repoint the references that resolve within it.
+ *
+ * The clone is parsed **in place in the whole document**, never as its own fragment. A fragment
+ * parse loses anything that only survives in context — a `<td>` outside a `<table>` is discarded by
+ * the tree builder — which is how the first cut duplicated a table cell to two `id="a"` cells and
+ * called it done. Every span here comes from the same parse the rest of Design Mode trusts, and the
+ * rewrites are anchored to real attribute-value spans (never a blind text replace over content).
  */
-function freshenClone(cloneText: string, taken: Set<string>, offset: DuplicateOffset): string {
-  const idMap = buildSlideMap('dup', cloneText)
+function freshenClone(
+  slideId: string,
+  source: string,
+  start: number,
+  end: number,
+  taken: Set<string>,
+): string {
+  const map = buildSlideMap(slideId, source)
+  const cloned = [...map.byId.values()].filter(
+    (element) => element.outer.start >= start && element.outer.start < end,
+  )
   const ops: SourceOp[] = []
   // Pass 1: freshen definition ids. Build the `id` remap (references target `id`, not `data-sl-id`)
   // so pass 2 can repoint intra-clone references at the fresh ids. Each op targets a distinct
   // attribute-value span, so none overlap.
   const remap = new Map<string, string>()
-  for (const element of idMap.byId.values()) {
+  for (const element of cloned) {
     const idAttr = element.attrs['id']
     if (idAttr !== undefined && idAttr.value !== null) {
-      const current = cloneText.slice(idAttr.value.start, idAttr.value.end)
+      const current = source.slice(idAttr.value.start, idAttr.value.end)
       const fresh = uniquify(current, taken)
       remap.set(current, fresh)
       ops.push({ kind: 'replaceSpan', span: idAttr.value, text: fresh })
     }
     const slAttr = element.attrs[SL_ID_ATTR]
     if (slAttr !== undefined && slAttr.value !== null) {
-      const current = cloneText.slice(slAttr.value.start, slAttr.value.end)
+      const current = source.slice(slAttr.value.start, slAttr.value.end)
       ops.push({ kind: 'replaceSpan', span: slAttr.value, text: uniquify(current, taken) })
     }
   }
@@ -208,29 +229,43 @@ function freshenClone(cloneText: string, taken: Set<string>, offset: DuplicateOf
   // defined outside the clone is not in `remap`, so it is left untouched. Distinct attribute spans
   // from pass 1 (id/data-sl-id are never reference carriers), so the two op sets never overlap.
   if (remap.size > 0) {
-    for (const element of idMap.byId.values()) {
+    for (const element of cloned) {
       for (const [key, attr] of Object.entries(element.attrs)) {
         if (attr.value === null) continue
-        const raw = cloneText.slice(attr.value.start, attr.value.end)
+        const raw = source.slice(attr.value.start, attr.value.end)
         const next = rewriteReference(key, raw, remap)
         if (next !== null) ops.push({ kind: 'replaceSpan', span: attr.value, text: next })
       }
     }
   }
+  return ops.length > 0 ? applyOps(source, ops) : source
+}
 
-  let text = ops.length > 0 ? applyOps(cloneText, ops) : cloneText
+/** The clone root's nudged transform, or why it is left exactly over the original. */
+type Nudge = { readonly transform: string } | { readonly declined: string }
 
-  // Pass 3: offset the root, rebuilt against the freshened text so its style span is live.
-  const offsetMap = buildSlideMap('dup', text)
-  const rootId = offsetMap.order[0]
-  const root = rootId === undefined ? undefined : offsetMap.byId.get(rootId)
-  if (root !== undefined) {
-    const transform = readStyleProp(text, root, 'transform')
-    const nudged = addTranslateOffset(transform, offset.dx, offset.dy)
-    const offsetOps = setStyleProp(text, root, 'transform', nudged)
-    if (offsetOps.length > 0) text = applyOps(text, offsetOps)
+/**
+ * Three cases, decided by `inspectTransform`. A transform the handles can decompose with a px (or
+ * absent) translate folds the offset into it — the common case. An **opaque** transform (`matrix`,
+ * a non-canonical order) gets a `translate(...)` **prepended**: the outermost function of a CSS
+ * transform list is applied last, so a leading translate is a parent-space shift that is correct
+ * whatever follows it, and the clone stays as opaque — and as loudly locked — as its original. An
+ * editable transform whose translate is *not* px (`translate(-50%, -50%)`, the centring idiom, or
+ * an `em`) is the one case with no safe nudge: adding px to it needs a `calc()` the tokenizer
+ * refuses, and prepending a second translate would make the clone opaque and lock the handles on a
+ * copy of an element whose original had them. So the clone lands in place and the caller says why.
+ */
+function nudgeTransform(transform: string | null, offset: DuplicateOffset): Nudge {
+  const shape = inspectTransform(transform)
+  const prefix = `translate(${String(offset.dx)}px, ${String(offset.dy)}px)`
+  if (!shape.editable) {
+    return { transform: transform === null ? prefix : `${prefix} ${transform}` }
   }
-  return text
+  const parts = withTranslateOffset(shape.parts, offset.dx, offset.dy)
+  if (parts === null) {
+    return { declined: `its translate(${shape.parts.translate ?? ''}) is not in px` }
+  }
+  return { transform: composeTransform(parts) }
 }
 
 /**
@@ -249,9 +284,24 @@ export function buildDuplicatePatch(
   if (element === undefined) return null
 
   const taken = collectAuthorIds(map)
-  const cloneText = source.slice(element.outer.start, element.outer.end)
-  const freshened = freshenClone(cloneText, taken, offset)
-
   const at = element.outer.end
-  return { source: source.slice(0, at) + freshened + source.slice(at), cloneStart: at }
+  const cloneText = source.slice(element.outer.start, at)
+  const inserted = source.slice(0, at) + cloneText + source.slice(at)
+  const freshened = freshenClone(slideId, inserted, at, at + cloneText.length, taken)
+
+  // Pass 3: offset the root, re-resolved against the freshened source so its style span is live.
+  const root = [...buildSlideMap(slideId, freshened).byId.values()].find(
+    (candidate) => candidate.outer.start === at,
+  )
+  if (root === undefined) {
+    return { source: freshened, cloneStart: at, declined: 'the copy could not be re-parsed' }
+  }
+  const nudge = nudgeTransform(readStyleProp(freshened, root, 'transform'), offset)
+  if ('declined' in nudge) return { source: freshened, cloneStart: at, declined: nudge.declined }
+  const ops = setStyleProp(freshened, root, 'transform', nudge.transform)
+  return {
+    source: ops.length > 0 ? applyOps(freshened, ops) : freshened,
+    cloneStart: at,
+    declined: null,
+  }
 }

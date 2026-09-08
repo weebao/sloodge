@@ -440,10 +440,304 @@ describe('buildFieldOps — position and size', () => {
     )
   })
 
-  it('preserves other transform functions when editing translate', () => {
+  it('preserves other transform functions, prepending a new translate so it acts in parent space', () => {
+    // `rotate(4deg) translate(10px, 0)` would shift the element along its own tilted axis; the
+    // leading position is the one CSS applies last, i.e. in the parent's frame (§5.3 canonical order).
+    // Mutation guard: appending the translate (the M3.3 behaviour) reds here.
     expect(edit('<div style="transform: rotate(4deg)">x</div>', 0, 'x', '10')).toBe(
-      '<div style="transform: rotate(4deg) translate(10px, 0)">x</div>',
+      '<div style="transform: translate(10px, 0) rotate(4deg)">x</div>',
     )
+  })
+
+  it('folds a translateX alias into the one translate the handles write (round-1 major 2)', () => {
+    // `transform.ts` folds `translateX` into the translate family; writing a second `translate()`
+    // beside it made the element opaque ("translate() appears more than once") on its first drag.
+    // Mutation guard: the exact-name `replaceTranslate` path reds both.
+    expect(edit('<div style="transform: translateX(120px)">x</div>', 0, 'x', '40')).toBe(
+      '<div style="transform: translate(40px, 0)">x</div>',
+    )
+    expect(
+      edit('<div style="transform: translateX(120px) rotate(5deg)">x</div>', 0, 'y', '8'),
+    ).toBe('<div style="transform: translate(120px, 8px) rotate(5deg)">x</div>')
+  })
+
+  it('reads the X/Y fields from a folded alias too', () => {
+    const { source, element } = at('<div style="transform: translateY(8px)">x</div>', 0)
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('0')
+    expect(values.y).toBe('8px')
+  })
+
+  it('opaque + in-flow: an X edit is REFUSED, not written through the transform (round-4 major)', () => {
+    // Round 2 made the new translate LEAD here (`translate(40px, 0) matrix(2, …)`) so it acted in
+    // parent space. Round 4 goes one further: the write does not happen at all, because the panel's
+    // X/Y inputs reach `buildFieldOps` without passing through the drag's gate, and on
+    // `rotate(90deg) translate(10px, 0)` the in-place rewrite moved the element 40px DOWN for a +40
+    // X edit. Mutation guard: restoring that write in `moveChannel`'s `refused` arm reds here
+    // with `translate(40px, 0) matrix(2, 0, 0, 2, 0, 0)`.
+    const html = '<div style="transform: matrix(2, 0, 0, 2, 0, 0)">x</div>'
+    expect(edit(html, 0, 'x', '40')).toBe(html)
+  })
+
+  it('opaque + in-flow: a Y edit is refused too — both axes, one refusal', () => {
+    // The vertical half (round-4 minor 1): a Y edit under `rotate(90deg)` moves the element LEFT.
+    const html = '<div style="transform: rotate(90deg) translate(10px, 0)">x</div>'
+    expect(edit(html, 0, 'y', '40')).toBe(html)
+    expect(edit(html, 0, 'x', '40')).toBe(html)
+  })
+
+  it('opaque, exact translate present: still READ on both axes, so the disabled field shows them', () => {
+    // The write is refused but the value is not hidden — the panel shows `5px`/`6px` greyed out with
+    // the reason as its tooltip. Mutation guard: `translateArgs` returning null for an opaque value
+    // reads 0/0 here.
+    const { source, element } = at(
+      '<div style="transform: translate(5px, 6px) skew(3deg)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('5px')
+    expect(values.y).toBe('6px')
+    expect(
+      edit('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="transform: translate(5px, 6px) skew(3deg)">x</div>')
+  })
+
+  it('opaque but POSITIONED: the write still lands — left/top is resolved before the transform', () => {
+    expect(
+      edit('<div style="left: 10px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>', 0, 'x', '40'),
+    ).toBe('<div style="left: 40px; transform: matrix(2, 0, 0, 2, 0, 0)">x</div>')
+  })
+
+  it('SVG with parent-aligned axes writes the x attribute', () => {
+    // No transform, and a pure translate, both leave the rect's own axes parallel to the parent's.
+    expect(edit('<svg><rect x="5"/></svg>', 1, 'x', '40')).toBe('<svg><rect x="40"/></svg>')
+    expect(
+      edit('<svg><rect x="5" style="transform: translate(3px, 0)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="40" style="transform: translate(3px, 0)"/></svg>')
+  })
+
+  it('SVG under a ROTATE writes a parent-space translate, NOT the x attribute (round-5 major)', () => {
+    // An SVG `x` is geometry inside the element's own user space, so +40 on `x` under `rotate(30deg)`
+    // moves the rect ~34.6px right and ~20px DOWN — it does not follow the pointer. The leading
+    // translate `composeTransform` writes is applied last, in the parent's frame, so it does.
+    // Mutation guard: an unconditional `attr` arm writes `x="40"` here.
+    expect(edit('<svg><rect x="5" style="transform: rotate(30deg)"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="5" style="transform: translate(40px, 0) rotate(30deg)"/></svg>',
+    )
+  })
+
+  it('SVG under a SCALE writes a parent-space translate too — 40 user units would be 80px', () => {
+    expect(edit('<svg><rect x="5" style="transform: scale(2)"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="5" style="transform: translate(40px, 0) scale(2)"/></svg>',
+    )
+  })
+
+  it('a NON-uniform scale pins both axes of the scale test — scale(1, 2) is not scale(2)', () => {
+    // The uniform `scale(2)` above leaves either conjunct of `scale.sx === 1 && scale.sy === 1`
+    // free to be dropped: it pins the pair, not each half. `scale(1, 2)` is the shape a designer
+    // gets from stretching a rect vertically, and it separates them — under it a `y="40"` write is
+    // 40 units in a doubled user space, i.e. 80px on screen, while X is untouched and would still
+    // be safe by the attribute channel. Mutation guard: dropping `scale.sy === 1` reds the first
+    // pair, dropping `scale.sx === 1` reds the second.
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(1, 2)"/></svg>', 1, 'y', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(0, 40px) scale(1, 2)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(1, 2)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(40px, 0) scale(1, 2)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(2, 1)"/></svg>', 1, 'x', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(40px, 0) scale(2, 1)"/></svg>')
+    expect(
+      edit('<svg><rect x="5" y="5" style="transform: scale(2, 1)"/></svg>', 1, 'y', '40'),
+    ).toBe('<svg><rect x="5" y="5" style="transform: translate(0, 40px) scale(2, 1)"/></svg>')
+  })
+
+  it('an SVG element with no x/y geometry moves by a translate, not a junk attribute (round-6 major)', () => {
+    // `<circle>` positions by `cx`/`cy`, `<path>` by `d`, `<g>` by its own transform. The x/y
+    // attribute channel is `<rect>`'s (and `<image>`/`<text>`/`<use>`/`<foreignObject>`'s); writing
+    // `x="40"` on any of these three adds an attribute nothing reads, so the shape does not move
+    // while the gesture still spends an undo entry. Mutation guard: dropping the `SVG_XY_TAGS`
+    // conjunct from `moveChannel`'s `attr` arm writes `<circle x="40" cx="50" …>` here.
+    expect(edit('<svg><circle cx="50" cy="50" r="10"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><circle style="transform: translate(40px, 0)" cx="50" cy="50" r="10"/></svg>',
+    )
+    expect(edit('<svg><path d="M0 0 L10 10"/></svg>', 1, 'y', '40')).toBe(
+      '<svg><path style="transform: translate(0, 40px)" d="M0 0 L10 10"/></svg>',
+    )
+    expect(edit('<svg><g><rect x="1"/></g></svg>', 1, 'x', '40')).toBe(
+      '<svg><g style="transform: translate(40px, 0)"><rect x="1"/></g></svg>',
+    )
+    // …and the reader agrees with the writer: the field the panel shows is the translate, not a
+    // `null` from an attribute that was never going to be there.
+    const { source, element } = at(
+      '<svg><circle cx="50" cy="50" style="transform: translate(7px, 8px)"/></svg>',
+      1,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('7px')
+    expect(values.y).toBe('8px')
+  })
+
+  it('the x/y attribute channel is still the set members — the gate is a set, not a ban, and EVERY member is pinned', () => {
+    // The other half of the tag gate: an element that DOES position by x/y keeps the attribute
+    // channel. One line per member of `SVG_XY_TAGS`, because pinning the set as a whole is not the
+    // same as pinning its membership — round 7 shipped two unpinned members and one of them was
+    // wrong. Mutation guard: deleting ANY single member of the set reds this test, and an empty
+    // set reds every line of it.
+    expect(edit('<svg><rect x="5"/></svg>', 1, 'x', '40')).toBe('<svg><rect x="40"/></svg>')
+    expect(edit('<svg><image x="5" href="a.png"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><image x="40" href="a.png"/></svg>',
+    )
+    expect(edit('<svg><text x="5" y="5">hi</text></svg>', 1, 'y', '40')).toBe(
+      '<svg><text x="5" y="40">hi</text></svg>',
+    )
+    expect(edit('<svg><use x="5" href="#a"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><use x="40" href="#a"/></svg>',
+    )
+    // `<foreignObject>` — camelCase in the set because parse5 case-adjusts foreign tag names, so
+    // BOTH source spellings resolve to the same member. Lowercasing the set member would silently
+    // drop the tag; this pins that it does not have to be spelled twice.
+    expect(
+      edit(
+        '<svg><foreignObject x="5" width="1" height="1"><div>a</div></foreignObject></svg>',
+        1,
+        'x',
+        '40',
+      ),
+    ).toBe('<svg><foreignObject x="40" width="1" height="1"><div>a</div></foreignObject></svg>')
+    expect(
+      edit(
+        '<svg><foreignobject x="5" width="1" height="1"><div>a</div></foreignobject></svg>',
+        1,
+        'x',
+        '40',
+      ),
+    ).toBe('<svg><foreignobject x="40" width="1" height="1"><div>a</div></foreignobject></svg>')
+  })
+
+  it('the tag gate is namespaced: a bare <text>/<tspan>/<use> is HTML and moves by a translate', () => {
+    // `SVG_XY_TAGS` is checked against `tagName`, and `text`, `tspan` and `use` are perfectly legal
+    // HTML tag names — the parser leaves a bare one in the HTML namespace, where `x` positions
+    // nothing. So the tag half of the gate is not sufficient on its own; the `isSvg(element)`
+    // conjunct is what stops these from taking the attribute channel.
+    //
+    // Mutation guard, and the reason this test exists: round 8 found that deleting `isSvg(element)`
+    // from `moveChannel`'s `attr` arm left the whole design + fonts suite green at 1792 passed,
+    // while flipping each line below to a junk `x="40"` on an element that never moves. The tag
+    // half was pinned six ways by the test above; the namespace half was pinned by nothing.
+    expect(edit('<text x="5" y="5">hi</text>', 0, 'x', '40')).toBe(
+      '<text style="transform: translate(40px, 0)" x="5" y="5">hi</text>',
+    )
+    expect(edit('<tspan x="5">frag</tspan>', 0, 'x', '40')).toBe(
+      '<tspan style="transform: translate(40px, 0)" x="5">frag</tspan>',
+    )
+    expect(edit('<use x="5"></use>', 0, 'x', '40')).toBe(
+      '<use style="transform: translate(40px, 0)" x="5"></use>',
+    )
+    // The positive control, so this cannot be satisfied by banning the channel outright: the same
+    // tag INSIDE an <svg> still writes the attribute.
+    expect(edit('<svg><text x="5" y="5">hi</text></svg>', 1, 'x', '40')).toBe(
+      '<svg><text x="40" y="5">hi</text></svg>',
+    )
+  })
+
+  it('a <tspan> moves by its x attribute — Chromium parses a transform on it and declines to apply it', () => {
+    // Round-7 major 2. A `<tspan>` is a text-content child, not a transformable element: measured
+    // in the Chromium that ships with the app, a `style="transform: translate(40px, 0)"` on one
+    // leaves its box exactly where it was (`getComputedStyle` reports the matrix, so it parses the
+    // declaration and simply does not honour it) while an `x` write moves it — with or without an
+    // `x` already there. So it belongs in `SVG_XY_TAGS`, and the translate arm would freeze it.
+    // Reachable: `grabbable.ts` documents alt-click as the way to select a `<tspan>`, and
+    // `SelectionOverlay` passes `event.altKey` straight into `requestHit`.
+    // Mutation guard: deleting `'tspan',` from the set writes the inert translate on both lines.
+    expect(edit('<svg><text x="5"><tspan x="10">f</tspan></text></svg>', 2, 'x', '40')).toBe(
+      '<svg><text x="5"><tspan x="40">f</tspan></text></svg>',
+    )
+    expect(edit('<svg><text x="5" y="9"><tspan>f</tspan></text></svg>', 2, 'y', '40')).toBe(
+      '<svg><text x="5" y="9"><tspan y="40">f</tspan></text></svg>',
+    )
+  })
+
+  it('the OUTERMOST <svg> moves by a translate, not by x/y — the attributes are inert on it', () => {
+    // Round-7 major 1, the mirror of the `<tspan>` case. The only `<svg>` a slide contains is an
+    // outermost one (slides are HTML documents with inline SVG blocks), and there `x`/`y` are not
+    // geometry at all: the element is a replaced element in the CSS box model. Measured in the
+    // app's own Chromium, `x` and `y` both leave its box untouched while `left`/`top` and a CSS
+    // translate both move it, and the translate also moves a NESTED `<svg>` — so the translate arm
+    // is right for both and `'svg'` must stay OUT of `SVG_XY_TAGS`.
+    // Mutation guard: adding `'svg',` back to the set emits `<svg x="40" …>`, two attributes the
+    // renderer ignores, on the ordinary click-and-drag of a whole icon.
+    expect(edit('<svg width="300"><rect x="1"/></svg>', 0, 'x', '40')).toBe(
+      '<svg style="transform: translate(40px, 0)" width="300"><rect x="1"/></svg>',
+    )
+    // Its real shape on a slide: absolutely positioned. `moveChannel`'s `offsets` arm is guarded by
+    // `!isSvg`, which is right for SVG *children* (a stray `left` on a `<rect>` does nothing) and
+    // skips the very `left`/`top` this element IS positioned by — so it takes the translate arm,
+    // which Chromium honours here. Recorded because the bytes look surprising, not because they
+    // are wrong. See the M3.6 roadmap row.
+    expect(
+      edit(
+        '<svg style="position: absolute; left: 100px" width="300"><rect x="1"/></svg>',
+        0,
+        'x',
+        '40',
+      ),
+    ).toBe(
+      '<svg style="position: absolute; left: 100px; transform: translate(40px, 0)" width="300"><rect x="1"/></svg>',
+    )
+  })
+
+  it('SVG under an OPAQUE transform is refused: the matrix was never decomposed', () => {
+    // `matrix(2, …)` doubles, so writing `x="40"` lands 80px out — but the point is that we cannot
+    // tell a doubling matrix from the identity without decomposing it, so neither channel is known
+    // safe. Mutation guard: an unconditional `attr` arm writes `x="40"` here.
+    const html = '<svg><rect x="5" style="transform: matrix(2, 0, 0, 2, 0, 0)"/></svg>'
+    expect(edit(html, 1, 'x', '40')).toBe(html)
+  })
+
+  it('an SVG child that declares a stray `left` still writes its x attribute', () => {
+    // Mutation guard: testing `positionsByOffsets` before `isSvg` reads `10px` and writes
+    // `left: 40px`, which does nothing whatsoever to an SVG child.
+    const { source, element } = at('<svg><rect x="5" style="left: 10px"/></svg>', 1)
+    expect(readPropertyValues(source, element).x).toBe('5')
+    expect(edit('<svg><rect x="5" style="left: 10px"/></svg>', 1, 'x', '40')).toBe(
+      '<svg><rect x="40" style="left: 10px"/></svg>',
+    )
+  })
+
+  it('a top-only element is positioned by offsets: Y reads top, X reads null, X writes left', () => {
+    // Pins the `top` half of `positionsByOffsets` (round-2 minor: dropping it survived the suite).
+    const { source, element } = at(
+      '<div style="top: 5px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBeNull()
+    expect(values.y).toBe('5px')
+    expect(edit('<div style="top: 5px">x</div>', 0, 'x', '120')).toBe(
+      '<div style="top: 5px; left: 120px">x</div>',
+    )
+  })
+
+  it('a left-only element: X reads left, Y reads null, a Y edit writes top', () => {
+    // Pins the `left` half at the READER (round-3 minor 2): every other left/top fixture declares both.
+    const { source, element } = at(
+      '<div style="left: 100px; transform: translate(9px, 9px)">x</div>',
+      0,
+    )
+    const values = readPropertyValues(source, element)
+    expect(values.x).toBe('100px')
+    expect(values.y).toBeNull()
+    expect(edit('<div style="left: 100px">x</div>', 0, 'y', '20')).toBe(
+      '<div style="left: 100px; top: 20px">x</div>',
+    )
+  })
+
+  it('replaces an existing translate where it stands', () => {
+    expect(
+      edit('<div style="transform: translate(1px, 2px) rotate(4deg)">x</div>', 0, 'x', '10'),
+    ).toBe('<div style="transform: translate(10px, 2px) rotate(4deg)">x</div>')
   })
 })
 

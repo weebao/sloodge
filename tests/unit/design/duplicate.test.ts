@@ -196,3 +196,62 @@ describe('buildDuplicatePatch — hostile corpus', () => {
     })
   }
 })
+
+describe('buildDuplicatePatch — the nudge follows inspectTransform (loud, not lossy)', () => {
+  it('folds the offset into a px translate and keeps the rotation', () => {
+    const source = '<div style="transform: translate(10px, 20px) rotate(30deg)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.declined).toBeNull()
+    expect(result.source).toContain('translate(26px, 36px) rotate(30deg)')
+  })
+
+  it('prepends a parent-space translate to an opaque transform, leaving the matrix intact', () => {
+    const source = '<div style="transform: matrix(1, 0, 0, 1, 5, 5)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.declined).toBeNull()
+    // Leading, so it is applied last — a screen shift whatever the matrix does. Mutation guard:
+    // appending it (inside the matrix's frame) or dropping the matrix reds here.
+    expect(result.source.slice(result.cloneStart)).toContain(
+      'transform: translate(16px, 16px) matrix(1, 0, 0, 1, 5, 5)',
+    )
+    // The original is byte-identical.
+    expect(result.source.slice(0, result.cloneStart)).toBe(source)
+  })
+
+  it('leaves a percentage-translated clone in place and says so, rather than writing -34px', () => {
+    const source = '<div style="transform: translate(-50%, -50%)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.declined).toContain('translate(-50%, -50%)')
+    expect(result.source).toBe(source + source)
+    expect(result.source).not.toContain('px')
+  })
+})
+
+describe('buildDuplicatePatch — the clone is freshened from the whole document (round-1)', () => {
+  it('a <td> clone keeps its table context: fresh id, nudged, original untouched', () => {
+    // A fragment parse discards a `<td>` outside a table, so the first cut duplicated a cell to two
+    // `id="a"` cells and skipped the nudge. Mutation guard: parsing the clone on its own reds here.
+    const source = '<table><tr><td id="a">c</td></tr></table>'
+    const td = [...buildSlideMap(SLIDE_ID, source).byId.values()].find((s) => s.tagName === 'td')!
+    const result = buildDuplicatePatch(SLIDE_ID, source, td.slId, OFFSET)!
+    expect(result.declined).toBeNull()
+    const ids = authorIds(buildSlideMap(SLIDE_ID, result.source))
+    expect(ids).toEqual(['a', 'a-2'])
+    expect(result.source.slice(result.cloneStart)).toContain('translate(16px, 16px)')
+    expect(result.source.slice(0, result.cloneStart)).toBe(source.slice(0, td.outer.end))
+  })
+
+  it('names the actual translate when it declines: an em, not "percentages"', () => {
+    const source = '<div style="transform: translate(1em, 0)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.declined).toBe('its translate(1em, 0) is not in px')
+    expect(result.source).toBe(source + source)
+  })
+
+  it('an uppercase px unit is still px, so the clone is nudged', () => {
+    const source = '<div style="transform: translate(10PX, 0)">x</div>'
+    const result = buildDuplicatePatch(SLIDE_ID, source, firstId(source), OFFSET)!
+    expect(result.declined).toBeNull()
+    expect(result.source.slice(result.cloneStart)).toContain('translate(26px, 16px)')
+  })
+})
