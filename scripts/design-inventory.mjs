@@ -1704,14 +1704,32 @@ function freshnessLine(files, totals) {
  * Every file whose basename a citation may name. `scan()` reads the renderer only, but the audit
  * also cites test files, and a citation the checker cannot resolve must fail rather than be
  * skipped — so the index is built over the whole of `src/` and `tests/`.
+ *
+ * The flat list is kept alongside the basename map because the remedy for an ambiguous basename is
+ * to cite a repo-relative path, and that remedy has to actually resolve.
  */
 function citationIndex() {
+  const all = [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'tests'))]
   const byBase = new Map()
-  for (const f of [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'tests'))]) {
+  for (const f of all) {
     const base = f.slice(f.lastIndexOf('/') + 1)
     byBase.set(base, (byBase.get(base) ?? []).concat(f))
   }
-  return byBase
+  return { all, byBase }
+}
+
+/**
+ * The files a citation names. A bare `Foo.tsx` matches on basename; anything carrying a `/` is a
+ * path fragment and matches on path suffix, so `src/renderer/src/features/design/Foo.tsx` and
+ * `design/Foo.tsx` both single out one file when the basename alone is ambiguous — which is what
+ * the ambiguity failure tells the reader to do.
+ */
+function citationCandidates({ all, byBase }, cite) {
+  if (!cite.includes('/')) return byBase.get(cite) ?? []
+  return all.filter((f) => {
+    const rel = relative(ROOT, f)
+    return rel === cite || rel.endsWith(`/${cite}`)
+  })
 }
 
 const MANIFEST_BEGIN = '<!-- BEGIN CITATION MANIFEST -->'
@@ -1738,7 +1756,7 @@ const citationExcerpt = (raw) => {
  * count found is asserted against the count resolved so a silent drop cannot pass either.
  */
 function collectCitations(doc) {
-  const byBase = citationIndex()
+  const index = citationIndex()
   const entries = new Map() // "path:line" → manifest line
   const problems = []
   let found = 0
@@ -1750,7 +1768,9 @@ function collectCitations(doc) {
     else if (text.includes(MANIFEST_END)) inManifest = false
     if (inManifest) return
     const at = `${relative(ROOT, AUDIT)}:${String(i + 1)}`
-    for (const m of text.matchAll(/([A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:[/–-]\d+)*)/g)) {
+    for (const m of text.matchAll(
+      /((?:[\w.-]+\/)*[A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:[/–-]\d+)*)/g,
+    )) {
       const nums = []
       for (const part of m[2].split('/')) {
         const range = /^(\d+)[–-](\d+)$/.exec(part)
@@ -1768,7 +1788,7 @@ function collectCitations(doc) {
         nums.push(lo, hi)
       }
       found += nums.length
-      const candidates = byBase.get(m[1]) ?? []
+      const candidates = citationCandidates(index, m[1])
       if (candidates.length === 0) {
         problems.push(
           `${at} — \`${m[1]}\` is cited but no such file exists under \`src/\` or \`tests/\` (renamed or deleted?)`,
@@ -1777,7 +1797,7 @@ function collectCitations(doc) {
       }
       if (candidates.length > 1) {
         problems.push(
-          `${at} — \`${m[1]}\` is ambiguous: ${String(candidates.length)} files share that basename (${candidates.map((c) => relative(ROOT, c)).join(', ')}) — cite a repo-relative path`,
+          `${at} — \`${m[1]}\` is ambiguous: ${String(candidates.length)} files match it (${candidates.map((c) => relative(ROOT, c)).join(', ')}) — cite enough of the repo-relative path to single one out, e.g. \`${relative(ROOT, candidates[0])}\``,
         )
         continue
       }
@@ -1896,7 +1916,21 @@ function verifyDoc() {
   } else {
     print(`Manifest: ${String(recorded.length)} lines recorded in §11.`)
     const want = new Map(manifest.map((l) => [l.slice(0, l.indexOf('  ')), l]))
-    const got = new Map(recorded.map((l) => [l.slice(0, l.indexOf('  ')), l]))
+    // Built by hand rather than with `new Map(recorded.map(…))`, which is last-wins: a regenerated
+    // block pasted *above* the old one instead of over it leaves a second, contradictory record for
+    // the same line that the map silently discards, so the manifest could record something false
+    // and still pass. A duplicated key is a failure, whichever copy is the wrong one.
+    const got = new Map()
+    for (const l of recorded) {
+      const key = l.slice(0, l.indexOf('  '))
+      const first = got.get(key)
+      if (first !== undefined) {
+        problems.push(
+          `§11 records \`${key}\` more than once — one of the two copies is unchecked. Replace the whole block with the output of \`node scripts/design-inventory.mjs --emit-citations\`.\n  first:  ${first}\n  second: ${l}`,
+        )
+      }
+      got.set(key, l)
+    }
     for (const [key, wantLine] of want) {
       const gotLine = got.get(key)
       if (gotLine === undefined) {
