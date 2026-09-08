@@ -197,7 +197,7 @@ describe('the font enumerator’s spawn options', () => {
     // Without this the child's stdout arrives as a Buffer and the parser's `.split('\n')` throws
     // into the catch — the same silent zero-families outcome as a bad payload.
     expect(call.options['encoding']).toBe('utf8')
-    expect(call.options['timeout']).toBe(10_000)
+    expect(call.options['timeout']).toBe(45_000)
     expect(call.options['maxBuffer']).toBe(4 * 1024 * 1024)
 
     // The env the child actually receives, not the one `childEnv` would build in isolation.
@@ -227,7 +227,7 @@ describe('the font enumerator’s spawn options', () => {
     // paths, which `normalizeFontFamilies` then refuses wholesale for an empty dropdown and no
     // error. Nothing else calls this branch on the real path, so the argv is pinned here or nowhere.
     expect(call.args).toEqual([':', 'family'])
-    expect(call.options['timeout']).toBe(10_000)
+    expect(call.options['timeout']).toBe(45_000)
     expect(call.options['maxBuffer']).toBe(4 * 1024 * 1024)
     expect(call.options['encoding']).toBe('utf8')
   })

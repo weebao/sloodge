@@ -59,8 +59,34 @@ export interface EnumeratedFonts {
 /**
  * Enumeration is a cold-start cost, not a hang: past this the list is simply empty for the session.
  * Exported for the test that really runs the enumerator, whose own timeout has to outlast this one.
+ *
+ * **Why 45 s and not the 10 s this started as.** The number has to cover the *cold* case, and the
+ * cold case is not the query — it is `Add-Type -AssemblyName System.Drawing`, which on a first call
+ * must find, map and JIT a GDI+ interop assembly the process has never touched. Measured against a
+ * real Windows host through WSL interop, warm, the whole payload answers in **697 / 476 / 469 ms**
+ * (561 families). The M9.0 release job on `windows-latest` nevertheless blew the 10 s budget: the
+ * child came back `killed: true, signal: 'SIGTERM'`, i.e. PowerShell never errored, it was shot by
+ * this timeout on a slow, heavily contended runner with a cold page cache.
+ *
+ * So the honest input is: warm is ~0.5 s, and cold-under-load is **more than 10 s by an unknown
+ * margin** — unknown precisely because the only observation we have of it is a kill at 10 s, which
+ * bounds it from below and not from above. Doubling to 20 s would be picking a number from the same
+ * blind spot that produced 10 s. 45 s is ~90x the measured warm cost, which is the order of headroom
+ * a first-ever assembly load under CPU and disk contention actually needs.
+ *
+ * **What that trades away.** On a genuinely wedged PowerShell the dropdown's "installed fonts aren't
+ * available" state now takes 45 s to appear instead of 10 s. That is the right side of the trade
+ * here, and only here, because: enumeration is lazy and user-initiated (it is not on the startup
+ * path — `installFontsIpc` answers a dropdown open); while it is pending `FontFamilyControl` already
+ * renders the System group and withholds the unavailable message, so the control is usable
+ * throughout rather than blocked; a success is memoised for the session by `./install.ts`, so the
+ * worst case is paid at most once; and a slow *right* answer beats a fast *wrong* one — the failure
+ * this replaces told Windows users they had no fonts installed.
+ *
+ * This is not a substitute for the timeout. `-NonInteractive` makes a prompt fail rather than hang,
+ * and this bounds everything else, so a wedged child still cannot leak a process for the session.
  */
-export const ENUMERATE_TIMEOUT_MS = 10_000
+export const ENUMERATE_TIMEOUT_MS = 45_000
 
 /** ~341 names on a stock Windows host; 4 MB is far more than any real machine produces. */
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024

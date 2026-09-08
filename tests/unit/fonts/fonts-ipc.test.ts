@@ -51,6 +51,85 @@ describe('app:listFonts', () => {
     expect(enumerate).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * The M9.0 release-blocker's second half. `enumerateSystemFonts` **never rejects** — a missing
+   * tool, a non-zero exit and a timeout all resolve `{ families: [], source: 'none' }` — so the
+   * rejection guard below could not fire for any failure that actually happens in production. A
+   * cold-start PowerShell timeout resolved `none`, the memo kept it, and every later dropdown open
+   * in the session was answered from the memo without re-spawning: one slow first open cost the
+   * user their installed fonts until they restarted the app.
+   *
+   * It also silently disabled the retry `FontFamilyControl.loadFromBridge` had already written,
+   * which clears its own memo on this exact result *on the stated grounds that main does not keep
+   * one*. The renderer retried; main handed back the poison.
+   */
+  it('does not memoise a `none` result, so a cold-start timeout stays retryable', async () => {
+    let calls = 0
+    const enumerate = vi.fn(async () => {
+      calls += 1
+      // Exactly what a SIGTERM'd PowerShell produces: resolved, not rejected.
+      if (calls === 1) return { families: [], source: 'none' as const }
+      return { families: ['Arial'], source: 'powershell' as const }
+    })
+    installFontsIpc(enumerate)
+    const handler = handlerFor('app:listFonts')
+
+    await expect(handler(null, {})).resolves.toEqual({ families: [], source: 'none' })
+    await expect(handler(null, {})).resolves.toEqual({
+      families: ['Arial'],
+      source: 'powershell',
+    })
+    expect(enumerate).toHaveBeenCalledTimes(2)
+  })
+
+  /**
+   * The other side of that rule, and the reason it is written as `source === 'none'` rather than
+   * `families.length === 0`. A machine that really has no families beyond the system group still
+   * reports the source that enumerated it, and that is a success: re-spawning PowerShell on every
+   * dropdown open for a host whose honest answer is "nothing extra" would reintroduce the cost the
+   * cache exists to remove. Emptiness is not failure; `none` is.
+   */
+  it('memoises a successful but empty enumeration, because empty is not the same as failed', async () => {
+    const enumerate = vi.fn(async () => ({ families: [], source: 'fc-list' as const }))
+    installFontsIpc(enumerate)
+    const handler = handlerFor('app:listFonts')
+
+    await handler(null, {})
+    await handler(null, {})
+    expect(enumerate).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Retryable must not mean unshared. Two panels opening the dropdown at the same moment on a cold
+   * Windows host still get one spawn between them — dropping the memo on the way *out* would
+   * otherwise turn every concurrent open into another PowerShell.
+   */
+  it('still shares one spawn between concurrent opens that all resolve `none`', async () => {
+    let calls = 0
+    const enumerate = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) return { families: [], source: 'none' as const }
+      return { families: ['Arial'], source: 'powershell' as const }
+    })
+    installFontsIpc(enumerate)
+    const handler = handlerFor('app:listFonts')
+
+    const together = await Promise.all([handler(null, {}), handler(null, {}), handler(null, {})])
+    expect(together).toEqual([
+      { families: [], source: 'none' },
+      { families: [], source: 'none' },
+      { families: [], source: 'none' },
+    ])
+    expect(enumerate).toHaveBeenCalledTimes(1)
+
+    // ...and the session is not poisoned: the next open re-spawns and gets the real list.
+    await expect(handler(null, {})).resolves.toEqual({
+      families: ['Arial'],
+      source: 'powershell',
+    })
+    expect(enumerate).toHaveBeenCalledTimes(2)
+  })
+
   it('does not cache a failure, so one bad run does not empty the list for the session', async () => {
     let calls = 0
     const enumerate = vi.fn(async () => {
