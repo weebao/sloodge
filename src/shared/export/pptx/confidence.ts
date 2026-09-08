@@ -45,6 +45,7 @@
 import type { MeasureResult, RootPaint, SlideNode, TransformSpec } from './node'
 import { SLIDE_HEIGHT_PX, SLIDE_WIDTH_PX } from '../types'
 import type { SlideTier } from './types'
+import { isSystemFont } from '../../fonts/system-fonts'
 
 /** At or above this score, an `auto` slide is converted structurally; below it, rasterized. */
 export const PPTX_TIER_THRESHOLD = 70
@@ -182,51 +183,6 @@ export const WRONG_CONSTRUCT_WEIGHTS = [
 
 /** The result of scoring one slide. `hardBlocker` non-null forces raster whatever the score. */
 export type SlideScore = { score: number; reasons: string[]; hardBlocker: string | null }
-
-/**
- * A conservative system-safe font list (§3.6). Families here map 1:1 into PowerPoint with no
- * substitution risk; anything else keeps its name but takes a confidence penalty and a report note.
- */
-const SYSTEM_FONTS: ReadonlySet<string> = new Set(
-  [
-    'arial',
-    'helvetica',
-    'helvetica neue',
-    'calibri',
-    'cambria',
-    'georgia',
-    'times new roman',
-    'times',
-    'courier new',
-    'courier',
-    'verdana',
-    'tahoma',
-    'trebuchet ms',
-    'segoe ui',
-    'sans-serif',
-    'serif',
-    'monospace',
-    'system-ui',
-    '-apple-system',
-    'ui-sans-serif',
-    'ui-serif',
-    'ui-monospace',
-  ].map((f) => f.toLowerCase()),
-)
-
-/** The first family in a `font-family` list, unquoted and lower-cased. */
-export function firstFontFamily(fontFamily: string): string {
-  const first = fontFamily.split(',')[0] ?? ''
-  return first
-    .trim()
-    .replace(/^["']|["']$/g, '')
-    .toLowerCase()
-}
-
-/** True when the (first) family maps into PowerPoint without substitution risk. */
-export function isSystemFont(fontFamily: string): boolean {
-  return SYSTEM_FONTS.has(firstFontFamily(fontFamily))
-}
 
 /**
  * A computed `transform`, decomposed. `identity` covers `none` and pure translation (position is

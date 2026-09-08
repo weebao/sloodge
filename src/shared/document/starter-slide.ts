@@ -6,7 +6,7 @@
  *   SL-G01/G02  exactly one `.slide` root at 1280x720, overflow:hidden, position:relative
  *   SL-G03      html,body reset + universal box-sizing
  *   SL-G04      48px root inset
- *   SL-S01..04  zero subresources, zero network/storage APIs, system font stack only — the title
+ *   SL-S01..04  zero subresources, zero network/storage APIs, no web fonts — the title
  *               and subtitle go through `slideText`, so a caller-supplied "fetch( basics" cannot
  *               put a forbidden token into the source (M4.5 review r3)
  *   SL-D01      every element inside `.slide` carries a unique data-sl-id, root is e_root

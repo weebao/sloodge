@@ -3,6 +3,7 @@ import { isIpcRequestChannel, MENU_EVENT_CHANNEL, type MenuAction } from '../sha
 import { createAgentBridge } from './agentBridge'
 import { createDocumentBridge } from './documentBridge'
 import { createExportBridge } from './exportBridge'
+import { createFontsBridge } from './fontsBridge'
 import { createMenuActionHandler } from './menuActionHandler'
 import { createPresentBridge } from './presentBridge'
 import { createSlideBridge } from './slideBridge'
@@ -89,9 +90,18 @@ const { openDeck } = createDocumentBridge(async (channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 )
 
+/**
+ * M3.10's font surface. Enumeration happens in main (no `local-fonts` permission prompt); the
+ * renderer only ever sees names that passed the allow-list on both sides of this seam.
+ */
+const { listSystemFonts } = createFontsBridge(async (channel, payload) =>
+  ipcRenderer.invoke(channel, payload),
+)
+
 const api = {
   version: '0.0.0',
   onMenuAction,
+  listSystemFonts,
   publishSlide,
   revokeSlide,
   agent,

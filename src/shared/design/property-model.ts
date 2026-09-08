@@ -41,6 +41,7 @@ import {
   setStyleProps,
   type SourceOp,
 } from './patch'
+import { buildFontFamilyValue } from '../fonts/family'
 import { parseTransform } from './style'
 import { textContentOp, textEditBlock } from './text-edit'
 import type { ElementSpan, SlideMap } from './types'
@@ -50,7 +51,17 @@ import type { ElementSpan, SlideMap } from './types'
  * M3.8's `stroke` (the third colour target, §5.1 APPEARANCE: Fill / Stroke / Text colour).
  */
 export type PropertyField =
-  'text' | 'fontSize' | 'fontWeight' | 'color' | 'fill' | 'stroke' | 'x' | 'y' | 'width' | 'height'
+  | 'text'
+  | 'fontFamily'
+  | 'fontSize'
+  | 'fontWeight'
+  | 'color'
+  | 'fill'
+  | 'stroke'
+  | 'x'
+  | 'y'
+  | 'width'
+  | 'height'
 
 /**
  * Why the Content field is disabled for an element: its content is not plain text (`mixed-content`),
@@ -82,6 +93,8 @@ export interface PropertyValues {
   readonly text: string | null
   /** Why `text` is `null` and the field disabled, or `null` when the text is editable. */
   readonly textBlock: TextFieldBlock | null
+  /** The whole `font-family` stack as the source declares it, not just the picked face (M3.10). */
+  readonly fontFamily: string | null
   readonly fontSize: string | null
   readonly fontWeight: string | null
   readonly color: string | null
@@ -159,6 +172,7 @@ export function readPropertyValues(source: string, element: ElementSpan): Proper
   return {
     text: textBlock === null ? element.textContent : null,
     textBlock,
+    fontFamily: readStyleProp(source, element, 'font-family'),
     fontSize: readStyleProp(source, element, 'font-size'),
     fontWeight: readStyleProp(source, element, 'font-weight'),
     color: readStyleProp(source, element, 'color'),
@@ -235,6 +249,21 @@ export function buildFieldOps(
       if (textFieldBlock(element) !== null) return []
       const op = textContentOp(element, rawValue)
       return op === null ? [] : [op]
+    }
+
+    /**
+     * `rawValue` is the **picked face name**, not a CSS value: the panel offers a list of families,
+     * and this is where one becomes a declaration. `buildFontFamilyValue` re-validates that name
+     * against the allow-list before quoting it, so a family that reached the panel through some
+     * path other than the IPC boundary still cannot be written. An unusable name yields no ops,
+     * which the caller treats as a no-op and does not commit — so a rejected pick costs no undo
+     * entry and leaves the source byte-identical.
+     */
+    case 'fontFamily': {
+      if (value.length === 0) return []
+      const stack = buildFontFamilyValue(value)
+      if (stack === null) return []
+      return setStyleProp(source, element, 'font-family', stack)
     }
 
     case 'fontSize':

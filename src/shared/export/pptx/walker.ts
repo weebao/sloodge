@@ -49,12 +49,8 @@
 
 import { boxToInches, pxToPoints } from './geometry'
 import { alphaToTransparency, parseCssColor } from './color'
-import {
-  decomposeTransformSpec,
-  firstFontFamily,
-  paintsImage,
-  ROTATION_EPSILON_DEG,
-} from './confidence'
+import { decomposeTransformSpec, paintsImage, ROTATION_EPSILON_DEG } from './confidence'
+import { firstFontFamily } from '../../fonts/system-fonts'
 import type { BorderSide, SlideNode, MeasureResult } from './node'
 import type { FillSpec, LineSpec, ShadowSpec, ShapeSpec, TextAlign, TextRunSpec } from './types'
 

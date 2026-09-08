@@ -1,4 +1,4 @@
-import type { MenuAction } from '../../../shared/ipc-contract'
+import type { MenuAction, SystemFontsResponse } from '../../../shared/ipc-contract'
 import type {
   ExportHtmlRequest,
   ExportHtmlResponse,
@@ -69,6 +69,13 @@ export type SloodgeBridge = {
    * host, which has no file system to open from.
    */
   openDeck?: () => Promise<OpenDeckResponse>
+
+  /**
+   * M3.10: the machine's installed font families, enumerated in main. Absent in a plain-browser
+   * host, where the family dropdown shows the system group alone — which is also what an Electron
+   * host on a platform we cannot enumerate returns, so the renderer has one code path, not two.
+   */
+  listSystemFonts?: () => Promise<SystemFontsResponse>
 }
 
 declare global {
