@@ -16,8 +16,22 @@ import { dirname, resolve, basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 
-const REPO = resolve(new URL('../../..', import.meta.url).pathname)
-const STATE = resolve(REPO, '.claude/model-policy.json')
+// Resolving the repo from this file's own location is wrong the moment the skill is run out of a
+// git worktree: policy.mjs would then read a DIFFERENT state file than watchdog.mjs, and the two
+// halves of the same state machine would silently disagree about the current tier. `--repo` /
+// `--state` (and SLOODGE_REPO) pin them to the same file.
+const argRepo = (() => {
+  const a = process.argv.slice(2)
+  const i = a.indexOf('--repo')
+  return i >= 0 && a[i + 1] ? a[i + 1] : null
+})()
+const argState = (() => {
+  const a = process.argv.slice(2)
+  const i = a.indexOf('--state')
+  return i >= 0 && a[i + 1] ? a[i + 1] : null
+})()
+const REPO = resolve(argRepo ?? process.env.SLOODGE_REPO ?? new URL('../../..', import.meta.url).pathname)
+const STATE = resolve(argState ?? join(REPO, '.claude/model-policy.json'))
 
 /**
  * Tier order is the CLI's own runway ladder, not a preference. Decompiled from the bundled
@@ -129,7 +143,20 @@ function roster(s, { respawn = false } = {}) {
   }
 }
 
-const [cmd, ...rest] = process.argv.slice(2)
+// `--repo` / `--state` are global, so strip them (with their values) before the subcommand is
+// read. Without this, `policy.mjs --repo X status` parses "--repo" as the command.
+const stripGlobals = (args) => {
+  const out = []
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--repo' || args[i] === '--state') {
+      i += 1
+      continue
+    }
+    out.push(args[i])
+  }
+  return out
+}
+const [cmd, ...rest] = stripGlobals(process.argv.slice(2))
 const flag = (name, fallback = null) => {
   const i = rest.indexOf(`--${name}`)
   return i >= 0 && rest[i + 1] !== undefined ? rest[i + 1] : fallback
