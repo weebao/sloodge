@@ -141,7 +141,12 @@ describe('writeDeckPptx (OPC validity)', () => {
               charSpacing: 1.5,
             },
             { text: 'second line', color: 'CBD5E1', fontSize: 15, lineBreakBefore: true },
-            { text: 'next paragraph', color: 'CBD5E1', fontSize: 15, paragraphBreakBefore: true },
+            { text: 'next paragraph ', color: 'CBD5E1', fontSize: 15, paragraphBreakBefore: true },
+            // The second paragraph has TWO runs, and only its FIRST carries the flag. A run that
+            // continues a paragraph must not re-open one: mark both and the deck gets three <a:p>
+            // for two paragraphs (review r8, major 1 — the walker fixture that pins the flag's
+            // placement is walker.test.ts 'marks line and paragraph breaks…').
+            { text: 'continued', color: 'FDE68A', fontSize: 15, italic: true },
           ],
           align: 'left',
           valign: 'top',
@@ -165,7 +170,12 @@ describe('writeDeckPptx (OPC validity)', () => {
     expect(first[1]).toContain('FDE68A')
     // The soft break sits between run 2 and run 3, inside the same paragraph.
     expect(paragraphs[0]).toMatch(/enterprise expansion<\/a:t><\/a:r><a:br\/><a:r>/)
-    expect(paragraphs[1]).toContain('next paragraph')
+    // Both runs of the second paragraph land in the SAME <a:p>, in order, with no break between.
+    const second = [...paragraphs[1]!.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)].map((m) => m[1]!)
+    expect(second).toHaveLength(2)
+    expect(second[0]).toContain('next paragraph ')
+    expect(second[1]).toContain('continued')
+    expect(second.map((r) => /\bi="1"/.test(r))).toEqual([false, true])
     expect(paragraphs[1]).not.toContain('<a:br/>')
     // Mutation: drop `softBreakBefore` from `runOptions` → no <a:br/>; drop the `breakLine`
     // shift in `pptxRuns` → one paragraph.

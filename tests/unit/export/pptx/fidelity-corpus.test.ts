@@ -24,7 +24,7 @@ import {
 import { groundTruthScript } from '../../../fidelity/lib/truth'
 
 /**
- * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 29-slide corpus.
+ * The §5.2 fidelity targets (research/pptx-export-fidelity.md), asserted over the 30-slide corpus.
  *
  * The inputs are recordings made by `tests/fidelity/harness.ts` from the *real* export window: the
  * measurement pass production consumed, and an independent ground truth (text nodes via `Range`,
@@ -273,7 +273,7 @@ describe('fidelity corpus recordings', () => {
   })
 
   it('carry real content (the corpus is not vacuous)', () => {
-    expect(recorded).toHaveLength(29)
+    expect(recorded).toHaveLength(30)
     expect(summary.textTotal).toBeGreaterThan(40)
     expect(summary.rotationsExpected).toBe(10)
     expect(summary.bodyImageSlides).toBe(1)
@@ -769,10 +769,13 @@ describe('§5.2 targets over the corpus', () => {
    * scorer-free exporter invents nothing. The old walker's losses are pinned by mutation instead,
    * one fix at a time (see the module docstring).
    */
-  it('the retroactive figure: with the scorer deleted, 14 of 29 slides are silent lies', () => {
+  it('the retroactive figure: with the scorer deleted, 15 of 30 slides are silent lies', () => {
     // `01-title-body` left this list in M4.8b: the run-level walk carries its bare text, so even a
     // scorer-free exporter loses nothing there. `x20-inline-flow` joined it — with the flow signal
     // deleted, the sentence around its pill ships at 100 with the pill's words missing from it.
+    // `x22-hidden-inline` joined it for the same reason (r8): descending into the hidden inline
+    // puts its visible span's words back in the box, but the hole that span sits in is still a
+    // hole, and it is `flowInterrupted`/`box` — not the emission — that keeps the slide honest.
     const lying = asOldExporter.filter((a) => a.silentLie).map((a) => a.file)
     expect(lying).toEqual([
       'x1-ghost-opacity.html',
@@ -789,6 +792,7 @@ describe('§5.2 targets over the corpus', () => {
       'x16-gradient-hero.html',
       'x18-view-transition-name.html',
       'x20-inline-flow.html',
+      'x22-hidden-inline.html',
     ])
     // …and the shipped pipeline, over the same corpus, lies about none.
     expect(summary.silentLies).toEqual([])

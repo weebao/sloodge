@@ -102,6 +102,12 @@ export const CORPUS: readonly CorpusSlide[] = [
   // r2's probe: two text blocks at one rect (an `inset: 0` overlay) with different line-heights.
   // Exports correctly; the oracle's line-spacing pairing reported it as a silent lie.
   { file: 'x21-overlay-spacing.html', rotations: [], bodyImage: false },
+  // r8's probe: a `visibility: visible` span inside a `visibility: hidden` inline, and the hidden
+  // wrapper is the LAST thing in its block. `collectInline` stopped at the wrapper, so the words
+  // reached no box; nothing deducted for them (the span's own block root resolves, and no text
+  // follows the wrapper), and the slide scored 100 with `reasons: []`. Its second paragraph is the
+  // mirror: a hidden `display: contents` wrapper whose text was shipped though it renders nowhere.
+  { file: 'x22-hidden-inline.html', rotations: [], bodyImage: false },
 ]
 
 /**

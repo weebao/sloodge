@@ -1,0 +1,66 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* M4.8b review r8, major 3: `visibility` INHERITS but is not final — a descendant of a hidden
+     inline that re-declares `visible` is drawn. The measurement pass used to stop at the hidden
+     inline, so those words reached no box; because the descendant is itself a visible node whose
+     block root resolves, `orphanText` stayed false, and with the hidden wrapper LAST in its block
+     `flowInterrupted` never fired either. The slide scored 100 with `reasons: []` while dropping
+     text the reader can read. The mirror shape — a hidden `display: contents` wrapper — went the
+     other way and shipped text that renders NOWHERE.
+
+     Both are one `.redacted` utility class away from any LLM-authored slide: hide a whole clause,
+     then punch one span back out of it. */
+  body {
+    background: #ffffff;
+    color: #111827;
+    padding: 72px;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+    margin-bottom: 32px;
+  }
+  p {
+    font-size: 26px;
+    line-height: 1.5;
+    width: 1040px;
+  }
+  p + p {
+    margin-top: 28px;
+  }
+  /* The hidden wrapper is the LAST thing in its paragraph — nothing follows it, so no `flowInterrupted`. */
+  .redacted {
+    visibility: hidden;
+  }
+  .cleared {
+    visibility: visible;
+    font-weight: 700;
+    color: #b91c1c;
+  }
+  /* Generates no box of its own, but the boxes its children generate are hidden and still take space. */
+  .ghost {
+    display: contents;
+    visibility: hidden;
+  }
+</style>
+<h1>Guidance, partly under embargo</h1>
+<p class="prose">
+  Full-year guidance is
+  <span class="redacted">unchanged at $4.2M <em class="cleared">— cleared for release</em></span>
+</p>
+<p class="note">Prepared by finance <span class="ghost">(draft only)</span> for the board.</p>

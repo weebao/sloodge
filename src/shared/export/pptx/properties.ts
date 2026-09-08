@@ -166,6 +166,27 @@ export const MODELLED_PROPERTIES: readonly string[] = [
   'opacity',
   'z-index',
 
+  /**
+   * --- Emitted: the text box's inset (`walker.ts` textInset, M4.8b) ---
+   *
+   * Padding is not resolved into the measured rect — that rect is the BORDER box — and it is not
+   * inert either: padding plus border width is where a block's own text starts, and the walker
+   * emits it as `<a:bodyPr lIns tIns rIns bIns>` rather than letting PowerPoint's default inset
+   * stand. It lived in `LAYOUT_RESOLVED_PROPERTIES` until r8, which was behaviourally identical
+   * (both sets are excluded from the census) but read as a claim the file's own taxonomy denies.
+   *
+   * The logical spellings are the same used values under a different name; `writing-mode` is a hard
+   * blocker, so a mode in which they map to different sides never ships structured anyway.
+   */
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'padding-block-start',
+  'padding-block-end',
+  'padding-inline-start',
+  'padding-inline-end',
+
   // --- Emitted: the transform chain (`confidence.ts` decomposeTransformSpec) ---
   'transform',
   'rotate',
@@ -235,9 +256,8 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'inset-inline-end',
   /**
    * Margins position the box and Chromium already applied them: the measured rect is the border
-   * box. Padding (plus border width) is where a block's own text starts inside that box, so the
-   * walker hands it to the text shape as its inset (M4.8b) — `<a:bodyPr lIns tIns rIns bIns>` —
-   * rather than fighting it with PowerPoint's default inset.
+   * box, so a margin can only have moved it somewhere we measured. Padding is NOT here — the walker
+   * emits it, so it is a `MODELLED_PROPERTIES` entry (r8).
    */
   'margin-top',
   'margin-right',
@@ -247,14 +267,6 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'margin-block-end',
   'margin-inline-start',
   'margin-inline-end',
-  'padding-top',
-  'padding-right',
-  'padding-bottom',
-  'padding-left',
-  'padding-block-start',
-  'padding-block-end',
-  'padding-inline-start',
-  'padding-inline-end',
 
   // --- Flex, grid and alignment: layout algorithms, fully resolved into the measured boxes ---
   'flex-basis',
@@ -429,8 +441,17 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
 
   /**
    * `visibility` is the measurement pass's own visibility filter: only `visible` elements become
-   * nodes, so neither `hidden` nor `collapse` can reach the file. (It read `!== 'hidden'` until
-   * r3, which let a `visibility: collapse` banner Chromium paints nowhere ship in full.)
+   * nodes. (It read `!== 'hidden'` until r3, which let a `visibility: collapse` banner Chromium
+   * paints nowhere ship in full.)
+   *
+   * That filter is over NODES, and it used to be written here as "so neither `hidden` nor `collapse`
+   * can reach the file". That was false for inline text, and r8 demonstrated it: `visibility`
+   * inherits without being final, so a `visibility: visible` span inside a `visibility: hidden`
+   * inline is drawn, while `collectInline` stopped at the hidden wrapper and dropped its words from
+   * every box — a `hidden` inline reaching the file as text that is missing from it. The fix is in
+   * the emission, where the r3 ones are: `collectInline` descends through a hidden inline, keeps
+   * what re-declares `visible`, and leaves a `box` marker for the hole (node.ts). The property stays
+   * exempt because the pass acts on it; it is not exempt because the value cannot occur.
    *
    * `content` is NOT here: it is `normal` on ordinary elements but `content: url(…)` replaces one,
    * and the exporter has no way to emit the replacement image. The `::before`/`::after` case is

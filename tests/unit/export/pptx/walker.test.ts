@@ -331,6 +331,12 @@ describe('walkSlide run-level text boxes (M4.8b)', () => {
   })
 
   it('marks line and paragraph breaks on the run that starts the new line/paragraph', () => {
+    // `<li>one<br>two<div>…</div>after <b>more</b></li>`. The trailing paragraph deliberately has
+    // TWO runs: with a single-run second paragraph, `i > 0 && j === 0` and a bare `i > 0` produce
+    // identical specs, and every fixture in the corpus and the suite was single-run, so dropping
+    // the `j === 0` conjunct survived all 4385 tests (review r8, major 1). Under the mutant 'more'
+    // also carries `paragraphBreakBefore`, and the writer then emits three `<a:p>` for two
+    // paragraphs — 'after ' and 'more' split onto separate paragraphs in the .pptx.
     const li = makeNode({
       tag: 'li',
       listType: 'ul',
@@ -339,17 +345,19 @@ describe('walkSlide run-level text boxes (M4.8b)', () => {
         { kind: 'br' },
         textItem('two'),
         { kind: 'block' },
-        textItem('after'),
+        textItem('after '),
+        textItem('more', { fontWeight: '700' }),
       ],
     })
     const [box] = textShapes(walkSlide(makeMeasure([li])).shapes)
     expect(box!.runs.map((r) => [r.text, r.lineBreakBefore, r.paragraphBreakBefore])).toEqual([
       ['one', undefined, undefined],
       ['two', true, undefined],
-      ['after', undefined, true],
+      ['after ', undefined, true],
+      ['more', undefined, undefined],
     ])
     // One marker per <li>, on the first paragraph only — Chromium draws one, not one per line.
-    expect(box!.runs.map((r) => r.bullet)).toEqual([true, undefined, undefined])
+    expect(box!.runs.map((r) => r.bullet)).toEqual([true, undefined, undefined, undefined])
   })
 
   it("insets the runs by padding plus border width, so a padded pill's label lands on its content box", () => {
@@ -387,6 +395,22 @@ describe('walkSlide run-level text boxes (M4.8b)', () => {
     const [box] = textShapes(walkSlide(makeMeasure([li])).shapes)
     expect(box!.lineSpacingMultiple).toBe(1.6)
     expect(box!.valign).toBe('top')
+    // The same block with the LARGE run FIRST — `<li …><span style="font-size:34px">Bigger </span>then
+    // normal</li>`. Until r8 every mixed-size block in the suite and in the corpus opened with a run
+    // whose size equalled the block's, so 35.2/22 and 35.2/firstRun were the same number and reading
+    // the divisor off `paragraphs[0][0]` instead of the block survived all 4385 tests (major 2).
+    // Here the mutant yields 35.2/34 = 1.04 — a 35% line-spacing error — against the correct 1.6.
+    const bigFirst = makeNode({
+      tag: 'li',
+      style: { fontSize: 22, lineHeight: '35.2px' },
+      inlineContent: [
+        textItem('Bigger ', { fontSize: 34 }),
+        textItem('then normal', { fontSize: 22 }),
+      ],
+    })
+    const [bigFirstBox] = textShapes(walkSlide(makeMeasure([bigFirst])).shapes)
+    expect(bigFirstBox!.runs.map((r) => r.fontSize)).toEqual([25.5, 16.5])
+    expect(bigFirstBox!.lineSpacingMultiple).toBe(1.6)
     // `line-height: normal` emits no spacing at all — PowerPoint's own single spacing.
     const normal = makeNode({ text: 'Plain', style: { fontSize: 22, lineHeight: 'normal' } })
     expect(

@@ -408,18 +408,34 @@ export function slideMeasurementScript(): string {
   const hrefOf = (el) => { const a = el.closest('a[href]'); return a ? a.getAttribute('href') : null; };
   // The inline content of one block root, in DOM order. Recurses through inline elements; a nested
   // block ends the paragraph; an atomic inline, a float or a hidden inline leaves a \`box\` marker.
-  const collectInline = (el, items) => {
+  //
+  // \`visibility\` INHERITS but is not final: a descendant of a hidden inline that re-declares
+  // \`visible\` is drawn, so the walk descends into a hidden inline rather than stopping at it, and
+  // carries a \`hidden\` flag that drops the text it owns itself. Stopping (r8, major 3) lost those
+  // words from every box — and lost them silently, since the descendant is a visible node whose
+  // block root resolves, so \`orphanText\` stayed false, and with the hidden inline LAST in its block
+  // \`flowInterrupted\` never fired either: 100 with \`reasons: []\` over text that is on screen.
+  // The \`box\` marker is emitted for a hidden \`display: contents\` inline too, which until r8 was the
+  // one hidden shape whose text was collected as if painted: it generates no box of its own, but
+  // the boxes its children generate are hidden and still occupy the line.
+  const collectInline = (el, items, hidden) => {
     for (const c of el.childNodes) {
-      if (c.nodeType === 3) { items.push({ kind: 'text', text: c.data, el }); continue; }
+      if (c.nodeType === 3) { if (!hidden) items.push({ kind: 'text', text: c.data, el }); continue; }
       if (c.nodeType !== 1) continue;
-      if (c.tagName.toLowerCase() === 'br') { items.push({ kind: 'br' }); continue; }
+      if (c.tagName.toLowerCase() === 'br') { if (!hidden) items.push({ kind: 'br' }); continue; }
       const ccs = getComputedStyle(c);
       if (ccs.display === 'none' || outOfFlow(ccs)) continue;
       if (inlineFlow(c, ccs)) {
-        if (ccs.visibility !== 'visible' && ccs.display !== 'contents') { items.push({ kind: 'box' }); continue; }
-        collectInline(c, items);
+        const childHidden = ccs.visibility !== 'visible';
+        // One marker per hidden RUN of the line: a hidden inline nested in a hidden inline is the
+        // same hole, already marked by its outermost ancestor.
+        if (childHidden && !hidden) items.push({ kind: 'box' });
+        collectInline(c, items, childHidden);
         continue;
       }
+      // A nested block or atomic inline inside a hidden inline is hidden too unless it re-declares
+      // \`visible\`; the enclosing marker already stands for the hole it leaves.
+      if (hidden && ccs.visibility !== 'visible') continue;
       items.push({ kind: atomicInline(ccs) || REPLACED.has(c.tagName.toLowerCase()) || c.namespaceURI === SVG_NS ? 'box' : 'block' });
     }
     return items;
@@ -510,7 +526,7 @@ export function slideMeasurementScript(): string {
   // <body> is a block root like any other when text sits directly in it (or in an inline child of
   // it); it is outside \`querySelectorAll('*')\`, so it is walked first, with its paint left to
   // \`RootPaint\` — the slide background already carries it.
-  const bodyItems = document.body ? collectInline(document.body, []) : [];
+  const bodyItems = document.body ? collectInline(document.body, [], false) : [];
   const elements = hasText(bodyItems) ? [document.body, ...all] : [...all];
   for (const el of elements) {
     if (el.parentElement !== null && replaced.has(el.parentElement)) { replaced.add(el); continue; }
@@ -544,7 +560,7 @@ export function slideMeasurementScript(): string {
         if (idx !== undefined) inlineOf = idx;
         else orphanText = /[^ \\t\\n\\r\\f]/.test(el.textContent || '');
       } else {
-        const items = collectInline(el, []);
+        const items = collectInline(el, [], false);
         if (hasText(items)) inlineContent = finishInline(items);
       }
     }
