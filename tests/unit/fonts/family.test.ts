@@ -569,7 +569,7 @@ describe('buildFontFamilyValue', () => {
     // Case-insensitively, because family matching is: the tail entry is still the same face.
     expect(buildFontFamilyValue('SEGOE UI')).toBe('SEGOE UI, system-ui, sans-serif')
     // Every stack this composes is duplicate-free, whatever the pick.
-    for (const name of ['Segoe UI', 'Papyrus', 'Georgia', 'Courier New', 'system-ui', 'Segoe UI']) {
+    for (const name of ['Segoe UI', 'Papyrus', 'Georgia', 'Courier New', 'system-ui', 'SEGOE UI']) {
       const families = buildFontFamilyValue(name)!.split(', ')
       expect(new Set(families.map((f) => f.toLowerCase())).size, name).toBe(families.length)
     }
