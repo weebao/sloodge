@@ -525,6 +525,16 @@ describe('instrument — performance', () => {
     const large = perCall(largeMap)
     expect(sink).toBeGreaterThan(0)
 
+    // Hoisting the map build (above) is what made repeated sampling affordable, but it also means
+    // this times WARM repeat calls on one map where production calls `instrument` once per map.
+    // A cache keyed on the map would therefore make every block 0.000ms and the ratio meaningless
+    // — measured: `small=[0.010, 0, 0, 0, 0] large=[0, 0, 0, 0, 0]`, ratio 0.89, passing any
+    // ceiling. `sink` does not catch that, because a cached non-empty string still adds length.
+    // `instrument.ts`'s own docblock points the next perf round at caching, so this is a live
+    // hazard rather than an invented one. 12-30ms is the measured range under load, so >1ms is
+    // nine-fold margin and fires only on a degenerate block.
+    expect(large.best, `degenerate measurement: ${large.blocks.join(', ')}`).toBeGreaterThan(1)
+
     // Every block is reported, because each investigation of this test so far has had to
     // re-instrument it by hand to tell a real regression from a contaminated sample.
     const blocks = `small=[${small.blocks.map((ms) => ms.toFixed(3)).join(', ')}] large=[${large.blocks.map((ms) => ms.toFixed(3)).join(', ')}]`
