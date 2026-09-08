@@ -92,7 +92,7 @@ export const FORBIDDEN_API_TOKENS: readonly string[] = [
  * SL-S04 and by the writers that refuse to produce a slide it would then reject — see the note on
  * `packForApiScan` for why they share one scan instead of each carrying their own.
  */
-export function findForbiddenApiTokens(value: string): string[] {
+export function findForbiddenApiTokens(value: string): readonly string[] {
   const packed = packForApiScan(value)
   return FORBIDDEN_API_TOKENS.filter((token) => packed.includes(packForApiScan(token)))
 }

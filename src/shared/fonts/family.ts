@@ -427,6 +427,8 @@ const RESERVED_FAMILY_WORDS: ReadonlySet<string> = new Set([
  * serif the author asked for.
  *
  * `system-ui` is a CSS keyword rather than a family name, so picking it writes the keyword alone.
+ * Picking `Segoe UI` writes `Segoe UI, system-ui, sans-serif`: a fallback the head already is would
+ * only repeat itself.
  */
 export function buildFontFamilyValue(name: string): string | null {
   const trimmed = name.trim()
@@ -444,7 +446,10 @@ function composeFontFamilyValue(trimmed: string): string {
   const generic: FontGeneric = SYSTEM_BY_KEY.get(key)?.generic ?? 'sans-serif'
   if (key === 'system-ui') return `system-ui, ${generic}`
   const tail = generic === 'sans-serif' ? ['Segoe UI', 'system-ui', generic] : [generic]
-  return [cssIdentFontFamily(trimmed), ...tail].join(', ')
+  // Picking `Segoe UI` itself would otherwise compose to `Segoe UI, Segoe UI, system-ui, …`. These
+  // bytes go into slide source a human reads, so drop a fallback the head already is.
+  const deduped = tail.filter((family) => family.toLowerCase() !== key)
+  return [cssIdentFontFamily(trimmed), ...deduped].join(', ')
 }
 
 /**

@@ -200,11 +200,21 @@ describe('font family name validation (M3.10)', () => {
     expect(isValidFontFamilyName('@Arial')).toBe(false)
   })
 
-  it('enforces the length cap exactly at the boundary', () => {
-    const ok = 'A'.repeat(MAX_FONT_FAMILY_NAME_LENGTH)
-    const tooLong = 'A'.repeat(MAX_FONT_FAMILY_NAME_LENGTH + 1)
-    expect(isValidFontFamilyName(ok)).toBe(true)
-    expect(isValidFontFamilyName(tooLong)).toBe(false)
+  /**
+   * Written against the literal `128`, never against the constant. A boundary built from the very
+   * constant it checks re-states whatever the cap happens to be, so widening it stays green — and
+   * widening is the security-relevant direction: length is the only bound on an attacker-influenced
+   * name, since every character in it is already allow-listed.
+   */
+  it('caps a family name at exactly 128 characters', () => {
+    expect(MAX_FONT_FAMILY_NAME_LENGTH).toBe(128)
+    expect(isValidFontFamilyName('A'.repeat(128))).toBe(true)
+    expect(isValidFontFamilyName('A'.repeat(129))).toBe(false)
+    // A hair over, and far over: neither a fence-post nor a widened cap may let these through.
+    expect(isValidFontFamilyName('A'.repeat(200))).toBe(false)
+    expect(isValidFontFamilyName('A'.repeat(5000))).toBe(false)
+    // And the cap is not so tight that a real long name is refused.
+    expect(isValidFontFamilyName('A'.repeat(127))).toBe(true)
   })
 })
 
@@ -336,9 +346,18 @@ describe('normalizeFontFamilies', () => {
     expect(normalizeFontFamilies(['Zapf', 'Arial', 'Mono'])).toEqual(['Arial', 'Mono', 'Zapf'])
   })
 
-  it('caps the list length', () => {
-    const many = Array.from({ length: MAX_SYSTEM_FONT_FAMILIES + 500 }, (_, i) => `Font${i}`)
-    expect(normalizeFontFamilies(many)).toHaveLength(MAX_SYSTEM_FONT_FAMILIES)
+  /** Literals, not the constant, for the reason given on the name-length cap above. */
+  it('caps the list at exactly 2000 families', () => {
+    expect(MAX_SYSTEM_FONT_FAMILIES).toBe(2000)
+    const many = Array.from({ length: 2500 }, (_, i) => `Font${i}`)
+    expect(normalizeFontFamilies(many)).toHaveLength(2000)
+    expect(normalizeFontFamilies(Array.from({ length: 2001 }, (_, i) => `Font${i}`))).toHaveLength(
+      2000,
+    )
+    // Under the cap nothing is dropped, so the cap is a ceiling and not a fixed length.
+    expect(normalizeFontFamilies(Array.from({ length: 1999 }, (_, i) => `Font${i}`))).toHaveLength(
+      1999,
+    )
   })
 
   it('keeps every real non-ASCII name', () => {
@@ -540,6 +559,19 @@ describe('buildFontFamilyValue', () => {
     for (const name of ['Papyrus', 'Bodoni MT', 'ＭＳ Ｐゴシック', 'Georgia', 'Foo.Bar']) {
       expect(buildFontFamilyValue(name), name).not.toContain('"')
       expect(buildFontFamilyValue(name), name).not.toContain("'")
+    }
+  })
+
+  it('does not repeat the picked face in its own fallback tail', () => {
+    // `Segoe UI` is the head of the sans-serif tail, so appending the tail unconditionally would
+    // write `Segoe UI, Segoe UI, system-ui, sans-serif` into slide source a human reads.
+    expect(buildFontFamilyValue('Segoe UI')).toBe('Segoe UI, system-ui, sans-serif')
+    // Case-insensitively, because family matching is: the tail entry is still the same face.
+    expect(buildFontFamilyValue('SEGOE UI')).toBe('SEGOE UI, system-ui, sans-serif')
+    // Every stack this composes is duplicate-free, whatever the pick.
+    for (const name of ['Segoe UI', 'Papyrus', 'Georgia', 'Courier New', 'system-ui', 'Segoe UI']) {
+      const families = buildFontFamilyValue(name)!.split(', ')
+      expect(new Set(families.map((f) => f.toLowerCase())).size, name).toBe(families.length)
     }
   })
 

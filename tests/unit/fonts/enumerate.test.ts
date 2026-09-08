@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -91,6 +94,38 @@ describe('parsePowerShellOutput', () => {
   })
 })
 
+/**
+ * The real-run tests below all decide their expectation from a **probe**: the platform tool run
+ * directly by the test, never through the module under test. That is what makes them able to fail.
+ * The earlier shape here — `expect(['powershell', 'none']).toContain(result.source)` — accepted
+ * total feature failure as a pass, so on a host without the tool it asserted nothing at all
+ * (M3.10 review r16). Now the probe says which of the two answers is the correct one for *this*
+ * host, and only that one passes: on a host with the tool a broken enumerator reports `none` and
+ * reds; on a host without it, an enumerator that somehow claims success also reds.
+ */
+async function probe(file: string, args: readonly string[]): Promise<string | null> {
+  try {
+    const { stdout } = await promisify(execFile)(file, [...args], {
+      timeout: ENUMERATE_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      encoding: 'utf8',
+    })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
+/** The invariants every result must satisfy, whichever branch produced it. */
+function expectWellFormed(result: { families: readonly string[] }): void {
+  expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
+  for (const name of result.families) {
+    expect(isValidFontFamilyName(name), name).toBe(true)
+  }
+  // Idempotent under normalisation: already sorted, deduped and allow-listed.
+  expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
+}
+
 describe('enumerateSystemFonts', () => {
   it('returns the empty list on a platform it cannot enumerate, without throwing', async () => {
     // A machine we cannot enumerate must still get a working panel: the system group is offered and
@@ -100,31 +135,70 @@ describe('enumerateSystemFonts', () => {
   })
 
   it(
-    'always resolves with an already-normalised result, whatever the platform tool does',
+    'really enumerates linux through fc-list, and matches what fc-list itself printed',
     async () => {
-      // Asserted as invariants rather than as a fixed list, because this one really does run the
-      // Windows enumerator where the host can reach it (under WSL, `powershell.exe` resolves through
-      // interop and answers in ~0.5 s with the Windows host's families) and fails to spawn anywhere
-      // else. Both outcomes must be well-formed: a rejected promise would leave the dropdown stuck on
-      // "loading", and an unnormalised one would put OS-authored strings into slide CSS.
-      //
-      // **This test cannot see the enumerator fail, and must not be read as if it could.** `none`
-      // is a legitimate result on every host without `powershell.exe`, so a change that breaks the
-      // spawn outright — a UTF-8 `-EncodedCommand` payload, say — leaves it green (M3.10 review
-      // r14). What the spawn is actually handed is pinned in `enumerate-spawn.test.ts`, argument by
-      // argument; this one covers the shape of the answer, not the correctness of the question.
-      const result = await enumerateSystemFonts('win32')
-      expect(['powershell', 'none']).toContain(result.source)
-      expect(result.families.length).toBeLessThanOrEqual(MAX_SYSTEM_FONT_FAMILIES)
-      for (const name of result.families) {
-        expect(isValidFontFamilyName(name), name).toBe(true)
+      // linux is the platform this repo's CI and dev hosts actually execute, so this is the branch
+      // that gets the genuine end-to-end run rather than a faked `execFile`.
+      const stdout = await probe('fc-list', [':', 'family'])
+      const result = await enumerateSystemFonts('linux')
+      expectWellFormed(result)
+
+      if (stdout === null) {
+        // fc-list is genuinely unreachable here. Then `none` is not merely allowed, it is required:
+        // an enumerator reporting `fc-list` without fc-list would be reporting a lie.
+        expect(result).toEqual({ families: [], source: 'none' })
+        return
       }
-      // Idempotent under normalisation: already sorted, deduped and allow-listed.
-      expect([...result.families]).toEqual(normalizeFontFamilies(result.families))
+
+      expect(result.source).toBe('fc-list')
+      // Derived from the tool's raw bytes, so swapping in the PowerShell parser (no comma split)
+      // or changing the argv away from `: family` cannot agree with it.
+      expect([...result.families]).toEqual(
+        normalizeFontFamilies(stdout.split('\n').flatMap((line) => line.split(','))),
+      )
+      // The aliases fc-list only ever prints after a comma — `DejaVu Sans,DejaVu Sans Light`. These
+      // exist in the result only if the comma split really ran on this host's real output.
+      const aliasOnly = [
+        ...new Set(
+          stdout
+            .split('\n')
+            .flatMap((line) => line.split(',').slice(1))
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0 && isValidFontFamilyName(name)),
+        ),
+      ].filter((name) => !stdout.split('\n').some((line) => line.trim() === name))
+      expect(result.families).toEqual(expect.arrayContaining(aliasOnly))
+    },
+    ENUMERATE_TIMEOUT_MS + 2_000,
+  )
+
+  it(
+    'really enumerates win32 through powershell.exe where the host can reach it',
+    async () => {
+      // Under WSL `powershell.exe` resolves through interop and answers in ~0.5 s with the Windows
+      // host's families; on a bare Linux CI runner it is absent. The probe decides which.
+      const stdout = await probe('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '1',
+      ])
+      const result = await enumerateSystemFonts('win32')
+      expectWellFormed(result)
+
+      if (stdout === null) {
+        expect(result).toEqual({ families: [], source: 'none' })
+        return
+      }
+
+      // powershell.exe runs here, so the enumerator has no excuse for an empty list: a broken
+      // `-EncodedCommand` payload lands in the catch and reports `none`, which now reds.
+      expect(result.source).toBe('powershell')
+      expect(result.families.length).toBeGreaterThan(0)
     },
     // The "times out" outcome is one of the ones under test, and it takes the enumerator's own
     // timeout to arrive — under a loaded host, interop `powershell.exe` has taken longer than
     // vitest's 5 s default and this test died before its subject had answered.
-    ENUMERATE_TIMEOUT_MS + 2_000,
+    2 * ENUMERATE_TIMEOUT_MS + 4_000,
   )
 })
