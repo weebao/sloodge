@@ -454,13 +454,14 @@ describe('instrument — performance', () => {
    *
    * | arm  | min  | median | max   | sd    | max/min | >=30 |
    * | ---- | ---- | ------ | ----- | ----- | ------- | ---- |
-   * | this | 6.42 | 12.46  | 24.79 |  4.48 |    3.86 |    0 |
-   * | old  | 2.40 | 12.37  | 47.82 | 12.39 |   19.92 |    3 |
+   * | this | 6.42 | 12.220 | 24.79 |  4.48 |    3.86 |    0 |
+   * | old  | 2.40 | 12.165 | 47.82 | 12.39 |   19.92 |    3 |
    *
    * Same median, F(19,19) = 7.65 against a p=0.01 critical value of 3.03, so p < 0.001. The
-   * estimator is what changed, not the threshold. Binary failure counts over the same runs were
-   * 1/45 against 5/45 — suggestive at Fisher p ~ 0.20, which is why the variance is the number
-   * quoted here and the counts are not.
+   * estimator is what changed, not the threshold. The table above is one interleaved batch of
+   * 20 per arm; binary failure counts across four batches (45 per arm) were 1/45 against 5/45,
+   * Fisher p ~ 0.20 — suggestive, not proven, which is why the variance is quoted here and the
+   * counts are not. The two are different n and are deliberately not pooled.
    *
    * `{ timeout: 20_000 }` is here because the old form reached 5154ms on this box and a timeout
    * means the assertion never runs at all; 20s against a 3.5s worst case keeps it an assertion.
@@ -547,8 +548,18 @@ describe('instrument — performance', () => {
     // — measured: `small=[0.010, 0, 0, 0, 0] large=[0, 0, 0, 0, 0]`, ratio 0.89, passing any
     // ceiling. `sink` does not catch that, because a cached non-empty string still adds length.
     // `instrument.ts`'s own docblock points the next perf round at caching, so this is a live
-    // hazard rather than an invented one. 12-30ms is the measured range under load, so >1ms is
-    // nine-fold margin and fires only on a degenerate block.
+    // hazard rather than an invented one.
+    //
+    // 1ms is placed in an empty gap spanning a factor of ~2450. A degenerate block measures
+    // 0.00017-0.0018ms, so 1ms is ~550x above that ceiling; the healthy floor is 4.416ms
+    // (file-only on a quiet box, where `Math.min` sees the least contended blocks), so 1ms is
+    // 4.42x below it. The margin to the healthy side is 4.4x, not the nine-fold an earlier
+    // draft of this comment claimed.
+    //
+    // `small.best` deliberately does NOT get the same assertion: it measures 0.422-0.478ms, so
+    // a >1ms guard there would fail every run. It needs none — a cached small side inflates the
+    // ratio instead (measured: 19086.59), which the ceiling below already catches. The two
+    // assertions cover all three cache shapes between them.
     expect(large.best, `degenerate measurement: ${large.blocks.join(', ')}`).toBeGreaterThan(1)
 
     // Every block is reported, because each investigation of this test so far has had to
