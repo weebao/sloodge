@@ -21,7 +21,19 @@
 //     a cooldown, a single burst would walk the ladder fable -> opus -> sonnet in one tick and
 //     spend two rungs of runway on one event.
 
-import { readFileSync, writeFileSync, appendFileSync, mkdtempSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs'
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  mkdtempSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve, join, basename } from 'node:path'
 import { homedir } from 'node:os'
@@ -41,7 +53,9 @@ const BASELINE = 'fable'
 const argv = process.argv.slice(2)
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`)
-  return i >= 0 && argv[i + 1] !== undefined && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback
+  return i >= 0 && argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')
+    ? argv[i + 1]
+    : fallback
 }
 const has = (name) => argv.includes(`--${name}`)
 
@@ -105,10 +119,24 @@ const writeJson = (p, v) => {
   writeFileSync(p, JSON.stringify(v, null, 2) + '\n')
 }
 
-const WD_EMPTY = { offsets: {}, seen: [], mode: 'watch', promoteAt: null, lastEscalation: 0, lastProbe: 0 }
+const WD_EMPTY = {
+  offsets: {},
+  seen: [],
+  mode: 'watch',
+  promoteAt: null,
+  lastEscalation: 0,
+  lastProbe: 0,
+}
 const loadWd = () => ({ ...WD_EMPTY, ...readJson(WD_STATE, {}) })
 
-const POLICY_EMPTY = { tier: BASELINE, since: null, reason: 'default', ackByUser: true, history: [], inflight: [] }
+const POLICY_EMPTY = {
+  tier: BASELINE,
+  since: null,
+  reason: 'default',
+  ackByUser: true,
+  history: [],
+  inflight: [],
+}
 const loadPolicy = () => ({ ...POLICY_EMPTY, ...readJson(STATE, {}) })
 
 // The persisted default only governs NEW sessions and freshly spawned agents; it cannot retarget
@@ -216,7 +244,10 @@ function probe(tier) {
       encoding: 'utf8',
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${homedir()}/.nvm/versions/node/v24.18.1/bin:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        PATH: `${homedir()}/.nvm/versions/node/v24.18.1/bin:${process.env.PATH}`,
+      },
     })
     if (/hit your session limit|rate_limit/i.test(out)) {
       return { ok: false, resetsAt: parseResetTime(out, new Date()) }
@@ -248,7 +279,9 @@ function announceEscalation(from, to, resetsAt, count) {
     `(${count} agent${count === 1 ? '' : 's'} 429'd).`,
     `ACTION: pass model: "${TIERS[to].agentModel}" on every Agent spawn from now on,`,
     `and RESPAWN any dead agent fresh (a resume keeps its exhausted model).`,
-    resetsAt ? `Promotion back to ${TIERS[BASELINE].label} is armed for ${resetsAt.toLocaleTimeString()}.` : 'No reset time stated; will probe periodically.',
+    resetsAt
+      ? `Promotion back to ${TIERS[BASELINE].label} is armed for ${resetsAt.toLocaleTimeString()}.`
+      : 'No reset time stated; will probe periodically.',
   )
 }
 
@@ -274,7 +307,11 @@ function tick() {
   if (fresh.length > 0 && now - wd.lastEscalation > COOLDOWN) {
     const from = policy.tier
     const to = TIERS[from].next
-    const resets = fresh.map((e) => e.resetsAt).filter(Boolean).sort((a, b) => b - a)[0] ?? null
+    const resets =
+      fresh
+        .map((e) => e.resetsAt)
+        .filter(Boolean)
+        .sort((a, b) => b - a)[0] ?? null
 
     if (to) {
       const at = new Date().toISOString()
@@ -346,7 +383,7 @@ function tick() {
 
 function selfTest() {
   const REAL =
-    'You\'ve hit your session limit · resets 10pm (America/Los_Angeles) (error type rate_limit, HTTP 429, request id req_011CeoFjxgzzjhJUjghAHn63)'
+    "You've hit your session limit · resets 10pm (America/Los_Angeles) (error type rate_limit, HTTP 429, request id req_011CeoFjxgzzjhJUjghAHn63)"
   // Every one of these is a real line lifted from the live transcript's 54 false positives, or
   // the shape of one. The load-bearing cases are the last two: an agent QUOTING the notice
   // without the API trailer, with a request id close enough to be swept up by a looser pattern.
@@ -379,16 +416,25 @@ function selfTest() {
 
   // A reset quoted earlier than the sighting belongs to tomorrow.
   const rolled = parseResetTime('resets 5:50am', new Date('2026-09-07T21:00:00'))
-  ok('rolls a past-looking reset to the next day', rolled.getDate() === 8 && rolled.getHours() === 5)
+  ok(
+    'rolls a past-looking reset to the next day',
+    rolled.getDate() === 8 && rolled.getHours() === 5,
+  )
 
   // Two notices in one chunk are two events, and a repeat of one id is still one.
-  const two = findLimitEvents(REAL + ' ... ' + REAL.replace('req_011CeoFjxgzzjhJUjghAHn63', 'req_ZZZ'), new Date())
+  const two = findLimitEvents(
+    REAL + ' ... ' + REAL.replace('req_011CeoFjxgzzjhJUjghAHn63', 'req_ZZZ'),
+    new Date(),
+  )
   ok('finds both notices in one chunk', two.length === 2)
 
   // A chunk holding one real notice plus two trailer-less quotes of it must yield exactly one
   // event. This is the whole precision claim stated as a number.
   const MIXED = PROSE.slice(4).join(' ') + ' ' + REAL + ' ' + PROSE[4]
-  ok('one real notice among quotes yields exactly 1', findLimitEvents(MIXED, new Date()).length === 1)
+  ok(
+    'one real notice among quotes yields exactly 1',
+    findLimitEvents(MIXED, new Date()).length === 1,
+  )
 
   // The ladder must not contain a cycle or a dangling rung.
   let t = BASELINE
@@ -418,7 +464,10 @@ function selfTest() {
   appendFileSync(f, REAL + '\n')
   const first = scanFiles(wd, [f])
   ok('an appended notice is detected', first.length === 1)
-  ok('the detected event carries its request id', first[0]?.requestId === 'req_011CeoFjxgzzjhJUjghAHn63')
+  ok(
+    'the detected event carries its request id',
+    first[0]?.requestId === 'req_011CeoFjxgzzjhJUjghAHn63',
+  )
 
   ok('an unchanged file yields nothing', scanFiles(wd, [f]).length === 0)
 
@@ -457,7 +506,10 @@ if (has('self-test')) {
 } else if (has('once')) {
   tick()
   const wd = loadWd()
-  console.log(`mode=${wd.mode} tier=${loadPolicy().tier} tracked-files=${Object.keys(wd.offsets).length} seen=${wd.seen.length}` + (wd.promoteAt ? ` promoteAt=${new Date(wd.promoteAt).toLocaleString()}` : ''))
+  console.log(
+    `mode=${wd.mode} tier=${loadPolicy().tier} tracked-files=${Object.keys(wd.offsets).length} seen=${wd.seen.length}` +
+      (wd.promoteAt ? ` promoteAt=${new Date(wd.promoteAt).toLocaleString()}` : ''),
+  )
 } else {
   // Baseline every existing file on the first run so a fresh watchdog does not replay a
   // transcript's worth of history as if it were happening now.
@@ -469,7 +521,9 @@ if (has('self-test')) {
       } catch {}
     }
     writeJson(WD_STATE, wd)
-    emit(`[watchdog ${stamp()}] armed on ${Object.keys(wd.offsets).length} transcript/agent files; tier=${loadPolicy().tier}. Silent until a limit hits.`)
+    emit(
+      `[watchdog ${stamp()}] armed on ${Object.keys(wd.offsets).length} transcript/agent files; tier=${loadPolicy().tier}. Silent until a limit hits.`,
+    )
   }
   const loop = () => {
     try {

@@ -212,10 +212,10 @@ node .claude/skills/model-escalation/watchdog.mjs --self-test # 25 assertions, n
 
 Run it under the `Monitor` tool with `persistent: true`. Each line it prints becomes one
 notification in the orchestrator's conversation — that is what makes the session actually
-*continue* rather than just record the tier change.
+_continue_ rather than just record the tier change.
 
 **Detection.** The literal `hit your session limit` appears in transcripts for two very different
-reasons: the CLI printing a real 429, and an agent writing prose *about* a 429. On the live
+reasons: the CLI printing a real 429, and an agent writing prose _about_ a 429. On the live
 transcript that is 79 real events against 54 false ones. The matcher requires the API's own
 trailer (`error type rate_limit, HTTP 429, request id req_…`), which prose does not carry, and the
 request id doubles as the dedupe key — so an agent quoting a real notice verbatim still cannot
@@ -234,7 +234,7 @@ two rungs of runway on one event.
 
 **Promotion is probed, never assumed.** A reset time is a promise, not an observation, and the
 window slides. At `promoteAt` the watchdog spends one token (`claude --print --model fable ok`).
-If that is still refused it believes the *new* notice over the old one and re-arms. Only a clean
+If that is still refused it believes the _new_ notice over the old one and re-arms. Only a clean
 probe promotes.
 
 **What it cannot do.** It cannot retarget a session that is already running — no settings key

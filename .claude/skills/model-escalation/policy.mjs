@@ -30,7 +30,9 @@ const argState = (() => {
   const i = a.indexOf('--state')
   return i >= 0 && a[i + 1] ? a[i + 1] : null
 })()
-const REPO = resolve(argRepo ?? process.env.SLOODGE_REPO ?? new URL('../../..', import.meta.url).pathname)
+const REPO = resolve(
+  argRepo ?? process.env.SLOODGE_REPO ?? new URL('../../..', import.meta.url).pathname,
+)
 const STATE = resolve(argState ?? join(REPO, '.claude/model-policy.json'))
 
 /**
