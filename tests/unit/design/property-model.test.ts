@@ -616,6 +616,32 @@ describe('buildFieldOps — position and size', () => {
     ).toBe('<svg><foreignobject x="40" width="1" height="1"><div>a</div></foreignobject></svg>')
   })
 
+  it('the tag gate is namespaced: a bare <text>/<tspan>/<use> is HTML and moves by a translate', () => {
+    // `SVG_XY_TAGS` is checked against `tagName`, and `text`, `tspan` and `use` are perfectly legal
+    // HTML tag names — the parser leaves a bare one in the HTML namespace, where `x` positions
+    // nothing. So the tag half of the gate is not sufficient on its own; the `isSvg(element)`
+    // conjunct is what stops these from taking the attribute channel.
+    //
+    // Mutation guard, and the reason this test exists: round 8 found that deleting `isSvg(element)`
+    // from `moveChannel`'s `attr` arm left the whole design + fonts suite green at 1792 passed,
+    // while flipping each line below to a junk `x="40"` on an element that never moves. The tag
+    // half was pinned six ways by the test above; the namespace half was pinned by nothing.
+    expect(edit('<text x="5" y="5">hi</text>', 0, 'x', '40')).toBe(
+      '<text style="transform: translate(40px, 0)" x="5" y="5">hi</text>',
+    )
+    expect(edit('<tspan x="5">frag</tspan>', 0, 'x', '40')).toBe(
+      '<tspan style="transform: translate(40px, 0)" x="5">frag</tspan>',
+    )
+    expect(edit('<use x="5"></use>', 0, 'x', '40')).toBe(
+      '<use style="transform: translate(40px, 0)" x="5"></use>',
+    )
+    // The positive control, so this cannot be satisfied by banning the channel outright: the same
+    // tag INSIDE an <svg> still writes the attribute.
+    expect(edit('<svg><text x="5" y="5">hi</text></svg>', 1, 'x', '40')).toBe(
+      '<svg><text x="40" y="5">hi</text></svg>',
+    )
+  })
+
   it('a <tspan> moves by its x attribute — Chromium parses a transform on it and declines to apply it', () => {
     // Round-7 major 2. A `<tspan>` is a text-content child, not a transformable element: measured
     // in the Chromium that ships with the app, a `style="transform: translate(40px, 0)"` on one
