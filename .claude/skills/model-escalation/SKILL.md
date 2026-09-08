@@ -197,3 +197,47 @@ and, on reset, `Usage limit reset · continuing automatically`. If they paste on
 | `already at the bottom of the ladder (sonnet)` (exit 1) | The model lever is spent. Switch to the effort lever or wait for the reset.                 |
 | `new-session default` reads `(unreadable)`              | `~/.claude/settings.json` is absent or malformed. Cosmetic — the tier still works.          |
 | Subagents keep coming back on the wrong model           | You omitted `model:` on the spawn. There is no default to fall back on; pass it explicitly. |
+
+## The watchdog (`watchdog.mjs`) — unattended demote and promote
+
+`policy.mjs` is driven by hand. `watchdog.mjs` is the part that runs unattended, because the
+failure it exists for happens when nobody is looking: a usage limit kills every in-flight agent
+at once, and the orchestrator finds out only when it next tries to spawn one.
+
+```
+node .claude/skills/model-escalation/watchdog.mjs            # daemon
+node .claude/skills/model-escalation/watchdog.mjs --once      # single tick, prints state
+node .claude/skills/model-escalation/watchdog.mjs --self-test # 25 assertions, no network
+```
+
+Run it under the `Monitor` tool with `persistent: true`. Each line it prints becomes one
+notification in the orchestrator's conversation — that is what makes the session actually
+*continue* rather than just record the tier change.
+
+**Detection.** The literal `hit your session limit` appears in transcripts for two very different
+reasons: the CLI printing a real 429, and an agent writing prose *about* a 429. On the live
+transcript that is 79 real events against 54 false ones. The matcher requires the API's own
+trailer (`error type rate_limit, HTTP 429, request id req_…`), which prose does not carry, and the
+request id doubles as the dedupe key — so an agent quoting a real notice verbatim still cannot
+double-fire it.
+
+**Why it is not a `grep` in a loop.** The live transcript is 21 MB and growing; each file is
+scanned incrementally from a persisted byte offset, with an 8 KB re-read overlap so a notice split
+across two ticks is still seen whole. A file seen for the first time is baselined and never
+back-scanned, so starting the watchdog today does not replay months of old limits as if they were
+happening now. Only the matched notice and its request id ever leave the process — transcript
+content never reaches the orchestrator's context.
+
+**Cooldown.** One limit produces a burst of request ids (every live agent 429s within seconds).
+Without the 180 s cooldown a single burst would walk fable → opus → sonnet in one tick and spend
+two rungs of runway on one event.
+
+**Promotion is probed, never assumed.** A reset time is a promise, not an observation, and the
+window slides. At `promoteAt` the watchdog spends one token (`claude --print --model fable ok`).
+If that is still refused it believes the *new* notice over the old one and re-arms. Only a clean
+probe promotes.
+
+**What it cannot do.** It cannot retarget a session that is already running — no settings key
+reaches `modelSelection.overrideMainLoopModel`. It writes `~/.claude/settings.json` (preserving a
+`[1m]` suffix if present), which governs new sessions and freshly spawned agents, and it tells the
+orchestrator to pass `model:` explicitly on every spawn. The human's half is still `/model <tier>`.
