@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { sep } from 'node:path'
 import { scanPreloadGraph, type SourceTree } from '../../support/preload-graph'
 
 /**
@@ -26,13 +27,20 @@ import { scanPreloadGraph, type SourceTree } from '../../support/preload-graph'
 describe('the preload source-graph scanner', () => {
   const ENTRY = '/preload/index.ts'
 
-  async function specsFor(files: Record<string, string>): Promise<string[]> {
+  async function specsFor(files: Record<string, string>, handed?: string[]): Promise<string[]> {
     const tree: SourceTree = {
       // The keys below are posix literals, but the scanner reaches them through `path.join`, which
       // spells `\` on Windows. A real filesystem there takes `/` and `\` for the same file; this
       // stand-in says so too, rather than pinning the resolver to posix — the resolver is shared
       // with the real-disk tree, where a win32 path is the right answer.
-      canonical: (file) => file.replaceAll('\\', '/'),
+      //
+      // `handed` records what the resolver actually spelled, so one case below can pin that it used
+      // the HOST separator. Without that, this adapter would happily absorb a resolver quietly
+      // rewritten to posix — which reds nothing here and breaks the real-disk tree on Windows.
+      canonical: (file) => {
+        handed?.push(file)
+        return file.replaceAll('\\', '/')
+      },
       exists: (file) => file in files,
       read: (file) => files[file] ?? '',
     }
@@ -47,6 +55,22 @@ describe('the preload source-graph scanner', () => {
         '/preload/a.ts': 'export const a = 1\n',
       }),
     ).toEqual([])
+  })
+
+  it('spells its candidates with the host separator, so a posix-pinned resolver cannot hide here', async () => {
+    // The adapter above folds `\` to `/`, which is what lets the fixtures stay posix literals. That
+    // fold is also blind by construction: a `resolveLocal` rewritten to `posix.join`/`posix.dirname`
+    // leaves every test in this file green under BOTH `pnpm test` and `pnpm test:win-paths`, while
+    // breaking the real-disk tree on a Windows runner — `posix.dirname('C:\\repo\\src\\preload\\index.ts')`
+    // is `.`, so every edge resolves to nothing. That is the same shape as the release-blocking
+    // defect this file was split out to catch, one layer down, so it is pinned rather than trusted.
+    const handed: string[] = []
+    await specsFor({ [ENTRY]: "import './a'\n", '/preload/a.ts': 'export const a = 1\n' }, handed)
+    expect(handed.length).toBeGreaterThan(0)
+    expect(
+      handed.some((name) => name.includes(sep)),
+      handed.join(', '),
+    ).toBe(true)
   })
 
   it('catches a direct package import', async () => {
