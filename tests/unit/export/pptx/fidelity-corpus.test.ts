@@ -64,7 +64,13 @@ import { groundTruthScript } from '../../../fidelity/lib/truth'
  * reds x21 (the overlay's correct 2.5 reported as ≠ 1.50, a silent lie at 90); skipping the pairing
  * altogether reds the `lineSpacingChecks` guard and the x19 counterfactual; stripping `<a:lnSpc>`
  * from every paragraph after the first in `normalizeSlideParts` reds x20's second paragraph; and
- * `shrinkText: true` or `wrap: false` in `pptx-writer.ts` each red 10 cases.
+ * `shrinkText: true` or `wrap: false` in `pptx-writer.ts` each red 10 cases. From M4.8b review
+ * r9: each HALF of the `collectInline` visibility fix reds the x22 case below on its own, after
+ * a re-record — collecting a hidden inline's own text again (`if (!hidden)` -> `if (true)`)
+ * ships the phantom "unchanged at $4.2M"/"(draft only)", and stopping at the hidden inline
+ * again (`if (childHidden) continue` before the recursion) drops "— cleared for release".
+ * Neither survives now; before that case existed, both did, because x22's two hidden shapes
+ * each supply the other's `interruptedFlow` deduction and the slide sits at 65 either way.
  */
 
 const RECORDED_DIR = join(process.cwd(), 'tests', 'fidelity', 'corpus', 'recorded')
@@ -850,6 +856,40 @@ describe('§5.2 targets over the corpus', () => {
     const replaced = auto.find((a) => a.file === 'x15-content-url.html')!
     expect(replaced.tier).toBe('raster')
     expect(replaced.unmodelledProperties).toContain('content')
+  })
+
+  /**
+   * r8's major 3 and its mirror, pinned INDIVIDUALLY on the emitted file. x22 carries both hidden
+   * shapes, and each supplies an `interruptedFlow` deduction that holds the slide at 65 on its own —
+   * so the slide-level assertions above cannot tell the two halves apart, and either half regressed
+   * alone survives the whole suite even after a re-record (review r9's major). What each half is
+   * FOR is the emission: descending into the hidden inline puts the re-declared `visible` span's
+   * words in the box, and the `hidden` flag keeps the wrapper's own words — and a hidden
+   * `display: contents` wrapper's — out of it.
+   */
+  it('emits the span punched back out of a hidden inline, and neither hidden clause', async () => {
+    // `visibility: hidden` on the wrapper; `display: contents` + `visibility: hidden` on the ghost.
+    const invisible = ['unchanged at $4.2M', '(draft only)']
+    // `editable` forces shapes, so this is the case a score could not have saved either way.
+    const emitted = await readbackOf('x22-hidden-inline.html', 'editable')
+    const shapeText = emitted.shapes.map((sh) => sh.text).join('\n')
+    expect(shapeText).toContain('\u2014 cleared for release')
+    for (const phantom of invisible) expect(shapeText, phantom).not.toContain(phantom)
+    // The slide is not vacuous: the words either hidden clause sits between still arrive.
+    expect(shapeText).toContain('Full-year guidance is')
+    expect(shapeText).toContain('for the board.')
+    // …and the same two words reach neither the measurement pass nor Chromium's own ground truth.
+    const x22 = recorded.find((r) => r.file === 'x22-hidden-inline.html')!
+    for (const phantom of invisible) {
+      expect(
+        x22.measure.nodes.some((n) => renderedBlockText(n).includes(phantom)),
+        phantom,
+      ).toBe(false)
+      expect(
+        x22.truth.texts.some((t) => t.text.includes(phantom)),
+        phantom,
+      ).toBe(false)
+    }
   })
 
   /**
