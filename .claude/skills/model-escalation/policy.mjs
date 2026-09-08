@@ -262,6 +262,109 @@ switch (cmd) {
     break
   }
 
+  // Reclaiming old agent worktrees is worth doing (they ran to 11 GB here), but a naive
+  // "clean and pushed, therefore disposable" sweep will happily delete a worktree an agent is
+  // standing in RIGHT NOW: an agent that has just checked out its branch and not yet written
+  // anything looks exactly like a finished one. That is not hypothetical — it destroyed a live
+  // reviewer's checkout and the running watchdog's own source file.
+  //
+  // The roster already knows which worktrees are spoken for, so it is the protected set. Recency
+  // is the backstop for an agent that has not been registered yet.
+  case 'sweep': {
+    const apply = rest.includes('--apply')
+    const recentMin = Number(flag('recent-minutes', '120'))
+    const recentCut = Date.now() - recentMin * 60_000
+    const protectedPaths = new Set(state.inflight.map((a) => a.worktree).filter(Boolean))
+
+    let listing
+    try {
+      listing = execFileSync('git', ['-C', REPO, 'worktree', 'list', '--porcelain'], {
+        encoding: 'utf8',
+      })
+    } catch (err) {
+      console.error(`cannot list worktrees: ${err.message}`)
+      process.exit(2)
+    }
+    const paths = listing
+      .split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length))
+
+    const git = (dir, args) => {
+      try {
+        return execFileSync('git', ['-C', dir, ...args], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim()
+      } catch {
+        return null
+      }
+    }
+
+    const removable = []
+    for (const p of paths) {
+      const keep = (why) => console.log(`KEEP    ${p}\n          ${why}`)
+      if (resolve(p) === resolve(REPO)) {
+        keep('the main checkout')
+        continue
+      }
+      if (protectedPaths.has(p)) {
+        keep('registered in flight — an agent is using it')
+        continue
+      }
+      let st
+      try {
+        st = statSync(p)
+      } catch {
+        keep('directory is gone; `git worktree prune` will clear the record')
+        continue
+      }
+      if (st.mtimeMs > recentCut) {
+        keep(`touched in the last ${recentMin} min — assume an unregistered agent has it`)
+        continue
+      }
+      if ((git(p, ['status', '--porcelain']) ?? 'x') !== '') {
+        keep('uncommitted changes')
+        continue
+      }
+      const head = git(p, ['rev-parse', 'HEAD'])
+      if (!head) {
+        keep('cannot read HEAD')
+        continue
+      }
+      if (!git(p, ['branch', '-r', '--contains', head])) {
+        keep('HEAD is not on any remote — removing it would lose commits')
+        continue
+      }
+      removable.push(p)
+    }
+
+    console.log('')
+    if (removable.length === 0) {
+      console.log('nothing is safely reclaimable')
+      break
+    }
+    console.log(`${removable.length} worktree(s) are clean, idle, unregistered and fully pushed:`)
+    for (const p of removable) console.log(`  ${p}`)
+    if (!apply) {
+      console.log('\nthis was a dry run; pass --apply to remove them')
+      break
+    }
+    let ok = 0
+    for (const p of removable) {
+      // Deliberately NOT --force: if this classification is wrong, git refusing is the last
+      // line of defence and it has already earned its keep once.
+      try {
+        execFileSync('git', ['-C', REPO, 'worktree', 'remove', p], { stdio: 'ignore' })
+        ok += 1
+      } catch {
+        console.log(`REFUSED ${p}  (git would not remove it; left alone)`)
+      }
+    }
+    console.log(`removed ${ok}/${removable.length}`)
+    break
+  }
+
   case 'roster':
     roster(state, { respawn: rest.includes('--respawn') })
     break
@@ -361,7 +464,7 @@ switch (cmd) {
         '  ack                                      user has typed the slash command\n' +
         '  register --id X --task "..." [--brief P] [--worktree P] [--verdict P]\n' +
         '  done     --id X                          clear a finished agent\n' +
-        '  roster   [--respawn]                     list in-flight agents\n' +
+        '  roster   [--respawn]                     list in-flight agents\n  sweep    [--apply] [--recent-minutes N]  reclaim idle worktrees, never a registered one\n' +
         '  scan     --tasks <dir> [--minutes N]     find usage-limit terminations',
     )
     process.exit(2)
