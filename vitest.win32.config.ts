@@ -52,6 +52,16 @@ const shim = fileURLToPath(new URL('./tests/support/path-win32.ts', import.meta.
  * on any new entry. "Touches the filesystem" means it uses `fs` for real — a suite that only
  * `vi.mock`s it, like `vault.test.ts`, is pure logic and belongs in the run.
  *
+ * **The list's other cost, paid once already.** An entry excludes a whole FILE, not the block that
+ * needs excluding. `preload-bundle-deps.test.ts` earned its place with two suites that read `src/`,
+ * and carried a third — pure-logic scanner coverage over a virtual tree of posix-literal paths —
+ * behind the same line. That block never ran here, so `join(dirname(f), './a.css')` spelling
+ * `\preload\a.css` on a `\` host went unseen until the `v0.0.1-preview.3` release job reported it
+ * as ten `<unresolved>` failures, after the tag was pushed and before an installer existed. The fix
+ * was to split the file (`preload-graph-scanner.test.ts`, unlisted) rather than to widen the list.
+ * So when a listed file grows a block that needs no filesystem, move the block out; an entry here
+ * silences everything in its file, including the class this run exists to catch.
+ *
  * A test that lands on main AFTER a branch is cut can trip both checks on rebase — `pnpm test` reds
  * naming the unlisted file, and the simulation dies with `ENOENT` on its `\`-path. That is the
  * guard doing its job, not a regression: classify the new test by the criterion above and list it.
