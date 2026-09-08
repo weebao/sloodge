@@ -1720,9 +1720,15 @@ function citationIndex() {
 
 /**
  * The files a citation names. A bare `Foo.tsx` matches on basename; anything carrying a `/` is a
- * path fragment and matches on path suffix, so `src/renderer/src/features/design/Foo.tsx` and
- * `design/Foo.tsx` both single out one file when the basename alone is ambiguous — which is what
- * the ambiguity failure tells the reader to do.
+ * path fragment and matches on path suffix, which NARROWS the candidate set but does not by itself
+ * settle it: `design/DesignNotice.tsx` is a suffix of both `src/renderer/src/features/design/…`
+ * and `tests/unit/design/…`, so it stays ambiguous — the collision §10 row 23 documents. Only a
+ * fragment long enough to be unique singles a file out, which is why the ambiguity failure prints
+ * a concrete full path to copy rather than telling the reader to add "some" of the path.
+ *
+ * A suffix match always shares the citation's final segment, so the candidate set is a subset of
+ * the basename set: widening the syntax can only narrow a result, never resolve one to a
+ * different file.
  */
 function citationCandidates({ all, byBase }, cite) {
   if (!cite.includes('/')) return byBase.get(cite) ?? []
