@@ -21,6 +21,7 @@
  * literals are read from `.ts`, `.tsx` and `.css`. Comments are stripped first so prose that quotes
  * a class (`w-[188px]` in ThumbnailPreview's header) is not counted as a use.
  */
+import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve as resolvePath } from 'node:path'
 
@@ -1516,6 +1517,11 @@ function themeColourBlocks() {
 
 async function check(args) {
   const final = args.includes('--final')
+  // Without this, "the role block has not landed yet" is a pass, so an empty diff satisfies
+  // M8b.2's definition of done. `--require-landed` is what that DoD names: it turns the one
+  // deliberately-inconclusive branch in this check into a red, so the milestone's gate can only
+  // go green once the block is actually there.
+  const requireLanded = args.includes('--require-landed')
   const failures = []
   const fail = (msg) => failures.push(msg)
 
@@ -1542,7 +1548,7 @@ async function check(args) {
   // Requested paths must be files the scan actually read; a directory expands to them. Anything
   // else is "I could not check", which is a failure, never a pass.
   const wanted = []
-  for (const arg of args.filter((a) => a !== '--final')) {
+  for (const arg of args.filter((a) => a !== '--final' && a !== '--require-landed')) {
     const path = resolvePath(ROOT, arg)
     let isDir = false
     try {
@@ -1605,6 +1611,11 @@ async function check(args) {
     print(
       `Role block: not landed (0/${String(newRoles.length)} new role colours declared anywhere in theme.css) — the theme-value, census and Tailwind gates apply after M8b.2.`,
     )
+    if (requireLanded) {
+      fail(
+        `--require-landed: the role block has not landed (0/${String(newRoles.length)} new role colours in theme.css) — every gate below it was skipped, so this run confirms nothing about M8b.2`,
+      )
+    }
   } else {
     if (landed.length < newRoles.length) {
       fail(
@@ -1690,17 +1701,165 @@ function freshnessLine(files, totals) {
 }
 
 /**
+ * Every file whose basename a citation may name. `scan()` reads the renderer only, but the audit
+ * also cites test files, and a citation the checker cannot resolve must fail rather than be
+ * skipped — so the index is built over the whole of `src/` and `tests/`.
+ */
+function citationIndex() {
+  const byBase = new Map()
+  for (const f of [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'tests'))]) {
+    const base = f.slice(f.lastIndexOf('/') + 1)
+    byBase.set(base, (byBase.get(base) ?? []).concat(f))
+  }
+  return byBase
+}
+
+const MANIFEST_BEGIN = '<!-- BEGIN CITATION MANIFEST -->'
+const MANIFEST_END = '<!-- END CITATION MANIFEST -->'
+
+/** What the manifest records for one cited line: its text, collapsed, hashed and excerpted. */
+const citationText = (raw) => raw.trim().replace(/\s+/g, ' ')
+const citationHash = (raw) =>
+  createHash('sha256').update(citationText(raw), 'utf8').digest('hex').slice(0, 8)
+const citationExcerpt = (raw) => {
+  const t = citationText(raw)
+  return t.length > 72 ? t.slice(0, 71) + '…' : t
+}
+
+/**
+ * Read every `Foo.tsx:12`, `Foo.tsx:12/34` and `Foo.css:12-15` out of the audit's prose and
+ * resolve each to a repo file and a source line.
+ *
+ * Three kinds of answer, and only one of them is a pass: resolved (a real file, a real line, whose
+ * text we hash), unresolvable (no such basename, or an ambiguous one, or a line past the end of the
+ * file), or absent. The old checker's `if (candidates.length !== 1) continue` turned the middle
+ * case into silence, so `git mv` of a cited component took fourteen citations out of the check and
+ * still printed `RESULT: pass`. Unresolvable is now a failure with the reason printed, and the
+ * count found is asserted against the count resolved so a silent drop cannot pass either.
+ */
+function collectCitations(doc) {
+  const byBase = citationIndex()
+  const entries = new Map() // "path:line" → manifest line
+  const problems = []
+  let found = 0
+  let resolved = 0
+  let inManifest = false
+  doc.split('\n').forEach((text, i) => {
+    // The manifest block cites every file it records; scanning it would be circular.
+    if (text.includes(MANIFEST_BEGIN)) inManifest = true
+    else if (text.includes(MANIFEST_END)) inManifest = false
+    if (inManifest) return
+    const at = `${relative(ROOT, AUDIT)}:${String(i + 1)}`
+    for (const m of text.matchAll(/([A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:[/–-]\d+)*)/g)) {
+      const nums = []
+      for (const part of m[2].split('/')) {
+        const range = /^(\d+)[–-](\d+)$/.exec(part)
+        if (!range) {
+          nums.push(Number(part))
+          continue
+        }
+        // A range cites a region, so both of its ends are checked; the lines between are the
+        // region's contents, and hashing all of them would red on any unrelated edit inside it.
+        const [lo, hi] = [Number(range[1]), Number(range[2])]
+        if (hi <= lo) {
+          problems.push(`${at} — \`${m[1]}:${part}\` is not a usable line range`)
+          continue
+        }
+        nums.push(lo, hi)
+      }
+      found += nums.length
+      const candidates = byBase.get(m[1]) ?? []
+      if (candidates.length === 0) {
+        problems.push(
+          `${at} — \`${m[1]}\` is cited but no such file exists under \`src/\` or \`tests/\` (renamed or deleted?)`,
+        )
+        continue
+      }
+      if (candidates.length > 1) {
+        problems.push(
+          `${at} — \`${m[1]}\` is ambiguous: ${String(candidates.length)} files share that basename (${candidates.map((c) => relative(ROOT, c)).join(', ')}) — cite a repo-relative path`,
+        )
+        continue
+      }
+      const path = relative(ROOT, candidates[0])
+      const lines = readFileSync(candidates[0], 'utf8').split('\n')
+      for (const n of nums) {
+        if (n < 1 || n > lines.length) {
+          problems.push(
+            `${at} — \`${m[1]}:${String(n)}\` is past the end of the file (${String(lines.length)} lines)`,
+          )
+          continue
+        }
+        resolved += 1
+        entries.set(
+          `${path}:${String(n)}`,
+          `${path}:${String(n)}  ${citationHash(lines[n - 1])}  ${citationExcerpt(lines[n - 1])}`.trimEnd(),
+        )
+      }
+    }
+  })
+  return {
+    manifest: [...entries.keys()].toSorted(cmpCitationKey).map((k) => entries.get(k)),
+    problems,
+    found,
+    resolved,
+  }
+}
+
+/** Sort by path then by line *numerically*, so the manifest diff of a shifted file is readable. */
+function cmpCitationKey(a, b) {
+  const [pa, na] = [a.slice(0, a.lastIndexOf(':')), Number(a.slice(a.lastIndexOf(':') + 1))]
+  const [pb, nb] = [b.slice(0, b.lastIndexOf(':')), Number(b.slice(b.lastIndexOf(':') + 1))]
+  return pa === pb ? na - nb : pa < pb ? -1 : 1
+}
+
+/** The manifest as the audit records it, or `null` when the block is missing. */
+function recordedManifest(doc) {
+  const from = doc.indexOf(MANIFEST_BEGIN)
+  const to = doc.indexOf(MANIFEST_END)
+  if (from < 0 || to < 0 || to < from) return null
+  return doc
+    .slice(from + MANIFEST_BEGIN.length, to)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('```'))
+}
+
+/** The block to paste into the audit. Printed by `--emit-citations`. */
+function emitCitations() {
+  const { manifest, problems, found, resolved } = collectCitations(readFileSync(AUDIT, 'utf8'))
+  for (const problem of problems) process.stderr.write(`warning: ${problem}\n`)
+  process.stderr.write(
+    `${String(found)} citations found, ${String(resolved)} resolved, ${String(manifest.length)} distinct lines.\n`,
+  )
+  print(MANIFEST_BEGIN)
+  print('```text')
+  for (const line of manifest) print(line)
+  print('```')
+  print(MANIFEST_END)
+}
+
+/**
  * The staleness gate. This document is a *measurement* of a tree, and `main` moves under it: M4.5
  * landed two colour tokens whose names collide with canonical roles and shifted every `file:line`
  * in the files it touched, which silently invalidated a third of the citations here — a whole
  * review round was spent discovering that by hand. So an agent runs `--verify-doc` before executing
  * any part of this audit.
  *
- * Two exact checks, no heuristics: §1's freshness line must byte-match what the scanner measures
- * now, and every `file:line` the document cites must still be inside that file. Deliberately NOT
- * checked: whether the utility named beside a citation is on that source line — §5.4's migration
- * rows name the token a line should *become*, so that test cannot tell a stale citation from a
- * prescription and would fail closed on correct text.
+ * Two exact checks, no heuristics. §1's freshness line must byte-match what the scanner measures
+ * now. And every `file:line` the document cites must still carry the *text it carried when the
+ * audit was written* — §11 records a hash and an excerpt of each cited source line, and this
+ * regenerates that block from the tree and demands a byte match.
+ *
+ * Content, not length, because length confirms nothing: the previous version tested only
+ * `1 <= n <= lineCount`, so M3.13 adding twelve lines to `SlideCanvas.tsx` moved all nine of its
+ * citations onto unrelated source while the gate still printed `RESULT: pass`. A commit that only
+ * *adds* lines above a citation is invisible to a bounds check and glaring to a content check.
+ *
+ * Hashing the line *as it is today* — rather than checking that the utility named beside the
+ * citation appears on it — is what keeps §5.4 workable: those rows name the token a line should
+ * *become*, so a utility match would fail closed on correct text. A hash distinguishes "the line
+ * moved" from "the line is a prescription" with no heuristics at all.
  */
 function verifyDoc() {
   const doc = readFileSync(AUDIT, 'utf8')
@@ -1718,38 +1877,54 @@ function verifyDoc() {
     problems.push(`§1's freshness line is stale.\n  recorded: ${recorded}\n  measured: ${line}`)
   }
 
-  const byBase = new Map()
-  for (const f of files) {
-    const base = f.slice(f.lastIndexOf('/') + 1)
-    byBase.set(base, (byBase.get(base) ?? []).concat(f))
+  const { manifest, problems: unresolved, found, resolved } = collectCitations(doc)
+  problems.push(...unresolved)
+  print(
+    `Citations: ${String(found)} \`file:line\` references in the prose, ${String(resolved)} resolved to a source line, ${String(manifest.length)} distinct lines hashed.`,
+  )
+  if (found !== resolved) {
+    problems.push(
+      `${String(found - resolved)} of ${String(found)} citations could not be resolved — a citation the checker cannot confirm is a failure, never a skip`,
+    )
   }
-  let checked = 0
-  doc.split('\n').forEach((text, i) => {
-    for (const m of text.matchAll(/([A-Za-z][\w.-]*\.(?:tsx|ts|css)):(\d+(?:\/\d+)*)/g)) {
-      const candidates = byBase.get(m[1]) ?? []
-      if (candidates.length !== 1) continue
-      const lines = readFileSync(candidates[0], 'utf8').split('\n').length
-      for (const n of m[2].split('/')) {
-        checked += 1
-        if (Number(n) < 1 || Number(n) > lines) {
-          problems.push(
-            `${relative(ROOT, AUDIT)}:${String(i + 1)} — \`${m[1]}:${n}\` is past the end of the file (${String(lines)} lines)`,
-          )
-        }
+
+  const recorded = recordedManifest(doc)
+  if (recorded === null) {
+    problems.push(
+      `§11's citation manifest is missing — regenerate it with \`node scripts/design-inventory.mjs --emit-citations\``,
+    )
+  } else {
+    print(`Manifest: ${String(recorded.length)} lines recorded in §11.`)
+    const want = new Map(manifest.map((l) => [l.slice(0, l.indexOf('  ')), l]))
+    const got = new Map(recorded.map((l) => [l.slice(0, l.indexOf('  ')), l]))
+    for (const [key, wantLine] of want) {
+      const gotLine = got.get(key)
+      if (gotLine === undefined) {
+        problems.push(`§11 does not record \`${key}\`, which the prose cites.\n  tree: ${wantLine}`)
+      } else if (gotLine !== wantLine) {
+        problems.push(
+          `\`${key}\` no longer says what the audit records — the citation moved or the source changed.\n  recorded: ${gotLine}\n  tree:     ${wantLine}`,
+        )
       }
     }
-  })
-  print(`Resolved ${String(checked)} \`file:line\` citations against the tree.`)
+    for (const key of got.keys()) {
+      if (!want.has(key)) {
+        problems.push(`§11 records \`${key}\`, which the prose no longer cites.`)
+      }
+    }
+  }
   print()
   for (const p2 of problems) print(`- ${p2}`)
   print()
   if (problems.length > 0) {
     print(
-      `RESULT: FAIL (${String(problems.length)}) — the audit no longer describes this tree; re-derive its numbers before executing it.`,
+      `RESULT: FAIL (${String(problems.length)}) — the audit no longer describes this tree; re-derive its numbers and citations before executing it.`,
     )
     return 1
   }
-  print('RESULT: pass — §1 matches the tree and every cited line still exists.')
+  print(
+    `RESULT: pass — §1 matches the tree and all ${String(resolved)} cited lines still carry the text §11 records.`,
+  )
   return 0
 }
 
@@ -1791,11 +1966,13 @@ try {
     process.exitCode = await check(process.argv.slice(3))
   } else if (mode === '--verify-doc') {
     process.exitCode = verifyDoc()
+  } else if (mode === '--emit-citations') {
+    emitCitations()
   } else if (mode === '--inventory') {
     inventory()
   } else {
     process.stderr.write(
-      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme, --verify-doc or --check [--final] [file …]\n`,
+      `unknown flag ${mode}; use --inventory, --contrast, --proposed, --emit-theme, --emit-citations, --verify-doc or --check [--final] [--require-landed] [file …]\n`,
     )
     process.exit(2)
   }
