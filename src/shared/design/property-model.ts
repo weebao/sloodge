@@ -125,12 +125,28 @@ const SVG_SIZED_TAGS: ReadonlySet<string> = new Set(['rect', 'image', 'img'])
  * gesture still spends an undo entry and the overlay still advances its stored box, so the picture
  * and the document disagree until the next re-measure. Everything outside this set falls through to
  * the `translate` arm, which moves any SVG element correctly in its parent's frame.
+ *
+ * **Membership is measured, not derived from the spec** (round-7 review): each candidate was moved
+ * by each channel in the Chromium that ships with the app (Electron 43), comparing
+ * `getBoundingClientRect()` before and after. Two answers the spec reading got wrong:
+ * - The **outermost `<svg>`** — the only kind a slide contains, since slides are HTML documents with
+ *   inline SVG blocks — is a replaced element in the CSS box model, and `x`/`y` are inert on it
+ *   while `left`/`top` and a CSS translate both move it. So it is NOT in this set; the translate arm
+ *   moves it, and moves a *nested* `<svg>` too, so the set loses nothing by excluding it.
+ * - **`<tspan>` is the mirror image**: Chromium parses a `transform` on it (`getComputedStyle`
+ *   reports the matrix) and declines to apply it, because a text-content child is not a
+ *   transformable element — but it does honour an `x`/`y` write, with or without an existing one.
+ *   So it must be IN the set; the translate arm would freeze it.
+ * `<textPath>` is correctly outside: no transform applies to it either, but it has no `x`/`y`
+ * geometry to write, so neither channel moves it and the translate arm at least corrupts nothing.
+ * `<mask>`/`<pattern>`/`<filter>`/`<marker>`/`<symbol>`/`<clipPath>` carry `x`/`y` but paint
+ * nothing, so they are never hit-testable and never reach this gate.
  */
 const SVG_XY_TAGS: ReadonlySet<string> = new Set([
   'rect',
   'image',
-  'svg',
   'text',
+  'tspan',
   'use',
   'foreignObject',
 ])

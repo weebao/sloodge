@@ -579,9 +579,12 @@ describe('buildFieldOps — position and size', () => {
     expect(values.y).toBe('8px')
   })
 
-  it("the x/y attribute channel is still <rect>/<image>/<text>/<use>'s — the gate is a set, not a ban", () => {
+  it('the x/y attribute channel is still the set members — the gate is a set, not a ban, and EVERY member is pinned', () => {
     // The other half of the tag gate: an element that DOES position by x/y keeps the attribute
-    // channel. Mutation guard: an empty `SVG_XY_TAGS` reds every line here.
+    // channel. One line per member of `SVG_XY_TAGS`, because pinning the set as a whole is not the
+    // same as pinning its membership — round 7 shipped two unpinned members and one of them was
+    // wrong. Mutation guard: deleting ANY single member of the set reds this test, and an empty
+    // set reds every line of it.
     expect(edit('<svg><rect x="5"/></svg>', 1, 'x', '40')).toBe('<svg><rect x="40"/></svg>')
     expect(edit('<svg><image x="5" href="a.png"/></svg>', 1, 'x', '40')).toBe(
       '<svg><image x="40" href="a.png"/></svg>',
@@ -591,6 +594,71 @@ describe('buildFieldOps — position and size', () => {
     )
     expect(edit('<svg><use x="5" href="#a"/></svg>', 1, 'x', '40')).toBe(
       '<svg><use x="40" href="#a"/></svg>',
+    )
+    // `<foreignObject>` — camelCase in the set because parse5 case-adjusts foreign tag names, so
+    // BOTH source spellings resolve to the same member. Lowercasing the set member would silently
+    // drop the tag; this pins that it does not have to be spelled twice.
+    expect(
+      edit(
+        '<svg><foreignObject x="5" width="1" height="1"><div>a</div></foreignObject></svg>',
+        1,
+        'x',
+        '40',
+      ),
+    ).toBe('<svg><foreignObject x="40" width="1" height="1"><div>a</div></foreignObject></svg>')
+    expect(
+      edit(
+        '<svg><foreignobject x="5" width="1" height="1"><div>a</div></foreignobject></svg>',
+        1,
+        'x',
+        '40',
+      ),
+    ).toBe('<svg><foreignobject x="40" width="1" height="1"><div>a</div></foreignobject></svg>')
+  })
+
+  it('a <tspan> moves by its x attribute — Chromium parses a transform on it and declines to apply it', () => {
+    // Round-7 major 2. A `<tspan>` is a text-content child, not a transformable element: measured
+    // in the Chromium that ships with the app, a `style="transform: translate(40px, 0)"` on one
+    // leaves its box exactly where it was (`getComputedStyle` reports the matrix, so it parses the
+    // declaration and simply does not honour it) while an `x` write moves it — with or without an
+    // `x` already there. So it belongs in `SVG_XY_TAGS`, and the translate arm would freeze it.
+    // Reachable: `grabbable.ts` documents alt-click as the way to select a `<tspan>`, and
+    // `SelectionOverlay` passes `event.altKey` straight into `requestHit`.
+    // Mutation guard: deleting `'tspan',` from the set writes the inert translate on both lines.
+    expect(edit('<svg><text x="5"><tspan x="10">f</tspan></text></svg>', 2, 'x', '40')).toBe(
+      '<svg><text x="5"><tspan x="40">f</tspan></text></svg>',
+    )
+    expect(edit('<svg><text x="5" y="9"><tspan>f</tspan></text></svg>', 2, 'y', '40')).toBe(
+      '<svg><text x="5" y="9"><tspan y="40">f</tspan></text></svg>',
+    )
+  })
+
+  it('the OUTERMOST <svg> moves by a translate, not by x/y — the attributes are inert on it', () => {
+    // Round-7 major 1, the mirror of the `<tspan>` case. The only `<svg>` a slide contains is an
+    // outermost one (slides are HTML documents with inline SVG blocks), and there `x`/`y` are not
+    // geometry at all: the element is a replaced element in the CSS box model. Measured in the
+    // app's own Chromium, `x` and `y` both leave its box untouched while `left`/`top` and a CSS
+    // translate both move it, and the translate also moves a NESTED `<svg>` — so the translate arm
+    // is right for both and `'svg'` must stay OUT of `SVG_XY_TAGS`.
+    // Mutation guard: adding `'svg',` back to the set emits `<svg x="40" …>`, two attributes the
+    // renderer ignores, on the ordinary click-and-drag of a whole icon.
+    expect(edit('<svg width="300"><rect x="1"/></svg>', 0, 'x', '40')).toBe(
+      '<svg style="transform: translate(40px, 0)" width="300"><rect x="1"/></svg>',
+    )
+    // Its real shape on a slide: absolutely positioned. `moveChannel`'s `offsets` arm is guarded by
+    // `!isSvg`, which is right for SVG *children* (a stray `left` on a `<rect>` does nothing) and
+    // skips the very `left`/`top` this element IS positioned by — so it takes the translate arm,
+    // which Chromium honours here. Recorded because the bytes look surprising, not because they
+    // are wrong. See the M3.6 roadmap row.
+    expect(
+      edit(
+        '<svg style="position: absolute; left: 100px" width="300"><rect x="1"/></svg>',
+        0,
+        'x',
+        '40',
+      ),
+    ).toBe(
+      '<svg style="position: absolute; left: 100px; transform: translate(40px, 0)" width="300"><rect x="1"/></svg>',
     )
   })
 

@@ -195,6 +195,36 @@ describe('buildDragPatch — the transform lock', () => {
     }
   })
 
+  it('a drag on the OUTERMOST <svg> writes a translate, not the x/y attributes it ignores (round-7 major)', () => {
+    // The ordinary click-and-drag of a whole inline icon: `<svg>` is addressable, is not in
+    // `NEVER_SELECTABLE`, has a real box, so a plain click resolves to it. `x`/`y` are inert on an
+    // outermost `<svg>` — it is a replaced element in the CSS box model — so routing it to the
+    // attribute channel froze it while the gesture still spent an undo entry. Mutation guard:
+    // adding `'svg',` to `SVG_XY_TAGS` emits `<svg y="25" x="40" style="position: absolute; …">`.
+    const html =
+      '<svg style="position: absolute; left: 100px; top: 60px" width="300" height="200"><rect x="1"/></svg>'
+    const slId = slIdOf('s', html, 'svg')
+    const rect: SlRect = { x: 100, y: 60, width: 300, height: 200 }
+    const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 140, y: 85 })
+    expect(patched).toContain('transform: translate(40px, 25px)')
+    expect(patched).not.toContain('x="40"')
+    expect(patched).not.toContain('y="25"')
+  })
+
+  it('a drag on a <tspan> writes its x/y attributes — a transform on one is inert (round-7 major)', () => {
+    // Reachable through the shipped alt-click path (`SelectionOverlay` passes `event.altKey` into
+    // `requestHit`; `grabbable.ts`'s header documents alt as the way to reach a `<tspan>`).
+    // Chromium parses a `transform` on a `<tspan>` and declines to apply it, so the translate arm
+    // freezes the fragment. Mutation guard: deleting `'tspan',` from `SVG_XY_TAGS` emits
+    // `<tspan style="transform: translate(40px, 0)" x="10" y="20">` and the text never moves.
+    const html = '<svg><text x="5" y="20"><tspan x="10" y="20">frag</tspan></text></svg>'
+    const slId = slIdOf('s', html, 'tspan')
+    const rect: SlRect = { x: 10, y: 6, width: 34, height: 19 }
+    const patched = buildDragPatch('s', html, slId, rect, { ...rect, x: 50 })
+    expect(patched).toContain('<tspan x="50" y="20">')
+    expect(patched).not.toContain('transform')
+  })
+
   it('an SVG element under an OPAQUE transform is refused like any other', () => {
     // A matrix we never decomposed could be a doubling one, under which `x` +40 lands 80px out.
     const html =
