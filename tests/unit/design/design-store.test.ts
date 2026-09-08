@@ -24,6 +24,8 @@ beforeEach(() => {
     selection: null,
     selections: [],
     notice: null,
+    finishing: 0,
+    caretRequests: {},
   })
 })
 
@@ -222,6 +224,38 @@ describe('text-edit sessions (M3.11)', () => {
     useDesignStore.getState().setEnabled(false)
 
     expect(useDesignStore.getState().editing).toBeNull()
+  })
+
+  // M3.13: the stage frame's hold is a count of sessions, one per open or finishing caret, so two
+  // sessions overlapping inside the finish window hold twice and each releases only its own. The
+  // toggle does not touch it — `OFF` leaves it alone — and it never goes below zero.
+  it('holds the frame per session and releases per session', () => {
+    useDesignStore.getState().holdFinishing()
+    useDesignStore.getState().holdFinishing()
+    expect(useDesignStore.getState().finishing).toBe(2)
+
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().finishing).toBe(2)
+
+    useDesignStore.getState().settleFinishing()
+    expect(useDesignStore.getState().finishing).toBe(1)
+    useDesignStore.getState().settleFinishing()
+    useDesignStore.getState().settleFinishing()
+    expect(useDesignStore.getState().finishing).toBe(0)
+  })
+
+  // M3.13, round-2 review: a stale finish judges itself superseded by the *request* for a newer caret on its
+  // element, which is posted before the frame can answer it — so the count is per element, moves as
+  // the request goes out, and survives the toggle like `finishing` does.
+  it('counts caret requests per element, and the toggle leaves them alone', () => {
+    expect(useDesignStore.getState().noteCaretRequest(HIT.slId)).toBe(1)
+    expect(useDesignStore.getState().noteCaretRequest(HIT.slId)).toBe(2)
+    expect(useDesignStore.getState().noteCaretRequest(HIT2.slId)).toBe(1)
+    expect(useDesignStore.getState().caretRequests).toEqual({ [HIT.slId]: 2, [HIT2.slId]: 1 })
+
+    useDesignStore.getState().setEnabled(true)
+    useDesignStore.getState().setEnabled(false)
+    expect(useDesignStore.getState().caretRequests).toEqual({ [HIT.slId]: 2, [HIT2.slId]: 1 })
   })
 
   it('endEditing is idempotent', () => {

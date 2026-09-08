@@ -974,10 +974,38 @@ Content field is simply disabled, with a hint explaining why.
   at 800 ms**: no commit, the frame reverted, nothing said. Ordinary interaction does not reach it —
   the slide's own JS has to stall for about a second at the instant of the toggle, and ~130 real
   sessions across the toggle, Present, `Enter`, `Esc`, `Tab` and blur never lost text — and it fails
-  safe, leaving the document untouched. Every exit therefore keeps the text provided the frame can
-  answer within a frame of the click; closing the residual window means capturing the frame's
-  `contentWindow` at pin time, or deferring the stage's re-navigation until a pending `finish`
-  settles (M3.13 in 80-roadmap.md).
+  safe, leaving the document untouched. **Closed in M3.13** by deferring the re-navigation with a
+  per-session hold: every text session acquires a hold on the stage frame's document when it opens
+  (`designStore.finishing`, a count), `SlideCanvas` keeps the instrumented document while any hold
+  is up, and each session releases exactly its own — for the way out of Design Mode, in the `finish`
+  callback — so the caret's document stays until it has answered or `FINISH_TIMEOUT_MS` has passed,
+  and two sessions finishing inside one window cannot release each other's frame. The other half
+  offered (capturing `contentWindow` at pin time) was not taken and was confirmed irrelevant in
+  Chromium: a WindowProxy keeps its identity across navigations, so it cannot tell the documents
+  apart and does nothing about a document torn down before its stalled script can answer. A frame
+  that still does not confirm the text within the timeout is now announced ("couldn’t confirm the
+  text you typed … wasn’t saved") instead of reverted in silence — unless a newer caret has since
+  been **asked for** on that same element, or the store already shows one **open** on it, in which
+  case the stale session neither touches nor announces it. Asked for, not only opened (round-2
+  review): the frame runs the parent's messages in posting order, so under the very stall this
+  closes the newer `begin` is queued behind the stale `commit` and `designStore.editing` cannot yet
+  show it, while the frame will open that caret and then run the stale `cancel` on it;
+  `designStore.caretRequests` counts each element's requests as they are posted, and a session
+  compares the count it opened under. Both are asked, never one instead of the other (round-3
+  review): a session the store opens directly (`beginEditing`) pins the count without moving it, so
+  the count alone reads it as the same generation the stale session holds and would let the stale
+  `cancel` into a live caret — which is what `editing` sees. What the newer caret then opens on is
+  the text the stale session left in the element, which is what it commits — nothing is lost, so
+  nothing is said. **The residual is announced with two exceptions**, both of which the pre-M3.13
+  tree is silent about as well: a notice raised on a slide the user has since left is dropped before
+  it is shown (M3.14), and a counted request that resolves *without* a caret — declined, superseded,
+  the selection moved on, or answered `null` — still marks the stale session superseded, so its loss
+  goes unannounced. Accepted edges: the hold is stage-wide, so a slide selected inside a
+  pending window loads instrumented with Design Mode off and is re-navigated once the hold clears
+  (cosmetic, nothing stranded); a slide switch inside the window drops the announcement before it
+  is shown, since a notice belongs to its slide (M3.14); and a stale `revert` that reaches the frame
+  behind another element's `begin` has nothing to rewind, because the frame keeps one `lastEnded`
+  slot and clears it on any `begin` (M3.15).
 - **Quitting with a caret open still loses it.** Nothing commits or cancels an open session on app
   quit or window close: typing deliberately never touches the store (`useTextEditing.ts`), so the
   characters live only in the frame's DOM until the session ends. This is consistent with the app
