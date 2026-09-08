@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { slideTextForNotes, walkSlide } from '../../../../src/shared/export/pptx/walker'
+import {
+  layOutInline,
+  renderedBlockText,
+  slideTextForNotes,
+  walkSlide,
+} from '../../../../src/shared/export/pptx/walker'
+import type { InlineItem } from '../../../../src/shared/export/pptx/node'
 import type { ShapeSpec } from '../../../../src/shared/export/pptx/types'
-import { ancestorMatrix, makeMeasure, makeNode, makeRootPaint, uniformBorder } from './_fixtures'
+import {
+  ancestorMatrix,
+  makeMeasure,
+  makeNode,
+  makeRootPaint,
+  runStyleOf,
+  textItem,
+  uniformBorder,
+} from './_fixtures'
 
 const textShapes = (shapes: ShapeSpec[]): Extract<ShapeSpec, { kind: 'text' }>[] =>
   shapes.filter((s): s is Extract<ShapeSpec, { kind: 'text' }> => s.kind === 'text')
@@ -11,7 +25,6 @@ describe('walkSlide text mapping', () => {
   it('emits an editable text box from a leaf, mapping the box to inches and style to runs', () => {
     const node = makeNode({
       tag: 'h1',
-      isLeaf: true,
       text: 'Hello',
       x: 96,
       y: 48,
@@ -45,15 +58,18 @@ describe('walkSlide text mapping', () => {
   })
 
   it('applies text-transform: uppercase to the run text', () => {
-    const node = makeNode({ isLeaf: true, text: 'quiet', style: { textTransform: 'uppercase' } })
+    const node = makeNode({ text: 'quiet', style: { textTransform: 'uppercase' } })
     const t = textShapes(walkSlide(makeMeasure([node])).shapes)[0]!
     expect(t.runs[0]!.text).toBe('QUIET')
   })
 
   it('emits bullets for list items and a hyperlink for <a>', () => {
-    const ul = makeNode({ tag: 'span', isLeaf: true, text: 'item', listType: 'ul' })
-    const ol = makeNode({ tag: 'span', isLeaf: true, text: 'one', listType: 'ol' })
-    const link = makeNode({ tag: 'a', isLeaf: true, text: 'go', href: 'https://x.test' })
+    const ul = makeNode({ tag: 'span', text: 'item', listType: 'ul' })
+    const ol = makeNode({ tag: 'span', text: 'one', listType: 'ol' })
+    const link = makeNode({
+      tag: 'a',
+      inlineContent: [textItem('go', {}, { href: 'https://x.test' })],
+    })
     const shapes = textShapes(walkSlide(makeMeasure([ul, ol, link])).shapes)
     expect(shapes[0]!.runs[0]!.bullet).toBe(true)
     expect(shapes[1]!.runs[0]!.bullet).toEqual({ type: 'number' })
@@ -66,7 +82,6 @@ describe('walkSlide text mapping', () => {
     // saw and the metric could not see either (review r2).
     const chip = makeNode({
       tag: 'li',
-      isLeaf: true,
       text: 'Discovery',
       listType: 'ul',
       style: { listStyleType: 'none' },
@@ -75,22 +90,411 @@ describe('walkSlide text mapping', () => {
     expect(shape!.runs[0]!.bullet).toBeUndefined()
   })
 
-  it('does not double-render: a non-leaf with no paint contributes no shape', () => {
-    const wrapper = makeNode({ tag: 'div', isLeaf: false })
+  it('does not double-render: a block with no text of its own and no paint contributes no shape', () => {
+    const wrapper = makeNode({ tag: 'div' })
     expect(walkSlide(makeMeasure([wrapper])).shapes).toHaveLength(0)
+  })
+})
+
+/**
+ * Run-level text (M4.8b). The measurement pass records text nodes raw; everything the reader sees
+ * — collapsed spaces, trimmed line edges, `<br>`s, `text-transform` — is decided here, so it is
+ * pinned against EXACT strings. The fidelity oracle's substring check cannot tell "a b c" from
+ * "ab c"; these can.
+ */
+describe('layOutInline white-space processing (M4.8b)', () => {
+  const fallback = runStyleOf()
+  const texts = (items: InlineItem[]): string[][] =>
+    layOutInline(items, fallback).map((p) => p.map((r) => r.text))
+
+  it('keeps one run per text node with the spaces between them intact: "a " + "b" + " c"', () => {
+    const items = [textItem('a '), textItem('b', { fontWeight: '700' }), textItem(' c')]
+    expect(texts(items)).toEqual([['a ', 'b', ' c']])
+  })
+
+  it('collapses source formatting: newlines and indentation become one space, line edges are trimmed', () => {
+    // `<p>\n  Growth was driven by <strong>enterprise expansion</strong> and a\n  <em>lower</em> than\n  forecast.\n</p>`
+    const items = [
+      textItem('\n  Growth was driven by '),
+      textItem('enterprise expansion', { fontWeight: '700' }),
+      textItem(' and a\n  '),
+      textItem('lower', { fontStyle: 'italic' }),
+      textItem(' than\n  forecast.\n'),
+    ]
+    const [paragraph] = texts(items)
+    expect(paragraph).toEqual([
+      'Growth was driven by ',
+      'enterprise expansion',
+      ' and a ',
+      'lower',
+      ' than forecast.',
+    ])
+    expect(paragraph!.join('')).toBe(
+      'Growth was driven by enterprise expansion and a lower than forecast.',
+    )
+  })
+
+  it('drops a collapsible space that follows another one across a run boundary', () => {
+    // `a <span> </span> b` — three nodes, two spaces between the words in the source, one rendered.
+    expect(texts([textItem('a '), textItem(' '), textItem(' b')])).toEqual([['a ', 'b']])
+    // Mutation: emit the runs verbatim → 'a ', ' ', ' b' → the reader sees three spaces.
+  })
+
+  it('a `pre` run is not a collapsible neighbour: it neither absorbs the next space nor loses its own', () => {
+    // An inline `white-space: pre` code chip beside ordinary text. Its spaces are not collapsible,
+    // so none of CSS Text §4.1.3 step 4 applies across the boundary in either direction: the space
+    // after it is not "after another collapsible space", the space before it is not dropped, and
+    // its own trailing space survives the end of the line. Each conjunct of the rule is one of the
+    // three cases below, and each is a separate silent space in the exported text (review r7).
+    const preserve = { whiteSpace: 'preserve' } as const
+    expect(texts([textItem('a ', {}, preserve), textItem(' b')])).toEqual([['a ', ' b']])
+    expect(texts([textItem('a '), textItem(' b', {}, preserve)])).toEqual([['a ', ' b']])
+    expect(texts([textItem('a'), textItem(' ', {}, preserve)])).toEqual([['a', ' ']])
+    // Mutations: drop `prev.collapsible &&` → case 1 becomes ['a ', 'b']; strip a leading space
+    // regardless of `seg.collapsible` → case 2 becomes ['a ', 'b']; trim the last run regardless of
+    // `last.collapsible` → case 3 becomes ['a'].
+  })
+
+  it('never collapses a non-breaking space', () => {
+    expect(texts([textItem('Non\u00a0breaking  space')])).toEqual([['Non\u00a0breaking space']])
+  })
+
+  it('turns <br> into a line break inside the paragraph, and drops the one a trailing <br> would add', () => {
+    const laid = layOutInline(
+      [textItem('one'), { kind: 'br' }, textItem(' two'), { kind: 'br' }],
+      fallback,
+    )
+    expect(laid).toHaveLength(1)
+    expect(laid[0]!.map((r) => [r.text, r.lineBreakBefore])).toEqual([
+      ['one', false],
+      ['two', true],
+    ])
+    // `a<br><br>` does render an empty second line.
+    const double = layOutInline([textItem('a'), { kind: 'br' }, { kind: 'br' }], fallback)
+    expect(double[0]!.map((r) => [r.text, r.lineBreakBefore])).toEqual([
+      ['a', false],
+      ['', true],
+    ])
+  })
+
+  it('preserves spaces and turns newlines into line breaks under white-space: pre; pre-line collapses spaces only', () => {
+    const pre = layOutInline(
+      [textItem('line one\n    line two', {}, { whiteSpace: 'preserve' })],
+      fallback,
+    )
+    expect(pre[0]!.map((r) => [r.text, r.lineBreakBefore])).toEqual([
+      ['line one', false],
+      ['    line two', true],
+    ])
+    const preLine = layOutInline(
+      [textItem('  first   line\n  second   line  ', {}, { whiteSpace: 'preserve-breaks' })],
+      fallback,
+    )
+    expect(preLine[0]!.map((r) => r.text)).toEqual(['first line', 'second line'])
+  })
+
+  it('marks the line break on the first run of a continuation line only, however many runs it has', () => {
+    // `a<br>b <strong>c</strong>` — one `<a:br/>` before 'b ', none before 'c'. Marking every run
+    // of the line puts a second break inside the sentence, which no test could see through a
+    // single-run line (review r7).
+    const laid = layOutInline(
+      [textItem('a'), { kind: 'br' }, textItem('b '), textItem('c', { fontWeight: '700' })],
+      fallback,
+    )
+    expect(laid[0]!.map((r) => [r.text, r.lineBreakBefore])).toEqual([
+      ['a', false],
+      ['b ', true],
+      ['c', false],
+    ])
+  })
+
+  it('keeps the blank line a trailing <br> makes when the paragraph before it ended at a nested block', () => {
+    // `<p>one<div>…</div><br></p>`: the second paragraph's only content is the break, so every one
+    // of its lines trims empty — but Chromium still renders a blank line there, and the run that
+    // carries it is what gives the `<a:p>` its height. The `hasOwnText` guard is why the whole
+    // block cannot reach here empty; a later paragraph of it can (review r7).
+    const laid = layOutInline([textItem('one'), { kind: 'block' }, { kind: 'br' }], fallback)
+    expect(laid.map((p) => p.map((r) => [r.text, r.lineBreakBefore]))).toEqual([
+      [['one', false]],
+      [['', false]],
+    ])
+    // Mutation: return early on all-empty lines without testing `breaks === 0` → the blank line and
+    // its paragraph vanish.
+  })
+
+  it('splits paragraphs at a nested block and keeps the block itself out of this box', () => {
+    const items: InlineItem[] = [
+      textItem('\n  Intro\n  '),
+      { kind: 'block' },
+      textItem('\n  more\n'),
+    ]
+    const laid = layOutInline(items, fallback)
+    expect(laid.map((p) => p.map((r) => r.text))).toEqual([['Intro'], ['more']])
+  })
+
+  it('emits nothing for content that is only formatting white space, and drops an atomic inline silently', () => {
+    expect(texts([textItem('\n  '), { kind: 'block' }, textItem('\n')])).toEqual([])
+    // `Rate: <span class="pill">24%</span> up` — the pill is its own box; its neighbours collapse
+    // to a single space between them (and the scorer names the gap).
+    expect(texts([textItem('Rate: '), { kind: 'box' }, textItem(' up')])).toEqual([
+      ['Rate: ', 'up'],
+    ])
+  })
+
+  it('applies text-transform per run, with capitalize carrying the word boundary across runs', () => {
+    expect(texts([textItem('quiet', { textTransform: 'uppercase' })])).toEqual([['QUIET']])
+    expect(texts([textItem('LOUD', { textTransform: 'lowercase' })])).toEqual([['loud']])
+    expect(
+      texts([textItem("capitalize each word, don't split", { textTransform: 'capitalize' })]),
+    ).toEqual([["Capitalize Each Word, Don't Split"]])
+    // `<p style="text-transform: capitalize">hello <b>w</b>orld</p>`: "orld" continues a word.
+    const cap = { textTransform: 'capitalize' }
+    expect(texts([textItem('hello ', cap), textItem('w', cap), textItem('orld', cap)])).toEqual([
+      ['Hello ', 'W', 'orld'],
+    ])
+  })
+})
+
+describe('walkSlide run-level text boxes (M4.8b)', () => {
+  it('emits ONE box with three runs for <p>a <strong>b</strong> c</p>, the strong bold, all in the inherited colour', () => {
+    const p = makeNode({
+      tag: 'p',
+      x: 72,
+      y: 398,
+      w: 1136,
+      h: 24,
+      style: { color: 'rgb(203, 213, 225)', fontSize: 20 },
+      inlineContent: [
+        textItem('Growth was driven by ', { color: 'rgb(203, 213, 225)', fontSize: 20 }),
+        textItem('enterprise expansion', {
+          color: 'rgb(203, 213, 225)',
+          fontSize: 20,
+          fontWeight: '700',
+        }),
+        textItem(' than forecast.', { color: 'rgb(203, 213, 225)', fontSize: 20 }),
+      ],
+    })
+    // The <strong> is a node too (it has a rect) but carries no text of its own and paints nothing.
+    const strong = makeNode({ tag: 'strong', inlineOf: p.domIndex, x: 296, y: 398, w: 239, h: 24 })
+    const shapes = walkSlide(makeMeasure([p, strong])).shapes
+    expect(shapes).toHaveLength(1)
+    const [box] = textShapes(shapes)
+    expect(box!.box).toEqual({ x: 0.75, y: 398 / 96, w: 1136 / 96, h: 0.25 })
+    expect(box!.runs.map((r) => r.text)).toEqual([
+      'Growth was driven by ',
+      'enterprise expansion',
+      ' than forecast.',
+    ])
+    expect(box!.runs.map((r) => r.bold)).toEqual([undefined, true, undefined])
+    expect(box!.runs.map((r) => r.color)).toEqual(['CBD5E1', 'CBD5E1', 'CBD5E1'])
+    expect(box!.runs.map((r) => r.fontSize)).toEqual([15, 15, 15])
+  })
+
+  it("carries a run's own size, colour, decoration, letter spacing and opacity — not the block's", () => {
+    const p = makeNode({
+      tag: 'p',
+      style: { fontSize: 20, color: 'rgb(0, 0, 0)' },
+      inlineContent: [
+        textItem('Sized ', { fontSize: 20 }),
+        textItem(
+          'bigger',
+          {
+            fontSize: 34,
+            color: 'rgba(244, 114, 182, 0.5)',
+            textDecorationLine: 'underline line-through',
+            letterSpacing: '2px',
+            fontStyle: 'italic',
+          },
+          { opacity: 0.5, href: 'https://x.test' },
+        ),
+      ],
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([p])).shapes)
+    expect(box!.runs[0]).toEqual({
+      text: 'Sized ',
+      color: '000000',
+      fontFace: 'arial',
+      fontSize: 15,
+    })
+    expect(box!.runs[1]).toEqual({
+      text: 'bigger',
+      italic: true,
+      underline: true,
+      strike: true,
+      color: 'F472B6',
+      transparency: 75, // 0.5 alpha × 0.5 opacity
+      fontFace: 'arial',
+      fontSize: 25.5,
+      charSpacing: 1.5,
+      hyperlink: 'https://x.test',
+    })
+  })
+
+  it('marks line and paragraph breaks on the run that starts the new line/paragraph', () => {
+    // `<li>one<br>two<div>…</div>after <b>more</b></li>`. The trailing paragraph deliberately has
+    // TWO runs: with a single-run second paragraph, `i > 0 && j === 0` and a bare `i > 0` produce
+    // identical specs, and every fixture in the corpus and the suite was single-run, so dropping
+    // the `j === 0` conjunct survived all 4385 tests (review r8, major 1). Under the mutant 'more'
+    // also carries `paragraphBreakBefore`, and the writer then emits three `<a:p>` for two
+    // paragraphs — 'after ' and 'more' split onto separate paragraphs in the .pptx.
+    const li = makeNode({
+      tag: 'li',
+      listType: 'ul',
+      inlineContent: [
+        textItem('one'),
+        { kind: 'br' },
+        textItem('two'),
+        { kind: 'block' },
+        textItem('after '),
+        textItem('more', { fontWeight: '700' }),
+      ],
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([li])).shapes)
+    expect(box!.runs.map((r) => [r.text, r.lineBreakBefore, r.paragraphBreakBefore])).toEqual([
+      ['one', undefined, undefined],
+      ['two', true, undefined],
+      ['after ', undefined, true],
+      ['more', undefined, undefined],
+    ])
+    // One marker per <li>, on the first paragraph only — Chromium draws one, not one per line.
+    expect(box!.runs.map((r) => r.bullet)).toEqual([true, undefined, undefined, undefined])
+  })
+
+  it("insets the runs by padding plus border width, so a padded pill's label lands on its content box", () => {
+    const pill = makeNode({
+      tag: 'span',
+      text: 'Shipped',
+      w: 120,
+      h: 40,
+      style: {
+        paddingTop: '8px',
+        paddingRight: '18px',
+        paddingBottom: '8px',
+        paddingLeft: '18px',
+        ...uniformBorder('2px', 'rgb(185, 28, 28)'),
+      },
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([pill])).shapes)
+    // (18 + 2) px × 0.75 = 15 pt; (8 + 2) px × 0.75 = 7.5 pt.
+    expect(box!.inset).toEqual({ left: 15, top: 7.5, right: 15, bottom: 7.5 })
+    // An unpadded block carries no inset at all (the writer then passes `margin: 0`).
+    const plain = makeNode({ text: 'Plain' })
+    expect(textShapes(walkSlide(makeMeasure([plain])).shapes)[0]!.inset).toBeUndefined()
+  })
+
+  it("sets the box's line spacing from the BLOCK's line-height/font-size, whatever sizes its runs have, anchored top", () => {
+    // `<li style="font-size:22px; line-height:1.6">Sized <span style="font-size:34px">bigger</span></li>`:
+    // Chromium computes the li's line-height to 35.2px. The paragraph gets 1.6 — proportional, as
+    // the unitless value gives each run — not 35.2/34 from the larger run. (r1: `lineSpacingMultiple`
+    // had no test, and `readback.ts` could not see `<a:lnSpc>`.)
+    const li = makeNode({
+      tag: 'li',
+      style: { fontSize: 22, lineHeight: '35.2px' },
+      inlineContent: [textItem('Sized ', { fontSize: 22 }), textItem('bigger', { fontSize: 34 })],
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([li])).shapes)
+    expect(box!.lineSpacingMultiple).toBe(1.6)
+    expect(box!.valign).toBe('top')
+    // The same block with the LARGE run FIRST — `<li …><span style="font-size:34px">Bigger </span>then
+    // normal</li>`. Until r8 every mixed-size block in the suite and in the corpus opened with a run
+    // whose size equalled the block's, so 35.2/22 and 35.2/firstRun were the same number and reading
+    // the divisor off `paragraphs[0][0]` instead of the block survived all 4385 tests (major 2).
+    // Here the mutant yields 35.2/34 = 1.04 — a 35% line-spacing error — against the correct 1.6.
+    const bigFirst = makeNode({
+      tag: 'li',
+      style: { fontSize: 22, lineHeight: '35.2px' },
+      inlineContent: [
+        textItem('Bigger ', { fontSize: 34 }),
+        textItem('then normal', { fontSize: 22 }),
+      ],
+    })
+    const [bigFirstBox] = textShapes(walkSlide(makeMeasure([bigFirst])).shapes)
+    expect(bigFirstBox!.runs.map((r) => r.fontSize)).toEqual([25.5, 16.5])
+    expect(bigFirstBox!.lineSpacingMultiple).toBe(1.6)
+    // `line-height: normal` emits no spacing at all — PowerPoint's own single spacing.
+    const normal = makeNode({ text: 'Plain', style: { fontSize: 22, lineHeight: 'normal' } })
+    expect(
+      textShapes(walkSlide(makeMeasure([normal])).shapes)[0]!.lineSpacingMultiple,
+    ).toBeUndefined()
+  })
+
+  it('scales the inset with a scaled element, like the font size', () => {
+    const scaled = makeNode({
+      text: '42%',
+      w: 220,
+      h: 110,
+      layoutW: 110,
+      layoutH: 55,
+      style: { paddingLeft: '10px', transform: 'matrix(2, 0, 0, 2, 0, 0)' },
+    })
+    const [box] = textShapes(walkSlide(makeMeasure([scaled])).shapes)
+    expect(box!.inset).toEqual({ left: 15, top: 0, right: 0, bottom: 0 })
+  })
+
+  it("paints an inline highlight UNDER the paragraph's glyphs: block fill, span fill, then the bare text box", () => {
+    const p = makeNode({
+      tag: 'p',
+      x: 0,
+      y: 0,
+      w: 400,
+      h: 30,
+      style: { backgroundColor: 'rgb(15, 23, 42)' },
+      inlineContent: [textItem('with '), textItem('record retention'), textItem(' in')],
+    })
+    const hi = makeNode({
+      tag: 'span',
+      inlineOf: p.domIndex,
+      x: 50,
+      y: 0,
+      w: 120,
+      h: 30,
+      style: { backgroundColor: 'rgb(253, 230, 138)', borderRadius: '4px' },
+    })
+    const shapes = walkSlide(makeMeasure([p, hi])).shapes
+    expect(shapes.map((s) => s.kind)).toEqual(['rect', 'roundRect', 'text'])
+    expect(shapes[0]).toMatchObject({ fill: { color: '0F172A' }, box: { x: 0, w: 400 / 96 } })
+    expect(shapes[1]).toMatchObject({ fill: { color: 'FDE68A' }, box: { x: 50 / 96, w: 120 / 96 } })
+    // The text box is bare — its fill went out first — and is emitted exactly once.
+    expect(shapes[2]).not.toHaveProperty('fill')
+    expect(shapes.filter((s) => s.kind === 'text')).toHaveLength(1)
+    // Mutation: emit the span at its DOM position → order becomes text, roundRect and the yellow
+    // rect covers the words.
+  })
+
+  it('emits an inline element that paints but whose block has no text under the plain paint rule', () => {
+    const div = makeNode({ tag: 'div' })
+    const dot = makeNode({
+      tag: 'span',
+      inlineOf: div.domIndex,
+      style: { backgroundColor: 'rgb(255, 0, 0)' },
+    })
+    const shapes = walkSlide(makeMeasure([div, dot])).shapes
+    expect(shapes.map((s) => s.kind)).toEqual(['rect'])
+  })
+
+  it("renders a block's text as its lines, for the notes layer and the oracle", () => {
+    const li = makeNode({
+      inlineContent: [
+        textItem('one'),
+        { kind: 'br' },
+        textItem(' two '),
+        { kind: 'block' },
+        textItem('after'),
+      ],
+    })
+    expect(renderedBlockText(li)).toBe('one\ntwo\nafter')
   })
 })
 
 describe('walkSlide shape mapping', () => {
   it('emits a filled rect for a painted container (container-paint rule)', () => {
-    const node = makeNode({ isLeaf: false, style: { backgroundColor: 'rgb(0, 128, 255)' } })
+    const node = makeNode({ style: { backgroundColor: 'rgb(0, 128, 255)' } })
     const shapes = walkSlide(makeMeasure([node])).shapes
     expect(shapes[0]).toMatchObject({ kind: 'rect', fill: { color: '0080FF' } })
   })
 
   it('emits a roundRect when a painted container has a corner radius', () => {
     const node = makeNode({
-      isLeaf: false,
       w: 200,
       h: 100,
       style: { backgroundColor: 'rgb(10, 10, 10)', borderRadius: '12px' },
@@ -101,7 +505,6 @@ describe('walkSlide shape mapping', () => {
 
   it('emits an ellipse when the radius makes the box a circle', () => {
     const node = makeNode({
-      isLeaf: false,
       w: 100,
       h: 100,
       style: { backgroundColor: 'rgb(10, 10, 10)', borderRadius: '50px' },
@@ -111,7 +514,6 @@ describe('walkSlide shape mapping', () => {
 
   it('maps a visible border to a line spec on the shape', () => {
     const node = makeNode({
-      isLeaf: false,
       style: {
         backgroundColor: 'rgb(255, 255, 255)',
         ...uniformBorder('2px', 'rgb(0, 0, 0)', 'dashed'),
@@ -122,8 +524,8 @@ describe('walkSlide shape mapping', () => {
   })
 
   it('orders emission by (zIndex, domIndex)', () => {
-    const back = makeNode({ isLeaf: true, text: 'back', z: 0, domIndex: 5 })
-    const front = makeNode({ isLeaf: true, text: 'front', z: 10, domIndex: 1 })
+    const back = makeNode({ text: 'back', z: 0, domIndex: 5 })
+    const front = makeNode({ text: 'front', z: 10, domIndex: 1 })
     const shapes = textShapes(walkSlide(makeMeasure([front, back])).shapes)
     expect(shapes.map((s) => s.runs[0]!.text)).toEqual(['back', 'front'])
   })
@@ -131,18 +533,18 @@ describe('walkSlide shape mapping', () => {
 
 describe('walkSlide background and coverage', () => {
   it('maps a solid body background to a slide fill', () => {
-    const measure = makeMeasure([makeNode({ isLeaf: true, text: 'x' })], {
+    const measure = makeMeasure([makeNode({ text: 'x' })], {
       body: makeRootPaint({ backgroundColor: 'rgb(17, 34, 51)' }),
     })
     expect(walkSlide(measure).background).toEqual({ color: '112233' })
   })
 
   it('reports full coverage for a text-only slide and reduced coverage when media is present', () => {
-    const textOnly = makeMeasure([makeNode({ isLeaf: true, text: 'x', w: 100, h: 100 })])
+    const textOnly = makeMeasure([makeNode({ text: 'x', w: 100, h: 100 })])
     expect(walkSlide(textOnly).coveredFraction).toBe(1)
 
     const withImage = makeMeasure([
-      makeNode({ isLeaf: true, text: 'x', w: 100, h: 100 }),
+      makeNode({ text: 'x', w: 100, h: 100 }),
       makeNode({ tag: 'img', src: 'p.png', w: 100, h: 100 }),
     ])
     expect(walkSlide(withImage).coveredFraction).toBeLessThan(1)
@@ -157,7 +559,6 @@ describe('walkSlide rotation (M4.8a)', () => {
   it('decomposes rot from the transform matrix and hands PowerPoint the unrotated, centred box', () => {
     // A 200×100 layout box rotated -14° has axis-aligned bounds 218.25×148.38 (w·cos+h·sin, w·sin+h·cos).
     const node = makeNode({
-      isLeaf: true,
       text: 'CONFIDENTIAL',
       x: 400 - 218.251 / 2,
       y: 300 - 148.377 / 2,
@@ -179,7 +580,6 @@ describe('walkSlide rotation (M4.8a)', () => {
 
   it("composes a transformed ancestor into the child's rotation", () => {
     const node = makeNode({
-      isLeaf: false,
       w: 100,
       h: 50,
       layoutW: 50,
@@ -196,12 +596,10 @@ describe('walkSlide rotation (M4.8a)', () => {
 
   it('leaves the measured rect alone for translate/none and for skew (no single angle)', () => {
     const plain = makeNode({
-      isLeaf: true,
       text: 'a',
       style: { transform: 'matrix(1, 0, 0, 1, 30, 0)' },
     })
     const skewed = makeNode({
-      isLeaf: true,
       text: 'b',
       style: { transform: 'matrix(1, 0.5, 0, 1, 0, 0)' },
     })
@@ -215,7 +613,6 @@ describe('walkSlide rotation (M4.8a)', () => {
 describe('walkSlide text-box decoration (M4.8a)', () => {
   it("keeps a leaf text box's border and corner radius instead of dropping them", () => {
     const node = makeNode({
-      isLeaf: true,
       text: 'Shipped',
       w: 120,
       h: 40,
@@ -230,7 +627,7 @@ describe('walkSlide text-box decoration (M4.8a)', () => {
   })
 
   it('flags a gradient body for the planner and no longer fakes coverage for it', () => {
-    const measure = makeMeasure([makeNode({ isLeaf: true, text: 'x', w: 100, h: 100 })], {
+    const measure = makeMeasure([makeNode({ text: 'x', w: 100, h: 100 })], {
       body: makeRootPaint({
         backgroundImage: 'linear-gradient(135deg, rgb(76, 29, 149) 0%, rgb(30, 58, 138) 100%)',
       }),
@@ -243,12 +640,8 @@ describe('walkSlide text-box decoration (M4.8a)', () => {
 })
 
 describe('slideTextForNotes', () => {
-  it('joins the visible leaf text for the accessibility notes layer', () => {
-    const nodes = [
-      makeNode({ isLeaf: true, text: 'Title' }),
-      makeNode({ isLeaf: false }),
-      makeNode({ isLeaf: true, text: 'Body' }),
-    ]
+  it('joins the visible block text for the accessibility notes layer', () => {
+    const nodes = [makeNode({ text: 'Title' }), makeNode({}), makeNode({ text: 'Body' })]
     expect(slideTextForNotes(nodes)).toBe('Title\nBody')
   })
 })

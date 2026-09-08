@@ -74,6 +74,26 @@ function localImports(file: string): string[] {
   return out
 }
 
+/**
+ * Every local module reachable from `file` through any chain of imports. The direct-import check
+ * above is what the allow-list is stated over; this is what "reaches" means for the import side —
+ * `store.ts → pptx-renderer.ts → confidence.ts` is a path into the scorer whether or not the
+ * middle hop is allow-listed (M4.8b r1).
+ */
+function transitiveImports(file: string): Set<string> {
+  const seen = new Set<string>()
+  const queue = [file]
+  while (queue.length > 0) {
+    const next = queue.pop()!
+    for (const dep of localImports(next)) {
+      if (seen.has(dep)) continue
+      seen.add(dep)
+      queue.push(join(ROOT, dep))
+    }
+  }
+  return seen
+}
+
 describe('the structured exporter is reachable only from its allow-listed callers', () => {
   const files = sourceFiles(SRC_ROOT)
   const exporterSet = new Set(STRUCTURED_EXPORTER)
@@ -92,15 +112,16 @@ describe('the structured exporter is reachable only from its allow-listed caller
     expect(importers).toEqual(ALLOWED_EXTERNAL_IMPORTERS)
   })
 
-  it('no import-side or document module reaches the structured exporter', () => {
+  it('no import-side or document module reaches the structured exporter, directly or transitively', () => {
     const importSide = files.filter((file) =>
       /[\\/]src[\\/](?:shared|main)[\\/]import[\\/]|[\\/]src[\\/]main[\\/]document[\\/]|pptx-roundtrip/.test(
         file,
       ),
     )
+    expect(importSide.length).toBeGreaterThan(0)
     for (const file of importSide) {
-      const reached = localImports(file).filter((dep) => exporterSet.has(dep))
-      expect(reached, `${relative(ROOT, file)} must not import the structured exporter`).toEqual([])
+      const reached = [...transitiveImports(file)].filter((dep) => exporterSet.has(dep)).toSorted()
+      expect(reached, `${relative(ROOT, file)} must not reach the structured exporter`).toEqual([])
     }
   })
 })

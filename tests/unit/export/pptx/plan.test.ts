@@ -17,7 +17,7 @@ const gradientBody = makeRootPaint({
 
 describe('planSlide body gradient/image background (M4.8a)', () => {
   const measure = (): ReturnType<typeof makeMeasure> =>
-    makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: 'Pillars' })], { body: gradientBody })
+    makeMeasure([makeNode({ tag: 'h1', text: 'Pillars' })], { body: gradientBody })
 
   it('emits the background-only capture as a full-bleed picture and stays structured', () => {
     const plan = planSlide({
@@ -70,7 +70,7 @@ describe('planSlide body gradient/image background (M4.8a)', () => {
 
 describe('planSlide', () => {
   it('plans a plain slide as structured with editable shapes', () => {
-    const measure = makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: 'Hello' })])
+    const measure = makeMeasure([makeNode({ tag: 'h1', text: 'Hello' })])
     const plan = planSlide({
       measure,
       fidelity: 'auto',
@@ -85,7 +85,7 @@ describe('planSlide', () => {
 
   it('plans a hard slide as raster in auto, embedding the capture', () => {
     const measure = makeMeasure([
-      makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 }),
+      makeNode({ tag: 'svg', svgPrimitiveCount: 30 }),
       makeNode({ style: { filter: 'blur(3px)' } }),
       makeNode({ style: { clipPath: 'circle(40%)' } }),
     ])
@@ -101,13 +101,13 @@ describe('planSlide', () => {
   })
 
   it('force-raster rasters even a plain slide; force-editable keeps a hard slide structured', () => {
-    const plain = makeMeasure([makeNode({ isLeaf: true, text: 'Hi' })])
+    const plain = makeMeasure([makeNode({ text: 'Hi' })])
     expect(
       planSlide({ measure: plain, fidelity: 'raster', rasterDataUrl: PNG, backgroundDataUrl: null })
         .tier,
     ).toBe('raster')
 
-    const hard = makeMeasure([makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 })])
+    const hard = makeMeasure([makeNode({ tag: 'svg', svgPrimitiveCount: 30 })])
     expect(
       planSlide({
         measure: hard,
@@ -120,7 +120,7 @@ describe('planSlide', () => {
 
   it('routes to raster in auto when structured coverage is too low (image-heavy slide)', () => {
     const measure = makeMeasure([
-      makeNode({ isLeaf: true, text: 'x', w: 50, h: 50 }),
+      makeNode({ text: 'x', w: 50, h: 50 }),
       makeNode({ tag: 'img', src: 'big.png', w: 1280, h: 720 }),
     ])
     const plan = planSlide({
@@ -134,7 +134,7 @@ describe('planSlide', () => {
   })
 
   it('keeps structured shapes rather than shipping an empty slide when a raster capture is unavailable', () => {
-    const hard = makeMeasure([makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 })])
+    const hard = makeMeasure([makeNode({ tag: 'svg', svgPrimitiveCount: 30 })])
     const plan = planSlide({
       measure: hard,
       fidelity: 'raster',
@@ -150,12 +150,12 @@ describe('planSlide', () => {
   })
 
   it('sets no downgrade on the ordinary paths', () => {
-    const plain = makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: 'Hello' })])
+    const plain = makeMeasure([makeNode({ tag: 'h1', text: 'Hello' })])
     expect(
       planSlide({ measure: plain, fidelity: 'auto', rasterDataUrl: PNG, backgroundDataUrl: null })
         .downgrade,
     ).toBeUndefined()
-    const hard = makeMeasure([makeNode({ tag: 'svg', isLeaf: false, svgPrimitiveCount: 30 })])
+    const hard = makeMeasure([makeNode({ tag: 'svg', svgPrimitiveCount: 30 })])
     expect(
       planSlide({ measure: hard, fidelity: 'auto', rasterDataUrl: PNG, backgroundDataUrl: null })
         .downgrade,
@@ -163,7 +163,7 @@ describe('planSlide', () => {
   })
 
   it('writes a [Slide text] accessibility layer and the animation note into speaker notes', () => {
-    const measure = makeMeasure([makeNode({ isLeaf: true, text: 'Agenda' })], {
+    const measure = makeMeasure([makeNode({ text: 'Agenda' })], {
       hasAnimation: true,
     })
     const plan = planSlide({

@@ -1,0 +1,118 @@
+<!doctype html><meta charset="utf-8" /><style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+  }
+  body {
+    font-family: Arial, sans-serif;
+  }
+</style>
+<style>
+  /* M4.8b: every construct the run-level walk has to get right inside ONE box. Under the leaf-text
+     rule this slide loses the bare text beside every inline element and scores 65. */
+  body {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 64px 72px;
+  }
+  h1 {
+    font-size: 44px;
+    font-weight: 800;
+    color: #38bdf8;
+    margin-bottom: 28px;
+  }
+  p.lead {
+    font-size: 24px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+  strong {
+    color: #fde68a;
+  }
+  em {
+    color: #5eead4;
+  }
+  .hi {
+    background: #fde68a;
+    color: #78350f;
+    padding: 0 6px;
+    border-radius: 4px;
+  }
+  a {
+    color: #93c5fd;
+    text-decoration: underline;
+  }
+  ul {
+    margin-top: 24px;
+    padding-left: 32px;
+    list-style: disc;
+  }
+  li {
+    font-size: 22px;
+    line-height: 1.6;
+  }
+  .big {
+    font-size: 34px;
+    font-weight: 700;
+    color: #f472b6;
+  }
+  .small {
+    font-size: 14px;
+    color: #94a3b8;
+  }
+  p.caps {
+    margin-top: 24px;
+    font-size: 20px;
+    text-transform: capitalize;
+    color: #a5b4fc;
+  }
+  pre.code {
+    margin-top: 20px;
+    font-family: 'Courier New', monospace;
+    font-size: 18px;
+    color: #86efac;
+    white-space: pre;
+  }
+  p.u {
+    margin-top: 20px;
+    font-size: 20px;
+    text-decoration: underline;
+  }
+  .c {
+    color: #fb7185;
+  }
+  p.nb {
+    margin-top: 16px;
+    font-size: 20px;
+    color: #cbd5e1;
+  }
+</style>
+<h1>Run-level text in one box</h1>
+<p class="lead">
+  Growth was driven by <strong>enterprise expansion</strong> and a <em>lower churn rate</em> than
+  forecast, with <span class="hi">record retention</span> in
+  <a href="https://example.com/regions">every region</a>.
+</p>
+<ul>
+  <li>First line of a bullet<br />second line of the same bullet</li>
+  <li>
+    Sized <span class="big">bigger</span> mid-sentence and <span class="small">smaller</span> after
+    it
+  </li>
+</ul>
+<p class="caps">capitalize each word here, don't split contractions</p>
+<pre class="code">
+line one
+    line two, indented four</pre>
+<p class="u">Underline on the paragraph <span class="c">reaches this coloured span</span> too</p>
+<p class="nb">
+  Non&nbsp;breaking&nbsp;spaces stay, and three spaces collapse, <span>even </span>
+  <span>across</span> spans.
+</p>

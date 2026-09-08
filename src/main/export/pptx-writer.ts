@@ -25,15 +25,17 @@
  * Do not add `sanitizeXmlText` calls here — the boundary owns it.
  */
 
+import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import { SLIDE_HEIGHT_INCHES, SLIDE_WIDTH_INCHES } from '../../shared/export/types'
 import { MAX_IMAGE_DATA_URL_BYTES, isImageDataUrl } from '../../shared/export/pptx/image'
-import { createSafePptxDeck, type SafePptxSlide } from './safe-pptx'
+import { createSafePptxDeck, type SafePptxSlide, type SafeTextRun } from './safe-pptx'
 import type {
   DeckPptxPlan,
   LineSpec,
   ShadowSpec,
   ShapeSpec,
   SlidePlan,
+  TextInset,
   TextRunSpec,
 } from '../../shared/export/pptx/types'
 
@@ -65,9 +67,39 @@ function runOptions(run: TextRunSpec): Record<string, unknown> {
     ...(run.transparency !== undefined ? { transparency: run.transparency } : {}),
     ...(run.fontFace !== undefined ? { fontFace: run.fontFace } : {}),
     ...(run.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
+    ...(run.charSpacing !== undefined ? { charSpacing: run.charSpacing } : {}),
     ...(run.bullet !== undefined ? { bullet: run.bullet } : {}),
     ...(run.hyperlink !== undefined ? { hyperlink: { url: run.hyperlink } } : {}),
+    // `<a:br/>` before this run, inside the same `<a:p>` (M4.8b).
+    ...(run.lineBreakBefore === true ? { softBreakBefore: true } : {}),
   }
+}
+
+/**
+ * pptxgenjs marks a paragraph boundary on the run that ENDS the paragraph (`breakLine`), while the
+ * spec marks the run that starts one, so the flag moves back one run here (M4.8b).
+ */
+function pptxRuns(runs: readonly TextRunSpec[]): SafeTextRun[] {
+  const out: SafeTextRun[] = []
+  for (const run of runs) {
+    const previous = out[out.length - 1]
+    if (run.paragraphBreakBefore === true && previous !== undefined)
+      previous.options['breakLine'] = true
+    out.push({ text: run.text, options: runOptions(run) })
+  }
+  return out
+}
+
+/**
+ * pptxgenjs reads a `margin` array as `[left, right, bottom, top]` — `lIns = margin[0]`,
+ * `rIns = margin[1]`, `bIns = margin[2]`, `tIns = margin[3]` in its slide-object pass — not the CSS
+ * clockwise order its documentation suggests. `pptx-writer.test.ts` reads the four insets back out
+ * of `<a:bodyPr>`, so a library release that changes the order reds a test rather than swapping the
+ * top and left insets of every padded text box.
+ */
+function marginOption(inset: TextInset | undefined): number | number[] {
+  if (inset === undefined) return 0
+  return [inset.left, inset.right, inset.bottom, inset.top]
 }
 
 /**
@@ -121,7 +153,7 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       h: box.h,
       align: shape.align,
       valign: shape.valign,
-      margin: 0,
+      margin: marginOption(shape.inset),
       wrap: true,
       shrinkText: false,
       ...(fillOpt(shape.fill) !== undefined ? { fill: fillOpt(shape.fill) } : {}),
@@ -135,12 +167,8 @@ function addShape(slide: PptxSlide, shape: ShapeSpec): void {
       ...(shape.lineSpacingMultiple !== undefined
         ? { lineSpacingMultiple: shape.lineSpacingMultiple }
         : {}),
-      ...(shape.charSpacing !== undefined ? { charSpacing: shape.charSpacing } : {}),
     }
-    slide.addText(
-      shape.runs.map((run) => ({ text: run.text, options: runOptions(run) })),
-      opts,
-    )
+    slide.addText(pptxRuns(shape.runs), opts)
     return
   }
 
@@ -204,9 +232,58 @@ function addSlideToDeck(deck: ReturnType<typeof createSafePptxDeck>, plan: Slide
   if (plan.notes !== '') slide.addNotes(plan.notes)
 }
 
+const PARAGRAPH = /<a:p>([\s\S]*?)<\/a:p>/g
+const PARAGRAPH_PROPERTIES = /<a:pPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:pPr>)/g
+
+/**
+ * Keep the first `<a:pPr>` of every `<a:p>` and drop the rest.
+ *
+ * pptxgenjs writes paragraph properties once per RUN, so a multi-run paragraph — which M4.8b's
+ * run-level text makes the common case — carries one `<a:pPr>` per run (its issue #258, which the
+ * research could not reproduce with single-run boxes). DrawingML allows one, and the copies are not
+ * even equal: on a bulleted `<li>` the first run's says `<a:buChar/>` and every later run's says
+ * `<a:buNone/>`, so which marker PowerPoint shows is undefined. Every paragraph property the walker
+ * sets is either identical across the runs (alignment, line spacing) or deliberately on the first
+ * run (the bullet), so the first `pPr` is the paragraph's.
+ */
+export function singleParagraphProperties(slideXml: string): string {
+  return slideXml.replace(PARAGRAPH, (_paragraph, inner: string) => {
+    let kept = false
+    const once = inner.replace(PARAGRAPH_PROPERTIES, (pPr) => {
+      if (kept) return ''
+      kept = true
+      return pPr
+    })
+    return `<a:p>${once}</a:p>`
+  })
+}
+
+/**
+ * Rewrite every slide part of the package through `singleParagraphProperties`. The package is
+ * returned untouched when no slide part changed, and pictures are stored rather than deflated
+ * again: a 40-slide raster deck spent 1–4 s re-compressing 16 MB of PNG captures for 0 bytes (r1).
+ */
+function normalizeSlideParts(pptx: Uint8Array): Uint8Array {
+  const parts = unzipSync(pptx)
+  const out: Zippable = {}
+  let changed = false
+  for (const [name, bytes] of Object.entries(parts)) {
+    if (/^ppt\/slides\/slide\d+\.xml$/.test(name)) {
+      const xml = strFromU8(bytes)
+      const once = singleParagraphProperties(xml)
+      if (once !== xml) changed = true
+      out[name] = strToU8(once)
+    } else {
+      out[name] = name.startsWith('ppt/media/') ? [bytes, { level: 0 }] : bytes
+    }
+  }
+  return changed ? zipSync(out) : pptx
+}
+
 /**
  * Emit a whole deck to `.pptx` bytes. Slide order is plan order. The buffer is written with
- * `outputType: 'nodebuffer'`, then normalized to a `Uint8Array` for the atomic writer.
+ * `outputType: 'nodebuffer'`, normalized to a `Uint8Array` for the atomic writer, and its slide
+ * parts passed through `singleParagraphProperties`.
  */
 export async function writeDeckPptx(plan: DeckPptxPlan): Promise<Uint8Array> {
   // Everything below goes through `SafePptxDeck`, which deep-sanitizes every string it forwards
@@ -223,7 +300,7 @@ export async function writeDeckPptx(plan: DeckPptxPlan): Promise<Uint8Array> {
 
   for (const slidePlan of plan.slides) addSlideToDeck(deck, slidePlan)
 
-  return deck.write()
+  return normalizeSlideParts(await deck.write())
 }
 
 /** The production writer seam. */

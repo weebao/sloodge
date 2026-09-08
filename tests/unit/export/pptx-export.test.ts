@@ -15,7 +15,7 @@ function fakeRenderer(
   return {
     renderSlide: vi.fn((html: string, index: number): Promise<PptxSlideRender> => {
       if (options.throwOn === index) return Promise.reject(new Error('render boom'))
-      const measure = makeMeasure([makeNode({ tag: 'h1', isLeaf: true, text: html })])
+      const measure = makeMeasure([makeNode({ tag: 'h1', text: html })])
       // `capturePage` throwing surfaces as a null data URL (see `pptx-renderer.ts`), which is the
       // real production path into the planner's capture-failed downgrade.
       const rasterDataUrl = options.captureFailsOn === index ? null : PNG

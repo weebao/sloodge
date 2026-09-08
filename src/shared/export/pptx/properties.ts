@@ -106,10 +106,22 @@ export const MODELLED_PROPERTIES: readonly string[] = [
   'line-height',
   'text-align',
   'text-decoration-line',
+  /**
+   * Chromium's record of the decoration PROPAGATED to an element from its ancestors — the underline
+   * a `<p>` draws under the `<strong>` inside it, whose own `text-decoration-line` is `none`. The
+   * run walk unions the chain the same way and emits it on the run (M4.8b).
+   */
+  '-webkit-text-decorations-in-effect',
   'text-transform',
   // `list-style-type` is read to SUPPRESS the bullet on `list-style: none`; the other two list
   // longhands are not modelled and stay out of both sets.
   'list-style-type',
+  /**
+   * Read per text node by the run walk (M4.8b): PowerPoint does not collapse white space, so the
+   * walker applies CSS's collapsing and line-edge trimming itself, and `pre`/`pre-line` text keeps
+   * its spaces and turns its segment breaks into line breaks.
+   */
+  'white-space-collapse',
 
   // --- Emitted: shape geometry, fill, outline, shadow (`walker.ts`) ---
   'background-color',
@@ -154,6 +166,27 @@ export const MODELLED_PROPERTIES: readonly string[] = [
   'opacity',
   'z-index',
 
+  /**
+   * --- Emitted: the text box's inset (`walker.ts` textInset, M4.8b) ---
+   *
+   * Padding is not resolved into the measured rect — that rect is the BORDER box — and it is not
+   * inert either: padding plus border width is where a block's own text starts, and the walker
+   * emits it as `<a:bodyPr lIns tIns rIns bIns>` rather than letting PowerPoint's default inset
+   * stand. It lived in `LAYOUT_RESOLVED_PROPERTIES` until r8, which was behaviourally identical
+   * (both sets are excluded from the census) but read as a claim the file's own taxonomy denies.
+   *
+   * The logical spellings are the same used values under a different name; `writing-mode` is a hard
+   * blocker, so a mode in which they map to different sides never ships structured anyway.
+   */
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'padding-block-start',
+  'padding-block-end',
+  'padding-inline-start',
+  'padding-inline-end',
+
   // --- Emitted: the transform chain (`confidence.ts` decomposeTransformSpec) ---
   'transform',
   'rotate',
@@ -193,7 +226,11 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   // --- Box model and flow: Chromium resolved all of it into the rects we measured ---
   'display',
   'box-sizing',
-  'float',
+  /**
+   * `float` is NOT here (M4.8b). The float's own rect is resolved, but the text beside it is not:
+   * Chromium shortens its sibling's line boxes around the float and PowerPoint flows the same runs
+   * straight through the space. `clear` only moves the box that carries it, which is measured.
+   */
   'clear',
   'vertical-align',
   'width',
@@ -218,10 +255,9 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'inset-inline-start',
   'inset-inline-end',
   /**
-   * Margins and paddings position the box and its text, and Chromium already applied both: the
-   * measured rect is the border box and the text rect is where the glyphs actually landed.
-   * PowerPoint's own text inset would fight that, so `pptx-writer.ts` passes `margin: 0` on every
-   * text shape and the emitted `<a:bodyPr>` carries `lIns="0" tIns="0" rIns="0" bIns="0"`.
+   * Margins position the box and Chromium already applied them: the measured rect is the border
+   * box, so a margin can only have moved it somewhere we measured. Padding is NOT here — the walker
+   * emits it, so it is a `MODELLED_PROPERTIES` entry (r8).
    */
   'margin-top',
   'margin-right',
@@ -231,14 +267,6 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'margin-block-end',
   'margin-inline-start',
   'margin-inline-end',
-  'padding-top',
-  'padding-right',
-  'padding-bottom',
-  'padding-left',
-  'padding-block-start',
-  'padding-block-end',
-  'padding-inline-start',
-  'padding-inline-end',
 
   // --- Flex, grid and alignment: layout algorithms, fully resolved into the measured boxes ---
   'flex-basis',
@@ -282,7 +310,6 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
    * catches it directly. PowerPoint re-wraps regardless of any of these, which is the milestone's
    * openly-admitted reflow blind spot (§5.2) and is measured by the pixel step, not by a property.
    */
-  'white-space-collapse',
   'text-wrap-mode',
   'text-wrap-style',
   'word-break',
@@ -406,9 +433,25 @@ export const LAYOUT_RESOLVED_PROPERTIES: readonly string[] = [
   'container-type',
 
   /**
+   * A shorthand Chromium enumerates alongside its longhands. It carries no information of its own:
+   * `text-decoration-line` is emitted, `text-decoration-color` is a `CURRENTCOLOR_PROPERTIES` entry,
+   * and `-style`/`-thickness` are in neither set, so a wavy or thick underline flags on its own name.
+   */
+  'text-decoration',
+
+  /**
    * `visibility` is the measurement pass's own visibility filter: only `visible` elements become
-   * nodes, so neither `hidden` nor `collapse` can reach the file. (It read `!== 'hidden'` until
-   * r3, which let a `visibility: collapse` banner Chromium paints nowhere ship in full.)
+   * nodes. (It read `!== 'hidden'` until r3, which let a `visibility: collapse` banner Chromium
+   * paints nowhere ship in full.)
+   *
+   * That filter is over NODES, and it used to be written here as "so neither `hidden` nor `collapse`
+   * can reach the file". That was false for inline text, and r8 demonstrated it: `visibility`
+   * inherits without being final, so a `visibility: visible` span inside a `visibility: hidden`
+   * inline is drawn, while `collectInline` stopped at the hidden wrapper and dropped its words from
+   * every box — a `hidden` inline reaching the file as text that is missing from it. The fix is in
+   * the emission, where the r3 ones are: `collectInline` descends through a hidden inline, keeps
+   * what re-declares `visible`, and leaves a `box` marker for the hole (node.ts). The property stays
+   * exempt because the pass acts on it; it is not exempt because the value cannot occur.
    *
    * `content` is NOT here: it is `normal` on ordinary elements but `content: url(…)` replaces one,
    * and the exporter has no way to emit the replacement image. The `::before`/`::after` case is
