@@ -446,10 +446,26 @@ describe('instrument — performance', () => {
    * | old, one sample, 1000/8000 | 3.06 - 59.74 | 2051 - 5154ms        |
    * | this, 500/4000             | 7.63 - 16.59 | 1776 - 3476ms        |
    *
-   * Tighter and cheaper than what it replaces. No claim is made that 30 "sits well clear": the
-   * measured margin above the worst loaded ratio is 1.8x, and that is the honest number.
+   * Tighter and cheaper than what it replaces. No claim is made that 30 "sits well clear", and the
+   * headline is NOT a margin: a margin quoted off ten runs is a tail estimate, and an independent
+   * review saw 24.79 clean and one run at 34.15 that failed. This still flakes, more rarely.
+   *
+   * The defensible claim is the variance, from an interleaved A/B of 20 runs per arm:
+   *
+   * | arm  | min  | median | max   | sd    | max/min | >=30 |
+   * | ---- | ---- | ------ | ----- | ----- | ------- | ---- |
+   * | this | 6.42 | 12.46  | 24.79 |  4.48 |    3.86 |    0 |
+   * | old  | 2.40 | 12.37  | 47.82 | 12.39 |   19.92 |    3 |
+   *
+   * Same median, F(19,19) = 7.65 against a p=0.01 critical value of 3.03, so p < 0.001. The
+   * estimator is what changed, not the threshold. Binary failure counts over the same runs were
+   * 1/45 against 5/45 — suggestive at Fisher p ~ 0.20, which is why the variance is the number
+   * quoted here and the counts are not.
+   *
    * `{ timeout: 20_000 }` is here because the old form reached 5154ms on this box and a timeout
    * means the assertion never runs at all; 20s against a 3.5s worst case keeps it an assertion.
+   * A sync body cannot be preempted, so the raised timeout cannot mask a regression: under the
+   * authentic historic bug this runs 136,542ms and still reports the AssertionError.
    *
    * ## What this catches, measured
    *
