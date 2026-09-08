@@ -411,21 +411,163 @@ describe('instrument — performance', () => {
     expect(buildMs + instrumentMs).toBeLessThan(2000)
   })
 
-  it('scales roughly linearly rather than quadratically', () => {
-    const time = (rows: number): number => {
-      const map = buildSlideMap(SLIDE_ID, generateLargeSlide(rows))
-      const started = performance.now()
-      instrument(map)
-      return performance.now() - started
+  /**
+   * A wall-clock ratio test, so the **estimator** is what needed fixing, not the ceiling.
+   *
+   * The version this replaced timed *one* `instrument` call per side and rebuilt the map for each
+   * one. At 1000 rows that call is ~2ms — under a single Linux scheduler quantum — so a single
+   * preemption doubled it, and the denominator was the noisy half: its samples spread 27.4x under
+   * load where the 8000-row numerator spread only 11.9x. A fast denominator paired with a slow
+   * numerator is what produced ratios of 35.03, 46.53, 50.89 and 59.74 against this 30 ceiling
+   * with no regression present at all.
+   *
+   * Three changes, none of which touch the ceiling or the 8x input step:
+   *
+   * 1. **Build each map once.** `instrument` at these sizes is ~1ms and ~9ms; `buildSlideMap` is
+   *    two orders of magnitude more. Hoisting the build is what makes repeated sampling free. An
+   *    earlier attempt at this test took best-of-5 through the rebuilding helper, which quintupled
+   *    `buildSlideMap` too and pushed the test past vitest's 5000ms default under the file-level
+   *    parallelism `pnpm test` uses, so it timed out instead of asserting on 8 runs in 10. A guard
+   *    that cannot execute is worse than one that flakes, because it still reads as coverage.
+   * 2. **Time a block, never a single call.** Each measurement repeats `instrument` until the
+   *    block has run for at least `BLOCK_MS`, then divides. Nothing sub-quantum is ever timed. The
+   *    loop self-calibrates in the direction that matters: when one call already exceeds
+   *    `BLOCK_MS` — which is what a real regression looks like — the block is one call and the
+   *    test does not get slower for it.
+   * 3. **Minimum of several blocks, on both sides.** Contention, GC and preemption can only ever
+   *    *add* time, so the fastest block is the least-contaminated estimate of the true cost.
+   *
+   * Measured under ~6x CPU oversubscription (16 cores at load average 87-102), far harsher than
+   * CI's 4 vCPU. Ten consecutive full `pnpm test` runs of each form, with the ceiling forced to
+   * fire so that every ratio is recorded rather than only the failures:
+   *
+   * | form                       | ratios       | this test's duration |
+   * | -------------------------- | ------------ | -------------------- |
+   * | old, one sample, 1000/8000 | 3.06 - 59.74 | 2051 - 5154ms        |
+   * | this, 500/4000             | 7.63 - 16.59 | 1776 - 3476ms        |
+   *
+   * Tighter and cheaper than what it replaces. No claim is made that 30 "sits well clear", and the
+   * headline is NOT a margin: a margin quoted off ten runs is a tail estimate, and an independent
+   * review saw 24.79 clean and one run at 34.15 that failed. This still flakes, more rarely.
+   *
+   * The defensible claim is the variance, from an interleaved A/B of 20 runs per arm:
+   *
+   * | arm  | min  | median | max   | sd    | max/min | >=30 |
+   * | ---- | ---- | ------ | ----- | ----- | ------- | ---- |
+   * | this | 6.42 | 12.220 | 24.79 |  4.48 |    3.86 |    0 |
+   * | old  | 2.40 | 12.165 | 47.82 | 12.39 |   19.92 |    3 |
+   *
+   * Same median, F(19,19) = 7.65 against a p=0.01 critical value of 3.03, so p < 0.001. The
+   * estimator is what changed, not the threshold. The table above is one interleaved batch of
+   * 20 per arm; binary failure counts across four batches (45 per arm) were 1/45 against 5/45,
+   * Fisher p ~ 0.20 — suggestive, not proven, which is why the variance is quoted here and the
+   * counts are not. The two are different n and are deliberately not pooled.
+   *
+   * `{ timeout: 20_000 }` is here because the old form reached 5154ms on this box and a timeout
+   * means the assertion never runs at all; 20s against a 3.5s worst case keeps it an assertion.
+   * A sync body cannot be preempted, so the raised timeout cannot mask a regression: under the
+   * authentic historic bug this runs 136,542ms and still reports the AssertionError.
+   *
+   * ## What this catches, measured
+   *
+   * The authentic historic bug — right-to-left splicing, one full document rebuild per insertion —
+   * reds at **142.27** (small 158-176ms, large 22.6-23.1s), 4.7x clear of the ceiling.
+   *
+   * Dialling a parameterised O(elements x length) penalty (`iters = rate x elements`, each iter a
+   * full-document `charCodeAt` scan summed into a value the function consumes, so V8 cannot fold
+   * it away; the trace confirmed 5 iters x 51,251 chars on the small map against 40 x 420,751 on
+   * the large, a 65.7x work ratio, i.e. the intended n^2), 3 runs per rate:
+   *
+   * | large-side cost | ratios              | verdict |
+   * | --------------- | ------------------- | ------- |
+   * | 9.3ms (none)    | 8.03, 11.05, 15.14  | green   |
+   * | 20-26ms (~2.4x) | 21.02, 21.27, 25.06 | green   |
+   * | 30-33ms (~3.3x) | 19.08, 24.26, 24.51 | green   |
+   * | 56-70ms (~6.7x) | 28.61, 36.06, 42.89 | red 2/3 |
+   * | 138-150ms (16x) | 43.68, 60.37, 62.15 | red 3/3 |
+   *
+   * So the floor is a quadratic regression costing ~6.7x at the large size to fire two runs in
+   * three, ~16x to fire reliably. The old form's floor measured lower (~4x borderline) only
+   * because noise had inflated its baseline ratio into the detection band — the same noise that
+   * made it fail twice in ten runs with nothing wrong. That is a trade the ceiling could buy back:
+   * 30 could come down to ~25 on this evidence, which would move the floor to ~4.5x, but 1.5x of
+   * loaded margin is not enough to spend on a test with this flake history.
+   *
+   * ## What this does not catch
+   *
+   * A ratio taken at 8x input can never exceed 8^e for an O(n^e) regression, so a 30 ceiling only
+   * fires above e = ln(30)/ln(8) = 1.64. Measured here with an O(n^1.5) penalty: at 493ms (53x the
+   * baseline) the ratios were 23.88 and 31.20, at 1979ms (213x) 19.65 and 26.44, and at 7963ms —
+   * an **856x** absolute regression — 22.83 and 22.83, converging on 8^1.5 = 22.6 and moving
+   * *away* from the ceiling as the constant grows. This assertion catches a **quadratic shape**,
+   * not superlinear blow-ups in general. The sibling `<500ms` test above is what fences absolute
+   * cost, and it is what would catch those.
+   */
+  it('scales roughly linearly rather than quadratically', { timeout: 20_000 }, () => {
+    const SMALL_ROWS = 500
+    const LARGE_ROWS = 4000 // ~421KB / 20k elements, the size this module is specified for
+    const BLOCK_MS = 25
+    const ROUNDS = 5
+    // Only reachable if a call gets into the microsecond range; a stop so the loop is bounded.
+    const MAX_CALLS = 500
+
+    // Consuming every result is what stops V8 eliding calls whose value is discarded, which would
+    // leave this guard measuring nothing while still looking like it measures something.
+    let sink = 0
+
+    const perCall = (map: SlideMap): { best: number; blocks: number[] } => {
+      const blocks: number[] = []
+      for (let round = 0; round < ROUNDS; round += 1) {
+        const started = performance.now()
+        let calls = 0
+        let elapsed = 0
+        do {
+          sink += instrument(map).length
+          calls += 1
+          elapsed = performance.now() - started
+        } while (elapsed < BLOCK_MS && calls < MAX_CALLS)
+        blocks.push(elapsed / calls)
+      }
+      return { best: Math.min(...blocks), blocks }
     }
 
-    // Warm up so the first measurement does not pay JIT costs the second avoids.
-    time(500)
-    const small = Math.max(time(1000), 0.5)
-    const large = time(8000)
+    const smallMap = buildSlideMap(SLIDE_ID, generateLargeSlide(SMALL_ROWS))
+    const largeMap = buildSlideMap(SLIDE_ID, generateLargeSlide(LARGE_ROWS))
+
+    // Warm up both shapes so the first timed block does not pay JIT costs the rest avoid.
+    sink += instrument(smallMap).length
+    sink += instrument(largeMap).length
+
+    const small = perCall(smallMap)
+    const large = perCall(largeMap)
+    expect(sink).toBeGreaterThan(0)
+
+    // Hoisting the map build (above) is what made repeated sampling affordable, but it also means
+    // this times WARM repeat calls on one map where production calls `instrument` once per map.
+    // A cache keyed on the map would therefore make every block 0.000ms and the ratio meaningless
+    // — measured: `small=[0.010, 0, 0, 0, 0] large=[0, 0, 0, 0, 0]`, ratio 0.89, passing any
+    // ceiling. `sink` does not catch that, because a cached non-empty string still adds length.
+    // `instrument.ts`'s own docblock points the next perf round at caching, so this is a live
+    // hazard rather than an invented one.
+    //
+    // 1ms is placed in an empty gap spanning a factor of ~2450. A degenerate block measures
+    // 0.00017-0.0018ms, so 1ms is ~550x above that ceiling; the healthy floor is 4.416ms
+    // (file-only on a quiet box, where `Math.min` sees the least contended blocks), so 1ms is
+    // 4.42x below it. The margin to the healthy side is 4.4x, not the nine-fold an earlier
+    // draft of this comment claimed.
+    //
+    // `small.best` deliberately does NOT get the same assertion: it measures 0.422-0.478ms, so
+    // a >1ms guard there would fail every run. It needs none — a cached small side inflates the
+    // ratio instead (measured: 19086.59), which the ceiling below already catches. The two
+    // assertions cover all three cache shapes between them.
+    expect(large.best, `degenerate measurement: ${large.blocks.join(', ')}`).toBeGreaterThan(1)
+
+    // Every block is reported, because each investigation of this test so far has had to
+    // re-instrument it by hand to tell a real regression from a contaminated sample.
+    const blocks = `small=[${small.blocks.map((ms) => ms.toFixed(3)).join(', ')}] large=[${large.blocks.map((ms) => ms.toFixed(3)).join(', ')}]`
 
     // 8x the input. Linear would be ~8x; the quadratic version was ~64x (and 44x in practice).
-    expect(large / small).toBeLessThan(30)
+    expect(large.best / small.best, blocks).toBeLessThan(30)
   })
 })
 
