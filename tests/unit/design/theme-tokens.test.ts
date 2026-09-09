@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
@@ -10,24 +11,75 @@ import { join, relative } from 'node:path'
  * (M8b.0 audit): the token was never declared, so the fields kept their light `bg-white` under the
  * dark `text-ink-fg` and rendered at 1.24:1 — invisible in dark mode, green in every test.
  *
- * This test derives the token set from the `@theme` block itself and the namespaces to police from
- * those tokens' first segment, so a new token or a new namespace is covered without editing this
- * file. Mutation check: change any utility under `src/renderer/src` to a colour token that is not in
- * `theme.css` (e.g. `bg-ink` → `bg-ink-bg`) and this test reds, naming the file and line.
+ * This test derives the token set from the `@theme` blocks themselves and the namespaces to police
+ * from those tokens' first segment, so a new token or a new namespace is covered without editing
+ * this file. Mutation check: change any utility under `src/renderer/src` to a colour token that is
+ * not in `theme.css` (e.g. `bg-ink` → `bg-ink-bg`) and this test reds, naming the file and line.
+ *
+ * **Retired-token clause (M8b.2, audit §5.4).** Deriving the policed namespaces from the surviving
+ * declarations makes the test blind to the one change M8b.3's last PR performs: delete the fourteen
+ * legacy `shell-*` / `chrome-*` / `ink-*` / `canvas-mat` / `*-dark` declarations and the namespaces
+ * go with them, so every orphaned utility stops being looked at and the run stays green with
+ * hundreds of dead references in the tree. So the policed set is the declared namespaces **union**
+ * the retired ones, while the accepted set stays the declared tokens only: a `bg-chrome` left behind
+ * after `--color-chrome` is gone is policed and unresolved, which is the failure this clause exists
+ * to produce. Mutation: delete those fourteen declarations with the renderer untouched and this test
+ * reds at every surviving `.tsx` reference (recorded in the M8b.2 PR body).
  */
 
 const RENDERER_ROOT = join(process.cwd(), 'src', 'renderer', 'src')
 const THEME_FILE = join(RENDERER_ROOT, 'styles', 'theme.css')
+const GENERATOR = join(process.cwd(), 'scripts', 'design-inventory.mjs')
 
 /** Tailwind utility families that take a colour. Anything else (`w-`, `h-`, `p-`) is not a colour. */
 const COLOUR_UTILITIES =
   'bg|text|border|outline|ring|inset-ring|fill|stroke|from|to|via|decoration|placeholder|caret|accent|shadow|inset-shadow|divide'
 
-/** Names declared as `--color-<name>` inside `@theme { … }`. */
-function themeColourTokens(css: string): ReadonlySet<string> {
-  const block = /@theme\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? ''
-  return new Set([...block.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((m) => m[1]!))
+/**
+ * Bodies of every `@theme { … }` / `@theme static { … }` block, matched brace-aware.
+ *
+ * The single-block, non-greedy version this replaces read only the *first* `@theme {` and stopped at
+ * the first `}` inside it. Once M8b.2 added the role block as a second `@theme static { … }` — which
+ * contains a nested `@keyframes` — that parser saw neither the role tokens nor anything past the
+ * keyframes' first brace, and would have passed while policing nothing it was supposed to police.
+ */
+function themeBlocks(css: string): readonly string[] {
+  const out: string[] = []
+  const opener = /@theme(?:\s+static)?\s*\{/g
+  for (const m of css.matchAll(opener)) {
+    let depth = 1
+    let i = m.index + m[0].length
+    const start = i
+    for (; i < css.length && depth > 0; i += 1) {
+      if (css[i] === '{') depth += 1
+      else if (css[i] === '}') depth -= 1
+    }
+    out.push(css.slice(start, i - 1))
+  }
+  return out
 }
+
+/** Names declared as `--color-<name>` across every `@theme` block. */
+function themeColourTokens(css: string): ReadonlySet<string> {
+  return new Set(
+    themeBlocks(css).flatMap((block) =>
+      [...block.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((m) => m[1]!),
+    ),
+  )
+}
+
+/**
+ * Namespaces of the fourteen tokens M8b.3's last PR deletes. Policed whether or not they are still
+ * declared — see the retired-token clause in the header.
+ */
+const RETIRED_NAMESPACES: readonly string[] = [
+  'shell',
+  'chrome',
+  'ink',
+  'canvas',
+  'danger',
+  'warning',
+]
 
 /**
  * Colour tokens referenced by utilities in `source`, restricted to the given namespaces (the first
@@ -68,13 +120,36 @@ function sourceFiles(dir: string): string[] {
 
 describe('theme colour tokens', () => {
   const tokens = themeColourTokens(readFileSync(THEME_FILE, 'utf8'))
-  const namespaces = new Set([...tokens].map((t) => t.split('-')[0]!))
+  const namespaces = new Set([...[...tokens].map((t) => t.split('-')[0]!), ...RETIRED_NAMESPACES])
 
   it('reads the declared token set from theme.css', () => {
     expect(tokens.has('ink')).toBe(true)
     expect(tokens.has('accent-soft')).toBe(true)
+    // Pinned by hand: this is what catches a typo in a token *declaration* (`--color-surfce`),
+    // which every other assertion here would happily police as a new namespace.
     expect(namespaces).toEqual(
-      new Set(['shell', 'chrome', 'accent', 'canvas', 'ink', 'danger', 'warning']),
+      new Set([
+        'shell',
+        'chrome',
+        'canvas',
+        'ink',
+        'surface',
+        'field',
+        'hover',
+        'pressed',
+        'line',
+        'text',
+        'accent',
+        'on',
+        'focus',
+        'danger',
+        'warning',
+        'success',
+        'edit',
+        'guide',
+        'hud',
+        'scrim',
+      ]),
     )
   })
 
@@ -104,5 +179,51 @@ describe('theme colour tokens', () => {
       }
     }
     expect(unresolved).toEqual([])
+  })
+})
+
+/**
+ * The canonical block is `--emit-theme`'s output, and this is what says so.
+ *
+ * `--check`'s byte-equality covers the 49 **colour** declarations and nothing else, so every other
+ * line of the generated region was unpinned: the `@theme static` keyword, the ten `--*: initial`
+ * resets, the eight `@utility` bodies and every spacing / radius / shadow / type / motion value.
+ * Five corruptions of the shipped block were demonstrated in review round 1 to leave `--check
+ * --require-landed` at `RESULT: pass` exit 0 with the whole suite, oxlint and Prettier green:
+ * dropping `static`, `--spacing-control` 1.75rem → 4rem, `--radius-overlay` 0.5rem → 2rem,
+ * `@utility duration-fast` emitting `var(--duration-slow)`, and `--ease-out` replaced by an ease-in
+ * curve.
+ *
+ * The first is the one that matters and it is not hypothetical. `static` is what makes Tailwind emit
+ * the whole block rather than only the tokens some utility happens to reference; with it removed and
+ * a fresh `pnpm build`, `--color-hud`, `--color-hud-strong` and `--color-hud-fg` are absent from the
+ * built CSS entirely, and `--color-canvas` / `--color-guide` survive only inside the dark media
+ * block, so `var(--color-canvas)` resolves to nothing in light mode. `static` reads as a redundant
+ * keyword; normalising it away is a plausible edit, and until this assertion existed no gate saw it.
+ *
+ * The generator is therefore the source of truth for the block: to change a value, change
+ * `PROPOSED_LIGHT` / `PROPOSED_DARK` / the scale constants in the script and re-run `--emit-theme`
+ * (audit §5.8). Editing `theme.css` alone reds here.
+ */
+describe('canonical role block', () => {
+  it('is the generator output, verbatim', () => {
+    const emitted = execFileSync(process.execPath, [GENERATOR, '--emit-theme'], {
+      encoding: 'utf8',
+      cwd: process.cwd(),
+    })
+    const css = readFileSync(THEME_FILE, 'utf8')
+    if (!css.includes(emitted)) {
+      // Diff the block against the same span of theme.css rather than reporting the bare
+      // `toContain` failure, whose output names neither the divergent line nor the value.
+      const want = emitted.split('\n')
+      const have = css.split('\n')
+      const at = have.indexOf(want[0]!)
+      expect(
+        at,
+        'theme.css does not carry the generated block header at all',
+      ).toBeGreaterThanOrEqual(0)
+      expect(have.slice(at, at + want.length)).toEqual(want)
+    }
+    expect(css).toContain(emitted)
   })
 })

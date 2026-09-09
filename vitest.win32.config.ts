@@ -97,6 +97,7 @@ export const REAL_FILESYSTEM_TESTS = [
   'tests/unit/perf/diff.test.ts',
   'tests/unit/perf/run.test.ts',
   'tests/unit/preload/preload-bundle-deps.test.ts',
+  'tests/unit/ui/focus-ring-compiles.test.ts',
 ]
 
 export default defineConfig({
