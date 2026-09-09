@@ -37,6 +37,7 @@ import { useCallback, useMemo, useRef, useState, type JSX, type RefObject } from
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import { applyOps } from '../../../../shared/design/patch'
 import { buildElementContextBundle } from '../../../../shared/design/element-context'
+import { lockNotice } from '../../../../shared/design/lock'
 import { findForbiddenApiTokens } from '../../../../shared/document/forbidden-apis'
 import {
   buildFieldOps,
@@ -232,6 +233,12 @@ export function PropertyPanel({
   // would be written *through* one. `buildFieldOps` refuses it either way — this asks the same
   // function so the field can say why instead of silently swallowing the number.
   const moveLock = element === null ? null : moveRefusal(map.source, element)
+  // `data-sl-lock`: "selectable but not mutable" (M3.16). Every field, every colour control, the
+  // font picker and all three transform buttons go dark under the one sentence — not the Content
+  // field alone, which is what the panel did between M3.12 and M3.16 while Color, Size, X/Y, Flip
+  // and Duplicate all still wrote. The reader and the writer are the same function here
+  // (`lockRefusal`), so the panel cannot offer a control an edit would silently drop.
+  const elementLock = lockNotice(element)
 
   return (
     <section
@@ -271,6 +278,7 @@ export function PropertyPanel({
             {...(loadFonts !== undefined ? { loadFonts } : {})}
             transformLock={transformLock}
             moveLock={moveLock}
+            elementLock={elementLock}
           />
           <div className="mt-2">
             <button
@@ -300,6 +308,12 @@ interface PropertyFieldsProps {
   readonly transformLock: string | null
   /** Why X/Y are off (the move would be written through an opaque `transform`), else `null`. */
   readonly moveLock: string | null
+  /**
+   * Why *every* control is off — the element is `data-sl-lock`ed (M3.16) — else `null`. Distinct
+   * from the two above: those are per-channel consequences of a transform this editor cannot
+   * decompose; this one is the author saying Design Mode may not touch the element at all.
+   */
+  readonly elementLock: string | null
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
@@ -327,6 +341,7 @@ function PropertyFields({
   fontFocus,
   transformLock,
   moveLock,
+  elementLock,
 }: PropertyFieldsProps): JSX.Element {
   const setSlideHtml = useDeckStore((state) => state.setSlideHtml)
   const actions = useElementActions(slide.id)
@@ -423,6 +438,10 @@ function PropertyFields({
     [commit],
   )
 
+  // Flip is off for two different reasons now, and the lock is the one worth saying when both hold.
+  // Duplicate takes only the lock: a clone of an opaque-transform element is still nudged cleanly.
+  const buttonLock = elementLock ?? transformLock
+
   const flipH = useCallback((): void => actions.flip('x'), [actions])
   const flipV = useCallback((): void => actions.flip('y'), [actions])
   const duplicate = useCallback((): void => actions.duplicate(), [actions])
@@ -445,7 +464,7 @@ function PropertyFields({
     // `buildFieldOps` returns no ops for them, and a field that eats a typed number without a word
     // is worse than one that is visibly off. Disjoint from `block`, which is the Content field's.
     const moveDisabled = moveLock !== null && (name === 'x' || name === 'y')
-    const disabled = block !== null || moveDisabled
+    const disabled = elementLock !== null || block !== null || moveDisabled
     // One prop set for both controls, so the disabled state and its hint cannot drift between
     // the textarea and the inputs; only the control-specific props differ below.
     const common = {
@@ -458,7 +477,10 @@ function PropertyFields({
       // The caret's own sentence for the same reason (`textBlockNotice.ts`): a disabled field that
       // says only "mixed" tells the user nothing (M3.11 round-5), and a second table over the same
       // reasons drifted (M3.12 round-4).
-      title: moveDisabled ? moveLock : block === null ? undefined : BLOCK_NOTICE[block],
+      // The lock outranks both: when it is on, it is why *this* field is off, whatever else the
+      // element's transform or content would have said about it on its own.
+      title:
+        elementLock ?? (moveDisabled ? moveLock : block === null ? undefined : BLOCK_NOTICE[block]),
       onChange: handleChange,
       onBlur: handleBlur,
       onKeyDown: handleKeyDown,
@@ -500,6 +522,7 @@ function PropertyFields({
         <FontFamilyControl
           current={values.fontFamily}
           onPick={pickFont}
+          lock={elementLock}
           focusOnRemount={fontFocus}
           {...(loadFonts !== undefined ? { loadFonts } : {})}
         />
@@ -528,15 +551,21 @@ function PropertyFields({
           {refusal}
         </p>
       ) : null}
-      <ColorControls targets={colorTargets} swatches={swatches} picker={picker} onApply={commit} />
+      <ColorControls
+        targets={colorTargets}
+        swatches={swatches}
+        picker={picker}
+        onApply={commit}
+        lock={elementLock}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-chrome-muted dark:text-ink-muted">Transform</span>
         <button
           type="button"
           data-testid="transform-flip-h"
           onClick={flipH}
-          disabled={transformLock !== null}
-          title={transformLock ?? undefined}
+          disabled={buttonLock !== null}
+          title={buttonLock ?? undefined}
           className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip H
@@ -545,8 +574,8 @@ function PropertyFields({
           type="button"
           data-testid="transform-flip-v"
           onClick={flipV}
-          disabled={transformLock !== null}
-          title={transformLock ?? undefined}
+          disabled={buttonLock !== null}
+          title={buttonLock ?? undefined}
           className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip V
@@ -555,7 +584,9 @@ function PropertyFields({
           type="button"
           data-testid="transform-duplicate"
           onClick={duplicate}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+          disabled={elementLock !== null}
+          title={elementLock ?? undefined}
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Duplicate
         </button>

@@ -748,3 +748,148 @@ describe('PropertyPanel — transform lock and caveats (M3.6)', () => {
     expect(useDesignStore.getState().notice?.text).toContain('translate(-50%, -50%) is not in px')
   })
 })
+
+/**
+ * `data-sl-lock` — "selectable but not mutable" (M3.16). Between M3.12 and M3.16 the panel showed
+ * the Content field disabled with the lock sentence while Color, Size, Weight, Fill, Stroke, X, Y,
+ * W, H, the font picker, the swatches, Flip H/V and Duplicate all still wrote: it announced a lock
+ * it enforced on one field of ten. Each of those is asserted here on its own, through the component,
+ * because the gate they share is a single `if` and a single test over it would not notice five of
+ * them coming uncovered.
+ */
+describe('PropertyPanel — data-sl-lock refuses every control (M3.16)', () => {
+  const LOCKED =
+    '<h1 data-sl-lock style="position: absolute; left: 10px; top: 20px; width: 100px; height: 50px; color: #111; font-size: 44px">Hello</h1>'
+  /** The identical element without the attribute — the paired half of every assertion below. */
+  const FREE = LOCKED.replace(' data-sl-lock', '')
+
+  function seedLocked(html = LOCKED): void {
+    useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
+    select()
+  }
+
+  const TEXT_FIELDS = ['text', 'fontSize', 'fontWeight', 'color', 'fill', 'stroke'] as const
+  const NUMBER_FIELDS = ['x', 'y', 'width', 'height'] as const
+  const ALL_FIELDS = [...TEXT_FIELDS, ...NUMBER_FIELDS] as const
+
+  it.each(ALL_FIELDS)('the %s field is disabled and carries the lock sentence', (name) => {
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId(`prop-${name}`) as HTMLInputElement | HTMLTextAreaElement
+    expect(input.disabled).toBe(true)
+    // One sentence over all ten, and it is the caret's own (`BLOCK_NOTICE.locked`), so a user who
+    // met the lock by double-clicking reads the same words in the panel.
+    expect(input.title).toBe(BLOCK_NOTICE.locked)
+    expect(input.title).toContain('data-sl-lock')
+  })
+
+  it.each(ALL_FIELDS)('forcing a value into the %s field writes nothing at all', (name) => {
+    // The disabled attribute is the visible half; this is the half that matters if a control is ever
+    // re-enabled by accident. Each field is driven separately: the gate they share covers ten
+    // writers, and a single field's assertion would leave nine of them unpinned.
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const input = screen.getByTestId(`prop-${name}`) as HTMLInputElement | HTMLTextAreaElement
+    fireEvent.change(input, { target: { value: '99' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.blur(input)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
+    expectNoUndoEntrySince(SOURCE)
+  })
+
+  it.each(ALL_FIELDS)(
+    'the same %s field is live on the identical element without the lock',
+    (name) => {
+      // Without this pair the block above would also pass if the panel had simply stopped rendering
+      // fields, or if the fixture had no editable values in it.
+      seedLocked(FREE)
+      render(<PropertyPanel slide={currentSlide()} />)
+      const input = screen.getByTestId(`prop-${name}`) as HTMLInputElement | HTMLTextAreaElement
+      expect(input.disabled).toBe(false)
+      expect(input.title).toBe('')
+      fireEvent.change(input, { target: { value: '99' } })
+      fireEvent.blur(input)
+      expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).not.toBe(FREE)
+    },
+  )
+
+  it('the fields still SHOW the element’s real values — greyed, not blanked or lied about', () => {
+    // The lock is kept out of `moveChannel` for exactly this: folding it in read X off an absent
+    // translate and showed `10px` as empty, so the panel would have greyed out a falsehood.
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    expect((screen.getByTestId('prop-x') as HTMLInputElement).value).toBe('10px')
+    expect((screen.getByTestId('prop-y') as HTMLInputElement).value).toBe('20px')
+    expect((screen.getByTestId('prop-width') as HTMLInputElement).value).toBe('100px')
+    expect((screen.getByTestId('prop-color') as HTMLInputElement).value).toBe('#111')
+    expect((screen.getByTestId('prop-fontSize') as HTMLInputElement).value).toBe('44px')
+  })
+
+  it('Flip H, Flip V and Duplicate are off, and clicking them writes nothing', () => {
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    for (const id of ['transform-flip-h', 'transform-flip-v', 'transform-duplicate']) {
+      const button = screen.getByTestId(id) as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+      expect(button.title).toBe(BLOCK_NOTICE.locked)
+      fireEvent.click(button)
+    }
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
+    expectNoUndoEntrySince(SOURCE)
+  })
+
+  it('the three transform buttons dim identically — disabled is not only a DOM flag', () => {
+    // Found by the PR recording, not by a test: Duplicate was `disabled` but its class list had no
+    // `disabled:opacity-50`, so it sat looking clickable beside two greyed siblings. One className
+    // across the three is the cheapest thing that cannot drift again.
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const classes = ['transform-flip-h', 'transform-flip-v', 'transform-duplicate'].map(
+      (id) => (screen.getByTestId(id) as HTMLButtonElement).className,
+    )
+    expect(new Set(classes).size).toBe(1)
+    expect(classes[0]).toContain('disabled:opacity-50')
+  })
+
+  it('the same three buttons work on the identical element without the lock', () => {
+    seedLocked(FREE)
+    render(<PropertyPanel slide={currentSlide()} />)
+    for (const id of ['transform-flip-h', 'transform-flip-v', 'transform-duplicate']) {
+      expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(false)
+    }
+    fireEvent.click(screen.getByTestId('transform-flip-h'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('scale(-1, 1)')
+  })
+
+  it('the colour controls and the font picker are off — a picker that drops the pick is worse', () => {
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} picker={SAMPLING_PICKER} />)
+    for (const id of ['swatch-color', 'swatch-fill', 'swatch-stroke']) {
+      expect((screen.getByTestId(id) as HTMLInputElement).disabled).toBe(true)
+    }
+    expect((screen.getByTestId('eyedrop-color') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('theme-color-accent') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('prop-fontFamily') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('prop-fontFamily') as HTMLButtonElement).title).toBe(
+      BLOCK_NOTICE.locked,
+    )
+    // The font popover cannot even be opened, so no face can be picked into a writer that refuses it.
+    fireEvent.click(screen.getByTestId('prop-fontFamily'))
+    expect(screen.queryByTestId('font-popover')).toBeNull()
+    // Theme swatches are the one colour control whose click handler is not the native `change`
+    // event, so a disabled attribute alone is what stops it — clicked here to prove it does.
+    fireEvent.click(screen.getByTestId('theme-color-accent'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
+    expectNoUndoEntrySince(SOURCE)
+  })
+
+  it('the same controls are live on the identical element without the lock', () => {
+    seedLocked(FREE)
+    render(<PropertyPanel slide={currentSlide()} picker={SAMPLING_PICKER} />)
+    expect((screen.getByTestId('swatch-color') as HTMLInputElement).disabled).toBe(false)
+    expect((screen.getByTestId('eyedrop-color') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByTestId('prop-fontFamily') as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByTestId('theme-color-accent'))
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('var(--sl-accent')
+  })
+})

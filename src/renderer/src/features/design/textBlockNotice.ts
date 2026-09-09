@@ -13,6 +13,7 @@
  * raises it, and pointing at the surface that *can* edit the text is the whole content of it.
  */
 
+import { LOCK_NOTICE } from '../../../../shared/design/lock'
 import type { TextEditBlock } from '../../../../shared/design/text-edit'
 
 /**
@@ -26,6 +27,9 @@ export const BLOCK_NOTICE: Readonly<Record<TextEditBlock, string>> = {
     'This text has formatting inside it, so it can’t be edited as plain text yet — ask Claude to change it.',
   'not-text': 'There is no text on this element to edit.',
   'too-long': 'This text is too long to edit on the canvas — use the Content field in the panel.',
-  locked: 'This element is locked, so its text can’t be edited.',
+  // Not a sentence of its own: since M3.16 the lock stops *every* Design Mode write, not the text
+  // alone, and the same sentence is the tooltip on all ten disabled panel fields and the overlay's
+  // badge. One constant, in the layer that decides the refusal (`lock.ts`).
+  locked: LOCK_NOTICE,
   'unknown-element': 'That element is no longer on this slide.',
 }
