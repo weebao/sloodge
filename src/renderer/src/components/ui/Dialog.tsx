@@ -10,6 +10,8 @@
  *    behind the scrim out of the tab order and out of the accessibility tree — `aria-hidden` alone
  *    leaves it keyboard-reachable. A dialog rendered *inside* the shell would inert itself along
  *    with it, so the portal is not a styling convenience; it is what makes `inert` usable at all.
+ *    Nesting is refcounted, so a confirm opened over another dialog does not release the shell when
+ *    it closes — see `openDialogCount` below.
  * 2. **Focus is restored to the element that opened it**, captured on open rather than on mount, so
  *    a dialog re-opened from a different control returns to that control.
  * 3. **The trap wraps on Tab / Shift+Tab** over the dialog's own focusables, recomputed on each
@@ -46,6 +48,16 @@ export type DialogProps = {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
+/**
+ * How many dialogs are open. `inert` is a property of the shell, not of any one dialog, so a boolean
+ * set on open and cleared on close is released by the FIRST dialog to unmount: with a confirm open
+ * over Settings, dismissing the confirm hands the app behind the still-painted scrim back to Tab and
+ * back to the screen-reader virtual cursor — the exact state decision 1 above exists to prevent, and
+ * silent, because the scrim looks identical either way. Module scope for the same reason the
+ * attribute is: two `Dialog` instances have to agree about one element.
+ */
+let openDialogCount = 0
+
 export function Dialog({
   open,
   title,
@@ -60,6 +72,7 @@ export function Dialog({
     if (!open) return
     const restoreTo = document.activeElement
     const shell = document.getElementById('sloodge-shell')
+    openDialogCount += 1
     shell?.setAttribute('inert', '')
 
     const panel = panelRef.current
@@ -67,7 +80,10 @@ export function Dialog({
     ;(first ?? panel)?.focus()
 
     return () => {
-      shell?.removeAttribute('inert')
+      openDialogCount -= 1
+      // Released by the LAST dialog to close, and before the focus restore below: focusing an
+      // element inside an inert subtree silently does nothing, so the order is load-bearing.
+      if (openDialogCount === 0) shell?.removeAttribute('inert')
       // Restoring only to an element still in the document: a dialog that unmounted because the
       // control that opened it went away must not throw, and must not steal focus to nowhere.
       if (restoreTo instanceof HTMLElement && restoreTo.isConnected) restoreTo.focus()

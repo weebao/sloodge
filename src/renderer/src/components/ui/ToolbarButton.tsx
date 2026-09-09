@@ -11,6 +11,15 @@
  * **Roving-tabindex ready**: a toolbar that adopts the pattern owns which of its buttons is
  * tabbable, so `tabIndex` passes straight through and is not defaulted here. Left alone, every
  * button is tabbable — today's behaviour, unchanged until a surface opts in.
+ *
+ * **`aria-label` and `aria-pressed` are applied after `{...rest}`, and that is the guard.** Both are
+ * `Omit`ted from the passthrough, but the `Omit` is documentation rather than enforcement:
+ * TypeScript does not excess-property-check a JSX attribute whose name is hyphenated, so
+ * `<ToolbarButton label="Bold" aria-label="spoofed" aria-pressed />` compiles clean (measured on
+ * this tree's `tsc`; a `bogusProp` on the same element errors, a hyphenated one does not), and a
+ * spread is never checked either way. Ordering is what actually holds the invariant: `label` names
+ * the button and `pressed` states it, whatever a caller supplies. `title` stays *before* the spread
+ * because overriding the tooltip is legitimate — it is not the accessible name.
  */
 
 import { type ButtonHTMLAttributes, type JSX, type ReactNode } from 'react'
@@ -18,11 +27,14 @@ import { FOCUS_RING } from './focusRing'
 
 export type ToolbarButtonProps = Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
-  'className' | 'aria-label'
+  'className' | 'aria-label' | 'aria-pressed'
 > & {
   /** Announced name. Required: this button never carries visible text. */
   readonly label: string
-  /** Drawn state — a pressed toolbar toggle also sets `aria-pressed`, never colour alone. */
+  /**
+   * Drawn state — a pressed toolbar toggle also sets `aria-pressed`, never colour alone. The only
+   * way to set either: see the header on why the ordering, not the `Omit`, is what enforces that.
+   */
   readonly pressed?: boolean
   readonly children: ReactNode
 }
@@ -39,10 +51,10 @@ export function ToolbarButton({
   return (
     <button
       type="button"
-      aria-label={label}
       title={label}
-      aria-pressed={pressed}
       {...rest}
+      aria-label={label}
+      aria-pressed={pressed}
       className={`${BASE} ${pressed === true ? 'bg-pressed' : ''} ${FOCUS_RING}`}
     >
       {children}

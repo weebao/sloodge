@@ -11,9 +11,17 @@
  * is what makes `inert` usable — a dialog rendered inside `#sloodge-shell` would inert itself — so
  * the portal is asserted here too, as the mechanism rather than as a styling detail.
  *
+ * The nesting row is the same assertion one level up. `inert` is a property of the shell, so a
+ * boolean set on open and cleared on close is released by the FIRST dialog to unmount — close a
+ * confirm over Settings and the app behind the still-painted scrim is Tab-reachable again, with
+ * nothing on screen to say so. No surface stacks dialogs today; nine M8b.3 PRs adopt this primitive
+ * without re-deriving its contract, and a confirm over a dialog is an ordinary thing for one of them
+ * to build.
+ *
  * Mutations: drop the `shell.setAttribute('inert')` line → the inert test reds; drop the Escape
  * branch → the Escape test reds; drop the `restoreTo.focus()` line → the restore test reds; return
- * the tree without `createPortal` → the inert test reds, because the dialog inerts itself.
+ * the tree without `createPortal` → the inert test reds, because the dialog inerts itself; make the
+ * cleanup remove the attribute unconditionally instead of at a zero refcount → the nesting test reds.
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -73,6 +81,48 @@ describe('Dialog', () => {
       <Dialog open={false} title="Export" onClose={vi.fn()}>
         {body}
       </Dialog>,
+    )
+    expect(shell.hasAttribute('inert')).toBe(false)
+  })
+
+  it('keeps the shell inert until the LAST of two nested dialogs closes', () => {
+    mountShell()
+    const view = render(
+      <>
+        <Dialog open title="Settings" onClose={vi.fn()}>
+          {body}
+        </Dialog>
+        <Dialog open title="Discard changes?" onClose={vi.fn()}>
+          <Button>Discard</Button>
+        </Dialog>
+      </>,
+    )
+    const shell = document.getElementById('sloodge-shell')!
+    expect(shell.hasAttribute('inert')).toBe(true)
+
+    // Close the inner one only. The outer is still open and its scrim is still painted.
+    view.rerender(
+      <>
+        <Dialog open title="Settings" onClose={vi.fn()}>
+          {body}
+        </Dialog>
+        <Dialog open={false} title="Discard changes?" onClose={vi.fn()}>
+          <Button>Discard</Button>
+        </Dialog>
+      </>,
+    )
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(shell.hasAttribute('inert')).toBe(true)
+
+    view.rerender(
+      <>
+        <Dialog open={false} title="Settings" onClose={vi.fn()}>
+          {body}
+        </Dialog>
+        <Dialog open={false} title="Discard changes?" onClose={vi.fn()}>
+          <Button>Discard</Button>
+        </Dialog>
+      </>,
     )
     expect(shell.hasAttribute('inert')).toBe(false)
   })

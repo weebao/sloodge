@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
@@ -28,6 +29,7 @@ import { join, relative } from 'node:path'
 
 const RENDERER_ROOT = join(process.cwd(), 'src', 'renderer', 'src')
 const THEME_FILE = join(RENDERER_ROOT, 'styles', 'theme.css')
+const GENERATOR = join(process.cwd(), 'scripts', 'design-inventory.mjs')
 
 /** Tailwind utility families that take a colour. Anything else (`w-`, `h-`, `p-`) is not a colour. */
 const COLOUR_UTILITIES =
@@ -177,5 +179,51 @@ describe('theme colour tokens', () => {
       }
     }
     expect(unresolved).toEqual([])
+  })
+})
+
+/**
+ * The canonical block is `--emit-theme`'s output, and this is what says so.
+ *
+ * `--check`'s byte-equality covers the 49 **colour** declarations and nothing else, so every other
+ * line of the generated region was unpinned: the `@theme static` keyword, the ten `--*: initial`
+ * resets, the eight `@utility` bodies and every spacing / radius / shadow / type / motion value.
+ * Five corruptions of the shipped block were demonstrated in review round 1 to leave `--check
+ * --require-landed` at `RESULT: pass` exit 0 with the whole suite, oxlint and Prettier green:
+ * dropping `static`, `--spacing-control` 1.75rem → 4rem, `--radius-overlay` 0.5rem → 2rem,
+ * `@utility duration-fast` emitting `var(--duration-slow)`, and `--ease-out` replaced by an ease-in
+ * curve.
+ *
+ * The first is the one that matters and it is not hypothetical. `static` is what makes Tailwind emit
+ * the whole block rather than only the tokens some utility happens to reference; with it removed and
+ * a fresh `pnpm build`, `--color-hud`, `--color-hud-strong` and `--color-hud-fg` are absent from the
+ * built CSS entirely, and `--color-canvas` / `--color-guide` survive only inside the dark media
+ * block, so `var(--color-canvas)` resolves to nothing in light mode. `static` reads as a redundant
+ * keyword; normalising it away is a plausible edit, and until this assertion existed no gate saw it.
+ *
+ * The generator is therefore the source of truth for the block: to change a value, change
+ * `PROPOSED_LIGHT` / `PROPOSED_DARK` / the scale constants in the script and re-run `--emit-theme`
+ * (audit §5.8). Editing `theme.css` alone reds here.
+ */
+describe('canonical role block', () => {
+  it('is the generator output, verbatim', () => {
+    const emitted = execFileSync(process.execPath, [GENERATOR, '--emit-theme'], {
+      encoding: 'utf8',
+      cwd: process.cwd(),
+    })
+    const css = readFileSync(THEME_FILE, 'utf8')
+    if (!css.includes(emitted)) {
+      // Diff the block against the same span of theme.css rather than reporting the bare
+      // `toContain` failure, whose output names neither the divergent line nor the value.
+      const want = emitted.split('\n')
+      const have = css.split('\n')
+      const at = have.indexOf(want[0]!)
+      expect(
+        at,
+        'theme.css does not carry the generated block header at all',
+      ).toBeGreaterThanOrEqual(0)
+      expect(have.slice(at, at + want.length)).toEqual(want)
+    }
+    expect(css).toContain(emitted)
   })
 })
