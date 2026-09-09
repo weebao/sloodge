@@ -393,7 +393,7 @@ describe('scope — a free child of a locked parent is mutable, for every gated 
     expect(textEditBlock(at(CONTAINER, 1).element)).toBeNull()
   })
 
-  it('the same holds with the lock on the `.slide` root — it does not freeze the deck', () => {
+  it('the same holds with the lock on the `.slide` root refuses the root only; its children stay mutable', () => {
     const root = '<div class="slide" data-sl-lock><h1>T</h1></div>'
     expect(lockRefusal(at(root, 0).element)).toBe(LOCK_REASON)
     const heading = at(root, 1)

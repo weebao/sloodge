@@ -43,7 +43,11 @@
  * ## Scope: the attribute answers for its own element, never for its subtree
  *
  * `lockRefusal` takes an `ElementSpan` and no `SlideMap`, which is the scope written into the
- * signature: an ancestor walk is not expressible at any gate. A free `<p>` inside a locked `<div>` is
+ * signature. That is a statement about what this function is *given*, not about what is reachable:
+ * review r2 implemented subtree scope two different ways without changing this signature or any
+ * caller, by resolving the ancestor once in `buildSlideMap` and exposing it as a field, so the gate
+ * stays a single O(1) read. Do not read the signature as proof that subtree scope is expensive —
+ * M3.19 carries the measured cost. A free `<p>` inside a locked `<div>` is
  * therefore fully mutable — colour, drag, group move, flip, rotate, duplicate and the caret all land
  * on it — and it is also what a click on that text *selects*, because the grabbable climb
  * (`grabbable.ts`) stops at the first addressable node rather than at the outermost one.
