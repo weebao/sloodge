@@ -245,7 +245,7 @@ export function PropertyPanel({
       <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-chrome-muted dark:text-ink-muted">
         <span>Properties</span>
         {selection === null ? null : (
-          <span className="font-normal normal-case text-chrome-muted/80 dark:text-ink-muted/80">
+          <span className="font-normal normal-case text-chrome-muted dark:text-ink-muted">
             {selection.tag}
             {selection.id ? `#${selection.id}` : ''}
           </span>

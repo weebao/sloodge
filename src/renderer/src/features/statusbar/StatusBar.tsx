@@ -79,7 +79,7 @@ function SkillsIndicator({ skills }: { skills: SessionSkills }): JSX.Element | n
             : 'Slide skills could not be loaded from disk, so this session inlines them into the prompt instead. Same output, higher token cost per turn.'
         }
         className={
-          degraded ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-500'
+          degraded ? 'text-red-600 dark:text-red-400' : 'text-amber-800 dark:text-amber-500'
         }
       >
         {label}
@@ -111,7 +111,7 @@ function CostMeter({
     budget.level === 'blocked'
       ? 'text-red-600 dark:text-red-400'
       : budget.level === 'warn' || budgetUnknown
-        ? 'text-amber-600 dark:text-amber-500'
+        ? 'text-amber-800 dark:text-amber-500'
         : undefined
   const barTone =
     budget.level === 'blocked'

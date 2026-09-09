@@ -73,6 +73,90 @@ describe('semantic colour tokens', () => {
     ).toBeGreaterThanOrEqual(4.5)
   })
 
+  /**
+   * M8b.1a: the six spellings audit §8 measured below AA, pinned so they cannot come back.
+   *
+   * A spelling pin rather than a computed ratio, because four of the six are not computable from
+   * `theme.css`: they involve Tailwind's OKLCH palette (`amber-600`, four rows) or an alpha
+   * composite over a translucent panel (`chrome-muted/80` over `shell-bg/95` over the mat). The
+   * two hover rows ARE computable from declared tokens — review r1 derived 1.00 and 1.24 with this
+   * file's own `themeHex`/`luminance` helpers — so they are pinned by spelling for consistency with
+   * their four siblings, not from necessity. `--contrast` in
+   * `scripts/design-inventory.mjs` resolves both, but it is a calculator over pair specs written
+   * in that script, not a source scanner — measured during this change: with
+   * `dark:hover:bg-ink-alt` put back in FormatBar.tsx it still printed the fixed 1.24, and the
+   * whole suite stayed green. Nothing in `pnpm test` could see any of the six returning, which is
+   * why this clause exists. M8b.4 generalises it to every file.
+   *
+   * Each row also pins its replacement present, so deleting the class outright reds too.
+   *
+   * The amber needles are the BARE `amber-600`, not `bg-`/`text-`-prefixed. Review r1 found the
+   * prefixed form left a real mutation alive: swapping `text-white` for `text-amber-600` on the
+   * badge in DesignNotice.tsx reintroduced a 3.19:1 pair and all 14 rows stayed green, because the
+   * needle only looked for the background spelling. `grep -r amber-600 src/` is zero, so the bare
+   * form has nothing legitimate to collide with.
+   */
+  const AA_REGRESSIONS: readonly [file: string, bad: string, measured: string, good: string][] = [
+    [
+      'features/format/FormatBar.tsx',
+      'dark:hover:bg-ink-alt',
+      '1.00:1 hover on the dark toolbar row',
+      'dark:hover:bg-ink-line',
+    ],
+    [
+      'features/design/ArrangeBar.tsx',
+      'dark:hover:bg-ink-alt',
+      '1.00:1 hover on the dark arrange bar',
+      'dark:hover:bg-ink-line',
+    ],
+    ['features/statusbar/StatusBar.tsx', 'amber-600', '3.06:1 on chrome at 11px', 'text-amber-800'],
+    ['features/settings/BudgetTab.tsx', 'amber-600', '3.06:1 on chrome at 12px', 'text-amber-800'],
+    [
+      'features/design/DesignNotice.tsx',
+      'amber-600',
+      '3.19:1 under white text at 11px',
+      'bg-amber-800',
+    ],
+    [
+      'features/design/SelectionOverlay.tsx',
+      'amber-600',
+      '3.19:1 under white text at 11px',
+      'bg-amber-800',
+    ],
+    [
+      'features/design/PropertyPanel.tsx',
+      'text-chrome-muted/80',
+      '3.70:1 on the property dock',
+      'text-chrome-muted',
+    ],
+    [
+      'features/design/PropertyPanel.tsx',
+      'dark:text-ink-muted/80',
+      '4.31:1 on the property dock',
+      'dark:text-ink-muted',
+    ],
+  ]
+
+  it.each(AA_REGRESSIONS)('%s no longer spells %s', (file, bad, measured, good) => {
+    const src = readFileSync(join(RENDERER_ROOT, ...file.split('/')), 'utf8')
+    expect(src, `${bad} measured ${measured}; use ${good}`).not.toContain(bad)
+    // Non-vacuity: a pin on an absent string also passes when the whole class is deleted.
+    expect(src, `${good} is gone from ${file}, so the pin above proves nothing`).toContain(good)
+  })
+
+  it('the Design Mode ✦ glyph carries its dark twin (2.36:1 on ink-alt without one)', () => {
+    const file = join(RENDERER_ROOT, 'features', 'design', 'DesignModeToggle.tsx')
+    const lines = readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((l) => /(?<!dark:)text-chrome-muted(?![\w/-])/.test(l))
+    expect(lines.length).toBeGreaterThan(0)
+    for (const l of lines) {
+      expect(l.trim(), 'text-chrome-muted with no dark twin is 2.36:1 on ink-alt').toContain(
+        'dark:text-ink-muted',
+      )
+    }
+  })
+
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
     const unpaired: string[] = []
     let seen = 0

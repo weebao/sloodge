@@ -54,7 +54,7 @@ export function DesignNotice({ slideId }: DesignNoticeProps): JSX.Element | null
     <div
       role="status"
       data-testid="design-notice"
-      className="pointer-events-auto flex items-center gap-2 rounded bg-amber-600 px-2 py-1 text-[11px] leading-4 text-white"
+      className="pointer-events-auto flex items-center gap-2 rounded bg-amber-800 px-2 py-1 text-[11px] leading-4 text-white"
     >
       <span>{notice.text}</span>
       <button

@@ -898,7 +898,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         >
           <span
             className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
-              isEditing ? 'bg-amber-600' : 'bg-accent'
+              isEditing ? 'bg-amber-800' : 'bg-accent'
             }`}
           >
             {isEditing
@@ -912,7 +912,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           {lockBadge !== null && !isEditing ? (
             <span
               data-testid="design-transform-lock"
-              className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-600 px-1 text-[11px] leading-4 text-white"
+              className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-800 px-1 text-[11px] leading-4 text-white"
               title={lockBadge}
             >
               {lockBadge}
