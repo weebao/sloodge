@@ -150,11 +150,13 @@ function tagNameEnd(source: string, startTagStart: number): number {
  *
  * `null` means the tree had no value under this location's key, and the raw slice stands in — i.e.
  * exactly the pre-M3.18 reading, so an unforeseen parse5 shape degrades rather than emptying the
- * value. It is not a shape any known input reaches: `slide-map.test.ts` walks every located
- * attribute of the hostile corpus and finds all of them in `node.attrs` under `decodedAttrs`' key,
- * with zero misses. That test, not this fallback, is what would notice if that stopped being true
- * — a missing decode is invisible from outside, since it looks exactly like a value that needed no
- * decoding.
+ * value. No known input reaches it *now*, but one did until review caught it — `<svg xmlns="…">`,
+ * whose empty-string prefix `attrLocationKey` rejoined into `':xmlns'`. That is what this fallback
+ * costs: it is silent, since a missing decode looks exactly like a value that needed no decoding.
+ * So the guarantee lives one level up, in `slide-map.test.ts`'s walk over every located attribute
+ * of the hostile corpus — which now carries an `xmlns` element — finding all of them in
+ * `node.attrs` under `attrLocationKey`. That test, not this line, is what says so if it stops
+ * being true.
  */
 function readAttrSpan(source: string, whole: Span, decoded: string | null): AttrSpan {
   const text = source.slice(whole.start, whole.end)
@@ -188,13 +190,23 @@ function readAttrSpan(source: string, whole: Span, decoded: string | null): Attr
 }
 
 /**
- * The tree's decoded value for every attribute of `node`, keyed the way `location.attrs` is.
+ * The `sourceCodeLocation.attrs` key for a tree attribute — the reconciliation between parse5's
+ * two spellings of one attribute.
  *
- * The two sides disagree about names and have to be reconciled: `location.attrs` keys are
- * lowercased in every namespace (see `ElementSpan.attrs`) and spell a namespaced attribute the way
- * the source did (`xlink:href`), while `node.attrs` carries the *adjusted* name (`viewBox`) with
- * the prefix split off into its own field. Lowercasing the re-joined `prefix:name` puts them back
- * on the same key.
+ * The sides disagree and have to be put back together: `location.attrs` keys are lowercased in
+ * every namespace (see `ElementSpan.attrs`) and spell a namespaced attribute the way the source
+ * did (`xlink:href`), while `node.attrs` carries the *adjusted* name (`viewBox`) with the prefix
+ * split off into its own field. Lowercasing the re-joined `prefix:name` puts them on one key.
+ *
+ * `prefix ?` and not `prefix !== undefined`: an **empty-string** prefix is as absent as a missing
+ * one. parse5's XML attribute adjustment table gives `xmlns` on a foreign element
+ * `{ prefix: '', name: 'xmlns' }` — its only entry with an empty prefix — and `':xmlns'` matches
+ * no location key, so `<svg xmlns="...">`, the commonest attribute in inline SVG, would miss.
+ *
+ * A miss is invisible from outside: `readAttrSpan` degrades to the raw slice, which looks exactly
+ * like a value that needed no decoding. So this function is exported for `slide-map.test.ts`'s
+ * zero-miss walk to drive *the same rule* the map is built with, rather than a copy of it free to
+ * disagree; the corpus carries an `xmlns` element so the walk can see this shape.
  *
  * No first-wins guard for a duplicate attribute, deliberately: the *tokenizer* drops the later one
  * — before the tree and before the locations — so neither side ever carries two entries for one
@@ -202,12 +214,15 @@ function readAttrSpan(source: string, whole: Span, decoded: string | null): Attr
  * nothing in 2343 tests). `<div a="1" a="2">` is one attribute to parse5, and the corpus pins that
  * the surviving value is the first one.
  */
+export function attrLocationKey(attr: { prefix?: string; name: string }): string {
+  const key = attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name
+  return key.toLowerCase()
+}
+
+/** The tree's decoded value for every attribute of `node`, keyed the way `location.attrs` is. */
 function decodedAttrs(node: Element): ReadonlyMap<string, string> {
   const out = new Map<string, string>()
-  for (const attr of node.attrs) {
-    const key = attr.prefix === undefined ? attr.name : `${attr.prefix}:${attr.name}`
-    out.set(key.toLowerCase(), attr.value)
-  }
+  for (const attr of node.attrs) out.set(attrLocationKey(attr), attr.value)
   return out
 }
 

@@ -252,9 +252,12 @@ export function setStyleProps(
  */
 export function removeStyleProp(source: string, element: ElementSpan, prop: string): SourceOp[] {
   const styleAttr = element.attrs['style']
-  if (styleAttr === undefined || styleAttr.value === null) return []
+  // `text === null` is the same condition as `value === null` — `readAttrSpan` sets them together
+  // for a valueless attribute, pinned by slide-map.test.ts — so this narrows rather than defaults.
+  // A `?? ''` here would read as doubt about an invariant this file's own tests state.
+  if (styleAttr === undefined || styleAttr.text === null) return []
   const key = prop.toLowerCase()
-  const declarations = parseDeclarations(styleAttr.text ?? '')
+  const declarations = parseDeclarations(styleAttr.text)
   const kept = declarations.filter((declaration) => declaration.prop !== key)
   if (kept.length === declarations.length) return []
   // Through `setAttr`, not a bare `replaceSpan`, because `kept` holds **decoded** values: writing

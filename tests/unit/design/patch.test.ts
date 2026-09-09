@@ -389,26 +389,98 @@ describe('inline style with a character reference (M3.18)', () => {
  * decoded equality so it can never silently widen into a *semantic* change.
  */
 describe('style read/write round trip (M3.18)', () => {
-  const BYTE_EXACT: readonly string[] = [
-    'font-family: &quot;Georgia&quot;, serif; color: red',
-    'font-family: &quot;A;B&quot;, serif; color: red',
-    'font-family: &#39;Georgia&#39;, serif',
-    'background: url(a;b); color: red',
-    'content: &quot;\\a9 &quot;; color: red',
-    'font-family: &quot, serif; color: red',
-    'color: red',
+  /**
+   * `writes` is how many of the three probed properties this row actually *writes back*, and it is
+   * asserted, not decorative.
+   *
+   * Without it a row can pin byte-exactness vacuously: when the decoded value carries a `;`,
+   * `isSafeStyleValue` refuses it and `setStyleProp` returns `[]`, so `applyOps(source, [])` is
+   * `source` and `toBe(source)` holds because **nothing was written**. That is how
+   * `font-family: &quot, serif` — the shape the PR body most wanted pinned — sat in this table
+   * proving nothing. Counting the writes makes a row that stops round-tripping fail instead of
+   * quietly going vacuous; the refusals are asserted as refusals in `REFUSED` below.
+   *
+   * A row may legitimately write fewer than all three: a declaration is also pinned byte-exact by
+   * surviving *another* property's write untouched, which is what `url(a;b)` and the `content`
+   * CSS-escape row are doing.
+   */
+  const BYTE_EXACT: readonly { attr: string; writes: number }[] = [
+    { attr: 'font-family: &quot;Georgia&quot;, serif; color: red', writes: 2 },
+    // The `;` is real, inside a decoded quoted family: `font-family` is refused (see REFUSED), and
+    // what this row pins is that the `color` write leaves those bytes exactly as authored.
+    { attr: 'font-family: &quot;A;B&quot;, serif; color: red', writes: 1 },
+    { attr: 'font-family: &#39;Georgia&#39;, serif', writes: 1 },
+    { attr: 'background: url(a;b); color: red', writes: 1 },
+    { attr: 'content: &quot;\\a9 &quot;; color: red', writes: 1 },
+    { attr: 'color: red', writes: 1 },
   ]
 
-  it.each(BYTE_EXACT)('writes back the same bytes: %s', (attr) => {
+  it.each(BYTE_EXACT)('writes back the same bytes: $attr', ({ attr, writes }) => {
     const { source, element } = styled(attr)
-    let out = source
-    for (const { prop } of [{ prop: 'font-family' }, { prop: 'color' }, { prop: 'background' }]) {
+    let attempted = 0
+    for (const prop of ['font-family', 'color', 'background']) {
       const value = readStyleProp(source, element, prop)
       if (value === null) continue
-      out = applyOps(source, setStyleProp(source, element, prop, value))
-      expect(out).toBe(source)
+      const ops = setStyleProp(source, element, prop, value)
+      if (ops.length === 0) continue
+      attempted += 1
+      expect(applyOps(source, ops)).toBe(source)
     }
-    expect(out).toBe(source)
+    expect(attempted).toBe(writes)
+  })
+
+  /**
+   * The shapes a read/write round trip **refuses** rather than round-trips, stated as refusals.
+   *
+   * Decoding is what makes them refusable: a `;` that was spelled as an entity, or hidden behind a
+   * CSS string the decode opens, is a real declaration separator once `AttrSpan.text` resolves it,
+   * and `isSafeStyleValue` will not write a value carrying one. The source is untouched — but by
+   * a no-op, not by a round trip, and the difference is the whole reason these rows are here
+   * instead of in `BYTE_EXACT`.
+   */
+  const REFUSED: readonly { name: string; attr: string; prop: string; decoded: string }[] = [
+    {
+      name: 'an unterminated `&quot,` — the decode opens a CSS string that swallows the rest',
+      attr: 'font-family: &quot, serif; color: red',
+      prop: 'font-family',
+      decoded: '", serif; color: red',
+    },
+    {
+      name: 'a real `;` inside a decoded quoted family',
+      attr: 'font-family: &quot;A;B&quot;, serif; color: red',
+      prop: 'font-family',
+      decoded: '"A;B", serif',
+    },
+  ]
+
+  it.each(REFUSED)('refuses to write back $name', ({ attr, prop, decoded }) => {
+    const { source, element } = styled(attr)
+    // The read is exact — this is a write-side refusal, not a decoding failure.
+    expect(readStyleProp(source, element, prop)).toBe(decoded)
+    expect(isSafeStyleValue(decoded)).toBe(false)
+    expect(setStyleProp(source, element, prop, decoded)).toEqual([])
+  })
+
+  it('appends a duplicate declaration when an unterminated CSS string hides the first', () => {
+    // Disclosed rather than repaired (roadmap M3.20). With the decoded value carrying an unclosed
+    // string, `parseDeclarations` sees ONE declaration whose value has swallowed everything after
+    // it, so an appended `outline` lands inside that string and the next parse cannot see it —
+    // repeated edits append without bound. Pinned here so the growth is a documented shape rather
+    // than a surprise, and so a future fix has something to turn red.
+    const { source, element } = styled('font-family: &quot, serif; color: red')
+    const first = applyOps(source, setStyleProp(source, element, 'outline', '1px solid'))
+    const { source: s2, element: e2 } = only(first)
+    const second = applyOps(s2, setStyleProp(s2, e2, 'outline', '1px solid'))
+    // Two `outline` declarations, not one: the first is inside the unclosed string, so the
+    // re-parse cannot see it and upserts a second. A third edit would make three.
+    expect(second.match(/outline: 1px solid/g)).toHaveLength(2)
+    // Bounded in badness, and strictly better than base `30ca973`, which read the value raw and
+    // DESTROYED it (`font-family: &amp;quot;`). Here the CSS a browser sees is unchanged — every
+    // appended declaration is swallowed by the same string the author left open — and the only
+    // byte movement outside it is the ambiguous `&quot,` re-spelled canonically as `&quot;`.
+    expect(second).toBe(
+      '<p data-sl-id="a" style="font-family: &quot;, serif; color: red; outline: 1px solid; outline: 1px solid">x</p>',
+    )
   })
 
   const DECODED_EXACT: readonly string[] = [

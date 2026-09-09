@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { parse } from 'parse5'
 
-import { buildSlideMap, SL_ID_ATTR, sourceFingerprint } from '../../../src/shared/design/slide-map'
+import {
+  attrLocationKey,
+  buildSlideMap,
+  SL_ID_ATTR,
+  sourceFingerprint,
+} from '../../../src/shared/design/slide-map'
 import type { ElementSpan, SlideMap, Span } from '../../../src/shared/design/types'
 import { CORPUS, SLIDE_ID } from './corpus'
 
@@ -915,6 +920,17 @@ describe('AttrSpan.text', () => {
       text: '0 0 1 1',
     },
     {
+      // parse5 adjusts `xmlns` on a foreign element to an EMPTY-STRING prefix — the sole such
+      // entry in its table — so a rejoin rule that only treats `undefined` as absent keys it
+      // `':xmlns'`, finds nothing, and hands back raw bytes. `<svg xmlns="http://www.w3.org/2000/
+      // svg">` is standard boilerplate, so the miss was reachable from essentially any slide
+      // carrying inline SVG; the entity is only what makes it show.
+      name: 'xmlns on a foreign element, whose parse5 prefix is the empty string',
+      html: '<svg xmlns="http://example.com/a&amp;b"><rect/></svg>',
+      key: 'xmlns',
+      text: 'http://example.com/a&b',
+    },
+    {
       name: 'the first of two duplicate attributes — the one the DOM keeps',
       html: '<div a="&amp;1" a="&amp;2" class="c">x</div>',
       key: 'a',
@@ -976,8 +992,12 @@ describe('AttrSpan.text', () => {
     // attribute, which is invisible from the outside — a missing decode and a value that needs no
     // decoding look identical. So the fallback is checked at its own level: over the whole hostile
     // corpus, every key `sourceCodeLocation.attrs` produces must be reachable in `node.attrs` by
-    // the rejoin-prefix-and-lowercase rule `decodedAttrs` uses. Zero misses is the claim; if
-    // parse5 ever grows a shape where the two sides disagree, this is what says so.
+    // the reconciliation rule the map is built with. Zero misses is the claim; if parse5 ever
+    // grows a shape where the two sides disagree, this is what says so.
+    //
+    // It drives the PRODUCTION `attrLocationKey`, never a copy of the rule: a copy would pass
+    // against a broken map, which is how the empty-string `xmlns` prefix survived round 1. The
+    // corpus carries `<svg xmlns="…&amp;…">` so this walk can see that shape at all.
     let located = 0
     for (const { html } of CORPUS) {
       const walk = (node: unknown): void => {
@@ -989,11 +1009,7 @@ describe('AttrSpan.text', () => {
         }
         const keys = Object.keys(element.sourceCodeLocation?.attrs ?? {})
         if (keys.length > 0 && element.attrs) {
-          const fromTree = new Set(
-            element.attrs.map((attr) =>
-              (attr.prefix === undefined ? attr.name : `${attr.prefix}:${attr.name}`).toLowerCase(),
-            ),
-          )
+          const fromTree = new Set(element.attrs.map(attrLocationKey))
           for (const key of keys) {
             expect({ html, key, fromTree: [...fromTree] }).toEqual({
               html,
