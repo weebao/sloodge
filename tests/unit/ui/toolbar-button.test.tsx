@@ -59,6 +59,23 @@ describe('ToolbarButton', () => {
     expect(button.className.split(/\s+/)).not.toContain('bg-pressed')
   })
 
+  it('cannot be renamed through aria-labelledby, which outranks aria-label', () => {
+    // The route review r2 found still open: omitting and re-applying `aria-label` does not help,
+    // because `aria-labelledby` wins the accessible-name computation outright. Asserted through the
+    // NAME rather than the attribute, so it fails if the precedence rule is what breaks.
+    const spoof = { 'aria-labelledby': 'other' }
+    render(
+      <>
+        <span id="other">spoofed</span>
+        <ToolbarButton label="Bold" {...spoof}>
+          B
+        </ToolbarButton>
+      </>,
+    )
+    expect(screen.getByRole('button', { name: 'Bold' })).toBeTruthy()
+    expect(screen.getByRole('button').getAttribute('aria-labelledby')).toBeNull()
+  })
+
   it('cannot be told to announce a name other than its label', () => {
     const spoof = { 'aria-label': 'spoofed' }
     render(

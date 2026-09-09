@@ -27,7 +27,7 @@ import { FOCUS_RING } from './focusRing'
 
 export type ToolbarButtonProps = Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
-  'className' | 'aria-label' | 'aria-pressed'
+  'className' | 'aria-label' | 'aria-labelledby' | 'aria-pressed'
 > & {
   /** Announced name. Required: this button never carries visible text. */
   readonly label: string
@@ -54,6 +54,11 @@ export function ToolbarButton({
       title={label}
       {...rest}
       aria-label={label}
+      // `aria-labelledby` OUTRANKS `aria-label` in the accessible-name computation, so omitting it
+      // and re-applying `aria-label` is not enough — review r2 measured a caller's `aria-labelledby`
+      // winning on the shipped component behind a clean `tsc`. Clearing it after the spread is what
+      // makes `label` the name, the same ordering guard the two attributes below rely on.
+      aria-labelledby={undefined}
       aria-pressed={pressed}
       className={`${BASE} ${pressed === true ? 'bg-pressed' : ''} ${FOCUS_RING}`}
     >
