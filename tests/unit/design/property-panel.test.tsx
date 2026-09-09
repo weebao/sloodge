@@ -838,6 +838,19 @@ describe('PropertyPanel — data-sl-lock refuses every control (M3.16)', () => {
     expectNoUndoEntrySince(SOURCE)
   })
 
+  it('the three transform buttons dim identically — disabled is not only a DOM flag', () => {
+    // Found by the PR recording, not by a test: Duplicate was `disabled` but its class list had no
+    // `disabled:opacity-50`, so it sat looking clickable beside two greyed siblings. One className
+    // across the three is the cheapest thing that cannot drift again.
+    seedLocked()
+    render(<PropertyPanel slide={currentSlide()} />)
+    const classes = ['transform-flip-h', 'transform-flip-v', 'transform-duplicate'].map(
+      (id) => (screen.getByTestId(id) as HTMLButtonElement).className,
+    )
+    expect(new Set(classes).size).toBe(1)
+    expect(classes[0]).toContain('disabled:opacity-50')
+  })
+
   it('the same three buttons work on the identical element without the lock', () => {
     seedLocked(FREE)
     render(<PropertyPanel slide={currentSlide()} />)

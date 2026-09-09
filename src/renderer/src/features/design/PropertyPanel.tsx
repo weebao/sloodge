@@ -586,7 +586,7 @@ function PropertyFields({
           onClick={duplicate}
           disabled={elementLock !== null}
           title={elementLock ?? undefined}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent dark:border-ink-line"
+          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Duplicate
         </button>
