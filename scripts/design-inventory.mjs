@@ -769,12 +769,7 @@ const CURRENT_PAIRS = [
     ['ink-muted', 'panel.dark'],
     'PropertyPanel:167/177/182/321/358, ColorControls:172',
   ),
-  p(
-    'text',
-    ['chrome-muted/80', 'panel.light'],
-    ['ink-muted/80', 'panel.dark'],
-    'PropertyPanel:170',
-  ),
+  p('text', ['chrome-muted', 'panel.light'], ['ink-muted', 'panel.dark'], 'PropertyPanel:248'),
   p(
     'text',
     ['chrome-muted', 'chrome-line/40 over white'],
@@ -805,9 +800,9 @@ const CURRENT_PAIRS = [
   // -- semantic text -----------------------------------------------------------------------
   p(
     'text',
-    ['white', 'amber-600'],
-    ['white', 'amber-600'],
-    'DesignNotice:57, SelectionOverlay:821',
+    ['white', 'amber-800'],
+    ['white', 'amber-800'],
+    'DesignNotice:57, SelectionOverlay:901/915',
   ),
   p('text', ['white', 'red-600'], ['white', 'red-600'], 'BudgetTab:259'),
   p(
@@ -816,7 +811,7 @@ const CURRENT_PAIRS = [
     ['red-400', 'ink'],
     'StatusBar:64/94, AuthTab:148, BudgetTab:215/295',
   ),
-  p('text', ['amber-600', 'chrome'], ['amber-500', 'ink'], 'StatusBar:64/96, BudgetTab:203/221'),
+  p('text', ['amber-800', 'chrome'], ['amber-500', 'ink'], 'StatusBar:82/114, BudgetTab:203/221'),
   p(
     'text',
     ['amber-900', 'amber-500/10 over chrome'],
@@ -908,13 +903,8 @@ const CURRENT_PAIRS = [
     ['accent', 'white'],
     'SelectionOverlay:849/867 handle border on white fill',
   ),
-  p(
-    'ui',
-    ['chrome-muted', 'white'],
-    ['chrome-muted', 'ink-alt'],
-    'DesignModeToggle:49 ✦ glyph, no dark variant',
-  ),
-  p('ui', ['accent', 'white'], ['accent', 'ink-alt'], 'DesignModeToggle:49 ✦ glyph when enabled'),
+  p('ui', ['chrome-muted', 'white'], ['ink-muted', 'ink-alt'], 'DesignModeToggle:51 ✦ glyph'),
+  p('ui', ['accent', 'white'], ['accent', 'ink-alt'], 'DesignModeToggle:51 ✦ glyph when enabled'),
   p(
     'ui',
     ['chrome-muted', 'accent/10 over chrome'],
@@ -951,10 +941,10 @@ const CURRENT_PAIRS = [
   p(
     'state',
     ['chrome-alt', 'white'],
-    ['ink-alt', 'ink-alt'],
+    ['ink-line', 'ink-alt'],
     'FormatBar:16 hover on the toolbar row',
   ),
-  p('state', ['chrome-alt', 'arrange.light'], ['ink-alt', 'arrange.dark'], 'ArrangeBar:20 hover'),
+  p('state', ['chrome-alt', 'arrange.light'], ['ink-line', 'arrange.dark'], 'ArrangeBar:20 hover'),
   p('state', ['chrome-alt', 'white'], ['ink-line', 'ink-alt'], 'DesignModeToggle:47 hover'),
   p('state', ['chrome-line', 'white'], ['chrome-line', 'white'], 'FormatBar:16 active (no dark)'),
   p(

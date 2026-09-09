@@ -13,7 +13,7 @@ import type { JSX, ReactNode } from 'react'
  */
 
 const BUTTON_BASE =
-  'inline-flex h-7 items-center justify-center gap-1.5 rounded border border-transparent px-2 text-[13px] text-shell-fg transition-colors hover:border-chrome-line hover:bg-chrome-alt active:bg-chrome-line dark:text-ink-fg dark:hover:border-ink-line dark:hover:bg-ink-alt'
+  'inline-flex h-7 items-center justify-center gap-1.5 rounded border border-transparent px-2 text-[13px] text-shell-fg transition-colors hover:border-chrome-line hover:bg-chrome-alt active:bg-chrome-line dark:text-ink-fg dark:hover:border-ink-line dark:hover:bg-ink-line'
 
 function ToolButton({
   label,

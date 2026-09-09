@@ -200,7 +200,7 @@ export function BudgetTab(): JSX.Element {
         {!loaded ? (
           <p
             data-testid="budget-unloaded"
-            className="text-[12px] text-amber-600 dark:text-amber-500"
+            className="text-[12px] text-amber-800 dark:text-amber-500"
           >
             {probeFailed
               ? 'Your saved limit could not be read here. Sloodge is still enforcing it; setting one below will store it.'
@@ -218,7 +218,7 @@ export function BudgetTab(): JSX.Element {
           </p>
         ) : null}
         {status.level === 'warn' ? (
-          <p className="text-[12px] text-amber-600 dark:text-amber-500">
+          <p className="text-[12px] text-amber-800 dark:text-amber-500">
             Approaching the limit. New messages stop once it is reached.
           </p>
         ) : null}

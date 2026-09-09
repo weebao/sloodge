@@ -17,7 +17,7 @@ export type ArrangeBarProps = {
 }
 
 const BUTTON =
-  'inline-flex h-7 w-7 items-center justify-center rounded border border-transparent text-shell-fg transition-colors hover:border-chrome-line hover:bg-chrome-alt disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-transparent disabled:hover:bg-transparent dark:text-ink-fg dark:hover:border-ink-line dark:hover:bg-ink-alt'
+  'inline-flex h-7 w-7 items-center justify-center rounded border border-transparent text-shell-fg transition-colors hover:border-chrome-line hover:bg-chrome-alt disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-transparent disabled:hover:bg-transparent dark:text-ink-fg dark:hover:border-ink-line dark:hover:bg-ink-line'
 
 function Icon({ children }: { children: ReactNode }): JSX.Element {
   return (

@@ -46,7 +46,10 @@ export function DesignModeToggle(): JSX.Element {
         }
         className="inline-flex h-7 items-center gap-2 rounded border border-chrome-line bg-white px-2 text-[13px] font-medium text-shell-fg transition-colors hover:bg-chrome-alt focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg dark:hover:bg-ink-line"
       >
-        <span aria-hidden="true" className={enabled ? 'text-accent' : 'text-chrome-muted'}>
+        <span
+          aria-hidden="true"
+          className={enabled ? 'text-accent' : 'text-chrome-muted dark:text-ink-muted'}
+        >
           ✦
         </span>
         Design Mode
