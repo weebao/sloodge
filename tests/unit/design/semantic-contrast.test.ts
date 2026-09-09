@@ -76,9 +76,12 @@ describe('semantic colour tokens', () => {
   /**
    * M8b.1a: the six spellings audit §8 measured below AA, pinned so they cannot come back.
    *
-   * A spelling pin rather than a computed ratio, because five of the six are not computable from
-   * `theme.css`: they involve Tailwind's OKLCH palette (`amber-600`) or an alpha composite over a
-   * translucent panel (`chrome-muted/80` over `shell-bg/95` over the mat). `--contrast` in
+   * A spelling pin rather than a computed ratio, because four of the six are not computable from
+   * `theme.css`: they involve Tailwind's OKLCH palette (`amber-600`, four rows) or an alpha
+   * composite over a translucent panel (`chrome-muted/80` over `shell-bg/95` over the mat). The
+   * two hover rows ARE computable from declared tokens — review r1 derived 1.00 and 1.24 with this
+   * file's own `themeHex`/`luminance` helpers — so they are pinned by spelling for consistency with
+   * their four siblings, not from necessity. `--contrast` in
    * `scripts/design-inventory.mjs` resolves both, but it is a calculator over pair specs written
    * in that script, not a source scanner — measured during this change: with
    * `dark:hover:bg-ink-alt` put back in FormatBar.tsx it still printed the fixed 1.24, and the
@@ -86,6 +89,12 @@ describe('semantic colour tokens', () => {
    * why this clause exists. M8b.4 generalises it to every file.
    *
    * Each row also pins its replacement present, so deleting the class outright reds too.
+   *
+   * The amber needles are the BARE `amber-600`, not `bg-`/`text-`-prefixed. Review r1 found the
+   * prefixed form left a real mutation alive: swapping `text-white` for `text-amber-600` on the
+   * badge in DesignNotice.tsx reintroduced a 3.19:1 pair and all 14 rows stayed green, because the
+   * needle only looked for the background spelling. `grep -r amber-600 src/` is zero, so the bare
+   * form has nothing legitimate to collide with.
    */
   const AA_REGRESSIONS: readonly [file: string, bad: string, measured: string, good: string][] = [
     [
@@ -100,27 +109,17 @@ describe('semantic colour tokens', () => {
       '1.00:1 hover on the dark arrange bar',
       'dark:hover:bg-ink-line',
     ],
-    [
-      'features/statusbar/StatusBar.tsx',
-      'text-amber-600',
-      '3.06:1 on chrome at 11px',
-      'text-amber-800',
-    ],
-    [
-      'features/settings/BudgetTab.tsx',
-      'text-amber-600',
-      '3.06:1 on chrome at 12px',
-      'text-amber-800',
-    ],
+    ['features/statusbar/StatusBar.tsx', 'amber-600', '3.06:1 on chrome at 11px', 'text-amber-800'],
+    ['features/settings/BudgetTab.tsx', 'amber-600', '3.06:1 on chrome at 12px', 'text-amber-800'],
     [
       'features/design/DesignNotice.tsx',
-      'bg-amber-600',
+      'amber-600',
       '3.19:1 under white text at 11px',
       'bg-amber-800',
     ],
     [
       'features/design/SelectionOverlay.tsx',
-      'bg-amber-600',
+      'amber-600',
       '3.19:1 under white text at 11px',
       'bg-amber-800',
     ],
