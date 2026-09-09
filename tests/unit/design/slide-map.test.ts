@@ -834,3 +834,192 @@ describe('buildSlideMap — textOnly requires the text nodes to cover inner exac
     }
   })
 })
+
+/* -------------------------------------------------------------------------------------------- *
+ * AttrSpan.text — the decoded attribute value (M3.18)
+ * -------------------------------------------------------------------------------------------- */
+
+describe('AttrSpan.text', () => {
+  /**
+   * Hand-written from the tokenizer's rules, not read off the implementation: `text` *is* parse5's
+   * decode, so an expectation derived from parse5 would assert nothing. The one rule worth stating
+   * twice is the **ambiguous ampersand** — in an attribute value a named reference with no `;`
+   * decodes unless the next character is alphanumeric or `=`.
+   */
+  const DECODES: readonly { name: string; html: string; key: string; text: string }[] = [
+    {
+      name: 'named reference',
+      html: '<p style="font-family: &quot;Georgia&quot;, serif">x</p>',
+      key: 'style',
+      text: 'font-family: "Georgia", serif',
+    },
+    {
+      name: 'decimal reference',
+      html: '<p style="a: &#34;b&#34;">x</p>',
+      key: 'style',
+      text: 'a: "b"',
+    },
+    {
+      name: 'hex reference',
+      html: '<p style="a: &#x22;b&#x22;">x</p>',
+      key: 'style',
+      text: 'a: "b"',
+    },
+    {
+      name: 'a reference that decodes to a semicolon',
+      html: '<p style="a: b&#59; c: d">x</p>',
+      key: 'style',
+      text: 'a: b; c: d',
+    },
+    {
+      name: 'unterminated named reference before a comma — decoded',
+      html: '<p title="a&quot,b">x</p>',
+      key: 'title',
+      text: 'a",b',
+    },
+    {
+      name: 'unterminated named reference before a letter — an ambiguous ampersand, left alone',
+      html: '<p title="a&quotb">x</p>',
+      key: 'title',
+      text: 'a&quotb',
+    },
+    { name: 'a literal ampersand', html: '<p title="a&amp;b">x</p>', key: 'title', text: 'a&b' },
+    {
+      name: 'astral reference',
+      html: '<p title="&#128512;">x</p>',
+      key: 'title',
+      text: '\u{1F600}',
+    },
+    {
+      name: 'a single-quoted value holding a double quote',
+      html: `<p title='a"b'>x</p>`,
+      key: 'title',
+      text: 'a"b',
+    },
+    {
+      name: 'an unquoted value holding a reference',
+      html: '<p title=a&amp;b>x</p>',
+      key: 'title',
+      text: 'a&b',
+    },
+    {
+      name: 'a namespaced foreign attribute, whose location key is the source spelling',
+      html: '<svg><a xlink:href="a&amp;b"/></svg>',
+      key: 'xlink:href',
+      text: 'a&b',
+    },
+    {
+      name: 'an SVG camelCase attribute, whose location key is lowercased',
+      html: '<svg viewBox="0&#32;0 1 1"><rect/></svg>',
+      key: 'viewbox',
+      text: '0 0 1 1',
+    },
+    {
+      name: 'the first of two duplicate attributes — the one the DOM keeps',
+      html: '<div a="&amp;1" a="&amp;2" class="c">x</div>',
+      key: 'a',
+      text: '&1',
+    },
+  ]
+
+  it.each(DECODES)('decodes $name', ({ html, key, text }) => {
+    const map = build(html)
+    const found = spans(map)
+      .map((span) => span.attrs[key])
+      .filter((attr) => attr !== undefined)
+    expect(found).toHaveLength(1)
+    expect(found[0]!.text).toBe(text)
+  })
+
+  it('is null for a valueless attribute, exactly where the value span is', () => {
+    const map = build('<div class=title data-x hidden>t</div>')
+    const div = one(map, 'div')
+    expect(div.attrs['data-x']?.value).toBeNull()
+    expect(div.attrs['data-x']?.text).toBeNull()
+    expect(div.attrs['hidden']?.text).toBeNull()
+    // An empty value is a value: `""`, not `null`.
+    const empty = one(build('<div class="">x</div>'), 'div')
+    expect(empty.attrs['class']?.text).toBe('')
+  })
+
+  it.each(CORPUS)(
+    'pairs every decoded value with its own span, over the corpus: $name',
+    ({ html }) => {
+      const map = build(html)
+      let checked = 0
+      for (const span of spans(map)) {
+        for (const attr of Object.values(span.attrs)) {
+          if (attr.value === null) {
+            expect(attr.text).toBeNull()
+            continue
+          }
+          expect(attr.text).not.toBeNull()
+          const raw = slice(map, attr.value)
+          // The decode comes from the tree while the span comes from the source location, and the
+          // two are keyed differently (lowercased-with-prefix vs adjusted-name-plus-prefix). An
+          // attribute with no `&` cannot decode to anything but itself, so any mispairing of the
+          // two keys — an `xlink:href` value landing on `style`, a camelCase `viewBox` missing its
+          // lowercased location — shows up here as a value that is not its own bytes.
+          if (!raw.includes('&')) expect(attr.text).toBe(raw)
+          // Decoding never lengthens: the shortest reference is three characters and yields at
+          // most two code units.
+          expect(attr.text!.length).toBeLessThanOrEqual(raw.length)
+          checked += 1
+        }
+      }
+      expect(checked).toBeGreaterThanOrEqual(0)
+    },
+  )
+
+  it('never falls back: every located attribute has a value in the tree', () => {
+    // `readAttrSpan` degrades to the raw slice when the tree has no value for a located
+    // attribute, which is invisible from the outside — a missing decode and a value that needs no
+    // decoding look identical. So the fallback is checked at its own level: over the whole hostile
+    // corpus, every key `sourceCodeLocation.attrs` produces must be reachable in `node.attrs` by
+    // the rejoin-prefix-and-lowercase rule `decodedAttrs` uses. Zero misses is the claim; if
+    // parse5 ever grows a shape where the two sides disagree, this is what says so.
+    let located = 0
+    for (const { html } of CORPUS) {
+      const walk = (node: unknown): void => {
+        const element = node as {
+          attrs?: { name: string; prefix?: string }[]
+          sourceCodeLocation?: { attrs?: Record<string, unknown> } | null
+          childNodes?: unknown[]
+          content?: unknown
+        }
+        const keys = Object.keys(element.sourceCodeLocation?.attrs ?? {})
+        if (keys.length > 0 && element.attrs) {
+          const fromTree = new Set(
+            element.attrs.map((attr) =>
+              (attr.prefix === undefined ? attr.name : `${attr.prefix}:${attr.name}`).toLowerCase(),
+            ),
+          )
+          for (const key of keys) {
+            expect({ html, key, fromTree: [...fromTree] }).toEqual({
+              html,
+              key,
+              fromTree: expect.arrayContaining([key]) as string[],
+            })
+            located += 1
+          }
+        }
+        for (const child of element.childNodes ?? []) walk(child)
+        if (element.content) walk(element.content)
+      }
+      walk(parse(html, { sourceCodeLocationInfo: true }))
+    }
+    expect(located).toBeGreaterThan(40)
+  })
+
+  it('covers the attribute shapes the corpus actually carries', () => {
+    // Guards the loop above against being vacuous — a corpus that lost its attributes would still
+    // pass it. Counted, so a future trim of the corpus has to notice.
+    const withValue = CORPUS.flatMap(({ html }) =>
+      spans(build(html)).flatMap((span) =>
+        Object.values(span.attrs).filter((attr) => attr.value !== null),
+      ),
+    )
+    expect(withValue.length).toBeGreaterThan(40)
+    expect(withValue.filter((attr) => attr.text!.includes('&')).length).toBeGreaterThan(0)
+  })
+})

@@ -142,14 +142,27 @@ function tagNameEnd(source: string, startTagStart: number): number {
  * rather than 0 because a name may legitimately *begin* with `=` (the tokenizer's
  * `unexpected-equals-sign-before-attribute-name` path makes `<div =a>` an attribute named `=a`),
  * and treating that `=` as the separator would produce an empty name span.
+ *
+ * `decoded` is the tree's value for this attribute — parse5 has already resolved its character
+ * references — and lands on `AttrSpan.text`. It is passed in rather than computed here because
+ * this function sees only bytes, and re-deriving the decode from bytes would be a second entity
+ * decoder beside the tokenizer's, free to disagree with it (see `AttrSpan.text`).
+ *
+ * `null` means the tree had no value under this location's key, and the raw slice stands in — i.e.
+ * exactly the pre-M3.18 reading, so an unforeseen parse5 shape degrades rather than emptying the
+ * value. It is not a shape any known input reaches: `slide-map.test.ts` walks every located
+ * attribute of the hostile corpus and finds all of them in `node.attrs` under `decodedAttrs`' key,
+ * with zero misses. That test, not this fallback, is what would notice if that stopped being true
+ * — a missing decode is invisible from outside, since it looks exactly like a value that needed no
+ * decoding.
  */
-function readAttrSpan(source: string, whole: Span): AttrSpan {
+function readAttrSpan(source: string, whole: Span, decoded: string | null): AttrSpan {
   const text = source.slice(whole.start, whole.end)
   const equals = text.indexOf('=', 1)
 
   if (equals === -1) {
     // Valueless: the whole thing is the name.
-    return { sourceName: text, name: { ...whole }, value: null, whole: { ...whole } }
+    return { sourceName: text, name: { ...whole }, value: null, text: null, whole: { ...whole } }
   }
 
   let nameEnd = equals
@@ -169,8 +182,33 @@ function readAttrSpan(source: string, whole: Span): AttrSpan {
     sourceName: text.slice(0, nameEnd),
     name: { start: whole.start, end: whole.start + nameEnd },
     value,
+    text: decoded ?? source.slice(value.start, value.end),
     whole: { ...whole },
   }
+}
+
+/**
+ * The tree's decoded value for every attribute of `node`, keyed the way `location.attrs` is.
+ *
+ * The two sides disagree about names and have to be reconciled: `location.attrs` keys are
+ * lowercased in every namespace (see `ElementSpan.attrs`) and spell a namespaced attribute the way
+ * the source did (`xlink:href`), while `node.attrs` carries the *adjusted* name (`viewBox`) with
+ * the prefix split off into its own field. Lowercasing the re-joined `prefix:name` puts them back
+ * on the same key.
+ *
+ * No first-wins guard for a duplicate attribute, deliberately: the *tokenizer* drops the later one
+ * — before the tree and before the locations — so neither side ever carries two entries for one
+ * key and a guard here would be a branch no input can take (a mutation that inverted it changed
+ * nothing in 2343 tests). `<div a="1" a="2">` is one attribute to parse5, and the corpus pins that
+ * the surviving value is the first one.
+ */
+function decodedAttrs(node: Element): ReadonlyMap<string, string> {
+  const out = new Map<string, string>()
+  for (const attr of node.attrs) {
+    const key = attr.prefix === undefined ? attr.name : `${attr.prefix}:${attr.name}`
+    out.set(key.toLowerCase(), attr.value)
+  }
+  return out
 }
 
 /**
@@ -402,11 +440,13 @@ function mapElement(
   const ns = NAMESPACE_BY_URI[node.namespaceURI] ?? 'html'
 
   const attrs: Record<string, AttrSpan> = {}
+  const decoded = decodedAttrs(node)
   for (const [name, attrLocation] of Object.entries(location.attrs ?? {})) {
-    attrs[name] = readAttrSpan(source, {
-      start: attrLocation.startOffset,
-      end: attrLocation.endOffset,
-    })
+    attrs[name] = readAttrSpan(
+      source,
+      { start: attrLocation.startOffset, end: attrLocation.endOffset },
+      decoded.get(name) ?? null,
+    )
   }
 
   const contentless = isContentless(source, node, ns, outer, startTag, attrs)

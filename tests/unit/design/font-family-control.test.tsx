@@ -8,6 +8,8 @@ import {
   scrollTopFor,
   visibleRange,
 } from '../../../src/renderer/src/features/design/FontFamilyControl'
+import { readStyleProp } from '../../../src/shared/design/patch'
+import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { SYSTEM_FONT_GROUP } from '../../../src/shared/fonts/family'
 import type { SystemFontsResponse } from '../../../src/shared/ipc-contract'
 
@@ -466,6 +468,24 @@ describe('FontFamilyControl — export-fidelity warning', () => {
     expect(screen.queryByTestId('font-export-warning')).toBeNull()
 
     rerender(<FontFamilyControl current={null} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />)
+    expect(screen.queryByTestId('font-export-warning')).toBeNull()
+  })
+
+  it('stays hidden for an entity-quoted family read out of real slide source (M3.18)', () => {
+    // The whole M3.18 symptom, end to end and through the real control rather than a string
+    // literal: the value comes out of a slide the way the panel gets it. Pre-fix `readStyleProp`
+    // returned the string `&quot`, the trigger read "&quot", and `isSystemFont('&quot')` is false,
+    // so the control raised "Won't travel" about a Georgia that travels fine.
+    const html = '<p style="font-family: &quot;Georgia&quot;, serif; color: red">x</p>'
+    const map = buildSlideMap('s', html)
+    const element = [...map.byId.values()].find((span) => span.tagName === 'p')!
+    const current = readStyleProp(map.source, element, 'font-family')
+
+    expect(current).toBe('"Georgia", serif')
+    render(
+      <FontFamilyControl current={current} onPick={vi.fn()} loadFonts={loaderFor(INSTALLED)} />,
+    )
+    expect(screen.getByTestId('prop-fontFamily').textContent).toContain('Georgia')
     expect(screen.queryByTestId('font-export-warning')).toBeNull()
   })
 

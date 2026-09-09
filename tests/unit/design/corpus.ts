@@ -51,6 +51,21 @@ export const CORPUS: readonly CorpusEntry[] = [
 
   // Entities.
   { name: 'entities in text and attribute', html: '<p title="a&amp;b">x&lt;y &#8212; z</p>' },
+  // A character reference ends in `;`, which is also what ends a CSS declaration — the M3.18
+  // collision. Three spellings of the same quote plus the ambiguous-ampersand form, which is the
+  // one the tokenizer must *not* decode.
+  {
+    name: 'entity-quoted family in a style attribute',
+    html: '<p style="font-family: &quot;Georgia&quot;, serif; color: red">x</p>',
+  },
+  {
+    name: 'numeric and hex references in a style attribute',
+    html: '<p style="font-family: &#34;A&#34;; color: &#x23;abc">x</p>',
+  },
+  {
+    name: 'ambiguous ampersand in an attribute',
+    html: '<div style="font-family: &quotGeorgia, serif" title="a&quot,b">x</div>',
+  },
 
   // Attribute shapes.
   { name: 'duplicate attributes', html: '<div a="1" a="2" class="c">x</div>' },

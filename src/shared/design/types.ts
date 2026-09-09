@@ -62,6 +62,28 @@ export interface AttrSpan {
   name: Span
   /** Span of the value with quotes stripped, or `null` for a valueless attribute (`hidden`). */
   value: Span | null
+  /**
+   * The **decoded** value — what the DOM reads back from `getAttribute`, with every character
+   * reference resolved — or `null` exactly when `value` is (a valueless attribute).
+   *
+   * This is to `value` what `ElementSpan.textContent` is to `inner`, and it exists for the same
+   * reason (M3.12, M3.18): a *value* in one of these attributes is a string in some other
+   * mini-language — CSS for `style`, a token list for `class` — and handing that language's parser
+   * the raw source bytes makes it parse the entity spellings rather than the characters they
+   * stand for. `style="font-family: &quot;Georgia&quot;, serif"` split on `;` over its raw bytes
+   * yields the declaration `font-family: &quot`; split over this, it yields
+   * `font-family: "Georgia", serif`, which is what the CSS actually says.
+   *
+   * It comes from parse5's own tokenizer rather than a decoder of ours, so it is exactly what a
+   * browser would see, ambiguous-ampersand rule included: in an attribute value a named reference
+   * with no `;` before an alphanumeric or `=` is *not* a reference, so `&quotGeorgia` stays
+   * literal while `&quot,` decodes.
+   *
+   * **It is not a span, and it is usually not the same length as one.** Nothing may index into the
+   * source with an offset derived from it; the write path still replaces the `value` span, and its
+   * inverse is `escapeAttrValue`.
+   */
+  text: string | null
   /** Span of the entire attribute, from the first character of the name to the closing quote. */
   whole: Span
 }

@@ -130,7 +130,9 @@ referring to the **original** source — which is exactly what patches operate o
 > - `sourceCodeLocation.attrs` keys are **lowercased in every namespace**, SVG included — the
 >   camelCase `viewBox` survives only on `node.attrs`. The map keys attributes by the lowercased
 >   name and keeps the source casing alongside, rather than keying by source-cased name as §1.2
->   describes.
+>   describes. The same reconciliation carries the **decoded** value onto `AttrSpan.text` (M3.18):
+>   `node.attrs` is where the tokenizer's entity decode lives, and its adjusted name plus split-off
+>   prefix rejoin and lowercase back onto the location's key (`xlink:href`, `viewbox`).
 > - The adoption agency **clones** mis-nested formatting elements and parse5 copies the original's
 >   `sourceCodeLocation` onto each clone, so one physical start tag can back several tree
 >   elements. Element identity is therefore the start-tag offset, not the tree node: the first
@@ -164,7 +166,7 @@ Derived helpers used by the property panel:
 |---|---|
 | `setAttr(slId, name, value)` | If attr exists → `replaceSpan(attrs[name].value)`. If it exists but is valueless (`hidden`) → `replaceSpan(attrs[name].whole, 'name="v"')`. If absent → `insertAt(attrInsert, ' name="v"')`. |
 | `removeAttr(slId, name)` | `deleteSpan` over `whole` plus the single leading space. |
-| `setStyleProp(slId, prop, value)` | Read `attrs.style.value`, parse as a declaration list **preserving order and unknown props**, upsert `prop`, re-emit, `setAttr`. Never touches other declarations. |
+| `setStyleProp(slId, prop, value)` | Read `attrs.style.text` (the **decoded** value — M3.18), parse as a declaration list **preserving order and unknown props**, upsert `prop`, re-emit, `setAttr`. Never touches other declarations. `value` and the value `readStyleProp` returns are decoded too, so the pair is inverse: read a declaration, write it back unchanged, and no byte moves. Reading `attrs.style.value`'s raw *bytes* instead — which is what M3.3 shipped — splits `font-family: &quot;Georgia&quot;, serif` on the `;` inside the entity and the next unrelated edit re-serialises the wreckage into the source. |
 | `textContentOp(element, text)` (`text-edit.ts`) | Only valid when `textOnly`; `replaceSpan(inner, escapeAndNeutralizeText(text))`, or no op when the decoded text is unchanged. `text` is the **decoded** string (what `ElementSpan.textContent` reads), for the caret and the panel's Content field alike — shipped as `setTextContent(escapeText)` in M3.3, unified with the caret's write in M3.12 after the panel was found double-escaping. |
 | `replaceOuter(slId, html)` | `replaceSpan(outer, html)` — the AI path's primitive; forces reparse. |
 
