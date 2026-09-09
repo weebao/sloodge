@@ -145,6 +145,12 @@ export interface FontFamilyControlProps {
   /** Test/demo seam, mirroring `PropertyPanel`'s `picker`. Omit to use the preload bridge. */
   readonly loadFonts?: SystemFontLoader
   /**
+   * Off, with this as the trigger's tooltip — the element is `data-sl-lock`ed (M3.16). The picker
+   * has to close as well as darken: a popover that lists faces and drops every pick is the silent
+   * no-op the lock milestone exists to remove.
+   */
+  readonly lock?: string | null
+  /**
    * Focus-restore flag owned by a component *above* the commit-keyed subtree — see the focus note
    * on the effect that consumes it. Omit when this control is not rendered inside one.
    */
@@ -156,6 +162,7 @@ export function FontFamilyControl({
   onPick,
   loadFonts,
   focusOnRemount,
+  lock = null,
 }: FontFamilyControlProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -483,7 +490,9 @@ export function FontFamilyControl({
         aria-expanded={open}
         onClick={toggle}
         onKeyDown={onTriggerKeyDown}
-        className="flex min-w-0 max-w-44 flex-1 items-center justify-between gap-1 rounded border border-chrome-line bg-white px-1.5 py-0.5 text-left text-shell-fg outline-none focus:border-accent dark:border-ink-line dark:bg-ink dark:text-ink-fg"
+        disabled={lock !== null}
+        title={lock ?? undefined}
+        className="flex min-w-0 max-w-44 flex-1 items-center justify-between gap-1 rounded border border-chrome-line bg-white px-1.5 py-0.5 text-left text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg"
       >
         <span className="truncate">{picked ?? 'Default'}</span>
         <span aria-hidden="true" className="text-chrome-muted dark:text-ink-muted">

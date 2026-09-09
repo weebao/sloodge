@@ -44,6 +44,7 @@
  * from the freshened ids and the offset nudge.
  */
 
+import { lockRefusal } from './lock'
 import { applyOps, readStyleProp, setStyleProp, type SourceOp } from './patch'
 import { buildSlideMap } from './slide-map'
 import { SL_ID_ATTR } from './slide-map'
@@ -270,8 +271,14 @@ function nudgeTransform(transform: string | null, offset: DuplicateOffset): Nudg
 
 /**
  * The patched source after duplicating `slId`, plus where the clone begins. Returns `null` when the
- * element does not resolve (the caller commits nothing). The clone is inserted immediately after the
- * original's `outer` with its author ids freshened and its root nudged by `offset`.
+ * element does not resolve, or when it is `data-sl-lock`ed (the caller commits nothing in either
+ * case). The clone is inserted immediately after the original's `outer` with its author ids
+ * freshened and its root nudged by `offset`.
+ *
+ * The lock is honoured here rather than at the Duplicate button (M3.16, `lock.ts`) — duplicate has
+ * two entry points already, the panel button and `Ctrl/⌘+D`. A clone of locked chrome is still a
+ * mutation of the document the author locked, and it carries the `data-sl-lock` with it, so the
+ * copy would be as unmovable and as undeletable as the original.
  */
 export function buildDuplicatePatch(
   slideId: string,
@@ -282,6 +289,7 @@ export function buildDuplicatePatch(
   const map = buildSlideMap(slideId, source)
   const element = map.byId.get(slId)
   if (element === undefined) return null
+  if (lockRefusal(element) !== null) return null
 
   const taken = collectAuthorIds(map)
   const at = element.outer.end

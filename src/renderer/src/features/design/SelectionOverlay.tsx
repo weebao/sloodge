@@ -113,6 +113,7 @@ import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
 import { moveRefusal } from '../../../../shared/design/property-model'
+import { lockNotice, lockRefusal } from '../../../../shared/design/lock'
 import type { TransformShape } from '../../../../shared/design/transform'
 import { CANVAS_HEIGHT, CANVAS_WIDTH } from '../../../../shared/document/types'
 import { getSlideHtml, useDeckStore } from '../../stores/deckStore'
@@ -386,16 +387,18 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // full parses per token for the ordinary case of watching the agent write with something selected.
   const slideHtml = useDeckStore((state) => state.slideHtml)
   const source = getSlideHtml(slideHtml, slideId)
-  const { elementOf, shapeOf, moveRefusalOf } = useMemo<{
+  const { elementOf, shapeOf, moveRefusalOf, lockNoticeOf } = useMemo<{
     elementOf: (slId: string) => ElementSpan | undefined
     shapeOf: (slId: string) => TransformShape | null
     moveRefusalOf: (slId: string) => string | null
+    lockNoticeOf: (slId: string) => string | null
   }>(() => {
     if (source === undefined) {
       return {
         elementOf: () => undefined,
         shapeOf: () => null,
         moveRefusalOf: () => null,
+        lockNoticeOf: () => null,
       }
     }
     let map: SlideMap | null = null
@@ -409,10 +412,15 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         const element = lookup(slId)
         return element === undefined ? null : readTransformShape(source, element)
       },
+      // The lock outranks the transform question and answers it too: a locked element is refused by
+      // `buildFieldOps` whatever its transform says, so counting it here keeps the badge and the
+      // cursor honest about every member the gesture would leave behind (M3.16).
       moveRefusalOf: (slId) => {
         const element = lookup(slId)
-        return element === undefined ? null : moveRefusal(source, element)
+        if (element === undefined) return null
+        return lockRefusal(element) ?? moveRefusal(source, element)
       },
+      lockNoticeOf: (slId) => lockNotice(lookup(slId) ?? null),
     }
   }, [source, slideId])
   const angleOf = useCallback(
@@ -439,6 +447,15 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   // The panel fields, the keyboard and the AI path still reach it.
   const transformLock =
     transformShape !== null && !transformShape.editable ? transformShape.reason : null
+  // `data-sl-lock` — "selectable but not mutable" (M3.16). Not a *kind* of transform lock: the
+  // handles come off for the same reason every panel control does, which is that no Design Mode
+  // write lands on this element at all. Single-selection only, like `transformLock`: a group's
+  // locked members are counted by `memberMoveLock` below and named in its badge.
+  const elementLock = useMemo<string | null>(
+    () => (isMulti || selection === null ? null : lockNoticeOf(selection.slId)),
+    [lockNoticeOf, selection, isMulti],
+  )
+  const handlesOff = elementLock !== null || transformLock !== null
   // Move is a separate question, and `moveChannel` is the one that answers it: an element positioned
   // with `left`/`top` writes those and never touches the transform, so it stays movable under the
   // lock (round 1 found `translateZ(0)`, the compositing idiom, had made such elements unmovable),
@@ -468,11 +485,15 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
   }, [selections, moveRefusalOf])
   const moveLocked = memberMoveLock.count > 0 && memberMoveLock.count === selections.length
   const lockBadge =
-    transformLock !== null
-      ? `Handles off — ${transformLock}`
-      : memberMoveLock.reason !== null
-        ? `${String(memberMoveLock.count)} of ${String(selections.length)} won't move — ${memberMoveLock.reason}`
-        : null
+    elementLock !== null
+      ? // Its own sentence rather than `Handles off — …`: the handles are the smallest part of what
+        // this element refuses, and the badge is the only place the canvas can say so.
+        elementLock
+      : transformLock !== null
+        ? `Handles off — ${transformLock}`
+        : memberMoveLock.reason !== null
+          ? `${String(memberMoveLock.count)} of ${String(selections.length)} won't move — ${memberMoveLock.reason}`
+          : null
 
   // Smart-guide snapping (move only): snap the dragged box to the other elements and the slide
   // centre. Targets are re-derived from parent-held element rects, excluding what is being moved.
@@ -929,8 +950,8 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           ) : null}
           {/* Resize + rotate handles only for a single element; a group only moves — and none while
               editing, where the box is a caret frame rather than a transform target, nor on a
-              transform-locked element (see `transformLock`). */}
-          {isMulti || isEditing || transformLock !== null
+              transform-locked or `data-sl-lock`ed element (see `handlesOff`). */}
+          {isMulti || isEditing || handlesOff
             ? null
             : HANDLES.map((handle, index) => (
                 <span
@@ -945,7 +966,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   onClick={stop}
                 />
               ))}
-          {isMulti || isEditing || transformLock !== null ? null : (
+          {isMulti || isEditing || handlesOff ? null : (
             <>
               <span
                 aria-hidden="true"

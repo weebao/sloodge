@@ -33,6 +33,7 @@
  * offsets or HTML.
  */
 
+import { lockRefusal } from './lock'
 import {
   readAttr,
   readStyleProp,
@@ -364,10 +365,10 @@ function translateOps(
 
 /**
  * Turn one field edit into the source ops that apply it. Returns `[]` when the edit is a no-op the
- * panel should not commit: an empty value, a `text` edit on an element whose text the panel does
- * not edit (`textFieldBlock` — mixed content, a lock, a non-text tag; the gate is applied on the
- * write as well as the read, so a value cannot be forced into a disabled field), or a `text` value
- * that already reads as the element's text (see `textContentOp`).
+ * panel should not commit: a `data-sl-lock`ed element, an empty value, a `text` edit on an element
+ * whose text the panel does not edit (`textFieldBlock` — mixed content, a lock, a non-text tag; the
+ * gate is applied on the write as well as the read, so a value cannot be forced into a disabled
+ * field), or a `text` value that already reads as the element's text (see `textContentOp`).
  *
  * `element` must come from `resolveElement(map, parentSlId)` — see the file header. `source` is the
  * map's own source (`map.source`); passing a different string would misplace every span.
@@ -378,6 +379,13 @@ export function buildFieldOps(
   field: PropertyField,
   rawValue: string,
 ): SourceOp[] {
+  // `data-sl-lock` — "selectable but not mutable" (M3.16), and the *whole* function is behind it,
+  // not `case 'text'` alone as it was until M3.16. This is the only gate the panel's ten fields
+  // need, and the only one `buildDragPatch` / `buildMultiElementPatch` need for the drag, the group
+  // drag and align/distribute: they all reach the bytes through here. See `lock.ts` for why the
+  // refusal lives in the writer rather than at each of those call sites.
+  if (lockRefusal(element) !== null) return []
+
   const value = rawValue.trim()
   const svg = isSvg(element)
 

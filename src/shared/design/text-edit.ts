@@ -57,6 +57,7 @@
  */
 
 import { findForbiddenApiTokens, forbiddenBreakPoints } from '../document/forbidden-apis'
+import { isLocked } from './lock'
 import { applyOps, type SourceOp } from './patch'
 import { LEADING_NEWLINE_DROPPED } from './slide-map'
 import { parseFragment } from 'parse5'
@@ -116,12 +117,6 @@ export const NON_EDITABLE_TAGS: ReadonlySet<string> = new Set([
   'html',
   'head',
 ])
-
-/**
- * `data-sl-lock` (30-slide-format.md §3.4): "selectable but **not mutable** by Design Mode" —
- * template chrome the deck author wants visible to selection but immune to editing.
- */
-export const LOCK_ATTR = 'data-sl-lock'
 
 /**
  * The hard cap on a committed text value. A `contenteditable` accepts an unbounded paste, and the
@@ -184,7 +179,7 @@ export function isTextEditable(element: ElementSpan): boolean {
 export function textEditBlock(element: ElementSpan | null): TextEditBlock | null {
   if (element === null) return 'unknown-element'
   if (NON_EDITABLE_TAGS.has(element.tagName)) return 'not-text'
-  if (element.attrs[LOCK_ATTR] !== undefined) return 'locked'
+  if (isLocked(element)) return 'locked'
   // No `inner` span at all is a void element (`<img>`): there is nothing between its tags to type
   // into, which is a different thing to say than "this has formatting in it".
   if (element.inner === null) return 'not-text'

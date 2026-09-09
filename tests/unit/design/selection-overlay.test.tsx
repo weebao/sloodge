@@ -11,6 +11,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SlHit, SlRect } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
+import { LOCK_NOTICE, LOCK_REASON } from '../../../src/shared/design/lock'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
 import { SelectionOverlay } from '../../../src/renderer/src/features/design/SelectionOverlay'
 import {
@@ -727,5 +728,106 @@ describe('SelectionOverlay — transform controls on a rotated or locked element
     seed(ROTATED)
     render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
     expect(screen.queryByTestId('design-transform-lock')).toBeNull()
+  })
+})
+
+describe('SelectionOverlay — data-sl-lock (M3.16)', () => {
+  const BOX = 'position:absolute;left:100px;top:100px;width:200px;height:100px'
+  const LOCKED = `<div data-sl-lock style="${BOX}">A</div>`
+  const FREE = `<div style="${BOX}">A</div>`
+  let slideId: string
+
+  /** Install `html` as the deck's only slide with an empty undo stack, and select its first div. */
+  function seed(html: string): string {
+    const base = createStarterDeck(0)
+    const id = base.currentSlideId!
+    const slides = Object.assign(Object.create(null) as Record<string, string>, { [id]: html })
+    base.history.reset({
+      manifest: base.deck,
+      slides,
+      notes: Object.create(null) as Record<string, string>,
+      theme: null,
+    })
+    useDeckStore.setState({
+      history: base.history,
+      deck: base.history.doc.manifest,
+      slideHtml: base.history.doc.slides,
+      currentSlideId: id,
+      canUndo: base.history.canUndo,
+      canRedo: base.history.canRedo,
+    })
+    slideId = id
+    const slId = buildSlideMap(id, html).order[0]!
+    const hit = boxHit(slId, { x: 100, y: 100, width: 200, height: 100 })
+    useDesignStore.setState({ enabled: true, selection: hit, selections: [hit], hover: null })
+    return slId
+  }
+
+  afterEach(cleanup)
+
+  it('says the element is locked, takes the handles off, and refuses the drag', () => {
+    seed(LOCKED)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    // Its own sentence, not `Handles off — …`: the handles are the smallest part of what is refused.
+    expect(screen.getByTestId('design-transform-lock').textContent).toBe(LOCK_NOTICE)
+    expect(screen.queryByTestId('design-handle-se')).toBeNull()
+    expect(screen.queryByTestId('design-handle-rotate')).toBeNull()
+    const body = screen.getByTestId('design-selection')
+    expect(body.style.cursor).toBe('default')
+    drag(body, { x: 150, y: 150 }, { x: 190, y: 150 })
+    expect(undoDepth()).toBe(0)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
+  })
+
+  it('the identical element without the attribute drags, resizes and keeps its handles', () => {
+    seed(FREE)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.queryByTestId('design-transform-lock')).toBeNull()
+    expect(screen.getByTestId('design-handle-se')).toBeTruthy()
+    expect(screen.getByTestId('design-handle-rotate')).toBeTruthy()
+    drag(screen.getByTestId('design-selection'), { x: 150, y: 150 }, { x: 190, y: 150 })
+    expect(undoDepth()).toBe(1)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toContain('left: 140px')
+  })
+
+  it('a locked member of a group is counted and left behind while the rest move', () => {
+    const html =
+      `<div data-sl-lock style="${BOX}">locked</div>` +
+      '<div style="position:absolute;left:400px;top:100px;width:50px;height:50px">free</div>'
+    seed(html)
+    const map = buildSlideMap(slideId, html)
+    const members = [
+      boxHit(map.order[0]!, { x: 100, y: 100, width: 200, height: 100 }),
+      boxHit(map.order[1]!, { x: 400, y: 100, width: 50, height: 50 }),
+    ]
+    useDesignStore.setState({ selections: members, selection: members[1]! })
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain("1 of 2 won't move")
+    expect(screen.getByTestId('design-transform-lock').textContent).toContain(LOCK_REASON)
+    drag(screen.getByTestId('design-group'), { x: 150, y: 150 }, { x: 190, y: 150 }, 3)
+    expect(undoDepth()).toBe(1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, slideId)!
+    expect(patched).toContain(`<div data-sl-lock style="${BOX}">locked</div>`)
+    expect(patched).toContain('left: 440px')
+    // Only the member that really moved has its stored box shifted.
+    expect(useDesignStore.getState().selections[0]?.rect.x).toBe(100)
+    expect(useDesignStore.getState().selections[1]?.rect.x).toBe(440)
+  })
+
+  it('a locked element added to the source mid-gesture still commits nothing', () => {
+    // The refusal is read at commit time against the bytes that exist then, not at `pointerdown` —
+    // the same rule the transform lock follows, and the reason both live in the pure writer.
+    const slId = seed(FREE)
+    render(<SelectionOverlay frameRef={frameRef} slideId={slideId} scale={1} />)
+    const body = screen.getByTestId('design-selection')
+    fireEvent.pointerDown(body, { clientX: 150, clientY: 150 })
+    fireEvent.pointerMove(window, { clientX: 160, clientY: 150 })
+    act(() => {
+      expect(useDeckStore.getState().setSlideHtml(slideId, LOCKED, slId, 'agent edit')).toBe(true)
+    })
+    fireEvent.pointerMove(window, { clientX: 190, clientY: 150 })
+    fireEvent.pointerUp(window, { clientX: 190, clientY: 150 })
+    expect(undoDepth()).toBe(1) // the agent's edit alone
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, slideId)).toBe(LOCKED)
   })
 })

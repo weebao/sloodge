@@ -67,6 +67,13 @@ export interface ColorControlsProps {
   readonly picker: ColorPicker | null
   /** Commit one colour edit — the panel routes this to `slide.setHtml` as one undoable command. */
   readonly onApply: (field: PropertyField, value: string) => void
+  /**
+   * Off, with this as every control's tooltip — the element is `data-sl-lock`ed (M3.16). A swatch
+   * that opens the OS colour picker and then writes nothing is worse than one that is visibly off,
+   * and the native `change` listener below would otherwise still fire `onApply` into a writer that
+   * refuses it.
+   */
+  readonly lock?: string | null
 }
 
 /** A theme-token swatch button. Its own component so the click handler closes over its write value. */
@@ -75,11 +82,13 @@ function ThemeSwatchButton({
   field,
   targetLabel,
   onPick,
+  lock,
 }: {
   readonly swatch: ThemeSwatch
   readonly field: ColorField
   readonly targetLabel: string
   readonly onPick: (field: ColorField, value: string) => void
+  readonly lock: string | null
 }): JSX.Element {
   const write = useMemo(() => themeSwatchWriteValue(swatch), [swatch])
   const style = useMemo(() => ({ backgroundColor: swatch.hex }), [swatch.hex])
@@ -90,10 +99,11 @@ function ThemeSwatchButton({
       type="button"
       data-testid={`theme-${field}-${swatch.key}`}
       aria-label={`Apply theme color ${swatch.label} to ${targetLabel}`}
-      title={swatch.label}
+      title={lock ?? swatch.label}
       onClick={onClick}
+      disabled={lock !== null}
       style={style}
-      className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover:ring-accent dark:border-ink-line"
+      className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover:ring-accent disabled:opacity-50 dark:border-ink-line"
     />
   )
 }
@@ -104,11 +114,13 @@ function ColorTargetRow({
   swatches,
   picker,
   onApply,
+  lock,
 }: {
   readonly target: ColorTarget
   readonly swatches: readonly ThemeSwatch[]
   readonly picker: ColorPicker | null
   readonly onApply: (field: PropertyField, value: string) => void
+  readonly lock: string | null
 }): JSX.Element {
   const { field, label, current } = target
   const inputRef = useRef<HTMLInputElement>(null)
@@ -179,7 +191,9 @@ function ColorTargetRow({
         value={shown}
         onChange={onPreview}
         onBlur={onAbort}
-        className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 dark:border-ink-line"
+        disabled={lock !== null}
+        title={lock ?? undefined}
+        className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 disabled:cursor-default disabled:opacity-50 dark:border-ink-line"
       />
       {picker !== null ? (
         <button
@@ -187,7 +201,9 @@ function ColorTargetRow({
           data-testid={`eyedrop-${field}`}
           aria-label={`Sample ${label} color with the eyedropper`}
           onClick={onEyedrop}
-          className="rounded border border-chrome-line px-1.5 py-0.5 hover:border-accent dark:border-ink-line"
+          disabled={lock !== null}
+          title={lock ?? undefined}
+          className="rounded border border-chrome-line px-1.5 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           <span aria-hidden="true">💧</span>
         </button>
@@ -200,6 +216,7 @@ function ColorTargetRow({
             field={field}
             targetLabel={label}
             onPick={onThemePick}
+            lock={lock}
           />
         ))}
       </div>
@@ -212,6 +229,7 @@ export function ColorControls({
   swatches,
   picker,
   onApply,
+  lock = null,
 }: ColorControlsProps): JSX.Element {
   return (
     <div data-testid="color-controls" className="flex flex-col gap-1.5">
@@ -222,6 +240,7 @@ export function ColorControls({
           swatches={swatches}
           picker={picker}
           onApply={onApply}
+          lock={lock}
         />
       ))}
     </div>

@@ -17,12 +17,12 @@ import {
 } from '../../../src/shared/document/slide-contract'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { escapeText } from '../../../src/shared/design/patch'
+import { LOCK_ATTR } from '../../../src/shared/design/lock'
 import {
   resolveTextEdit,
   escapeAndNeutralizeText,
   isTextEditable,
   textEditBlock,
-  LOCK_ATTR,
   MAX_TEXT_LENGTH,
   NON_EDITABLE_TAGS,
   sanitizeEditedText,

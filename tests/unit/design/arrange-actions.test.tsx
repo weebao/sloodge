@@ -233,3 +233,95 @@ describe('useArrangeActions — a transform-locked member stays put', () => {
     expect(after[2]?.rect.x).toBe(10)
   })
 })
+
+describe('useArrangeActions — a data-sl-lock member stays put (M3.16)', () => {
+  // Align and distribute reach the bytes through `buildMultiElementPatch` → `buildDragPatch` →
+  // `buildFieldOps`, so they inherit the lock without a gate of their own. That inheritance is what
+  // this asserts: two entry points the lock's author never touched, still refusing.
+  const LOCKED_HTML = `<!doctype html><html><body>
+<div class="slide" data-sl-slide="X">
+  <div class="a" style="position:absolute;left:10px;top:20px;width:100px;height:40px">A</div>
+  <div class="k" data-sl-lock style="position:absolute;left:200px;top:60px;width:80px;height:40px">K</div>
+  <div class="c" style="position:absolute;left:400px;top:100px;width:60px;height:40px">C</div>
+</div>
+</body></html>`
+
+  function members(id: string): SlHit[] {
+    const map = buildSlideMap(id, LOCKED_HTML)
+    return (['a', 'k', 'c'] as const).map((cls) => {
+      const span = [...map.byId.values()].find((candidate) =>
+        LOCKED_HTML.slice(candidate.outer.start, candidate.outer.end).startsWith(
+          `<div class="${cls}"`,
+        ),
+      )!
+      const rect = rectOf(LOCKED_HTML, span)
+      return {
+        slId: span.slId,
+        tag: 'div',
+        id: null,
+        classes: [cls],
+        rect,
+        box: rect,
+        ancestors: [],
+      }
+    })
+  }
+
+  it('align left moves A and C, leaves the locked K byte-identical, in one command', () => {
+    const id = seedDeck(LOCKED_HTML)
+    useDesignStore.getState().setSelections(members(id))
+    const { result } = renderHook(() => useArrangeActions(id))
+    result.current.align('left')
+
+    expect(undoDepth()).toBe(1)
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, id) ?? ''
+    expect(patched).toContain(
+      '<div class="k" data-sl-lock style="position:absolute;left:200px;top:60px;width:80px;height:40px">K</div>',
+    )
+    expect(patched.match(/left:\s*10px/g)?.length).toBe(2)
+    // Its stored box is not shifted either, so the outline keeps matching the element.
+    expect(useDesignStore.getState().selections[1]?.rect.x).toBe(200)
+  })
+
+  it('distribute horizontally leaves the locked middle element byte-identical', () => {
+    // Distribute is the entry point that moves the *middle* member, so a lock that only ever gets
+    // asked about the anchor would be caught here and nowhere else in this file.
+    const id = seedDeck(LOCKED_HTML)
+    useDesignStore.getState().setSelections(members(id))
+    const { result } = renderHook(() => useArrangeActions(id))
+    result.current.distribute('horizontal')
+    const patched = getSlideHtml(useDeckStore.getState().slideHtml, id) ?? ''
+    expect(patched).toContain(
+      '<div class="k" data-sl-lock style="position:absolute;left:200px;top:60px;width:80px;height:40px">K</div>',
+    )
+  })
+
+  it('an align in which EVERY member is locked commits no empty command', () => {
+    const allLocked = LOCKED_HTML.replace(/<div class="(a|c)"/g, '<div class="$1" data-sl-lock')
+    const id = seedDeck(allLocked)
+    const map = buildSlideMap(id, allLocked)
+    useDesignStore.getState().setSelections(
+      (['a', 'k', 'c'] as const).map((cls) => {
+        const span = [...map.byId.values()].find((candidate) =>
+          allLocked
+            .slice(candidate.outer.start, candidate.outer.end)
+            .startsWith(`<div class="${cls}"`),
+        )!
+        const rect = rectOf(allLocked, span)
+        return {
+          slId: span.slId,
+          tag: 'div',
+          id: null,
+          classes: [cls],
+          rect,
+          box: rect,
+          ancestors: [],
+        }
+      }),
+    )
+    const { result } = renderHook(() => useArrangeActions(id))
+    result.current.align('left')
+    expect(undoDepth()).toBe(0)
+    expect(getSlideHtml(useDeckStore.getState().slideHtml, id)).toBe(allLocked)
+  })
+})

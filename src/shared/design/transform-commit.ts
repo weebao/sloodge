@@ -18,8 +18,12 @@
  *
  * An element whose transform `inspectTransform` refuses is also a no-op here: the overlay has already
  * hidden its handles and said why (`readTransformShape`), so this is the last line, not the message.
+ *
+ * A `data-sl-lock`ed element is a no-op here too, and for a different reason: not "this transform
+ * cannot be composed" but "Design Mode may not write this element at all" (M3.16, `lock.ts`).
  */
 
+import { lockRefusal } from './lock'
 import { applyOps, readStyleProp, removeStyleProp, setStyleProp } from './patch'
 import { buildSlideMap } from './slide-map'
 import {
@@ -48,6 +52,11 @@ function commitTransform(
   const map = buildSlideMap(slideId, source)
   const element = map.byId.get(slId)
   if (element === undefined) return source
+  // `data-sl-lock` (M3.16). Both builders funnel through here, so one refusal covers flip *and*
+  // rotate — the overlay's rotation handle, the panel's Flip H/V, and any later transform action.
+  // Put here rather than in `useElementActions` for the reason `lock.ts` gives: the caller that
+  // forgets is the defect, and a caller cannot forget a gate it does not hold.
+  if (lockRefusal(element) !== null) return source
 
   const current = readStyleProp(source, element, 'transform')
   const shape = inspectTransform(current)
