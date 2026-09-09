@@ -51,6 +51,21 @@ export const CORPUS: readonly CorpusEntry[] = [
 
   // Entities.
   { name: 'entities in text and attribute', html: '<p title="a&amp;b">x&lt;y &#8212; z</p>' },
+  // A character reference ends in `;`, which is also what ends a CSS declaration — the M3.18
+  // collision. Three spellings of the same quote plus the ambiguous-ampersand form, which is the
+  // one the tokenizer must *not* decode.
+  {
+    name: 'entity-quoted family in a style attribute',
+    html: '<p style="font-family: &quot;Georgia&quot;, serif; color: red">x</p>',
+  },
+  {
+    name: 'numeric and hex references in a style attribute',
+    html: '<p style="font-family: &#34;A&#34;; color: &#x23;abc">x</p>',
+  },
+  {
+    name: 'ambiguous ampersand in an attribute',
+    html: '<div style="font-family: &quotGeorgia, serif" title="a&quot,b">x</div>',
+  },
 
   // Attribute shapes.
   { name: 'duplicate attributes', html: '<div a="1" a="2" class="c">x</div>' },
@@ -105,6 +120,23 @@ export const CORPUS: readonly CorpusEntry[] = [
     html: '<svg viewBox="0 0 640 360" gradientUnits="userSpaceOnUse"><rect x="1" y="2"/></svg>',
   },
   { name: 'nested svg', html: '<svg><svg><rect/></svg></svg>' },
+  // `xmlns` is the one entry in parse5's XML attribute adjustment table with an EMPTY-STRING
+  // prefix, so a reconciliation rule that only rejects `undefined` mis-keys it as `':xmlns'`, the
+  // decode is never found and `AttrSpan.text` falls back to raw bytes. The entity is what makes
+  // that visible; `xmlns` on `<svg>` is otherwise standard boilerplate. Both `slide-map.test.ts`'s
+  // zero-miss walk and its decodes table depend on this entry.
+  {
+    name: 'svg xmlns with an entity in its value',
+    html: '<svg xmlns="http://example.com/a&amp;b" viewBox="0 0 1 1"><rect/></svg>',
+  },
+  // The other half of the same rejoin rule. `xmlns` exercises the empty-prefix branch; nothing
+  // exercised the NON-empty one, so review r2 found that dropping the prefix entirely
+  // (`const key = attr.name`) left the zero-miss walk green — a guard covering half its subject.
+  // parse5 maps this to `{ prefix: 'xlink', name: 'href' }`, keyed `xlink:href` in the locations.
+  {
+    name: 'svg xlink:href with an entity in its value',
+    html: '<svg><use xlink:href="#a&amp;b" x="1"/></svg>',
+  },
   {
     name: 'foreignObject re-entering html',
     html: '<svg><foreignObject><div>h</div></foreignObject></svg>',

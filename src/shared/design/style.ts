@@ -71,6 +71,15 @@ const IMPORTANT = /\s*!\s*important\s*$/i
  * whitespace-only declarations (a stray `;;`) are dropped; a declaration with no `:` is dropped
  * (it is not a declaration). Property names are lowercased — CSS property names are
  * case-insensitive and the panel looks them up by canonical name — while values keep their case.
+ *
+ * ## The input is CSS, not the attribute's source bytes
+ *
+ * This is a CSS parser and its argument is the *decoded* attribute value — `AttrSpan.text`, which
+ * is what the browser's style system is handed. Passing the raw slice instead is the M3.18 defect:
+ * a character reference ends in `;`, so `font-family: &quot;Georgia&quot;, serif` split over its
+ * bytes yields `font-family: &quot` plus an orphan `Georgia&quot;, serif` with no `:`, dropped.
+ * Decoded first, the `"` are quotes and `splitTopLevel` protects everything between them, so a
+ * family name that really does contain a `;` survives too.
  */
 export function parseDeclarations(styleValue: string): Declaration[] {
   const out: Declaration[] = []

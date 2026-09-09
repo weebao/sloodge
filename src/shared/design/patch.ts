@@ -134,6 +134,15 @@ export function escapeText(text: string): string {
  * single quote is what stops a value like `blue' onmouseover='alert(1)` from breaking out of a
  * single-quoted attribute and injecting a new one into the saved (and exportable, unsandboxed)
  * slide source. `<`/`>` are legal unescaped inside any attribute value and are left alone.
+ *
+ * ## Its inverse is `AttrSpan.text`, and every read/write pair must use both
+ *
+ * This is the *encode* half of an attribute-value boundary whose *decode* half is parse5's
+ * tokenizer, surfaced as `AttrSpan.text`. Reading raw bytes and writing through here is not a
+ * round trip — it adds a level of escaping per commit, which is precisely how the Content field
+ * came to double-escape (M3.12) and how a `font-family: &quot;Georgia&quot;` was rewritten to
+ * `font-family: &amp;quot` by an unrelated font-size tweak (M3.18). So a value that will be
+ * written back through here is read from `AttrSpan.text`, never sliced out of the source.
  */
 export function escapeAttrValue(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -182,8 +191,9 @@ export function isSafeStyleValue(value: string): boolean {
 
 /**
  * Ops to upsert one inline-`style` declaration on `element`, preserving every other declaration.
- * Reads the current `style` value from source (via the map), upserts `prop`, and either replaces
- * the existing `style` value span or inserts a whole new `style` attribute when there is none.
+ * Reads the element's current *decoded* `style` value (`AttrSpan.text`), upserts `prop`, and
+ * either replaces the existing `style` value span or inserts a whole new `style` attribute when
+ * there is none.
  *
  * A `value` that could terminate the declaration (contains `;`, `{` or `}`) is **rejected** — the
  * function returns `[]` (a no-op the caller does not commit) rather than let the write inject a
@@ -208,17 +218,23 @@ export function setStyleProp(
  *
  * The whole batch is rejected (`[]`) if *any* value could terminate a declaration (`;`, `{`, `}`),
  * same guard as `setStyleProp` — a single unsafe value must not sneak in beside safe ones.
+ *
+ * `entries` are **decoded** values, the same alphabet `readStyleProp` returns: the escaping into
+ * attribute-value bytes happens once, in `setAttr`. Re-parsing the raw bytes here and handing them
+ * back to that escaper is what rewrote `font-family: &quot;Georgia&quot;, serif` as
+ * `font-family: &amp;quot` on the next unrelated edit (M3.18); every untouched declaration now goes
+ * out through the same decode → re-emit → escape path, so it comes back saying what it said.
+ *
+ * `source` is unused for the same reason as in `readStyleProp` — the decoded value lives on
+ * `AttrSpan.text` — and is kept so all the `…StyleProp` helpers share one signature.
  */
 export function setStyleProps(
-  source: string,
+  _source: string,
   element: ElementSpan,
   entries: readonly (readonly [prop: string, value: string])[],
 ): SourceOp[] {
   if (entries.some(([, value]) => !isSafeStyleValue(value))) return []
-  const styleAttr = element.attrs['style']
-  const styleValue = styleAttr?.value ?? null
-  const current = styleValue === null ? '' : source.slice(styleValue.start, styleValue.end)
-  let declarations = parseDeclarations(current)
+  let declarations = parseDeclarations(element.attrs['style']?.text ?? '')
   for (const [prop, value] of entries) declarations = upsertDeclaration(declarations, prop, value)
   return setAttr(element, 'style', 'style', serializeDeclarations(declarations))
 }
@@ -236,26 +252,45 @@ export function setStyleProps(
  */
 export function removeStyleProp(source: string, element: ElementSpan, prop: string): SourceOp[] {
   const styleAttr = element.attrs['style']
-  if (styleAttr === undefined || styleAttr.value === null) return []
+  // `text === null` is the same condition as `value === null` — `readAttrSpan` sets them together
+  // for a valueless attribute, pinned by slide-map.test.ts — so this narrows rather than defaults.
+  // A `?? ''` here would read as doubt about an invariant this file's own tests state.
+  if (styleAttr === undefined || styleAttr.text === null) return []
   const key = prop.toLowerCase()
-  const declarations = parseDeclarations(source.slice(styleAttr.value.start, styleAttr.value.end))
+  const declarations = parseDeclarations(styleAttr.text)
   const kept = declarations.filter((declaration) => declaration.prop !== key)
   if (kept.length === declarations.length) return []
-  if (kept.length > 0) {
-    return [{ kind: 'replaceSpan', span: styleAttr.value, text: serializeDeclarations(kept) }]
-  }
+  // Through `setAttr`, not a bare `replaceSpan`, because `kept` holds **decoded** values: writing
+  // them straight into the value span would put a raw `"` inside a double-quoted attribute and
+  // end it early — `style="font-family: "Georgia", serif"` truncates to `font-family: `. The
+  // escape belongs on this path for the same reason it belongs on `setStyleProps`'.
+  if (kept.length > 0) return setAttr(element, 'style', 'style', serializeDeclarations(kept))
   // Nothing left — delete the attribute and its single leading space so the tag is as it was.
   const hasLeadingSpace = styleAttr.whole.start > 0 && /\s/.test(source[styleAttr.whole.start - 1]!)
   const start = hasLeadingSpace ? styleAttr.whole.start - 1 : styleAttr.whole.start
   return [{ kind: 'deleteSpan', span: { start, end: styleAttr.whole.end } }]
 }
 
-/** The current source value of one inline-`style` declaration, or `null` if unset. */
-export function readStyleProp(source: string, element: ElementSpan, prop: string): string | null {
-  const styleValue = element.attrs['style']?.value ?? null
-  if (styleValue === null) return null
-  const current = source.slice(styleValue.start, styleValue.end)
-  return getDeclaration(parseDeclarations(current), prop)
+/**
+ * The current value of one inline-`style` declaration, **decoded**, or `null` if unset.
+ *
+ * Decoded because the `style` attribute holds CSS, and the CSS it holds is what the character
+ * references *stand for*, not how they are spelled: the browser sees
+ * `font-family: "Georgia", serif` where the bytes say `font-family: &quot;Georgia&quot;, serif`.
+ * Parsing the bytes made `;` inside an entity end a declaration, so that attribute read back as
+ * `font-family: &quot` with `Georgia&quot;, serif` dropped for having no `:` (M3.18).
+ *
+ * The value is therefore in the same alphabet as the one `setStyleProp` takes, and the two are
+ * inverse: read a declaration, write it back unchanged, and the bytes do not move.
+ *
+ * `source` is unused — `AttrSpan.text` already carries the decoded value for the map that was
+ * built from it — but stays in the signature, which is the one every `…StyleProp` helper shares
+ * and which ~15 call sites pass positionally.
+ */
+export function readStyleProp(_source: string, element: ElementSpan, prop: string): string | null {
+  const style = element.attrs['style']
+  if (style === undefined || style.text === null) return null
+  return getDeclaration(parseDeclarations(style.text), prop)
 }
 
 /** The current raw source value of an attribute (quotes stripped, entities NOT decoded), or null. */

@@ -142,14 +142,29 @@ function tagNameEnd(source: string, startTagStart: number): number {
  * rather than 0 because a name may legitimately *begin* with `=` (the tokenizer's
  * `unexpected-equals-sign-before-attribute-name` path makes `<div =a>` an attribute named `=a`),
  * and treating that `=` as the separator would produce an empty name span.
+ *
+ * `decoded` is the tree's value for this attribute — parse5 has already resolved its character
+ * references — and lands on `AttrSpan.text`. It is passed in rather than computed here because
+ * this function sees only bytes, and re-deriving the decode from bytes would be a second entity
+ * decoder beside the tokenizer's, free to disagree with it (see `AttrSpan.text`).
+ *
+ * `null` means the tree had no value under this location's key, and the raw slice stands in — i.e.
+ * exactly the pre-M3.18 reading, so an unforeseen parse5 shape degrades rather than emptying the
+ * value. No known input reaches it *now*, but one did until review caught it — `<svg xmlns="…">`,
+ * whose empty-string prefix `attrLocationKey` rejoined into `':xmlns'`. That is what this fallback
+ * costs: it is silent, since a missing decode looks exactly like a value that needed no decoding.
+ * So the guarantee lives one level up, in `slide-map.test.ts`'s walk over every located attribute
+ * of the hostile corpus — which now carries an `xmlns` element — finding all of them in
+ * `node.attrs` under `attrLocationKey`. That test, not this line, is what says so if it stops
+ * being true.
  */
-function readAttrSpan(source: string, whole: Span): AttrSpan {
+function readAttrSpan(source: string, whole: Span, decoded: string | null): AttrSpan {
   const text = source.slice(whole.start, whole.end)
   const equals = text.indexOf('=', 1)
 
   if (equals === -1) {
     // Valueless: the whole thing is the name.
-    return { sourceName: text, name: { ...whole }, value: null, whole: { ...whole } }
+    return { sourceName: text, name: { ...whole }, value: null, text: null, whole: { ...whole } }
   }
 
   let nameEnd = equals
@@ -169,8 +184,46 @@ function readAttrSpan(source: string, whole: Span): AttrSpan {
     sourceName: text.slice(0, nameEnd),
     name: { start: whole.start, end: whole.start + nameEnd },
     value,
+    text: decoded ?? source.slice(value.start, value.end),
     whole: { ...whole },
   }
+}
+
+/**
+ * The `sourceCodeLocation.attrs` key for a tree attribute — the reconciliation between parse5's
+ * two spellings of one attribute.
+ *
+ * The sides disagree and have to be put back together: `location.attrs` keys are lowercased in
+ * every namespace (see `ElementSpan.attrs`) and spell a namespaced attribute the way the source
+ * did (`xlink:href`), while `node.attrs` carries the *adjusted* name (`viewBox`) with the prefix
+ * split off into its own field. Lowercasing the re-joined `prefix:name` puts them on one key.
+ *
+ * `prefix ?` and not `prefix !== undefined`: an **empty-string** prefix is as absent as a missing
+ * one. parse5's XML attribute adjustment table gives `xmlns` on a foreign element
+ * `{ prefix: '', name: 'xmlns' }` — its only entry with an empty prefix — and `':xmlns'` matches
+ * no location key, so `<svg xmlns="...">`, the commonest attribute in inline SVG, would miss.
+ *
+ * A miss is invisible from outside: `readAttrSpan` degrades to the raw slice, which looks exactly
+ * like a value that needed no decoding. So this function is exported for `slide-map.test.ts`'s
+ * zero-miss walk to drive *the same rule* the map is built with, rather than a copy of it free to
+ * disagree; the corpus carries an `xmlns` element so the walk can see this shape.
+ *
+ * No first-wins guard for a duplicate attribute, deliberately: the *tokenizer* drops the later one
+ * — before the tree and before the locations — so neither side ever carries two entries for one
+ * key and a guard here would be a branch no input can take (a mutation that inverted it changed
+ * nothing in 2343 tests). `<div a="1" a="2">` is one attribute to parse5, and the corpus pins that
+ * the surviving value is the first one.
+ */
+export function attrLocationKey(attr: { prefix?: string; name: string }): string {
+  const key = attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name
+  return key.toLowerCase()
+}
+
+/** The tree's decoded value for every attribute of `node`, keyed the way `location.attrs` is. */
+function decodedAttrs(node: Element): ReadonlyMap<string, string> {
+  const out = new Map<string, string>()
+  for (const attr of node.attrs) out.set(attrLocationKey(attr), attr.value)
+  return out
 }
 
 /**
@@ -402,11 +455,13 @@ function mapElement(
   const ns = NAMESPACE_BY_URI[node.namespaceURI] ?? 'html'
 
   const attrs: Record<string, AttrSpan> = {}
+  const decoded = decodedAttrs(node)
   for (const [name, attrLocation] of Object.entries(location.attrs ?? {})) {
-    attrs[name] = readAttrSpan(source, {
-      start: attrLocation.startOffset,
-      end: attrLocation.endOffset,
-    })
+    attrs[name] = readAttrSpan(
+      source,
+      { start: attrLocation.startOffset, end: attrLocation.endOffset },
+      decoded.get(name) ?? null,
+    )
   }
 
   const contentless = isContentless(source, node, ns, outer, startTag, attrs)
