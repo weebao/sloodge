@@ -129,6 +129,14 @@ export const CORPUS: readonly CorpusEntry[] = [
     name: 'svg xmlns with an entity in its value',
     html: '<svg xmlns="http://example.com/a&amp;b" viewBox="0 0 1 1"><rect/></svg>',
   },
+  // The other half of the same rejoin rule. `xmlns` exercises the empty-prefix branch; nothing
+  // exercised the NON-empty one, so review r2 found that dropping the prefix entirely
+  // (`const key = attr.name`) left the zero-miss walk green — a guard covering half its subject.
+  // parse5 maps this to `{ prefix: 'xlink', name: 'href' }`, keyed `xlink:href` in the locations.
+  {
+    name: 'svg xlink:href with an entity in its value',
+    html: '<svg><use xlink:href="#a&amp;b" x="1"/></svg>',
+  },
   {
     name: 'foreignObject re-entering html',
     html: '<svg><foreignObject><div>h</div></foreignObject></svg>',
