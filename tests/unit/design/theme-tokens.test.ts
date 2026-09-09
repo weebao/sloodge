@@ -10,10 +10,20 @@ import { join, relative } from 'node:path'
  * (M8b.0 audit): the token was never declared, so the fields kept their light `bg-white` under the
  * dark `text-ink-fg` and rendered at 1.24:1 — invisible in dark mode, green in every test.
  *
- * This test derives the token set from the `@theme` block itself and the namespaces to police from
- * those tokens' first segment, so a new token or a new namespace is covered without editing this
- * file. Mutation check: change any utility under `src/renderer/src` to a colour token that is not in
- * `theme.css` (e.g. `bg-ink` → `bg-ink-bg`) and this test reds, naming the file and line.
+ * This test derives the token set from the `@theme` blocks themselves and the namespaces to police
+ * from those tokens' first segment, so a new token or a new namespace is covered without editing
+ * this file. Mutation check: change any utility under `src/renderer/src` to a colour token that is
+ * not in `theme.css` (e.g. `bg-ink` → `bg-ink-bg`) and this test reds, naming the file and line.
+ *
+ * **Retired-token clause (M8b.2, audit §5.4).** Deriving the policed namespaces from the surviving
+ * declarations makes the test blind to the one change M8b.3's last PR performs: delete the fourteen
+ * legacy `shell-*` / `chrome-*` / `ink-*` / `canvas-mat` / `*-dark` declarations and the namespaces
+ * go with them, so every orphaned utility stops being looked at and the run stays green with
+ * hundreds of dead references in the tree. So the policed set is the declared namespaces **union**
+ * the retired ones, while the accepted set stays the declared tokens only: a `bg-chrome` left behind
+ * after `--color-chrome` is gone is policed and unresolved, which is the failure this clause exists
+ * to produce. Mutation: delete those fourteen declarations with the renderer untouched and this test
+ * reds at every surviving `.tsx` reference (recorded in the M8b.2 PR body).
  */
 
 const RENDERER_ROOT = join(process.cwd(), 'src', 'renderer', 'src')
@@ -23,11 +33,51 @@ const THEME_FILE = join(RENDERER_ROOT, 'styles', 'theme.css')
 const COLOUR_UTILITIES =
   'bg|text|border|outline|ring|inset-ring|fill|stroke|from|to|via|decoration|placeholder|caret|accent|shadow|inset-shadow|divide'
 
-/** Names declared as `--color-<name>` inside `@theme { … }`. */
-function themeColourTokens(css: string): ReadonlySet<string> {
-  const block = /@theme\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? ''
-  return new Set([...block.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((m) => m[1]!))
+/**
+ * Bodies of every `@theme { … }` / `@theme static { … }` block, matched brace-aware.
+ *
+ * The single-block, non-greedy version this replaces read only the *first* `@theme {` and stopped at
+ * the first `}` inside it. Once M8b.2 added the role block as a second `@theme static { … }` — which
+ * contains a nested `@keyframes` — that parser saw neither the role tokens nor anything past the
+ * keyframes' first brace, and would have passed while policing nothing it was supposed to police.
+ */
+function themeBlocks(css: string): readonly string[] {
+  const out: string[] = []
+  const opener = /@theme(?:\s+static)?\s*\{/g
+  for (const m of css.matchAll(opener)) {
+    let depth = 1
+    let i = m.index + m[0].length
+    const start = i
+    for (; i < css.length && depth > 0; i += 1) {
+      if (css[i] === '{') depth += 1
+      else if (css[i] === '}') depth -= 1
+    }
+    out.push(css.slice(start, i - 1))
+  }
+  return out
 }
+
+/** Names declared as `--color-<name>` across every `@theme` block. */
+function themeColourTokens(css: string): ReadonlySet<string> {
+  return new Set(
+    themeBlocks(css).flatMap((block) =>
+      [...block.matchAll(/--color-([a-z0-9-]+)\s*:/g)].map((m) => m[1]!),
+    ),
+  )
+}
+
+/**
+ * Namespaces of the fourteen tokens M8b.3's last PR deletes. Policed whether or not they are still
+ * declared — see the retired-token clause in the header.
+ */
+const RETIRED_NAMESPACES: readonly string[] = [
+  'shell',
+  'chrome',
+  'ink',
+  'canvas',
+  'danger',
+  'warning',
+]
 
 /**
  * Colour tokens referenced by utilities in `source`, restricted to the given namespaces (the first
@@ -68,13 +118,36 @@ function sourceFiles(dir: string): string[] {
 
 describe('theme colour tokens', () => {
   const tokens = themeColourTokens(readFileSync(THEME_FILE, 'utf8'))
-  const namespaces = new Set([...tokens].map((t) => t.split('-')[0]!))
+  const namespaces = new Set([...[...tokens].map((t) => t.split('-')[0]!), ...RETIRED_NAMESPACES])
 
   it('reads the declared token set from theme.css', () => {
     expect(tokens.has('ink')).toBe(true)
     expect(tokens.has('accent-soft')).toBe(true)
+    // Pinned by hand: this is what catches a typo in a token *declaration* (`--color-surfce`),
+    // which every other assertion here would happily police as a new namespace.
     expect(namespaces).toEqual(
-      new Set(['shell', 'chrome', 'accent', 'canvas', 'ink', 'danger', 'warning']),
+      new Set([
+        'shell',
+        'chrome',
+        'canvas',
+        'ink',
+        'surface',
+        'field',
+        'hover',
+        'pressed',
+        'line',
+        'text',
+        'accent',
+        'on',
+        'focus',
+        'danger',
+        'warning',
+        'success',
+        'edit',
+        'guide',
+        'hud',
+        'scrim',
+      ]),
     )
   })
 
