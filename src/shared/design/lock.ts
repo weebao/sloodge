@@ -27,11 +27,33 @@
  * A new entry point that goes through any of those inherits the refusal; one that does not is a new
  * writer, and belongs on this list.
  *
- * ## Duplicate is a mutation, even though the original's bytes do not move
+ * ## Duplicate is a mutation of the element it is invoked on
  *
  * Cloning a locked element inserts a second copy of chrome the deck author marked immutable, and the
  * clone carries the `data-sl-lock` with it — a locked element the user can neither move nor delete
- * from Design Mode. "Not mutable" is about the document the author locked, not about one span.
+ * from Design Mode. So `buildDuplicatePatch` refuses when the element being duplicated is locked.
+ *
+ * It does *not* refuse when a locked element merely rides along inside a free parent the user did
+ * legitimately act on (pinned in `lock.test.ts`, writer 6). Both halves are the same span-scoped
+ * rule — the refusal is about acting **on** the locked element — and the passenger copy is the
+ * author's own copy, arriving still locked, exactly as it would if they had copied the card in the
+ * source. Refusing any subtree that merely contains a locked node would let one locked caption
+ * freeze a whole card, which §3.4's "selectable but not mutable" does not ask for.
+ *
+ * ## Scope: the attribute answers for its own element, never for its subtree
+ *
+ * `lockRefusal` takes an `ElementSpan` and no `SlideMap`, which is the scope written into the
+ * signature: an ancestor walk is not expressible at any gate. A free `<p>` inside a locked `<div>` is
+ * therefore fully mutable — colour, drag, group move, flip, rotate, duplicate and the caret all land
+ * on it — and it is also what a click on that text *selects*, because the grabbable climb
+ * (`grabbable.ts`) stops at the first addressable node rather than at the outermost one.
+ *
+ * That is the contract as written: `30-slide-format.md` §3.3 gives `data-sl-ignore` explicit
+ * "(or subtree)" wording and §3.4's `data-sl-lock` row has none — §3.4 now states the asymmetry
+ * rather than leaving it to be inferred. Whether a locked container *should* freeze its children is a
+ * product question this module does not get to settle; roadmap **M3.21** puts it to the user with the
+ * evidence. Both directions are pinned by tests (`lock.test.ts`, "scope"), so moving the rule is a
+ * visible decision that reds a suite rather than a quiet change of meaning.
  *
  * ## What the lock is *not*
  *
@@ -71,6 +93,10 @@ export function isLocked(element: ElementSpan): boolean {
  * writer and every surface calls, so a control the panel offers is by construction a control an edit
  * would honour. `null` in, `null` out: an unresolved sl-id is not "locked", it is absent, and its
  * caller already has its own answer for that.
+ *
+ * Takes the element and no map, deliberately: the answer is about *this* element's own attributes,
+ * so a locked ancestor cannot refuse a free descendant and a locked descendant cannot refuse a free
+ * ancestor. See "Scope" above — that is the shipped contract, not an omission.
  */
 export function lockRefusal(element: ElementSpan | null): string | null {
   return element !== null && isLocked(element) ? LOCK_REASON : null

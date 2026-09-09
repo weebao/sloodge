@@ -40,6 +40,8 @@ import {
   resolveElement,
   type PropertyField,
 } from '../../../src/shared/design/property-model'
+import { resolveSelectionTarget, type HitNode } from '../../../src/shared/design/grabbable'
+import { textEditBlock } from '../../../src/shared/design/text-edit'
 import type { SlRect } from '../../../src/shared/design/bridge-protocol'
 
 /**
@@ -146,8 +148,9 @@ describe('writer 1 — buildFieldOps: every panel field, not `case "text"` alone
   )
 
   it('a locked descendant of a free parent is refused while the parent still edits', () => {
-    // The lock is per element, not inherited downward or upward: a locked caption inside an editable
-    // card must not freeze the card, and the card being editable must not thaw the caption.
+    // The *upward* half of the per-element rule: a free parent does not thaw a locked child. The
+    // downward half — a locked parent does not freeze a free child — is the "scope" block at the
+    // bottom of this file, which pins it for every gated writer rather than only for this one.
     const html = '<div><p data-sl-lock>chrome</p></div>'
     const { source } = at(html, 0)
     expect(buildFieldOps(source, at(html, 1).element, 'color', 'blue')).toEqual([])
@@ -289,5 +292,125 @@ describe('writer 6 — buildDuplicatePatch', () => {
     const result = buildDuplicatePatch('s', html, parentId, { dx: 16, dy: 16 })
     expect(result).not.toBeNull()
     expect(result!.source.match(/data-sl-lock/g)?.length).toBe(2)
+  })
+})
+
+/**
+ * ## Scope — the lock answers for its own element, never for its subtree
+ *
+ * `lockRefusal(element)` takes no `SlideMap`, so an ancestor walk is not expressible at any gate:
+ * a free descendant of a locked element is fully mutable, and that is the shipped contract
+ * (`30-slide-format.md` §3.4, which states the asymmetry against §3.3's subtree-scoped
+ * `data-sl-ignore`). It is also the *default* click path — the grabbable climb stops at the first
+ * addressable node, so clicking a locked container's caption selects the caption.
+ *
+ * Until now that half of the rule lived only in a comment. It is pinned here **per gated writer**,
+ * for the same reason the refusals are: a rule asserted once for one writer quietly stops holding
+ * for the other five. Every assertion below is the current behaviour, deliberately, and none of it
+ * is an endorsement — roadmap **M3.21** puts subtree scoping to the user as an open question. If the
+ * answer is "make it subtree-scoped", this block is what goes red and forces that change to be an
+ * explicit decision rather than a silent one.
+ */
+/** A `resolveSelectionTarget` node: the minimal interface the grabbable climb reasons about. */
+function hitNode(tagName: string, attrs: Record<string, string>, parent: HitNode | null): HitNode {
+  return {
+    tagName,
+    parent,
+    getAttribute: (name: string): string | null => attrs[name] ?? null,
+    text: 'Confidential',
+    empty: false,
+  }
+}
+
+describe('scope — a free child of a locked parent is mutable, for every gated writer', () => {
+  /** A locked container with a free caption inside it: the commonest "template chrome" shape. */
+  const CONTAINER =
+    '<div data-sl-lock style="position: absolute; left: 0; top: 0; width: 400px; height: 200px">' +
+    '<p class="cap" style="position: absolute; left: 10px; top: 20px; width: 100px; height: 50px; color: red">Confidential</p>' +
+    '</div>'
+  /** `at(CONTAINER, 0)` is the locked `<div>`; `at(CONTAINER, 1)` is the free `<p>`. */
+  const childId = (): string => buildSlideMap('s', CONTAINER).order[1]!
+  const parentId = (): string => buildSlideMap('s', CONTAINER).order[0]!
+
+  it('the decision function itself is element-scoped: the parent refuses, the child does not', () => {
+    expect(lockRefusal(at(CONTAINER, 0).element)).toBe(LOCK_REASON)
+    expect(lockRefusal(at(CONTAINER, 1).element)).toBeNull()
+    expect(isLocked(at(CONTAINER, 1).element)).toBe(false)
+  })
+
+  it.each(FIELD_EDITS)(
+    'writer 1 — the %s field lands on the child of a locked parent',
+    (field, value) => {
+      const { source, element } = at(CONTAINER, 1)
+      const ops = buildFieldOps(source, element, field, value)
+      expect(ops.length).toBeGreaterThan(0)
+      expect(applyOps(source, ops)).not.toBe(source)
+    },
+  )
+
+  it('writer 2 — the child drags and resizes', () => {
+    const moved = buildDragPatch('s', CONTAINER, childId(), START, { ...START, x: 60 })
+    expect(moved).toContain('left: 60px')
+    const resized = buildDragPatch('s', CONTAINER, childId(), START, {
+      x: 10,
+      y: 20,
+      width: 300,
+      height: 200,
+    })
+    expect(resized).toContain('width: 300px')
+  })
+
+  it('writer 3 — a group carries the child and leaves the locked parent behind', () => {
+    // Align/distribute reach the same patcher, so this is the arrange path on locked chrome too.
+    const result = buildMultiElementPatch('s', CONTAINER, [
+      {
+        slId: parentId(),
+        startRect: { x: 0, y: 0, width: 400, height: 200 },
+        nextRect: { x: 40, y: 0, width: 400, height: 200 },
+      },
+      { slId: childId(), startRect: START, nextRect: { ...START, x: 60 } },
+    ])
+    expect(result.moved.has(parentId())).toBe(false)
+    expect(result.moved.has(childId())).toBe(true)
+    expect(result.source).toContain('left: 60px')
+  })
+
+  it('writers 4 and 5 — the child flips and rotates', () => {
+    expect(buildFlipPatch('s', CONTAINER, childId(), 'x')).toContain('scale(-1, 1)')
+    expect(buildRotatePatch('s', CONTAINER, childId(), 30)).toContain('rotate(30deg)')
+  })
+
+  it('writer 6 — the child duplicates, inserting a second copy inside the locked parent', () => {
+    const result = buildDuplicatePatch('s', CONTAINER, childId(), { dx: 16, dy: 16 })
+    expect(result).not.toBeNull()
+    expect(result!.source.match(/class="cap"/g)?.length).toBe(2)
+    // The parent's own bytes are untouched: it is still the one locked element in the slide.
+    expect(result!.source.match(/data-sl-lock/g)?.length).toBe(1)
+  })
+
+  it('writer 7 — the caret opens on the child (the M3.11/M3.12 gate is element-scoped too)', () => {
+    expect(textEditBlock(at(CONTAINER, 0).element)).toBe('locked')
+    expect(textEditBlock(at(CONTAINER, 1).element)).toBeNull()
+  })
+
+  it('the same holds with the lock on the `.slide` root — it does not freeze the deck', () => {
+    const root = '<div class="slide" data-sl-lock><h1>T</h1></div>'
+    expect(lockRefusal(at(root, 0).element)).toBe(LOCK_REASON)
+    const heading = at(root, 1)
+    expect(heading.element.tagName).toBe('h1')
+    expect(buildFieldOps(heading.source, heading.element, 'color', 'blue').length).toBeGreaterThan(
+      0,
+    )
+  })
+
+  it('and the child is what a click selects: the grabbable climb stops at the first addressable node', () => {
+    // Why the scope is user-visible rather than academic. `elementFromPoint` on the caption text
+    // returns the `<p>`; the climb keeps it, because it is addressable, renderable and not a bare
+    // inline wrapper — so the locked container is never the selection unless the user clicks its
+    // own padding. Mirrored inside `frame-script.ts`, which is why this rule is worth pinning here.
+    const container = hitNode('div', { 'data-sl-id': 'e_1', [LOCK_ATTR]: '' }, null)
+    const caption = hitNode('p', { 'data-sl-id': 'e_2', class: 'cap' }, container)
+    expect(resolveSelectionTarget(caption, false)).toBe(caption)
+    expect(resolveSelectionTarget(caption, true)).toBe(caption)
   })
 })

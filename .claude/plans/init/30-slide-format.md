@@ -441,7 +441,7 @@ Every element inside `.slide` carries `data-sl-id="e_<hex>"`, unique within the 
 | `data-sl-slide` | `<html>` | Slide id — lets a detached HTML file be re-associated with its manifest entry. |
 | `data-sl-id` | any element in `.slide` | Stable element identity (§3.3). |
 | `data-sl-ignore` | any element | Excluded from Design Mode hit-testing. |
-| `data-sl-lock` | any element | Selectable but not mutable by Design Mode (template chrome). |
+| `data-sl-lock` | any element | Selectable but not mutable by Design Mode (template chrome). **That element only** — unlike `data-sl-ignore`, not its subtree; see below. |
 | `data-sl-freeze` | `<html>`, injected by host | Export/thumbnail pass: pause animations. |
 | `data-hover-target` | one element | Testing hook: primary hoverable. |
 | `data-click-target` | one element | Testing hook: primary clickable. |
@@ -451,6 +451,21 @@ Every element inside `.slide` carries `data-sl-id="e_<hex>"`, unique within the 
 
 Anything else in the `data-sl-*` namespace is reserved for future Sloodge use; slides must not invent
 `data-sl-*` attributes.
+
+**`data-sl-lock` is element-scoped; `data-sl-ignore` is subtree-scoped.** The asymmetry is deliberate,
+and it is stated here because the two rows read alike and are not alike: §3.3 gives `data-sl-ignore`
+explicit "(or subtree)" wording, because opting a decorative motif layer out of hit-testing is only
+meaningful for the whole layer, while the lock refuses Design Mode's writers **on the element carrying
+the attribute** and says nothing about that element's descendants. So a free `<p>` inside a locked
+`<div>` still takes a colour edit, a drag, a group move, a flip, a rotate, a duplicate and a caret —
+and it is also what a *click* on that text selects, because the grabbable climb
+([40-design-mode.md](40-design-mode.md) §4.3) stops at the first addressable node rather than at the
+outermost one. Locking a container therefore locks the container, not the card.
+
+Both directions are pinned by tests (`tests/unit/design/lock.test.ts`, the "scope" block, one
+assertion per gated writer), so this is a contract a change has to red rather than a behaviour a
+refactor can drift. Whether the lock *should* be subtree-scoped — PowerPoint's group lock is — is an
+open product question, not a defect: it is filed for decision as roadmap **M3.21**.
 
 ### 3.5 Assets
 

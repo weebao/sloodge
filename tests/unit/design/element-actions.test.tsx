@@ -8,19 +8,21 @@
  * - `flip` — the panel's Flip H/V (covered in `property-panel.test.tsx` too, at the button).
  * - `rotateTo` — the overlay's **rotation handle**, which is a pointer gesture with no other
  *   component test; the handle is hidden on a locked element, so the commit half needs pinning here.
- * - `duplicate` — the panel's Duplicate button *and* `Ctrl/⌘+D` (`useDuplicateKey` calls straight
- *   into this callback, so the accelerator's refusal is exactly this refusal).
+ * - `duplicate` — the panel's Duplicate button *and* `Ctrl/⌘+D`. `useDuplicateKey` is handed this
+ *   exact callback, and rather than leave that coupling as an argument the accelerator is *driven*
+ *   here: `withDuplicateKey` mounts both hooks together and the test dispatches the real chord.
  *
  * Each action gets its own assertion: they share `lockRefusal` but not a gate — flip and rotate go
  * through `commitTransform`, duplicate through `buildDuplicatePatch` — and a suite that only drove
  * flip would leave the other two riding on an argument rather than on a test.
  */
 
-import { cleanup, renderHook } from '@testing-library/react'
+import { cleanup, fireEvent, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
+import { useDuplicateKey } from '../../../src/renderer/src/features/design/useDuplicateKey'
 import { useElementActions } from '../../../src/renderer/src/features/design/useElementActions'
 import {
   createStarterDeck,
@@ -66,6 +68,24 @@ function seed(source: string): void {
   useDesignStore.setState({ enabled: true, selection: hit, selections: [hit], hover: null })
 }
 
+/**
+ * Mount `useElementActions` with `useDuplicateKey` bound to its `duplicate`, exactly as
+ * `SelectionOverlay` wires them, so a dispatched `Ctrl/⌘+D` reaches the same callback the panel
+ * button calls. Returned so a test can also invoke the callback directly and compare the two.
+ */
+function withDuplicateKey() {
+  return renderHook(() => {
+    const actions = useElementActions(slideId)
+    useDuplicateKey(actions.duplicate, true)
+    return actions
+  })
+}
+
+/** The accelerator as the user presses it, on a real descendant so window sees capture-then-bubble. */
+function ctrlD(): void {
+  fireEvent.keyDown(document.body, { key: 'd', ctrlKey: true })
+}
+
 function undoDepth(): number {
   return useDeckStore.getState().history.undoStack().length
 }
@@ -106,7 +126,7 @@ describe('useElementActions — data-sl-lock (M3.16)', () => {
     expect(undoDepth()).toBe(0)
   })
 
-  it('duplicate writes nothing and leaves the selection where it was (Ctrl/⌘+D too)', () => {
+  it('duplicate writes nothing and leaves the selection where it was', () => {
     seed(LOCKED)
     const before = useDesignStore.getState().selection!.slId
     const { result } = renderHook(() => useElementActions(slideId))
@@ -116,6 +136,18 @@ describe('useElementActions — data-sl-lock (M3.16)', () => {
     // A refusal must not move the selection onto a clone that was never inserted.
     expect(useDesignStore.getState().selection!.slId).toBe(before)
     expect(useDesignStore.getState().notice).toBeNull()
+  })
+
+  it('Ctrl/⌘+D writes nothing either — the accelerator, dispatched', () => {
+    // Driven rather than argued: the chord is the second entry point to `duplicate`, and a title
+    // claiming it while only calling the callback is coverage this repo has shipped before.
+    seed(LOCKED)
+    const before = useDesignStore.getState().selection!.slId
+    withDuplicateKey()
+    ctrlD()
+    expect(html()).toBe(LOCKED)
+    expect(undoDepth()).toBe(0)
+    expect(useDesignStore.getState().selection!.slId).toBe(before)
   })
 
   it('all three act on the identical element without the attribute', () => {
@@ -129,5 +161,15 @@ describe('useElementActions — data-sl-lock (M3.16)', () => {
     result.current.duplicate()
     expect(html().match(/<div style/g)?.length).toBe(2)
     expect(undoDepth()).toBe(3)
+  })
+
+  it('the chord really does duplicate the unlocked twin — the harness can see its own subject', () => {
+    // Without this half, a chord that never matched (wrong key, unmounted listener, a guard that
+    // swallowed it) would let the locked assertion above pass while proving nothing.
+    seed(FREE)
+    withDuplicateKey()
+    ctrlD()
+    expect(html().match(/<div style/g)?.length).toBe(2)
+    expect(undoDepth()).toBe(1)
   })
 })
