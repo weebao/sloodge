@@ -791,18 +791,24 @@ const CURRENT_PAIRS = [
     'ThumbnailRail:160 selected number, :372 hover',
   ),
   p('text', ['accent', 'white'], ['accent', 'ink-alt'], 'StatusBar:182 hover:text-accent'),
+  // M8b.1c: was `white` on `accent`. M8b.2 lifted the dark accent to `oklch(0.67 …)`, which took
+  // hard-coded white from 5.19:1 to 3.23:1 — the worst text pair in the app. `on-fill` is the role
+  // token for text on a filled control (white in light, `oklch(0.18 …)` in dark): 5.19 and 5.83.
+  // Note the light column below still misreads this row until M8b.1b fixes `currentPalette()`.
   p(
     'text',
-    ['white', 'accent'],
-    ['white', 'accent'],
-    'DesignModeToggle:57, ChatPanel:198/225/313, SettingsDialog:213, AuthTab:199, SlideContextMenu:169 hover, SelectionOverlay:778/820',
+    ['on-fill', 'accent'],
+    ['on-fill', 'accent'],
+    'Button:33, DesignModeToggle:60, ChatPanel:198/225/313, SettingsDialog:213, AuthTab:199, SlideContextMenu:169 hover, SelectionOverlay:879/926',
   ),
   // -- semantic text -----------------------------------------------------------------------
+  // `amber-800` is a fixed dark fill in both modes, so this row keeps `white` — `on-fill` would be
+  // 2.64:1 on it in dark. M8b.1c split SelectionOverlay:926's badge so each arm names its own.
   p(
     'text',
     ['white', 'amber-800'],
     ['white', 'amber-800'],
-    'DesignNotice:57, SelectionOverlay:901/915',
+    'DesignNotice:57, SelectionOverlay:926/940',
   ),
   p('text', ['white', 'red-600'], ['white', 'red-600'], 'BudgetTab:259'),
   p(

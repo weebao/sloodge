@@ -166,7 +166,7 @@ function MenuItem({
       data-menu-item={item.id}
       disabled={item.disabled === true}
       onClick={handleClick}
-      className="block w-full px-3 py-1 text-left text-shell-fg hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:text-chrome-muted disabled:hover:bg-transparent disabled:hover:text-chrome-muted dark:text-ink-fg dark:disabled:text-ink-muted"
+      className="block w-full px-3 py-1 text-left text-shell-fg hover:bg-accent hover:text-on-fill disabled:cursor-not-allowed disabled:text-chrome-muted disabled:hover:bg-transparent disabled:hover:text-chrome-muted dark:text-ink-fg dark:disabled:text-ink-muted"
     >
       {item.label}
     </button>

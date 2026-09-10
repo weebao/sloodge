@@ -210,7 +210,7 @@ export function SettingsDialog({
               <button
                 type="button"
                 onClick={confirmDiscard}
-                className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-white"
+                className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-on-fill"
               >
                 Discard
               </button>

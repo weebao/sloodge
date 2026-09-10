@@ -229,6 +229,87 @@ describe('semantic colour tokens', () => {
     }
   })
 
+  /**
+   * M8b.1c: no opaque `bg-accent` fill carries `text-white`.
+   *
+   * M8b.2 gave `accent` a lighter dark value (`oklch(0.67 0.176 34.8)` against light's
+   * `oklch(0.554 …)`), which turned every hard-coded `text-white` on an opaque accent fill from
+   * 5.19:1 into **3.23:1** — the worst text pair in the app and below AA. The fix is the
+   * `on-fill` role token, which is white in light and `oklch(0.18 0.006 286)` in dark: 5.19:1
+   * and 5.83:1. `Button.tsx:33` already spelt it; nine other sites did not.
+   *
+   * Why a scanner and not nine more `AA_REGRESSIONS` rows. Five of the files lose `text-white`
+   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` keeps four
+   * legitimate `text-white` uses (over `bg-black/70` HUD pills and the fixed `bg-amber-800`
+   * editing frame, 7.13:1 and unaffected by the mode), so a file-level pin would either red on
+   * innocent code or be scoped so narrowly it stops watching. The subject here is a *pair*, so
+   * the guard looks for the pair.
+   *
+   * Two rules, because the defect is not always on one line. Class strings are split into
+   * segments at every quote, backtick and `${`/`}` boundary, so the two arms of a ternary are
+   * distinct segments:
+   *
+   *  1. a segment with an opaque `bg-accent` must not also spell `text-white` — this catches the
+   *     eight single-line sites;
+   *  2. a segment with an opaque `bg-accent` that names no foreground at all inherits one from
+   *     its surroundings, so the neighbouring lines must not spell `text-white` — this catches
+   *     `SelectionOverlay.tsx`, where the pre-fix `text-white` sat on the template literal's
+   *     static head (line 921) and `bg-accent` in the interpolated `!isEditing` arm one line
+   *     below. A single-line grep returned eight sites and missed the ninth.
+   *
+   * Rule 2 is why the fix moved the badge's foreground into each ternary arm rather than swapping
+   * the shared one: `on-fill` on the amber arm would be 2.64:1 in dark.
+   *
+   * `bg-accent/5`, `/10`, `/20` and `bg-accent-soft` are excluded by the needle — they are tints,
+   * not fills, the text over them is `shell-fg`/`ink-fg`, and swapping those would be wrong.
+   *
+   * Mutations run on this file: restoring `text-white` at ChatPanel.tsx:225 reds rule 1 naming
+   * the file and line; restoring the pre-fix split shape at SelectionOverlay.tsx:921/922 reds
+   * rule 2; deleting the `text-on-fill` from all ten paired sites reds the non-vacuity count.
+   */
+  it('no opaque bg-accent fill is painted with text-white (3.23:1 in dark)', () => {
+    const OPAQUE_ACCENT = /(?<![\w-])bg-accent(?![\w/-])/
+    const WHITE = /(?<![\w-])text-white(?![\w-])/
+    const ON_FILL = /(?<![\w-])text-on-fill(?![\w-])/
+    /** Quote, backtick and interpolation boundaries — one class string per segment. */
+    const SEGMENTS = /[`'"]|\$\{|\}/
+
+    const offenders: string[] = []
+    let fills = 0
+    let paired = 0
+    for (const file of sourceFiles(RENDERER_ROOT)) {
+      const lines = readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        for (const segment of line.split(SEGMENTS)) {
+          if (!OPAQUE_ACCENT.test(segment)) continue
+          fills += 1
+          const where = `${relative(process.cwd(), file)}:${i + 1}`
+          if (WHITE.test(segment)) {
+            offenders.push(`${where} → text-white on an opaque bg-accent`)
+            continue
+          }
+          if (ON_FILL.test(segment)) {
+            paired += 1
+            continue
+          }
+          // No foreground of its own: the colour comes from the surrounding markup.
+          const near = lines.slice(Math.max(0, i - 6), i + 7).join('\n')
+          if (WHITE.test(near)) {
+            offenders.push(`${where} → bg-accent under a text-white declared nearby`)
+          }
+        }
+      })
+    }
+    // Non-vacuity, both halves: the scanner must still find accent fills at all, and the ten
+    // that exist must still name `on-fill` — otherwise a deleted class would pass this silently.
+    expect(fills, 'no opaque bg-accent found; the scanner has lost its subject').toBeGreaterThan(0)
+    expect(offenders, 'use text-on-fill: white is 3.23:1 on the dark accent').toEqual([])
+    expect(
+      paired,
+      'fewer than ten bg-accent fills spell text-on-fill; the M8b.1c swap has been undone',
+    ).toBeGreaterThanOrEqual(10)
+  })
+
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
     const unpaired: string[] = []
     let seen = 0
