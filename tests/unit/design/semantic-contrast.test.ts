@@ -273,6 +273,21 @@ describe('semantic colour tokens', () => {
     const ON_FILL = /(?<![\w-])text-on-fill(?![\w-])/
     /** Quote, backtick and interpolation boundaries — one class string per segment. */
     const SEGMENTS = /[`'"]|\$\{|\}/
+    // Any TEXT COLOUR the segment sets for itself. Not `text-sm` or `text-[13px]`, which are size.
+    // Rule 2 below is about a fill that inherits its foreground; a fill naming its own must not be
+    // judged by whatever happens to sit six lines away.
+    // The `:` in the lookbehind is load-bearing. A VARIANT-prefixed foreground — `hover:text-ink-fg`,
+    // `dark:text-ink-fg` — does not answer the RESTING colour, so it must not skip rule 2. Review r2
+    // found both shapes escaping: with only `[\w-]` excluded they matched, the fill was skipped, and
+    // an inherited `text-white` two lines up went unreported where the round-1 guard had caught it.
+    const TW_PALETTE =
+      'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone'
+    const OWN_FOREGROUND = new RegExp(
+      `(?<![\\w:-])text-(?:white|black|on-fill|current|inherit|transparent` +
+        `|ink[\\w-]*|shell[\\w-]*|chrome[\\w-]*|canvas[\\w-]*|text[\\w-]*|hud[\\w-]*|guide[\\w-]*` +
+        `|accent[\\w-]*|danger[\\w-]*|warning[\\w-]*|success[\\w-]*` +
+        `|(?:${TW_PALETTE})-\\d{2,3})(?![\\w-])`,
+    )
 
     const offenders: string[] = []
     let fills = 0
@@ -292,10 +307,18 @@ describe('semantic colour tokens', () => {
             paired += 1
             continue
           }
-          // No foreground of its own: the colour comes from the surrounding markup.
+          // Rule 2, and only where it applies. A fill that names its OWN foreground is already
+          // answered — judging it by a `text-white` six lines away reds on innocent code with a
+          // message describing a check the code was not making. Review r1 found exactly that.
+          if (OWN_FOREGROUND.test(segment)) continue
+          // No foreground of its own: the colour comes from the surrounding markup. The ±6-line
+          // window is the honest limit — a fill inheriting `text-white` from further away escapes.
+          // Widening it WOULD trade that for false reds on unrelated siblings, but review r2 measured
+          // that it costs nothing on this tree: ±20, ±40, ±100 and whole-file all stay green. So 6 is
+          // not a measured optimum, just a conservative default; M8b.4 owns the real fix.
           const near = lines.slice(Math.max(0, i - 6), i + 7).join('\n')
           if (WHITE.test(near)) {
-            offenders.push(`${where} → bg-accent under a text-white declared nearby`)
+            offenders.push(`${where} → bg-accent inherits a text-white declared within 6 lines`)
           }
         }
       })
@@ -304,9 +327,15 @@ describe('semantic colour tokens', () => {
     // that exist must still name `on-fill` — otherwise a deleted class would pass this silently.
     expect(fills, 'no opaque bg-accent found; the scanner has lost its subject').toBeGreaterThan(0)
     expect(offenders, 'use text-on-fill: white is 3.23:1 on the dark accent').toEqual([])
+    // A floor, not a census. It catches the swap being deleted wholesale, but it will also fall
+    // LEGITIMATELY when M8b.3 migrates these call sites onto `<Button>`, which spells `text-on-fill`
+    // once inside the primitive instead of ten times here. So it must not assert a cause it cannot
+    // know: an M8b.3 agent reading "the swap has been undone" would be told something false.
     expect(
       paired,
-      'fewer than ten bg-accent fills spell text-on-fill; the M8b.1c swap has been undone',
+      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 10). Either the swap ` +
+        'was reverted, or these sites moved onto <Button>, which spells it internally — check ' +
+        'which before lowering this floor.',
     ).toBeGreaterThanOrEqual(10)
   })
 
