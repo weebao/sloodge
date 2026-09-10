@@ -196,7 +196,7 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
             type="button"
             onClick={saveToken}
             disabled={busy || token.trim().length === 0}
-            className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-white disabled:opacity-50"
+            className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-on-fill disabled:opacity-50"
           >
             Save token
           </button>

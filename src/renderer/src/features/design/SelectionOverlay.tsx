@@ -876,7 +876,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           style={hoverStyle}
         >
           {hover ? (
-            <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-accent px-1 text-[11px] leading-4 text-white">
+            <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-accent px-1 text-[11px] leading-4 text-on-fill">
               {label(hover)}
             </span>
           ) : null}
@@ -918,8 +918,12 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           onPointerDown={moveLocked ? undefined : onBodyPointerDown}
         >
           <span
-            className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 text-white ${
-              isEditing ? 'bg-amber-800' : 'bg-accent'
+            className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 ${
+              // M8b.1c: the foreground moves into the branch that owns the fill. `accent` swaps
+              // with the mode, so its text must be the `on-fill` role token (white was 3.23:1 on
+              // the dark accent); the amber editing frame is a fixed dark fill in both modes,
+              // where `on-fill` would be 2.64:1 — so that branch keeps white.
+              isEditing ? 'bg-amber-800 text-white' : 'bg-accent text-on-fill'
             }`}
           >
             {isEditing

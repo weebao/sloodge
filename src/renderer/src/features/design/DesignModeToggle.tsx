@@ -57,7 +57,7 @@ export function DesignModeToggle(): JSX.Element {
         <span
           className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
             enabled
-              ? 'bg-accent text-white'
+              ? 'bg-accent text-on-fill'
               : 'bg-chrome-line text-chrome-muted dark:bg-ink-line dark:text-ink-muted'
           }`}
         >

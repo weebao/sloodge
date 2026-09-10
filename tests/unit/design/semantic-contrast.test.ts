@@ -229,6 +229,120 @@ describe('semantic colour tokens', () => {
     }
   })
 
+  /**
+   * M8b.1c: no opaque `bg-accent` fill carries `text-white`.
+   *
+   * M8b.2 gave `accent` a lighter dark value (`oklch(0.67 0.176 34.8)` against light's
+   * `oklch(0.554 …)`), which turned every hard-coded `text-white` on an opaque accent fill from
+   * 5.19:1 into **3.23:1** — the worst text pair in the app and below AA. The fix is the
+   * `on-fill` role token, which is white in light and `oklch(0.18 0.006 286)` in dark: 5.19:1
+   * and 5.83:1. `Button.tsx:33` already spelt it; nine other sites did not.
+   *
+   * Why a scanner and not nine more `AA_REGRESSIONS` rows. Five of the files lose `text-white`
+   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` keeps five
+   * legitimate `text-white` uses (over `bg-black/70` HUD pills and the fixed `bg-amber-800`
+   * editing frame, 7.13:1 and unaffected by the mode), so a file-level pin would either red on
+   * innocent code or be scoped so narrowly it stops watching. The subject here is a *pair*, so
+   * the guard looks for the pair.
+   *
+   * Two rules, because the defect is not always on one line. Class strings are split into
+   * segments at every quote, backtick and `${`/`}` boundary, so the two arms of a ternary are
+   * distinct segments:
+   *
+   *  1. a segment with an opaque `bg-accent` must not also spell `text-white` — this catches the
+   *     eight single-line sites;
+   *  2. a segment with an opaque `bg-accent` that names no foreground at all inherits one from
+   *     its surroundings, so the neighbouring lines must not spell `text-white` — this catches
+   *     `SelectionOverlay.tsx`, where the pre-fix `text-white` sat on the template literal's
+   *     static head (line 921) and `bg-accent` in the interpolated `!isEditing` arm one line
+   *     below. A single-line grep returned eight sites and missed the ninth.
+   *
+   * Rule 2 is why the fix moved the badge's foreground into each ternary arm rather than swapping
+   * the shared one: `on-fill` on the amber arm would be 2.64:1 in dark.
+   *
+   * `bg-accent/5`, `/10`, `/20` and `bg-accent-soft` are excluded by the needle — they are tints,
+   * not fills, the text over them is `shell-fg`/`ink-fg`, and swapping those would be wrong.
+   *
+   * Mutations run on this file: restoring `text-white` at ChatPanel.tsx:225 reds rule 1 naming
+   * the file and line; restoring the pre-fix split shape at SelectionOverlay.tsx:921/922 reds
+   * rule 2; deleting the `text-on-fill` from all ten paired sites reds the non-vacuity count.
+   */
+  it('no opaque bg-accent fill is painted with text-white (3.23:1 in dark)', () => {
+    const OPAQUE_ACCENT = /(?<![\w-])bg-accent(?![\w/-])/
+    const WHITE = /(?<![\w-])text-white(?![\w-])/
+    const ON_FILL = /(?<![\w-])text-on-fill(?![\w-])/
+    /** Quote, backtick and interpolation boundaries — one class string per segment. */
+    const SEGMENTS = /[`'"]|\$\{|\}/
+    // Any TEXT COLOUR the segment sets for itself. Not `text-sm` or `text-[13px]`, which are size.
+    // Rule 2 below is about a fill that inherits its foreground; a fill naming its own must not be
+    // judged by whatever happens to sit six lines away.
+    // `text-current` and `text-inherit` are NOT foregrounds for this purpose: they defer to the
+    // parent, which is exactly the question rule 2 asks. Review r3 caught them in the allowlist —
+    // both flipped the escape below from red to green. `text-transparent` stays: it does set a
+    // colour, and invisible text has no contrast to fail.
+    // The `:` in the lookbehind is load-bearing. A VARIANT-prefixed foreground — `hover:text-ink-fg`,
+    // `dark:text-ink-fg` — does not answer the RESTING colour, so it must not skip rule 2. Review r2
+    // found both shapes escaping: with only `[\w-]` excluded they matched, the fill was skipped, and
+    // an inherited `text-white` two lines up went unreported where the round-1 guard had caught it.
+    const TW_PALETTE =
+      'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone'
+    const OWN_FOREGROUND = new RegExp(
+      `(?<![\\w:-])text-(?:white|black|on-fill|transparent` +
+        `|ink[\\w-]*|shell[\\w-]*|chrome[\\w-]*|canvas[\\w-]*|text[\\w-]*|hud[\\w-]*|guide[\\w-]*` +
+        `|accent[\\w-]*|danger[\\w-]*|warning[\\w-]*|success[\\w-]*` +
+        `|(?:${TW_PALETTE})-\\d{2,3})(?![\\w-])`,
+    )
+
+    const offenders: string[] = []
+    let fills = 0
+    let paired = 0
+    for (const file of sourceFiles(RENDERER_ROOT)) {
+      const lines = readFileSync(file, 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        for (const segment of line.split(SEGMENTS)) {
+          if (!OPAQUE_ACCENT.test(segment)) continue
+          fills += 1
+          const where = `${relative(process.cwd(), file)}:${i + 1}`
+          if (WHITE.test(segment)) {
+            offenders.push(`${where} → text-white on an opaque bg-accent`)
+            continue
+          }
+          if (ON_FILL.test(segment)) {
+            paired += 1
+            continue
+          }
+          // Rule 2, and only where it applies. A fill that names its OWN foreground is already
+          // answered — judging it by a `text-white` six lines away reds on innocent code with a
+          // message describing a check the code was not making. Review r1 found exactly that.
+          if (OWN_FOREGROUND.test(segment)) continue
+          // No foreground of its own: the colour comes from the surrounding markup. The ±6-line
+          // window is the honest limit — a fill inheriting `text-white` from further away escapes.
+          // Widening it WOULD trade that for false reds on unrelated siblings, but review r2 measured
+          // that it costs nothing on this tree: ±20, ±40, ±100 and whole-file all stay green. So 6 is
+          // not a measured optimum, just a conservative default; M8b.4 owns the real fix.
+          const near = lines.slice(Math.max(0, i - 6), i + 7).join('\n')
+          if (WHITE.test(near)) {
+            offenders.push(`${where} → bg-accent inherits a text-white declared within 6 lines`)
+          }
+        }
+      })
+    }
+    // Non-vacuity, both halves: the scanner must still find accent fills at all, and the ten
+    // that exist must still name `on-fill` — otherwise a deleted class would pass this silently.
+    expect(fills, 'no opaque bg-accent found; the scanner has lost its subject').toBeGreaterThan(0)
+    expect(offenders, 'use text-on-fill: white is 3.23:1 on the dark accent').toEqual([])
+    // A floor, not a census. It catches the swap being deleted wholesale, but it will also fall
+    // LEGITIMATELY when M8b.3 migrates these call sites onto `<Button>`, which spells `text-on-fill`
+    // once inside the primitive instead of ten times here. So it must not assert a cause it cannot
+    // know: an M8b.3 agent reading "the swap has been undone" would be told something false.
+    expect(
+      paired,
+      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 10). Either the swap ` +
+        'was reverted, or these sites moved onto <Button>, which spells it internally — check ' +
+        'which before lowering this floor.',
+    ).toBeGreaterThanOrEqual(10)
+  })
+
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
     const unpaired: string[] = []
     let seen = 0

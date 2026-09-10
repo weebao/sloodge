@@ -195,7 +195,7 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
               disabled={!canSend}
               aria-disabled={!canSend}
               title={hasBridge ? 'Send (Enter)' : 'Chat is unavailable in this window'}
-              className="ml-auto inline-flex items-center gap-1 rounded bg-accent px-3 py-1 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="ml-auto inline-flex items-center gap-1 rounded bg-accent px-3 py-1 text-[12px] font-medium text-on-fill transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               Send <span aria-hidden="true">➤</span>
             </button>
@@ -222,7 +222,7 @@ function EmptyState(): JSX.Element {
 function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
   if (message.kind === 'user') {
     return (
-      <div className="self-end rounded-lg bg-accent px-3 py-2 text-[13px] text-white">
+      <div className="self-end rounded-lg bg-accent px-3 py-2 text-[13px] text-on-fill">
         <p className="whitespace-pre-wrap">{message.text}</p>
       </div>
     )
@@ -310,7 +310,7 @@ function AuthGate({ onOpenSettings }: { onOpenSettings?: (() => void) | undefine
       <button
         type="button"
         onClick={onOpenSettings}
-        className="rounded bg-accent px-2 py-1 text-[12px] font-medium text-white"
+        className="rounded bg-accent px-2 py-1 text-[12px] font-medium text-on-fill"
       >
         Open Settings
       </button>
