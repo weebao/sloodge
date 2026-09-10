@@ -210,6 +210,18 @@ node .claude/skills/model-escalation/watchdog.mjs --once      # single tick, pri
 node .claude/skills/model-escalation/watchdog.mjs --self-test # 25 assertions, no network
 ```
 
+**It dies with the session, so restart it at the top of every session.** A `Monitor`-hosted
+process is session-local: when the session ends, the node process goes with it and the state file
+simply stops advancing. Nothing announces this — measured on 2026-09-09, the watchdog had been down
+15 hours across a session restart while `.claude/model-watchdog.json` still read
+`mode: wait-to-promote`, so the tier stayed escalated long after the limit had lifted. Two
+consequences: check `lastProbe`'s age before trusting the tier, and do not diagnose liveness with
+`pgrep -f watchdog.mjs` — that pattern matches the shell running the `pgrep`, which reports a dead
+watchdog as alive. `ps -eo comm | grep -c '^node$'` is the honest check.
+
+Restarting is safe and cheap: the state file survives, a `promoteAt` already in the past probes on
+the first tick, and the per-file byte offsets mean no transcript is re-scanned.
+
 Run it under the `Monitor` tool with `persistent: true`. Each line it prints becomes one
 notification in the orchestrator's conversation — that is what makes the session actually
 _continue_ rather than just record the tier change.
