@@ -238,9 +238,32 @@ const scan = (wd) => scanFiles(wd, sources())
 
 // The only honest test that a limit has lifted is to spend one token against it. A reset time is
 // a promise, not an observation, and it has been wrong before (the window slides).
+/**
+ * Every way the CLI says "not this model, not now".
+ *
+ * `hit your session limit … rate_limit … HTTP 429` is the ACCOUNT-wide refusal, and it is what the
+ * detector above keys on. A model-specific refusal is a different sentence entirely — measured
+ * 2026-09-09, verbatim:
+ *
+ *   You've reached your Fable limit. Switch to another model, or manage usage credits at
+ *   claude.ai/settings/usage?from=cc_cli_limit_message, to continue.
+ *
+ * No `rate_limit`, no `429`, no reset time. The first version of this probe matched only the
+ * account-wide wording, so it read a live model limit as an unrecognised error — the right verdict
+ * for the wrong reason, and only because a non-TTY run exits 1. Under a TTY the same refusal exits
+ * **0**, so the probe would have returned "available" and promoted onto an exhausted model.
+ */
+const REFUSED =
+  /hit your session limit|rate_limit|reached your [A-Za-z. ]*limit|cc_cli_limit_message/i
+
+/**
+ * Three outcomes, not two. "Still limited" and "the probe itself is broken" both used to return
+ * `{ ok: false }`, so a missing binary, a failed auth or a changed CLI surface was indistinguishable
+ * from a limit — the watchdog would wait for a reset that was never coming and never say why.
+ */
 function probe(tier) {
-  try {
-    const out = execFileSync(CLAUDE_BIN, ['--print', '--model', TIERS[tier].agentModel, 'ok'], {
+  const run = () =>
+    execFileSync(CLAUDE_BIN, ['--print', '--model', TIERS[tier].agentModel, 'ok'], {
       encoding: 'utf8',
       timeout: 120_000,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -249,17 +272,17 @@ function probe(tier) {
         PATH: `${homedir()}/.nvm/versions/node/v24.18.1/bin:${process.env.PATH}`,
       },
     })
-    if (/hit your session limit|rate_limit/i.test(out)) {
-      return { ok: false, resetsAt: parseResetTime(out, new Date()) }
-    }
-    return { ok: true }
+  let blob
+  try {
+    blob = run()
   } catch (err) {
-    const blob = `${err.stdout ?? ''}${err.stderr ?? ''}${err.message ?? ''}`
-    if (/hit your session limit|rate_limit|429/i.test(blob)) {
-      return { ok: false, resetsAt: parseResetTime(blob, new Date()) }
-    }
-    return { ok: false, error: blob.slice(0, 200) }
+    // The refusal arrives on stdout with status 1 when there is no TTY, so the text matters more
+    // than the exit code — check it on both paths rather than trusting either.
+    blob = `${err.stdout ?? ''}${err.stderr ?? ''}${err.message ?? ''}`
+    if (!REFUSED.test(blob)) return { ok: false, broken: blob.slice(0, 200) }
   }
+  if (REFUSED.test(blob)) return { ok: false, resetsAt: parseResetTime(blob, new Date()) }
+  return { ok: true }
 }
 
 // ---------------------------------------------------------------- events out
@@ -365,6 +388,17 @@ function tick() {
         wd.mode = 'watch'
         wd.promoteAt = null
       } else {
+        // A broken probe is not a limit, and staying quiet about it means waiting forever for a
+        // reset that is not coming. Said once per episode, not every five minutes.
+        if (r.broken !== undefined && wd.brokenSaid !== true) {
+          emit(
+            `[watchdog ${stamp()}] PROBE FAILED — cannot tell whether ${TIERS[BASELINE].label} is`,
+            `available, so the tier stays put. This is not a limit:`,
+            r.broken.replace(/\s+/g, ' ').trim(),
+          )
+          wd.brokenSaid = true
+        }
+        if (r.broken === undefined) wd.brokenSaid = false
         // Still limited. The window slid; believe the new notice over the old one.
         wd.promoteAt = r.resetsAt ? r.resetsAt.getTime() : now + PROBE_EVERY
       }
@@ -427,6 +461,20 @@ function selfTest() {
     new Date(),
   )
   ok('finds both notices in one chunk', two.length === 2)
+
+  // The probe's refusal matcher, against the two sentences the CLI actually emits. The
+  // model-specific one shares no token with the account-wide one — not `rate_limit`, not `429` —
+  // and matching only the latter is what let a live model limit read as an unrecognised error.
+  const REAL_MODEL_LIMIT =
+    "You've reached your Fable limit. Switch to another model, or manage usage credits at " +
+    'claude.ai/settings/usage?from=cc_cli_limit_message, to continue.'
+  ok('the matcher knows the model-specific refusal', REFUSED.test(REAL_MODEL_LIMIT))
+  ok('the matcher knows the account-wide refusal', REFUSED.test(REAL))
+  ok('the matcher does not fire on a normal reply', !REFUSED.test('ok'))
+  ok(
+    'the matcher does not fire on prose about limits',
+    !REFUSED.test('the run stopped at the usage cap; see the roadmap row'),
+  )
 
   // A chunk holding one real notice plus two trailer-less quotes of it must yield exactly one
   // event. This is the whole precision claim stated as a number.
