@@ -239,7 +239,7 @@ describe('semantic colour tokens', () => {
    * and 5.83:1. `Button.tsx:33` already spelt it; nine other sites did not.
    *
    * Why a scanner and not nine more `AA_REGRESSIONS` rows. Five of the files lose `text-white`
-   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` keeps four
+   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` keeps five
    * legitimate `text-white` uses (over `bg-black/70` HUD pills and the fixed `bg-amber-800`
    * editing frame, 7.13:1 and unaffected by the mode), so a file-level pin would either red on
    * innocent code or be scoped so narrowly it stops watching. The subject here is a *pair*, so
@@ -276,6 +276,10 @@ describe('semantic colour tokens', () => {
     // Any TEXT COLOUR the segment sets for itself. Not `text-sm` or `text-[13px]`, which are size.
     // Rule 2 below is about a fill that inherits its foreground; a fill naming its own must not be
     // judged by whatever happens to sit six lines away.
+    // `text-current` and `text-inherit` are NOT foregrounds for this purpose: they defer to the
+    // parent, which is exactly the question rule 2 asks. Review r3 caught them in the allowlist —
+    // both flipped the escape below from red to green. `text-transparent` stays: it does set a
+    // colour, and invisible text has no contrast to fail.
     // The `:` in the lookbehind is load-bearing. A VARIANT-prefixed foreground — `hover:text-ink-fg`,
     // `dark:text-ink-fg` — does not answer the RESTING colour, so it must not skip rule 2. Review r2
     // found both shapes escaping: with only `[\w-]` excluded they matched, the fill was skipped, and
@@ -283,7 +287,7 @@ describe('semantic colour tokens', () => {
     const TW_PALETTE =
       'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone'
     const OWN_FOREGROUND = new RegExp(
-      `(?<![\\w:-])text-(?:white|black|on-fill|current|inherit|transparent` +
+      `(?<![\\w:-])text-(?:white|black|on-fill|transparent` +
         `|ink[\\w-]*|shell[\\w-]*|chrome[\\w-]*|canvas[\\w-]*|text[\\w-]*|hud[\\w-]*|guide[\\w-]*` +
         `|accent[\\w-]*|danger[\\w-]*|warning[\\w-]*|success[\\w-]*` +
         `|(?:${TW_PALETTE})-\\d{2,3})(?![\\w-])`,
