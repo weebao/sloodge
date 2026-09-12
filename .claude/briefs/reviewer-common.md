@@ -33,6 +33,22 @@ builder's worktree. Therefore:
   Never a generic path like `scratchpad/wt` or `scratchpad/pr-body.md`.
 - Before trusting any measurement, confirm your checkout is clean and carries no untracked files
   from other branches.
+- **Never symlink `node_modules` into a worktree and then run `pnpm`.** pnpm 11's
+  `verify-deps-before-run` check fires on `pnpm build`/`pnpm test`, decides the modules dir is
+  wrong, and attempts an install **plus a modules-dir purge through the symlink** — which would
+  delete the main checkout's `node_modules`. Two agents hit this independently on 2026-09-11 and it
+  was stopped only by the absence of a TTY, i.e. by luck. Either run a real
+  `pnpm install --frozen-lockfile` in the worktree (about a second against a warm store), or pass
+  `--config.verify-deps-before-run=false` on every pnpm call. Invoking the binaries directly
+  (`./node_modules/.bin/vitest`) also avoids it.
+
+- **`git add -A` in a worktree with an untracked `node_modules` symlink commits the symlink.** It
+  lands as a mode-120000 entry and shows up in the PR diff. Add files by name.
+
+- **`git checkout -- <file>` discards uncommitted work in that file.** Obvious in isolation, easy to
+  do by reflex when reverting a mutation — it has destroyed an uncommitted fix in this repo. Copy
+  the file aside before mutating, and restore from the copy.
+
 - **`git stash` is repo-global, not per-worktree.** A `git stash pop` in your worktree can apply _another
   agent's_ stash into your tree. This happened: a `git stash push -- <untracked path>` (a no-op that
   errors) followed by `git stash pop` pulled in a 23-file stash from a concurrent agent and landed a
