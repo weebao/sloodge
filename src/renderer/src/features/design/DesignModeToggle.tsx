@@ -23,19 +23,42 @@
  * half: sloodge slides can contain live JS — charts, hover states, click-throughs — and Design Mode
  * deliberately freezes them so selection is stable (§2.1). Turning it off is how you play with a
  * slide, which no affordance previously explained.
+ *
+ * ## Drawn with the primitives
+ *
+ * The control is `Button`'s `secondary` variant — a standalone control on the toolbar row, so it has
+ * an edge at rest (`line-strong`, 3.95 / 3.22:1 on `surface-raised`) and the one focus ring, which the
+ * primitive owns (ui-design-audit.md §5.6, rule R6). The glyph is a `currentColor` SVG rather than
+ * the `✦` character, coloured by role — `accent` when on, `text-muted` when idle, both mode-swapping
+ * tokens, so the 2.36:1 dark glyph M8b.1a patched with a `dark:` twin cannot come back by omission.
  */
 
 import type { JSX } from 'react'
+import { Button } from '../../components/ui'
 import { useDesignStore } from './designStore'
+
+/** A four-point star at the toolbar icon size (ui-design-audit.md §4.1 item 4). */
+function SparkIcon(): JSX.Element {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+      <path
+        d="M8 1.75C8.55 5.35 10.65 7.45 14.25 8 10.65 8.55 8.55 10.65 8 14.25 7.45 10.65 5.35 8.55 1.75 8 5.35 7.45 7.45 5.35 8 1.75Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
 export function DesignModeToggle(): JSX.Element {
   const enabled = useDesignStore((state) => state.enabled)
   const toggle = useDesignStore((state) => state.toggle)
 
   return (
-    <div className="flex shrink-0 items-center gap-2 border-l border-chrome-line px-3 dark:border-ink-line">
-      <button
-        type="button"
+    <div className="flex shrink-0 items-center border-l border-line px-3">
+      <Button
+        variant="secondary"
         role="switch"
         aria-checked={enabled}
         onClick={toggle}
@@ -44,26 +67,21 @@ export function DesignModeToggle(): JSX.Element {
             ? 'Design Mode is on — click text to select and edit it. Turn it off (Ctrl/⌘+D) to interact with a live slide.'
             : 'Design Mode is off — the slide is live and interactive. Turn it on (Ctrl/⌘+D) to select and edit elements.'
         }
-        className="inline-flex h-7 items-center gap-2 rounded border border-chrome-line bg-white px-2 text-[13px] font-medium text-shell-fg transition-colors hover:bg-chrome-alt focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg dark:hover:bg-ink-line"
       >
-        <span
-          aria-hidden="true"
-          className={enabled ? 'text-accent' : 'text-chrome-muted dark:text-ink-muted'}
-        >
-          ✦
+        <span aria-hidden="true" className={enabled ? 'text-accent' : 'text-text-muted'}>
+          <SparkIcon />
         </span>
         Design Mode
-        {/* The state, in words. A colour alone is not a state indicator. */}
+        {/* The state, in words. A colour alone is not a state indicator. On is the accent fill with
+            `on-fill` text (5.19 / 5.83:1); Off is a sunken well with muted text (5.62 / 6.77:1). */}
         <span
-          className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
-            enabled
-              ? 'bg-accent text-on-fill'
-              : 'bg-chrome-line text-chrome-muted dark:bg-ink-line dark:text-ink-muted'
+          className={`rounded-control px-1.5 py-0.5 text-caption font-semibold tracking-caps uppercase ${
+            enabled ? 'bg-accent text-on-fill' : 'bg-surface-sunken text-text-muted'
           }`}
         >
           {enabled ? 'On' : 'Off'}
         </span>
-      </button>
+      </Button>
     </div>
   )
 }
