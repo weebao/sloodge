@@ -27,13 +27,17 @@
  * canvas's fit scale is driven by a continuous `ResizeObserver`, so any transition there lags every
  * window drag by its own duration. The overlay is the most tempting place in the app to add motion
  * and the one place the audit refuses it, so the refusal is asserted on the rendered tree in each of
- * the seven overlay states that draw a distinct element — hover, single selection, editing, group,
- * locked, marquee, mid-drag with guides — and on the canvas with Design Mode on and off: no class from
- * the motion namespaces on any element behind any variant chain (`transition`, `transition-*`,
- * `duration-*`, `delay-*`, `ease-*`, `animate-*`, `starting:`, the `[transition:…]` /
- * `[animation:…]` arbitrary properties, `!` on either side), and no inline style property in the
- * `transition*` / `animation*` families — `transitionDuration` alone animates `all`. Review r1 found
- * the first cut skipped the marquee and locked states and missed those last three spellings. The
+ * the eight overlay states that draw a distinct element — hover, single selection, breadcrumb with
+ * ancestors, editing, group, locked, marquee, mid-drag with guides — and on the canvas with Design
+ * Mode on and off, sweeping from the render root so a wrapper is inside it: no motion utility on any
+ * element (`utilityOf` sets the variants aside unparsed, so `[&:not(:hover)]:transition`,
+ * `hover:!transition-opacity`, `data-[state=open]:transition` and `duration-(--x)` all read as what
+ * they are), and no inline style property in the `transition*` / `animation*` families —
+ * `transitionDuration` alone animates `all`. Review r1 found the first cut skipped the marquee and
+ * locked states and missed three spellings; r2 found seven more shapes a variant grammar had not
+ * enumerated, the wrapper outside the sweep root and the breadcrumb state unvisited — hence a
+ * detector that never reads variants, and `it('the motion detector …')` below, which is its own
+ * mutation subject. The
  * three `requestAnimationFrame` sites in the gesture hooks (`useDragGesture.ts:206`,
  * `useRotateGesture.ts:96`, `useMarqueeGesture.ts:101`) are pointer-event coalescing, not motion,
  * and are not this file's subject.
@@ -63,7 +67,12 @@
  * selection box, on the marquee box, on the marquee tint and on the lock badge, a `transition` on
  * the mat, an inline `transition: 'left 100ms'` and an inline `transitionDuration: '150ms'` on the
  * handle style, a `[transition:opacity_100ms]` and a `transition!` on the selection box each red a
- * still-tree case (gate green — the gate has no motion column); member `border-accent` →
+ * still-tree case (gate green — the gate has no motion column); so do `[&::before]:transition`,
+ * `hover:!transition-opacity`, `data-[state=open]:transition`, `[@media(hover:hover)]:transition`,
+ * `[&:not(:hover)]:transition`, `duration-(--x)`, `transition-(--x)`, `md:[&>span]:!duration-300` and
+ * `supports-[display:grid]:animate-working` on the selection box, a `transition` on the notice's
+ * `pointer-events-auto` wrapper and an inline `transitionDuration` on a breadcrumb parent (1 each);
+ * member `border-accent` →
  * `border-accent/70` and marquee fill `bg-accent opacity-10` → `bg-accent/10` red here AND the
  * shared gate (`alpha = 1`).
  */
@@ -94,13 +103,51 @@ const classes = (el: Element | null | undefined): string[] =>
   (el?.className ?? '').split(/\s+/).filter(Boolean)
 
 /**
- * Every Tailwind spelling that moves something over time, behind any variant chain: `transition`,
- * `transition-*`, `duration-*`, `delay-*`, `ease-*`, `animate-*`, and the `starting:` variant that
- * only exists to feed a transition. `motion-safe:` / `motion-reduce:` are variants, so they are
- * caught by whatever they prefix.
+ * The utility a class token names, with its variants set aside — never parsed. Bracketed and
+ * parenthesised groups are masked first (`[&:not(:hover)]`, `[@media(hover:hover)]`,
+ * `data-[state=open]` all carry `:` inside them), the token is split on the `:` that remain, the last
+ * segment is the utility, and the important modifier is dropped from either end (`!transition` is
+ * v4's still-accepted legacy spelling, `transition!` the current one). Review r1 and r2 of this file
+ * each found variant shapes a variant *grammar* had not enumerated; a grammar that never reads the
+ * variants has nothing left to enumerate.
  */
-const MOTION =
-  /^!?(?:[\w[\]&>*@-]+:)*(?:transition(?:-[a-z-]+)?|duration-[\w-]+|delay-[\w-]+|ease-[\w-]+|animate-[\w-]+|starting:.+|\[(?:transition|animation)[^\]]*\])!?$/
+function utilityOf(token: string): {
+  readonly utility: string
+  readonly variants: readonly string[]
+} {
+  const segments: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < token.length; i += 1) {
+    const c = token[i]
+    if (c === '[' || c === '(') depth += 1
+    else if (c === ']' || c === ')') depth = Math.max(0, depth - 1)
+    else if (c === ':' && depth === 0) {
+      segments.push(token.slice(start, i))
+      start = i + 1
+    }
+  }
+  segments.push(token.slice(start))
+  const raw = segments.pop() ?? ''
+  return { utility: raw.replace(/^!/, '').replace(/!$/, ''), variants: segments }
+}
+
+/** A utility value in every v4 spelling: a name, a `(--var)` functional variable, or a `[…]` literal. */
+const VALUE = String.raw`(?:[\w.%/-]+|\(--[\w-]+\)|\[[^\]]*\])`
+/**
+ * Every Tailwind utility that moves something over time: `transition` and `transition-*`,
+ * `duration-*`, `delay-*`, `ease-*`, `animate-*` (each in the three value spellings — a lone
+ * `duration-(--x)` animates `all`, like a lone inline `transitionDuration`), and the
+ * `[transition:…]` / `[animation:…]` arbitrary properties. `starting:` is a variant that only exists
+ * to feed a transition, so it is caught on the variants side.
+ */
+const MOTION_UTILITY = new RegExp(
+  `^(?:transition(?:-${VALUE})?|(?:duration|delay|ease|animate)-${VALUE}|\\[(?:transition|animation)[^\\]]*\\])$`,
+)
+const isMotion = (token: string): boolean => {
+  const { utility, variants } = utilityOf(token)
+  return MOTION_UTILITY.test(utility) || variants.includes('starting')
+}
 
 /**
  * Every inline style property that moves something over time. `transitionDuration` alone is enough
@@ -108,11 +155,11 @@ const MOTION =
  */
 const MOTION_STYLE = /^(?:transition|animation)/
 
-/** No class from the motion namespaces and no inline transition/animation anywhere under `root`. */
+/** No motion utility and no inline transition/animation anywhere under `root`, `root` included. */
 function expectStill(root: Element, what: string): void {
   const moving: string[] = []
   for (const el of [root, ...root.querySelectorAll('*')]) {
-    for (const klass of classes(el)) if (MOTION.test(klass)) moving.push(`${el.tagName}.${klass}`)
+    for (const klass of classes(el)) if (isMotion(klass)) moving.push(`${el.tagName}.${klass}`)
     const style = (el as HTMLElement).style
     // `style` enumerates the properties that are SET on the element (React writes each one).
     for (let i = 0; i < style.length; i += 1) {
@@ -377,7 +424,7 @@ describe('M8b.3 surface 5 — the selection overlay on the design tokens', () =>
     }
     useDesignStore.setState({ selection: hit, selections: [hit] })
     slideId = 's_x'
-    overlay()
+    const root = overlay()
 
     const nav = screen.getByRole('navigation', { name: 'Selection breadcrumb' })
     for (const k of ['bg-hud', 'text-hud-fg', 'text-caption', 'rounded-full']) {
@@ -394,6 +441,7 @@ describe('M8b.3 surface 5 — the selection overlay on the design tokens', () =>
     for (const el of nav.querySelectorAll('*')) {
       expect(classes(el).some((k) => k.startsWith('opacity-'))).toBe(false)
     }
+    expectStill(root, 'the overlay with an ancestor breadcrumb')
   })
 
   it('U19 / T2 — the editing frame is the edit role, dashed, and its label is bg-edit text-on-fill', () => {
@@ -531,7 +579,7 @@ describe('M8b.3 surface 5 — the selection overlay on the design tokens', () =>
 describe('M8b.3 surface 5 — the refused-edit notice on the Notice primitive', () => {
   it('item 5 / T2 — a warning Notice: soft fill, warning edge, the tone word, role status, a ringed ✕', () => {
     useDesignStore.setState({ notice: { slideId: 'slide-1', text: 'That text is too long' } })
-    render(<DesignNotice slideId="slide-1" />)
+    const { container } = render(<DesignNotice slideId="slide-1" />)
 
     const notice = screen.getByTestId('design-notice')
     expect(notice.getAttribute('role')).toBe('status')
@@ -563,6 +611,60 @@ describe('M8b.3 surface 5 — the refused-edit notice on the Notice primitive', 
     expect(classes(notice.parentElement), 'pointer-events-auto wrapper').toContain(
       'pointer-events-auto',
     )
-    expectStill(notice, 'the notice')
+    // From the render root, so the `pointer-events-auto` wrapper above the Notice is swept too.
+    expectStill(container, 'the notice and its wrapper')
+  })
+})
+
+/**
+ * The detector is a test subject too: a guard that quietly reads a motion spelling as inert is the
+ * house failure mode. Positive rows are the shapes review r1 / r2 found escaping (each compiled to a
+ * real `transition-*` rule against the repo's Tailwind 4.3.3 by the reviewer) plus two invented here;
+ * negative rows are things that carry a `:`/`[`/`!` but move nothing. Mutations, observed: drop the
+ * bracket masking from `utilityOf` and the two arbitrary-property rows red — `[transition:opacity_100ms]`
+ * splits inside its own brackets and reads as the utility `opacity_100ms]` (the variant-shaped rows
+ * survive that mutation, because the last segment of `[&:not(:hover)]:transition` is still
+ * `transition`; the masking is for the utility's own brackets, not the variants'); strip only a
+ * leading `!` and `transition!` reds; drop the `(--var)` spelling from `VALUE` and `duration-(--x)`
+ * and `transition-(--x)` red.
+ */
+describe('M8b.3 surface 5 — the motion detector reads a utility through any variant chain', () => {
+  it.each([
+    'transition',
+    'transition-colors',
+    'transition!',
+    '!transition',
+    'hover:!transition-opacity',
+    '[&::before]:transition',
+    'data-[state=open]:transition',
+    '[@media(hover:hover)]:transition',
+    '[&:not(:hover)]:transition',
+    'duration-(--x)',
+    'transition-(--x)',
+    'duration-[150ms]',
+    'md:[&>span]:!duration-300',
+    'supports-[display:grid]:animate-working',
+    'group-hover:ease-out',
+    'motion-safe:delay-75',
+    'starting:opacity-0',
+    '[transition:opacity_100ms]',
+    '[animation:spin_1s_linear_infinite]',
+  ])('%s is motion', (token) => {
+    expect(isMotion(token)).toBe(true)
+  })
+
+  it.each([
+    'text-caption',
+    'text-hud-fg/70',
+    '-translate-x-1/2',
+    'rounded-control',
+    'motion-safe:opacity-50',
+    "[&::before]:content-['']",
+    '[mask-type:luminance]',
+    'hover:bg-hud-strong',
+    'data-[state=open]:bg-accent',
+    'focus-visible:outline-2',
+  ])('%s is not', (token) => {
+    expect(isMotion(token)).toBe(false)
   })
 })
