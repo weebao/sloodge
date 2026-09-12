@@ -184,14 +184,16 @@ export function AppShell(): JSX.Element {
   return (
     <div
       id="sloodge-shell"
-      className="flex h-screen w-screen flex-col overflow-hidden bg-shell-bg text-shell-fg dark:bg-ink dark:text-ink-fg"
+      className="flex h-screen w-screen flex-col overflow-hidden bg-surface text-text"
     >
       <MenuTabStrip documentName={documentName} />
       {/* The toolbar row and the Design Mode switch are siblings on purpose: the toolbar is a tab
           panel whose contents M6.1 swaps per ribbon tab, and the switch must stay visible and
           operable on every tab (see DesignModeToggle's header). Owning the row here is what makes
-          that structural rather than a convention a later PR can quietly break. */}
-      <div className="flex shrink-0 items-stretch border-b border-chrome-line bg-white dark:border-ink-line dark:bg-ink-alt">
+          that structural rather than a convention a later PR can quietly break.
+          The row is `surface-raised` on the strip's `surface` with no line between them; its one
+          hairline is the bottom edge against the workspace (ui-design-audit.md §4.1 item 3). */}
+      <div className="flex shrink-0 items-stretch border-b border-line bg-surface-raised">
         <FormatBar />
         <DesignModeToggle />
       </div>

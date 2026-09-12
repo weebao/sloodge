@@ -169,11 +169,21 @@ describe('semantic colour tokens', () => {
    * form has nothing legitimate to collide with.
    */
   const AA_REGRESSIONS: readonly [file: string, bad: string, measured: string, good: string][] = [
+    // M8b.3 (surface 2) moved the toolbar row's buttons onto `ToolbarButton` / `Button`, whose
+    // `hover:bg-hover` is a role pair the `--check` census measures (`hover` on `surface-raised`,
+    // 1.18 / 1.24:1). FormatBar.tsx no longer spells a hover of its own, so the "replacement
+    // present" half of this row is the JSX open tag of the primitive that owns it. The needle is
+    // `<ToolbarButton`, not the bare name: FormatBar.tsx's header names the component in prose, and
+    // review r1 showed the bare needle staying green with every import and JSX use deleted and the
+    // comment kept. This row proves exactly two things — the 1.00:1 spelling is absent from the
+    // file, and the primitive is still mounted in it. A hand-rolled button with some other bad
+    // hover is the suite-run `--check` gate's business (`migrated-files-check.test.ts`, the shared
+    // list #76 extracts — this file joins its list when #75 rebases onto it), not this row's.
     [
       'features/format/FormatBar.tsx',
       'dark:hover:bg-ink-alt',
       '1.00:1 hover on the dark toolbar row',
-      'dark:hover:bg-ink-line',
+      '<ToolbarButton',
     ],
     [
       'features/design/ArrangeBar.tsx',
@@ -216,14 +226,25 @@ describe('semantic colour tokens', () => {
     expect(src, `${good} is gone from ${file}, so the pin above proves nothing`).toContain(good)
   })
 
-  it('the Design Mode ✦ glyph carries its dark twin (2.36:1 on ink-alt without one)', () => {
+  /**
+   * M8b.1a pinned `text-chrome-muted dark:text-ink-muted` on the idle glyph. M8b.3 (surface 2)
+   * replaced that pair with the role token `text-text-muted`, whose value swaps in `:root`
+   * (6.41 / 5.81:1 on `surface-raised`, `--check` census pair #10) — so the defect this guards
+   * against is now the idle arm losing the role token, or a mode-bound spelling returning without
+   * its twin. Mutation: change the idle arm to `text-chrome-muted` and the first assertion reds.
+   */
+  it('the Design Mode glyph reads in dark (2.36:1 on ink-alt when it had no dark twin)', () => {
     const file = join(RENDERER_ROOT, 'features', 'design', 'DesignModeToggle.tsx')
-    const lines = readFileSync(file, 'utf8')
+    const src = readFileSync(file, 'utf8')
+    expect(
+      src,
+      "the glyph's idle arm must be the mode-swapping role token: enabled ? 'text-accent' : 'text-text-muted'",
+    ).toMatch(/'text-accent'\s*:\s*'text-text-muted'/)
+    const modeBound = src
       .split('\n')
-      .filter((l) => /(?<!dark:)text-chrome-muted(?![\w/-])/.test(l))
-    expect(lines.length).toBeGreaterThan(0)
-    for (const l of lines) {
-      expect(l.trim(), 'text-chrome-muted with no dark twin is 2.36:1 on ink-alt').toContain(
+      .filter((line) => /(?<!dark:)text-chrome-muted(?![\w/-])/.test(line))
+    for (const line of modeBound) {
+      expect(line.trim(), 'text-chrome-muted with no dark twin is 2.36:1 on ink-alt').toContain(
         'dark:text-ink-muted',
       )
     }
