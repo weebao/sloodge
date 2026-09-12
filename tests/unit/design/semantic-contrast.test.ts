@@ -172,13 +172,18 @@ describe('semantic colour tokens', () => {
     // M8b.3 (surface 2) moved the toolbar row's buttons onto `ToolbarButton` / `Button`, whose
     // `hover:bg-hover` is a role pair the `--check` census measures (`hover` on `surface-raised`,
     // 1.18 / 1.24:1). FormatBar.tsx no longer spells a hover of its own, so the "replacement
-    // present" half of this row is the primitive that owns it — a hand-rolled button would have to
-    // put a hover spelling back into this file, where the `bad` needle still watches for it.
+    // present" half of this row is the JSX open tag of the primitive that owns it. The needle is
+    // `<ToolbarButton`, not the bare name: FormatBar.tsx's header names the component in prose, and
+    // review r1 showed the bare needle staying green with every import and JSX use deleted and the
+    // comment kept. This row proves exactly two things — the 1.00:1 spelling is absent from the
+    // file, and the primitive is still mounted in it. A hand-rolled button with some other bad
+    // hover is the suite-run `--check` gate's business (`migrated-files-check.test.ts`, the shared
+    // list #76 extracts — this file joins its list when #75 rebases onto it), not this row's.
     [
       'features/format/FormatBar.tsx',
       'dark:hover:bg-ink-alt',
       '1.00:1 hover on the dark toolbar row',
-      'ToolbarButton',
+      '<ToolbarButton',
     ],
     [
       'features/design/ArrangeBar.tsx',
