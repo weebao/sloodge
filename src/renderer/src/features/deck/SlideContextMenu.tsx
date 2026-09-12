@@ -21,6 +21,7 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react'
+import { FOCUS_RING } from '../../components/ui'
 
 export type SlideContextMenuItem = {
   /** Stable key, and the `data-menu-item` hook tests select on. */
@@ -136,7 +137,12 @@ export function SlideContextMenu({
       aria-label={label}
       style={style}
       onKeyDown={handleKeyDown}
-      className="fixed z-50 min-w-[140px] rounded border border-chrome-line bg-white py-1 text-[12px] shadow-lg dark:border-ink-line dark:bg-ink-alt"
+      // The OS menu the rest of the rail imitates: a floating surface whose edge is the shadow's
+      // ring rather than a border, above every panel and below a dialog (`z-menu`), 8px outside
+      // with 4px items inside 4px of padding (concentric). It does not animate in (M8b.0 §3.1):
+      // Windows context menus do not, and a scale-in would race the flip measurement above — the
+      // height read mid-transform would put the menu in the wrong place.
+      className="fixed z-menu min-w-35 rounded-overlay bg-surface-raised p-1 text-ui-sm shadow-floating"
     >
       {items.map((item) => (
         <MenuItem key={item.id} item={item} onClose={onClose} />
@@ -166,7 +172,10 @@ function MenuItem({
       data-menu-item={item.id}
       disabled={item.disabled === true}
       onClick={handleClick}
-      className="block w-full px-3 py-1 text-left text-shell-fg hover:bg-accent hover:text-on-fill disabled:cursor-not-allowed disabled:text-chrome-muted disabled:hover:bg-transparent disabled:hover:text-chrome-muted dark:text-ink-fg dark:disabled:text-ink-muted"
+      // The quiet hover fill every OS menu uses, not the accent (this was the app's one full-fill
+      // hover, audit C2). A disabled item keeps its row and loses the fill, so the verb stays where
+      // the user expects it. The arrow keys move focus here, so the ring is the shared one (R6).
+      className={`block w-full rounded-control px-3 py-1 text-left text-text hover:bg-hover disabled:cursor-default disabled:text-text-muted disabled:hover:bg-transparent ${FOCUS_RING}`}
     >
       {item.label}
     </button>

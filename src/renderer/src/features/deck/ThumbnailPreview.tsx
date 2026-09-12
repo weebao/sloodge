@@ -8,7 +8,7 @@ import { useVisibility, type VisibilityTracker } from './visibilityTracker'
 /**
  * Thumbnail width in CSS px, and with it the mini-frame's scale.
  *
- * A constant, not a measurement: the rail is a fixed 188px column (`w-[188px]`) minus its 12px
+ * A constant, not a measurement: the rail is a fixed 188px column (`w-rail`) minus its 12px
  * gutters, the 12px slide-number column and the 8px gap. Every card is therefore the same known
  * width, and hard-coding it avoids a `ResizeObserver` per thumbnail.
  */
@@ -76,11 +76,13 @@ export function ThumbnailPreview({ slide, visibility }: ThumbnailPreviewProps): 
           slideUrls={defaultSlideUrls('thumbnails')}
         />
       ) : (
-        <span
-          aria-hidden="true"
-          className="flex h-full w-full items-center justify-center px-2 text-center text-[9px] leading-tight text-chrome-muted dark:text-ink-muted"
-        >
-          {slide.title}
+        <span aria-hidden="true" className="flex h-full w-full items-center justify-center px-2">
+          {/* Caption size, not 9px — the one text in the app that sat below the 12px floor (audit
+              §2.5) — clamped to two lines so a long title cannot outgrow the box. `line-clamp` is
+              a `display: -webkit-box`, so it cannot be the centring flex box itself. */}
+          <span className="line-clamp-2 text-center text-caption text-text-muted">
+            {slide.title}
+          </span>
         </span>
       )}
     </div>

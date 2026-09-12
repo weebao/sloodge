@@ -50,6 +50,10 @@ const MIGRATED = [
   'src/renderer/src/features/canvas/SlideCanvas.tsx',
   'src/renderer/src/features/design/SelectionOverlay.tsx',
   'src/renderer/src/features/design/DesignNotice.tsx',
+  // M8b.3 surface 6 — thumbnail rail (#80)
+  'src/renderer/src/features/deck/ThumbnailRail.tsx',
+  'src/renderer/src/features/deck/ThumbnailPreview.tsx',
+  'src/renderer/src/features/deck/SlideContextMenu.tsx',
 ] as const
 
 const RENDERER = 'src/renderer/src/'
