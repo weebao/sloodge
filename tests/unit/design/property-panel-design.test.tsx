@@ -43,8 +43,12 @@
  * `<svg>` → the old `💧` span; the arrange bar's `<ToolbarButton` → a raw `<button>`;
  * `h-inspector` → `h-64` on the dock (this file and `slide-canvas-dock.test.tsx`); review r1's
  * `isSwatchSelected` token branch → `return false` (green before the token case existed — 7 files,
- * 166 tests; now the token case reds on `aria-pressed`, `expected 'false' to be 'true'`); and
- * `max-w-full` dropped from `ASK_CHIP` (the Chip-parity case reds naming the missing class).
+ * 166 tests; now the token case reds on `aria-pressed`, `expected 'false' to be 'true'`);
+ * `max-w-full` dropped from `ASK_CHIP` (the Chip-parity case reds naming the missing class); and
+ * review r2's two that the first token fixture could not see — R2e, the token branch replaced by a
+ * match on the `var()` fallback hex alone (green while the fixture's fallback was the accent's own
+ * `#4c8dff`; red on the token case now that it is `#ff0000`), and R2b, `[,)]` narrowed to `,` so a
+ * bare `var(--sl-accent)` no longer matches (red on the bare-token case).
  *
  * What neither half can show: that the tokens paint the ratios the audit measured. happy-dom applies
  * no stylesheet; the values are the census's business (`--check`, rows 40–48), not this file's.
@@ -76,8 +80,14 @@ const RING = [
 const NOW = 1_700_000_000_000
 /** `#4c8dff` is the default theme's Accent swatch, so that swatch is the selected one (by value). */
 const SOURCE = '<h1 style="color: #4c8dff; font-size: 44px">Hello</h1>'
-/** What a swatch click writes (`themeSwatchWriteValue`): selected by token — the primary path. */
-const SOURCE_TOKEN = '<h1 style="color: var(--sl-accent, #4c8dff); font-size: 44px">Hello</h1>'
+/**
+ * What a swatch click writes (`themeSwatchWriteValue`): selected by token — the primary path. The
+ * fallback is deliberately NOT any swatch's hex: with `#4c8dff` here, code that matched the fallback
+ * alone and never read the token passed this case (review r2, mutation R2e).
+ */
+const SOURCE_TOKEN = '<h1 style="color: var(--sl-accent, #ff0000); font-size: 44px">Hello</h1>'
+/** The app's own canonical spelling (`starter-slide.ts`, 30-slide-format §4.1): a bare `var()`. */
+const SOURCE_TOKEN_BARE = '<h1 style="color: var(--sl-accent); font-size: 44px">Hello</h1>'
 /** A token that merely starts with the accent's name: the word boundary must not select accent. */
 const SOURCE_NEAR_MISS = '<h1 style="color: var(--sl-accent-fg); font-size: 44px">Hello</h1>'
 const SHAPES = `<!doctype html><html><body>
@@ -254,6 +264,16 @@ describe('M8b.3 surface 3 — the property panel on the design tokens', () => {
       const other = screen.getByTestId(`theme-color-${key}`)
       expect(other.getAttribute('aria-pressed'), `${key} is not the referenced token`).toBe('false')
       expect(classes(other)).not.toContain('ring-2')
+    }
+  })
+
+  it('a bare token reference with no fallback — the canonical spelling — selects the swatch too', () => {
+    mountPanel(SOURCE_TOKEN_BARE)
+    const accent = screen.getByTestId('theme-color-accent')
+    expect(accent.getAttribute('aria-pressed'), 'var(--sl-accent) with no fallback').toBe('true')
+    expect(classes(accent)).toContain('ring-2')
+    for (const key of ['bg', 'fg', 'muted']) {
+      expect(screen.getByTestId(`theme-color-${key}`).getAttribute('aria-pressed')).toBe('false')
     }
   })
 

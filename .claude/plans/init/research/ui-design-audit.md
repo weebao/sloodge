@@ -40,6 +40,23 @@ a citation that described a pre-migration spelling the work list was written fro
 pinned to the commit it was measured on rather than to a line — so §11 no longer hashes it. §3.1's
 U2, U4, U10 (composer), U12, U13 and U18 rows read **Landed**; §4.4 and §7 row 1 record the landing.
 
+**M8b.3 surface 3 (the property panel, the colour controls and the arrange bar) — a fourth time**, the same
+way: the migration rewrote every line of the three files the audit cited, so `--verify-doc` printed
+`RESULT: FAIL (18)` on the rebased branch — §1's freshness line and all **17** `PropertyPanel.tsx` /
+`ColorControls.tsx` / `ArrangeBar.tsx` citations, none landing on identical text. Triaged before §11 was
+regenerated: a citation whose subject still exists is re-pointed (the dock `PropertyPanel.tsx:284`, the element
+tag `:289`, the fields `:558` and `:86`, the transform buttons `:616/625/634`, the chip `:92`; the swatches
+`ColorControls.tsx:175` and `:178`, the eyedropper `:270`; the bar `ArrangeBar.tsx:126`, its buttons `:166/178`); a
+citation that described a pre-migration spelling the work list was written from (`bg-shell-bg/95`,
+`border-chrome-line hover:border-accent`, `hover:ring-2`, the `w-px` dividers, `shadow-md` under a border,
+`text-[11px]`, the `mb-1.5`/`mt-2` margins, `focus:border-accent`) now says so and names the replacement line,
+or is pinned to the commit it was measured on. §3.1's T3, U3, U6, U7 and U11 rows read **Landed**; §4.5
+and §7 row 3 record the landing and the five deviations from the work list; §2.7 and §2.8 are re-derived
+again for the transition and the disabled opacities that went with the bar's `BUTTON`. And the trap fired
+here too, one level down: the first regenerate hashed `ArrangeBar.tsx` line 150 as an **empty line** and
+`PropertyPanel.tsx` line 569 as a `</div>` — §11's own list of non-unique entries still named the old lines —
+and `--verify-doc` passed on it. Recounting the non-unique entries is what caught it (§11).
+
 ## 1. Headline numbers
 
 | Measure | Value |
@@ -63,7 +80,7 @@ U2, U4, U10 (composer), U12, U13 and U18 rows read **Landed**; §4.4 and §7 row
 | Worst UI ratio | **1.00:1** — credential fields whose fill equals the panel fill (`AuthTab.tsx` lines 193 and 245 on `6452c04`), identified only by a 1.24:1 hairline. Unchanged by the five merges; **closed by M8b.3 surface 4**, which made both the `Input` primitive (`AuthTab.tsx:183`, `:227` — `bg-field border-line-strong`, 3.95 / 3.76 against the field). The remaining UI failures are the property panel's and the canvas's (U3, U6–U9, U11, U19), owned by surfaces 3, 5 and 8 |
 | Canonical set, verified | 27 colour roles × 2 modes, 63 pairs measured, **0 failures** — and every one of the 18 remaining failures maps to a measured pair (§5.2); every token reachable from a Tailwind utility (probe in §5.7). **Landed** by M8b.2: `--check --require-landed` prints `Role block: landed — 49/49 declarations byte-equal to the canonical values` and `RESULT: pass` |
 
-Measured on 84 files: 370 colour uses, 80 `dark:`, 38 arbitrary, 68 palette, 138 retired-token references.
+Measured on 84 files: 324 colour uses, 52 `dark:`, 33 arbitrary, 64 palette, 86 retired-token references.
 
 **Every number above was re-derived on `815bc61` plus this branch (#74, M8b.1c)** — M8b.1 took its
 originals on `a92337a`; the five merges to `774b356`, then #72 and #73, then M8b.1c's nine
@@ -171,11 +188,11 @@ dialog only, `ExportPptxDialog.tsx:72–118`), `red-50/200/300/400/500/600/800/9
 
 | # | Same thing, several spellings | Where | Wins |
 | --- | --- | --- | --- |
-| C1 | Raised surface: `bg-white` (18) vs `bg-chrome` (7); dark partner `dark:bg-ink` (12) vs `dark:bg-ink-alt` (13); plus M8b.2's `bg-surface-raised` (2, `components/ui/` only). `ChatPanel.tsx`'s composer was `bg-white`+`dark:bg-ink-alt` (`bg-field` at `ChatPanel.tsx:48` since M8b.3 surface 1); `AuthTab.tsx`'s credential inputs were `bg-chrome`+`dark:bg-ink` (line 193 on `6452c04`; the `Input` primitive, `bg-field`, at `AuthTab.tsx:183` since M8b.3 surface 4); `PropertyPanel.tsx:487` field is `bg-white`+`dark:bg-ink`. Three fields, three recipes. | 20 sites | `field` for inputs, `surface-raised` for everything else (§5.2) |
-| C2 | Hover fill: `hover:bg-chrome-alt` (`ArrangeBar.tsx:20`; `FormatBar.tsx` `:16` and `DesignModeToggle.tsx` `:47` too, until M8b.3 surface 2 put them on `ToolbarButton`/`Button` — `hover:bg-hover`, 1.18 / 1.24:1 on `surface-raised`) vs `hover:bg-chrome-line/40` (the chat Stop button, until M8b.3 surface 1 made it `<Button variant="secondary">` — `ChatPanel.tsx:217`) vs `hover:border-accent` only (`ThumbnailRail.tsx:372`, `PropertyPanel.tsx:569–589`, `ColorControls.tsx:206`) vs `hover:opacity-90` (chat Send; `Button`'s `primary` recipe at `ChatPanel.tsx:222` since M8b.3 surface 1) vs `hover:ring-2` (`ColorControls.tsx:106`) vs full accent fill (`SlideContextMenu.tsx:169`). **Fixed by M8b.1a (#68):** the dark hover on the toolbar row was `dark:hover:bg-ink-alt` on a row that is already `ink-alt` — 1.00:1, invisible (`FormatBar.tsx` `:16` then, `ArrangeBar.tsx:20` over its `ink-alt/95` bar). All three then carried `dark:hover:bg-ink-line` — 1.24:1; `ArrangeBar.tsx:20` still does, and the app shell's two are the primitives' `hover:bg-hover` since M8b.3 surface 2. The six-mechanism spread itself is untouched on the surfaces that have not migrated. | 6 mechanisms | `hover` / `pressed` fills for subtle buttons; `opacity-90` for filled buttons; nothing else |
+| C1 | Raised surface: `bg-white` (18) vs `bg-chrome` (7); dark partner `dark:bg-ink` (12) vs `dark:bg-ink-alt` (13); plus M8b.2's `bg-surface-raised` (2, `components/ui/` only). `ChatPanel.tsx`'s composer was `bg-white`+`dark:bg-ink-alt` (`bg-field` at `ChatPanel.tsx:48` since M8b.3 surface 1); `AuthTab.tsx`'s credential inputs were `bg-chrome`+`dark:bg-ink` (line 193 on `6452c04`; the `Input` primitive, `bg-field`, at `AuthTab.tsx:183` since M8b.3 surface 4); the property panel's fields were `bg-white`+`dark:bg-ink` (the `Input` primitive at `PropertyPanel.tsx:558` since M8b.3 surface 3). Three fields, three recipes — two of them `field` now. | 20 sites | `field` for inputs, `surface-raised` for everything else (§5.2) |
+| C2 | Hover fill: `hover:bg-chrome-alt` (the arrange bar's `BUTTON` — `ArrangeBar.tsx` line 20 on `870ea7a`, `ToolbarButton` at `ArrangeBar.tsx:166` since M8b.3 surface 3; `FormatBar.tsx` `:16` and `DesignModeToggle.tsx` `:47` too, until M8b.3 surface 2 put them on `ToolbarButton`/`Button` — `hover:bg-hover`, 1.18 / 1.24:1 on `surface-raised`) vs `hover:bg-chrome-line/40` (the chat Stop button, until M8b.3 surface 1 made it `<Button variant="secondary">` — `ChatPanel.tsx:217`) vs `hover:border-accent` only (`ThumbnailRail.tsx:372`; the transform buttons and the eyedropper until M8b.3 surface 3 — `Button`'s `subtle` at `PropertyPanel.tsx:616` and a `ToolbarButton` at `ColorControls.tsx:270` now) vs `hover:opacity-90` (chat Send; `Button`'s `primary` recipe at `ChatPanel.tsx:222` since M8b.3 surface 1) vs `hover:ring-2` (the theme swatch, until M8b.3 surface 3 — `hover:shadow-raised` at `ColorControls.tsx:175`) vs full accent fill (`SlideContextMenu.tsx:169`). **Fixed by M8b.1a (#68):** the dark hover on the toolbar row was `dark:hover:bg-ink-alt` on a row that is already `ink-alt` — 1.00:1, invisible (`FormatBar.tsx` `:16` then, and the arrange bar's `BUTTON` over its `ink-alt/95` bar — line 20 on `870ea7a`). All three then carried `dark:hover:bg-ink-line` — 1.24:1; all three are the primitives' `hover:bg-hover` now — the app shell's two since M8b.3 surface 2, the arrange bar's since M8b.3 surface 3. The six-mechanism spread itself is untouched on the surfaces that have not migrated. | 6 mechanisms | `hover` / `pressed` fills for subtle buttons; `opacity-90` for filled buttons; nothing else |
 | C3 | Error: `text-red-600 dark:text-red-400` (5 sites; the three in Settings are danger `Notice`s since M8b.3 surface 4); `border-red-300 bg-red-50 text-red-800` + dark twins (the chat error bubble until M8b.3 surface 1; the danger `Notice` at `ChatPanel.tsx:264` now); `bg-red-500` bar (`StatusBar.tsx:118`); `bg-red-600` button (`BudgetTab.tsx` line 259 on `6452c04`; `<Button variant="danger">` at `BudgetTab.tsx:272` since M8b.3 surface 4) | 8 sites | `danger` / `danger-soft` |
 | C4 | Warning: `text-amber-800 dark:text-amber-500` (4, was `amber-600` until M8b.1a; 2 since M8b.3 surface 4 made the Budget pair warning `Notice`s); `bg-amber-800 text-white` (`DesignNotice.tsx:57`, `SelectionOverlay.tsx:926`, `:940`, was `amber-600`); `border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-200` vs `border-amber-500/60` for the same box (`AuthTab.tsx` line 157 and `BudgetTab.tsx` line 242 on `6452c04`; both are `<Notice tone="warning">` since M8b.3 surface 4 — `AuthTab.tsx:160`, `BudgetTab.tsx:264`); `bg-amber-50 text-amber-800` (`ExportPptxDialog.tsx:102`); `bg-amber-500` bar (`StatusBar.tsx:120`); `border-amber-500` editing frame (`SelectionOverlay.tsx:915`) — a **non-status** use of the warning hue | 11 sites | `warning` / `warning-soft`; the editing frame gets its own `edit` token |
-| C5 | Tinted chip: `bg-accent/10 border-accent/50` (the chat context chip — `Chip tone="accent"` at `ChatPanel.tsx:187` since M8b.3 surface 1), `bg-accent/10 border-accent/60 hover:bg-accent/20` (`PropertyPanel.tsx:288`), `bg-accent/5 border-accent/40` (the chat auth gate — `bg-accent-soft border-accent` at `ChatPanel.tsx:343` since M8b.3 surface 1), `bg-accent/10` marquee (`SelectionOverlay.tsx:998`) — three alphas for one tint, and the declared `accent-soft` unused | 4 sites | `accent-soft` (re-valued, §5.2) |
+| C5 | Tinted chip: `bg-accent/10 border-accent/50` (the chat context chip — `Chip tone="accent"` at `ChatPanel.tsx:187` since M8b.3 surface 1), `bg-accent/10 border-accent/60 hover:bg-accent/20` (the "Ask Claude" chip — `bg-accent-soft hover:bg-hover`, no border, at `PropertyPanel.tsx:92` since M8b.3 surface 3), `bg-accent/5 border-accent/40` (the chat auth gate — `bg-accent-soft border-accent` at `ChatPanel.tsx:343` since M8b.3 surface 1), `bg-accent/10` marquee (`SelectionOverlay.tsx:998`) — three alphas for one tint, and the declared `accent-soft` unused | 4 sites | `accent-soft` (re-valued, §5.2) |
 | C6 | HUD: `bg-black/70` (5) + `hover:bg-black/85` (1) + `bg-black/20` dismiss hover (`DesignNotice.tsx:63`) + `bg-white/15` present hover (3) | 10 sites | `hud` / `hud-fg` |
 | C7 | Scrim: `bg-black/40` twice for dialogs, and once as the **dark canvas mat** (`SlideCanvas.tsx:104` `dark:bg-black/40`) — the same value meaning "modal backdrop" and "work surface" | 3 sites | `scrim` for dialogs; opaque `canvas` for the mat |
 | C8 | No success colour existed anywhere in the chrome until M8b.3 surface 4: "Saved" was muted grey (`BudgetTab.tsx` line 290 on `6452c04`) and is `text-success` with a check glyph at `BudgetTab.tsx:300`. | — | `success` / `success-soft` |
@@ -196,14 +213,14 @@ Fluent documents (M8b.0 §4.4). **Nothing here needs a new scale.** What needs t
 
 | # | Finding | Sites |
 | --- | --- | --- |
-| S1 | 14 margin spellings, 27 uses — `mt-1` ×4, `mb-2` ×3, `mb-1` ×3, `mt-2` ×2, `mt-4` ×2, `mx-0.5` ×2, and one each of `mt-0.5`, `ml-0.5`, `mt-1.5`, `mb-1.5`, `mt-6`, `ml-2`, `ml-5`, `mx-1`. Margins on children are spacing done by eye; the parent's `gap` is the same value declared once. | `ChatPanel.tsx` (five sites, all parent `gap` since M8b.3 surface 1 — the composer column `ChatPanel.tsx:158`, the assistant bubble `:287`, the auth gate `:343`), `AuthTab.tsx` (the status card's two `mt-1`s, lines 136 and 140 on `6452c04` — the card's own `gap-1` at `AuthTab.tsx:136` since M8b.3 surface 4), `ExportPptxDialog.tsx:75/79/92/102/107`, `SlideCanvas.tsx:166`, `PropertyPanel.tsx:250/283`, `FormatBar.tsx` `:41`/`:102` (both gone in M8b.3 surface 2: the dividers are a gap, the colour bar sits in a `gap-0.5` column), `ArrangeBar.tsx:150/164`, `SettingsDialog.tsx` (`ml-2` on the Model tab's badge, line 256 on `6452c04` — a `gap-2` row since M8b.3 surface 4, and the Discard prompt uses `grow`, not `mr-auto`), `BudgetTab.tsx` (`ml-5`, line 242 on `6452c04` — the two-column row at `BudgetTab.tsx:245`) |
+| S1 | 14 margin spellings, 27 uses — `mt-1` ×4, `mb-2` ×3, `mb-1` ×3, `mt-2` ×2, `mt-4` ×2, `mx-0.5` ×2, and one each of `mt-0.5`, `ml-0.5`, `mt-1.5`, `mb-1.5`, `mt-6`, `ml-2`, `ml-5`, `mx-1`. Margins on children are spacing done by eye; the parent's `gap` is the same value declared once. | `ChatPanel.tsx` (five sites, all parent `gap` since M8b.3 surface 1 — the composer column `ChatPanel.tsx:158`, the assistant bubble `:287`, the auth gate `:343`), `AuthTab.tsx` (the status card's two `mt-1`s, lines 136 and 140 on `6452c04` — the card's own `gap-1` at `AuthTab.tsx:136` since M8b.3 surface 4), `ExportPptxDialog.tsx:75/79/92/102/107`, `SlideCanvas.tsx:166`, `PropertyPanel.tsx` (both parent `gap` since M8b.3 surface 3 — the dock `PropertyPanel.tsx:284`), `FormatBar.tsx` `:41`/`:102` (both gone in M8b.3 surface 2: the dividers are a gap, the colour bar sits in a `gap-0.5` column), `ArrangeBar.tsx` (its two `mx-0.5` hairlines are `dividerGap` since M8b.3 surface 3 — `ArrangeBar.tsx:126`), `SettingsDialog.tsx` (`ml-2` on the Model tab's badge, line 256 on `6452c04` — a `gap-2` row since M8b.3 surface 4, and the Discard prompt uses `grow`, not `mr-auto`), `BudgetTab.tsx` (`ml-5`, line 242 on `6452c04` — the two-column row at `BudgetTab.tsx:245`) |
 | S2 | The one genuinely off-grid value was `-mb-px` (`MenuTabStrip.tsx` `:21` on `a92337a`) — the tab overlapping the strip's border by 1px. A legitimate technique, but **retired by M8b.3 surface 2**: the strip no longer has a border to overlap (§4.1 item 3), the tab is `border-b-0` in the row's own colour, and M8b.4's allow-list has one entry fewer. | 0 |
 | S3 | Indentation by padding: `pl-5` ×3 + `ml-5` ×1 in `BudgetTab.tsx` (lines 242, 267, 295 and 300 on `6452c04`) to align under a checkbox — four places that had to agree with the checkbox width by coincidence. **Landed (M8b.3 surface 4)**: the row is two columns — the box at `BudgetTab.tsx:245`, everything it governs in the column at `:258` — so the alignment is structural; flex rather than `grid-cols-[auto_1fr]`, which is an arbitrary value and a gate column | 0 |
 | S4 | The two dialogs disagree on their own padding: Settings `px-5 py-3` header / `px-5 py-4` body / `px-5 py-3` footer (lines 148, 189 and 197 on `6452c04`; the `Dialog` primitive's own rhythm — the same values, `Dialog.tsx:202/205/209` — since M8b.3 surface 4, which is what the PPTX dialog inherits when surface 8 adopts it); PPTX `p-6` throughout with `mt-4`/`mt-6` stacking (`ExportPptxDialog.tsx:69–107`) | 2 files |
-| S5 | Panel header padding: rail `px-3 py-2` (`ThumbnailRail.tsx:335`), chat `px-3 py-2` (`ChatPanel.tsx:137`, wrapping a `PanelHeading` since M8b.3 surface 1), property panel `px-4 py-2.5` with the title in `mb-1.5` (`PropertyPanel.tsx:250/252`) — the inspector is the odd one out | 3 |
+| S5 | Panel header padding: rail `px-3 py-2` (`ThumbnailRail.tsx:335`), chat `px-3 py-2` (`ChatPanel.tsx:137`, wrapping a `PanelHeading` since M8b.3 surface 1), property panel `px-4 py-2.5` (`PropertyPanel.tsx:284`; the title's `mb-1.5` became the dock's `gap-2` in M8b.3 surface 3, the padding is unchanged) — the inspector is still the odd one out | 3 |
 
 **Sizes** (42 distinct, 86 uses) confirm the 28px control: `h-7` ×5 on `a92337a` (`FormatBar.tsx` `:16`/`:45` and `DesignModeToggle.tsx` `:47` — `h-control` via the primitives since M8b.3 surface 2 —
-`ArrangeBar.tsx:20`, `StatusBar.tsx:181`) — Helium's `kToolbarButtonHeight`
+the arrange bar's, `h-control w-control` through `ToolbarButton` since M8b.3 surface 3 — `ArrangeBar.tsx:166`, `StatusBar.tsx:181`) — Helium's `kToolbarButtonHeight`
 after subtraction, and the reason M8b.0 §5.0 carries **no "make it roomier" item**. Present controls
 are `h-8` (32px) — appropriate for a fullscreen HUD. Arbitrary sizes: `w-[188px]` rail, `w-[320px]`
 chat, `h-64` inspector, `min-w-[140px]` menu, `w-[28rem]`/`w-[34rem]` dialogs, `max-w-[80%]`,
@@ -220,7 +237,7 @@ was the other `rounded-sm` (`rounded-full` on a 2px bar since M8b.3 surface 2). 
 both dialogs), **pill** (12 uses: context chips, HUD pills, present controls, budget bar, rotate handle).
 
 Inconsistencies: chat bubbles were 8px while the auth card in the same column was 4px (both
-`rounded-panel` since M8b.3 surface 1 — `ChatPanel.tsx:254`, `:343`); the arrange bar (a floating toolbar) is 8px (`ArrangeBar.tsx:145`) while the
+`rounded-panel` since M8b.3 surface 1 — `ChatPanel.tsx:254`, `:343`); the arrange bar (a floating toolbar) was 8px (`rounded-panel`, 6px, at `ArrangeBar.tsx:126` since M8b.3 surface 3) while the
 context menu (a floating menu) is 4px (`SlideContextMenu.tsx:139`); the dialog is 8px and its inner
 tabs `rounded-t` 4px with a `border-b-2` underline (`SettingsDialog.tsx` line 175 on `6452c04`; `rounded-t-control` at `SettingsDialog.tsx:58` since M8b.3 surface 4) — concentric radius
 (`outer = inner + padding`) holds nowhere. Ceiling is 8px everywhere, which matches Helium's `kMSmall`
@@ -229,7 +246,7 @@ name the three steps.**
 
 ### 2.4 Shadow — 6 spellings, 9 uses
 
-`shadow-sm` (`ThumbnailRail.tsx:165`), `shadow-md` (`ArrangeBar.tsx:145`), `shadow-lg`
+`shadow-sm` (`ThumbnailRail.tsx:165`), `shadow-md` (the arrange bar, until M8b.3 surface 3 — `shadow-floating` with no border at `ArrangeBar.tsx:126`), `shadow-lg`
 (`SlideContextMenu.tsx:139`, `PresentControls.tsx:47`), `shadow-xl` (`SettingsDialog.tsx` line 146 on `6452c04` — `shadow-overlay` through the `Dialog` primitive, `Dialog.tsx:71`, since M8b.3 surface 4;
 `ExportPptxDialog.tsx:69`), and the bespoke `shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)]`
 on the canvas slide (`SlideCanvas.tsx:131`) — the only two raw `rgba()` literals in a component.
@@ -263,7 +280,7 @@ Weights: `font-medium` ×22, `font-semibold` ×11, `font-normal` ×1, `font-bold
 glyph, `FormatBar.tsx:120` — `font-semibold` since M8b.3 surface 2, `--font-weight-*: initial` having already killed `font-bold`). The **section-heading recipe** — uppercase, tracked, 11px — appears six
 times with two trackings and two weights: `tracking-wider font-semibold` (`ThumbnailRail.tsx:335`,
 `ChatPanel.tsx:138` until M8b.3 surface 1 made it a `PanelHeading`), `tracking-wide font-semibold` (`ChatPanel.tsx:289` until the same PR made it `tracking-caps`, `DesignModeToggle.tsx:78` — `tracking-caps text-caption` since M8b.3 surface 2,
-`PropertyPanel.tsx:250`), `tracking-wide font-medium` (`AuthTab.tsx` line 132 on `6452c04`; a `PanelHeading` at `AuthTab.tsx:138` since M8b.3 surface 4). One recipe, one token.
+the property panel's title until M8b.3 surface 3 made it a `PanelHeading` — `PropertyPanel.tsx:287`), `tracking-wide font-medium` (`AuthTab.tsx` line 132 on `6452c04`; a `PanelHeading` at `AuthTab.tsx:138` since M8b.3 surface 4). One recipe, one token.
 
 `tabular-nums` appears twice (`ThumbnailRail.tsx:163`, `PresentControls.tsx:69`). Changing numbers
 without it: zoom percentage (`SlideCanvas.tsx:145`), dimensions and rotation labels
@@ -283,22 +300,22 @@ focus (`ThumbnailRail.tsx:159/167`) — the offset has no colour, resolves to Ta
 paints a white halo on the dark rail (M8b.0 §2.5e; still shipped). `border-dashed` ×6 marks four
 different things: hover outline, multi-select box, editing frame, "+ New" and empty-chip affordances.
 
-**`outline-none` ×5** (×4 since M8b.3 surface 1 dropped the chat composer's, ×3 since M8b.3 surface 2 put the switch on `Button`): `ThumbnailRail.tsx:159` and `DesignModeToggle.tsx` `:47` (on `Button` since M8b.3 surface 2) restore a
-`focus-visible` ring; `PropertyPanel.tsx:487` replaces it with — and the chat composer did until M8b.3 surface 1 gave it the shared `FOCUS_RING` (`ChatPanel.tsx:48`) —
+**`outline-none` ×5** (×4 since M8b.3 surface 1 dropped the chat composer's, ×3 since M8b.3 surface 2 put the switch on `Button`, ×2 since M8b.3 surface 3 dropped the property panel's; `FontFamilyControl.tsx:495/541`, which M3.10 added after this count was taken, are not in it): `ThumbnailRail.tsx:159` and `DesignModeToggle.tsx` `:47` (on `Button` since M8b.3 surface 2) restore a
+`focus-visible` ring; the property panel's fields replaced it with — until M8b.3 surface 3 gave them `Input` and the shared `FOCUS_RING` (`PropertyPanel.tsx:558`, `:86`), as the chat composer did until M8b.3 surface 1 (`ChatPanel.tsx:48`) —
 `focus:border-accent` (a 1px colour swap — 2.91:1 in dark, §3); `SelectionOverlay.tsx:859` restores nothing, and
 `SettingsDialog.tsx` line 146 on `6452c04` restored nothing (since M8b.3 surface 4 the panel is the `Dialog` primitive's, which moves focus to the first focusable instead). Every other interactive element (≈40) relies on the UA
 default, which Chromium draws in `-webkit-focus-ring-color` — a blue that is nowhere in the palette.
 
-### 2.7 Motion — 7 utilities, 17 uses
+### 2.7 Motion — 7 utilities, 16 uses
 
-`transition-colors` ×7 (`ThumbnailRail.tsx:165` and `:372`, `ArrangeBar.tsx:20`,
-`PresentControls.tsx:56`, `:65` and `:77`, `StatusBar.tsx:217`), `transition-opacity` ×2
+`transition-colors` ×6 (`ThumbnailRail.tsx:165` and `:372`, `PresentControls.tsx:56`, `:65` and `:77`,
+`StatusBar.tsx:217`; the arrange bar's went with its `BUTTON` in M8b.3 surface 3), `transition-opacity` ×2
 (`PresentControls.tsx:42`, and `ChatPanel.tsx:57` for the bubbles' `@starting-style` arrival — chat
 Send's moved into `Button` in M8b.3 surface 1), `duration-base` ×1 (`ChatPanel.tsx:57`),
 `duration-300` ×1 (`PresentControls.tsx:42`), `animate-working` ×1 (the chat typing dot,
 `ChatPanel.tsx:306`) — and, since M8b.3 surface 4, the `Dialog` primitive's own five: `transition-opacity duration-fast` on the scrim (`Dialog.tsx:69`), `transition` on the panel (`Dialog.tsx:71`) with `duration-base` on arrival and `duration-fast` on exit (`Dialog.tsx:199`), which is the dialog enter/exit bridge ui-design-direction.md §5.5 approved, on the shell and scrim only.
 
-**The count had fallen from 14 to 12 because the primitives declare no transition at all**, and that is
+**The count had fallen from 14 to 12, and M8b.3 surface 3 takes one more off (the arrange bar's), because the primitives declare no transition at all**, and that is
 worth stating rather than reading as a miscount. §5.6 specifies every `Button` / `ToolbarButton` /
 `Input` variant as state classes with no `transition-*`, and `src/renderer/src/components/ui/`
 matched the spec — it contained no `transition` of any kind until surface 4 gave `Dialog.tsx` the five above, and the controls (`Button`, `ToolbarButton`, `Input`, `Chip`, `Notice`) still declare none. So each control M8b.3 moves onto a
@@ -309,7 +326,7 @@ behaviour change, so it is recorded here rather than left to be inferred from a 
 **Two claims this section made before M8b.2 are now inverted.** (a) There is no bare Tailwind default
 left to inherit: `theme.css:105` sets `--ease-*: initial` (deleting the `ease-*` utilities outright),
 `theme.css:108` sets `--default-transition-duration: 120ms` and `theme.css:109`
-`--default-transition-timing-function: var(--ease-out)`, so the seven bare `transition-colors` above
+`--default-transition-timing-function: var(--ease-out)`, so the six bare `transition-colors` above
 run 120ms on the instant-in curve `emil-design-eng` and M8b.0 §5.5 asked for — correct *by default*
 now, where they were wrong by accident before. (b) `animate-pulse`'s unguarded 2s loop is gone:
 `animate-working` is 900ms (`theme.css:111`), and the `prefers-reduced-motion` block the renderer
@@ -322,25 +339,26 @@ F2 and F4 stand.
 
 ### 2.8 Opacity, z-index, blur
 
-**Opacity** (7 spellings, 29 uses — fewer spellings, more uses, because the primitives spread one
-of them): `opacity-50` ×14 (×20 before M8b.3 surface 4 took the six `disabled:opacity-50`s off the settings controls, which now inherit the primitives') is the dominant disabled value and sits *in* the primitives
+**Opacity** (7 spellings, 24 uses — fewer spellings than before M8b.2, and fewer uses as the surfaces hand their disabled
+state to the primitives): `opacity-50` ×10 (×20 before M8b.3 surface 4 took the six `disabled:opacity-50`s off the settings controls and M8b.3 surface 3 took four off the property panel's transform buttons and eyedropper — all of them inherit the primitives' now) is the dominant disabled value and sits *in* the primitives
 (`Button.tsx:30`, `Input.tsx:19`, `ToolbarButton.tsx:43`) as well as the settings and property
-controls; `opacity-40` ×2 (`ArrangeBar.tsx:20`, and the dragged thumbnail at `ThumbnailRail.tsx:147`);
+controls; `opacity-40` ×1 (the dragged thumbnail at `ThumbnailRail.tsx:147`; the arrange bar's `disabled:opacity-40` went with its `BUTTON` in M8b.3 surface 3);
 `opacity-30` ×2 (`PresentControls.tsx:56`, `:65`). **`opacity-60` is gone** — it was the composer's,
 retired by M8b.3 surface 1 — so the **four** disabled opacities this section opened with are now
-**three**, converging on `opacity-50` as the primitives spread. `opacity-90` ×3 is `Button`'s own
+**three**, converging on `opacity-50` as the primitives spread — surface 3's five went the same way: four `disabled:opacity-50` (the three transform buttons, the eyedropper) and the one `disabled:opacity-40` into `Button` / `ToolbarButton`, and the fields' into `Input`; the Content textarea and the two swatches still spell their own (`PropertyPanel.tsx:86`, `ColorControls.tsx:175/178`). `opacity-90` ×3 is `Button`'s own
 hover/active pair (`Button.tsx:33`, `:37`, `:38`). `opacity-0` ×6 and `opacity-100` ×1 belong to the
 transition sites in §2.7 — four of the six are the `Dialog` primitive's arrival and exit frames (`Dialog.tsx:69/71/73/74`) — not to state styling. Unchanged: `opacity-50`/`opacity-80` on
 breadcrumb text (`SelectionOverlay.tsx:1011/1012`) is text colour done with opacity, which composites
 unpredictably over the HUD.
 
 **Z-index**: `z-50` claimed by four independent surfaces (`SlideContextMenu.tsx:139`,
-`ExportPptxDialog.tsx:61`, `PresentSurface.tsx:154`, and `SettingsDialog.tsx` line 134 on `6452c04` — `z-dialog` through `Dialog.tsx:69` since M8b.3 surface 4); `z-10` by the arrange
-bar and the present blanker. No ordering contract: opening Settings from the menu bar while a context
+`ExportPptxDialog.tsx:61`, `PresentSurface.tsx:154`, and `SettingsDialog.tsx` line 134 on `6452c04` — `z-dialog` through `Dialog.tsx:69` since M8b.3 surface 4); `z-10` by the present
+blanker (the arrange bar's is `z-panel` since M8b.3 surface 3 — `ArrangeBar.tsx:126`). No ordering contract: opening Settings from the menu bar while a context
 menu is open is decided by DOM order.
 
-**Blur**: `backdrop-blur` (8px) on the arrange bar and present controls — the two floating HUDs; fine,
-and the one glassmorphism M8b.0 §8 permits.
+**Blur**: `backdrop-blur` (8px) on the present controls — the one floating HUD left with it, and the one
+glassmorphism M8b.0 §8 permits. The arrange bar's went in M8b.3 surface 3 with its opaque `bg-surface-raised`
+(a blur behind an opaque fill paints nothing; the `/95` the work list wrote is an alpha on a role token, R3).
 
 ---
 
@@ -353,10 +371,10 @@ opaque ground they actually sit on. The composite grounds (all opaque results):
 | Ground | Composition | Light | Dark |
 | --- | --- | --- | --- |
 | canvas mat | `canvas-mat/25` over `shell-bg` · `black/40` over `ink` (`SlideCanvas.tsx:104`) | `#d5d5d5` | `#131314` |
-| property panel | `shell-bg/95` · `ink-alt/95` over the mat (`PropertyPanel.tsx:250`) | `#f1f1f1` | `#25252a` |
+| property panel | `shell-bg/95` · `ink-alt/95` over the mat, as measured; opaque `surface-raised` at `PropertyPanel.tsx:284` since M8b.3 surface 3 | `#f1f1f1` | `#25252a` |
 | dialog scrim | `black/40` over the app ground | `#929292` | `#131314` |
 | HUD pill | `black/70` over a white slide · over `ink-alt` | `#4d4d4d` | `#0b0b0d` |
-| arrange bar | `white/95` · `ink-alt/95` over the slide | `#ffffff` | `#26262b` |
+| arrange bar | `white/95` · `ink-alt/95` over the slide, as measured; opaque `surface-raised` at `ArrangeBar.tsx:126` since M8b.3 surface 3 | `#ffffff` | `#26262b` |
 
 Thresholds: **4.5:1** for text (nothing in the chrome reaches WCAG's 18.66px-bold "large" size),
 **3:1** for UI components (WCAG 1.4.11). Disabled controls and `aria-hidden` decoration are exempt
@@ -403,7 +421,7 @@ quoted alongside.
 | --- | --- | --- | --- | --- | --- |
 | T1 | `amber-600` on `chrome` | **3.06** | 7.66 (`amber-500`) | `StatusBar.tsx:82/114` skills-fallback + budget-warn text, `BudgetTab.tsx` lines 203 and 221 on `6452c04` | **Landed (M8b.1a)** — those four lines read `text-amber-800 dark:text-amber-500`, 6.83 / 7.66. **The Budget pair landed again in M8b.3 surface 4** as warning `Notice`s (`BudgetTab.tsx:218/239` — `text-text` on `warning-soft`, 16.62 / 12.05; a `Notice` rather than `text-warning` because the twin clause §5.9 assigns to row 7 reds the bare token, and the twin it wants is a `dark:` the gate reds). The status bar's two still convert to `text-warning` — 6.83 / 7.65 — in row 7 |
 | T2 | `white` on `amber-600` | **3.19** | **3.19** | `DesignNotice.tsx:57`, `SelectionOverlay.tsx:926` editing label (and `:940`) | **Landed (M8b.1a)** — all three read `bg-amber-800`, 7.13. M8b.1c then moved the editing label's `text-white` out of the shared class head and into its own ternary arm, so `amber-800` still names its foreground explicitly — `on-fill` would be 2.64:1 on it in dark. M8b.3 still converts to `bg-warning text-on-fill` — 7.13 / 8.77 (the editing label becomes `bg-edit text-on-fill` — 5.26 / 7.14) |
-| T3 | `chrome-muted/80` on the property panel | **3.70** | **4.31** | `PropertyPanel.tsx:255` element tag | **Landed (M8b.1a)** — the `/80` is gone, 5.68 / 5.88. M8b.3 still converts to `text-text-muted` — 6.14 on `surface` |
+| T3 | `chrome-muted/80` on the property panel | **3.70** | **4.31** | `PropertyPanel.tsx:289` element tag | **Landed (M8b.1a)** — the `/80` is gone, 5.68 / 5.88. **Landed (M8b.3 surface 3)** — `text-text-muted` on `surface-raised`, 6.41 / 5.81, guarded by `tests/unit/design/property-panel-design.test.tsx` + `tests/unit/design/migrated-files-check.test.ts` |
 | T4 | `accent` on `ink` | 4.96 | **3.17** | `ThumbnailRail.tsx:160` selected slide number, `:372` hover | **Landed (M8b.2)** — the dark block declares `--color-accent: oklch(0.67 0.176 34.8)`, so this is 4.97 / 5.10 with no surface change; 5.09 on `surface` once M8b.3 migrates the ground |
 | T5 | `accent` on `ink-alt` | 5.18 | **2.91** | `StatusBar.tsx:217` hover, `MenuTabStrip.tsx:29` (was worked around with `dark:text-ink-fg`) | **Landed (M8b.2)** — 5.19 / 4.67 with the dark `accent`; 4.66 on `surface-raised`. The tab strip's `dark:text-ink-fg` fallback was dead and **M8b.3 surface 2 dropped it** — `text-accent` alone on `surface-raised`, 5.19 / 4.66 |
 | T7 | `white` on `accent`, dark only — opened by M8b.2 | 5.19 | **3.23** | **Nine sites**, re-enumerated on `870ea7a`: `ChatPanel.tsx` send, user bubble and auth-gate button (lines 198 / 225 / 313 on `870ea7a`; since M8b.3 surface 1 Send and the auth-gate button are `<Button variant="primary">` and only the user bubble, `ChatPanel.tsx:254`, still spells the pair itself); `SettingsDialog.tsx` line 213 (Discard) and `AuthTab.tsx` line 199 (Save token) as they stood on `815bc61` — both `<Button variant="primary">` since M8b.3 surface 4 (`SettingsDialog.tsx:126`, `AuthTab.tsx:194`); `SlideContextMenu.tsx:169` hover; `DesignModeToggle.tsx:79` On badge (`:60` when #74 landed); `SelectionOverlay.tsx:879` dimension label and `SelectionOverlay.tsx:921/926` size/rotation badge | **Landed (M8b.1c, #74)** — all nine read `text-on-fill`: **5.19 light / 5.83 dark**, AA in both modes. `--color-accent` swaps to `oklch(0.67 …)` in dark, which is why a hard-coded `text-white` that measured 5.19 in both modes had fallen to 3.23 there. `components/ui/Button.tsx:33` was already `bg-accent text-on-fill` and needed nothing. The size/rotation badge was the one site no single-line grep could find — `text-white` sat on the template literal's static head (`:921`) and `bg-accent` in the interpolated `!isEditing` arm below it — so #74 moved the foreground **into each arm**: `:926` now reads `isEditing ? 'bg-amber-800 text-white' : 'bg-accent text-on-fill'`. That `bg-amber-800` arm deliberately keeps `text-white`: `amber-800` is a fixed dark fill in both modes, where `on-fill` measures **2.64:1** in dark (T2). The remaining opaque `bg-accent` fills carry no text and were never in this row: `FormatBar.tsx:151` (the colour bar, 2px since M8b.3 surface 2) and `StatusBar.tsx:121` (the budget-meter fill). M8b.3 inherits nothing here — the §5.4 map's `text-white` on a filled element → `text-on-fill` row is already applied on these nine. Guarded from here on by `tests/unit/design/semantic-contrast.test.ts`, which scans every renderer source for an opaque `bg-accent` and reds when the same class-string segment — or, for a fill naming no foreground of its own, a neighbouring line — spells `text-white`; that neighbour clause is what catches the split pair a one-line grep missed |
@@ -415,15 +433,15 @@ quoted alongside.
 | --- | --- | --- | --- | --- | --- |
 | U1 | field fill = panel fill (`chrome` on `chrome`) | **1.00** | **1.00** | `AuthTab.tsx` lines 193 and 245 on `6452c04` — the credential inputs | **Landed (M8b.3 surface 4)** — both are the `Input` primitive (`AuthTab.tsx:183`, `:227`): `bg-field border-line-strong`, border 3.95 / 3.76 vs field, 3.79 / 3.52 vs panel; guarded by `tests/unit/settings/settings-design.test.tsx` + `tests/unit/design/migrated-files-check.test.ts` |
 | U2 | field fill vs panel (`white` on `chrome`; `ink-alt` on `ink`) | 1.04 | 1.09 | `ChatPanel.tsx:48` (**Landed, M8b.3 surface 1** — `bg-field border-line-strong`, guarded by `tests/unit/chat/chat-panel-design.test.tsx` + `tests/unit/design/migrated-files-check.test.ts`), `BudgetTab.tsx` line 279 on `6452c04` (**Landed, M8b.3 surface 4** — `Input` at `BudgetTab.tsx:286`) | same |
-| U3 | field fill vs property panel | 1.12 | 1.08 | `PropertyPanel.tsx:487` | same |
-| U4 | control border `chrome-line` on `white` | **1.30** | **1.24** | `FormatBar.tsx:58` select, `DesignModeToggle.tsx:61`, `StatusBar.tsx:217`, `ChatPanel.tsx:48` (**Landed, M8b.3 surface 1** — `border-line-strong`), `BudgetTab.tsx` line 279 on `6452c04` (**Landed, M8b.3 surface 4** — `Input`, `BudgetTab.tsx:286`), `ColorControls.tsx:196` | `border-line-strong` on controls (3.95 / 3.22); `line` stays for dividers, which are exempt. **Landed on the app shell (M8b.3 surface 2)**: the select is `border-line-strong` on `field` (3.95 / 3.76) and the switch is `Button` `secondary` (`line-strong` on `surface-raised`, 3.95 / 3.22); with the chat composer landed in surface 1, the other three sites are still open |
+| U3 | field fill vs property panel | 1.12 | 1.08 | `PropertyPanel.tsx:558` (**Landed, M8b.3 surface 3** — the `Input` primitive, `bg-field border-line-strong`, guarded by `tests/unit/design/property-panel-design.test.tsx`; the Content textarea spells the same pair at `PropertyPanel.tsx:86`) | same |
+| U4 | control border `chrome-line` on `white` | **1.30** | **1.24** | `FormatBar.tsx:58` select, `DesignModeToggle.tsx:61`, `StatusBar.tsx:217`, `ChatPanel.tsx:48` (**Landed, M8b.3 surface 1** — `border-line-strong`), `BudgetTab.tsx` line 279 on `6452c04` (**Landed, M8b.3 surface 4** — `Input`, `BudgetTab.tsx:286`), `ColorControls.tsx:178` (**Landed, M8b.3 surface 3** — `border-line-strong`) | `border-line-strong` on controls (3.95 / 3.22); `line` stays for dividers, which are exempt. **Landed on the app shell (M8b.3 surface 2)**: the select is `border-line-strong` on `field` (3.95 / 3.76) and the switch is `Button` `secondary` (`line-strong` on `surface-raised`, 3.95 / 3.22); with the chat composer (surface 1), the budget field (surface 4) and the colour swatch (surface 3) landed, `StatusBar.tsx:217` is the one site still open |
 | U5 | control border `chrome-line` on `chrome` | **1.24** | **1.35** | `ThumbnailRail.tsx:168/372`, `ChatPanel.tsx` (**Landed, M8b.3 surface 1** — the empty context pill is `border-line-strong` at `ChatPanel.tsx:197`, Stop is `Button`'s `secondary` at `:217`), `AuthTab.tsx` lines 128/193/245/251, `BudgetTab.tsx` lines 252/285 and `SettingsDialog.tsx` line 222 on `6452c04` (**Landed, M8b.3 surface 4** — the status card lost its border for a `surface-sunken` well at `AuthTab.tsx:136`; the fields are `Input` at `AuthTab.tsx:183/227` and `BudgetTab.tsx:286`; Save key, Keep the limit, Save and Close are `Button`'s `secondary` at `AuthTab.tsx:237`, `BudgetTab.tsx:271/296`, `SettingsDialog.tsx:131`) | `line-strong` (3.79 / 3.52) on interactive controls; thumbnails move to `shadow-raised` + `line` |
-| U6 | control border on the property panel | **1.15** | **1.25** | `PropertyPanel.tsx:487/569/579/589`, `ColorControls.tsx:106/196/206` | `line-strong` |
-| U7 | arrange bar border | **1.30** | **1.24** | `ArrangeBar.tsx:145` | `shadow-floating` carries the separation; border → `line` (exempt) |
+| U6 | control border on the property panel | **1.15** | **1.25** | `PropertyPanel.tsx:558` fields, `:616/625/634` transform buttons, `ColorControls.tsx:175/178` swatches, `:270` eyedropper | **Landed (M8b.3 surface 3)** — `line-strong` on the fields (`Input`) and on both swatches, 3.95 / 3.76 on `field`, 3.95 / 3.22 on `surface-raised`; the transform buttons and the eyedropper are the edgeless `subtle` / `ToolbarButton` recipes (`hover:bg-hover`), so no border is left to measure |
+| U7 | arrange bar border | **1.30** | **1.24** | `ArrangeBar.tsx:126` | **Landed (M8b.3 surface 3)** — `shadow-floating` carries the separation and the border is gone entirely (the `line` this row prescribed was exempt anyway); opaque `bg-surface-raised`, not the work list's `/95` — R3, and the gate's `alpha` column |
 | U8 | slide outline on the mat | **1.14** | **1.53** | `SlideCanvas.tsx:131` | `shadow-floating` + `outline-line`; the outline is decorative once the shadow is dark-adjusted |
 | U9 | `neutral-200` option border | **1.26** | **1.26** | `ExportPptxDialog.tsx:84` | `line-strong` |
 | U10 | focus ring `accent` on `ink-alt` | 5.18 | **2.91** | `DesignModeToggle.tsx:61` outline, `ChatPanel.tsx:48` focus border | **Landed (M8b.2)** — 5.19 / 4.67 with the dark `accent`. M8b.3 moves it to `outline-focus`: **done for the composer in M8b.3 surface 1** (the shared `FOCUS_RING`, 4.28 / 4.09 on `field`) and **on the switch in M8b.3 surface 2** (through `Button`'s `FOCUS_RING`, 4.28 / 3.51 on `surface-raised`) — both of this row's sites are closed |
-| U11 | `accent/60` chip border | **2.49** | **1.82** | `PropertyPanel.tsx:288` | `bg-accent-soft border-line` — the chip is a label; its border is decorative (R4) |
+| U11 | `accent/60` chip border | **2.49** | **1.82** | `PropertyPanel.tsx:92` | **Landed (M8b.3 surface 3)** — `bg-accent-soft`, no border at all (`Chip`'s classes spelled on the button — §4.5), 15.03 / 10.03 under `text` |
 | U12 | `accent/50` chip border | **2.17** | **1.67** | `ChatPanel.tsx:187` | **Landed (M8b.3 surface 1)** — `Chip tone="accent"`: `bg-accent-soft`, no border, 15.03 / 10.03 under `text` |
 | U13 | `accent/40` auth-gate border | **1.84** | **1.47** | `ChatPanel.tsx:343` | **Landed (M8b.3 surface 1)** — `bg-accent-soft` + `border-accent` (4.97 / 5.09 on the panel, 4.52 / 3.87 on its own tint) since this box is a call to action |
 | U14 | `✦` glyph `chrome-muted` with **no dark variant** | 6.39 | **2.36** | `DesignModeToggle.tsx:71` | **Landed (M8b.1a)** — the line read `text-chrome-muted dark:text-ink-muted`, 6.39 / 5.81. **M8b.3 surface 2 replaced both with `text-text-muted`** on an SVG glyph — 6.41 / 5.81 on `surface-raised` |
@@ -475,9 +493,9 @@ as the record of what was there; the work list says what each item became.
 Findings (on `32ce6bb`): the strip was `bg-chrome` and the toolbar row `bg-white` with a `border-b`
 between (two surface tones *and* a line — Helium removes the line). The Home tab overlapped the strip
 border with `-mb-px border-b-white` (fine) but its `text-accent` had no dark answer and fell back to
-`ink-fg` (C10). `BUTTON_BASE` (`FormatBar.tsx` `:16`) and `ArrangeBar.tsx:20`'s `BUTTON` were the same
+`ink-fg` (C10). `BUTTON_BASE` (`FormatBar.tsx` `:16`) and the arrange bar's `BUTTON` (line 20 on `870ea7a`; `ToolbarButton` at `ArrangeBar.tsx:166` since M8b.3 surface 3) were the same
 recipe modulo width — the only `active:` in the app was here. Their dark hover was invisible (C2) until
-**M8b.1a (#68)** gave all three of `FormatBar.tsx` `:16`, `ArrangeBar.tsx:20` and `DesignModeToggle.tsx`
+**M8b.1a (#68)** gave all three of `FormatBar.tsx` `:16`, the arrange bar's `BUTTON` and `DesignModeToggle.tsx`
 `:47` `dark:hover:bg-ink-line` (1.24:1). The toggle's `✦` had no dark variant until M8b.1a (U14) and
 its Off badge was `bg-chrome-line text-chrome-muted` (4.93 — passed, but it was the divider colour used
 as a fill) while its **On** badge is `bg-accent text-on-fill` (`DesignModeToggle.tsx:79`) — T7,
@@ -569,10 +587,10 @@ Findings: panel is `bg-shell-bg/95` over the mat (the only place `shell-bg` is v
 Claude" chip (C5, U11); Transform buttons are `border-chrome-line hover:border-accent` (C2) — a third
 button recipe; swatches `h-5 w-5 rounded border` with `hover:ring-2` (a sixth hover mechanism);
 `💧` eyedropper emoji (M8b.0 #15); arrange bar `bg-white/95 backdrop-blur border shadow-md rounded-lg`
-(border + shadow) and `disabled:opacity-40` — its dark hover was invisible (C2) until M8b.1a gave `ArrangeBar.tsx:20` `dark:hover:bg-ink-line`, **landed**; its label is
+(border + shadow) and `disabled:opacity-40` — its dark hover was invisible (C2) until M8b.1a gave the bar's `BUTTON` (line 20 on `870ea7a`) `dark:hover:bg-ink-line`, **landed**; its label is
 `text-[11px] font-medium`, the toolbar's is 13px. The panel mounts/unmounts on selection and changes
-the canvas height — **must not animate** (M8b.0 §3.1). Test coupling: `slide-canvas-dock.test.tsx:85`
-asserts `h-64` on the dock; keep `h-64` or update the assertion in the same PR with the mutation noted.
+the canvas height — **must not animate** (M8b.0 §3.1). Test coupling: `slide-canvas-dock.test.tsx:86`
+asserted `h-64` on the dock; it asserts `h-inspector` since M8b.3 surface 3, and `h-inspector` → `h-64` reds it and `property-panel-design.test.tsx` together.
 
 Work list:
 1. Panel → `bg-surface-raised border-t border-line`, opaque (the 95% tint over a mat that is now opaque buys nothing); `h-inspector` (= 256px, the current `h-64`).
@@ -581,6 +599,43 @@ Work list:
 4. Swatches → `rounded-control border-line-strong`, selected `ring-2 ring-accent`, hover `shadow-raised` (no ring); eyedropper → SVG.
 5. Arrange bar → `bg-surface-raised/95 backdrop-blur-hud shadow-floating rounded-panel`, no border; buttons via `ToolbarButton`; label `text-caption`; `z-panel`.
 6. Section heading → `PanelHeading`; element tag `text-text-muted` (no alpha).
+
+**Landed (M8b.3 surface 3) — all six, with the deviations recorded here so nobody re-does them.** (1) The dock is
+`bg-surface-raised border-t border-line h-inspector`, opaque (`PropertyPanel.tsx:284`). (2) The seven `<input>`s are `Input`
+(`PropertyPanel.tsx:558`), which owns its `text-ui` — its header says why a field never inherits a smaller size — so the
+fields are 13px on a 12px panel, not the `text-ui-sm` this list wrote; the Content field is a `<textarea>`, which `Input`
+cannot render, and spells `Input`'s recipe minus `h-control` (`PropertyPanel.tsx:86`, the chat composer's deviation);
+`tabular-nums` sits on the `<label>` of Size / X / Y / W / H (the panel has no rotation field) and reaches the control
+through preflight's `font: inherit`. (3) Flip H / Flip V / Duplicate are `<Button variant="subtle">` (`SubtleButton` is that
+variant, §5.6 — `PropertyPanel.tsx:616/625/634`); "Ask Claude" carries `Chip`'s classes plus `hover:bg-hover` on one
+`<button>` (`PropertyPanel.tsx:92`, mounted at `:322`) rather than mounting `Chip`, whose interactive form wraps an unstyled
+button in a tinted span — this control is what `font-family-panel.test.tsx` and `property-panel.test.tsx` focus and click
+**by element**. (4) Swatches are `rounded-control border-line-strong` (`ColorControls.tsx:175`, `:178`), hover
+`shadow-raised`; the swatch whose token or hex the source already carries is `ring-2 ring-accent` **and** `aria-pressed`
+(state, never colour alone); the eyedropper is a `ToolbarButton` with an SVG pipette (`ColorControls.tsx:270`). (5) The
+arrange bar is opaque `bg-surface-raised shadow-floating rounded-panel z-panel` with no border (`ArrangeBar.tsx:126`) — **not**
+the `/95` + `backdrop-blur-hud` this list wrote: an alpha suffix on a role token is what R3 forbids and what the gate's
+`alpha` column counts (only `hud-fg/70` passes), and a blur behind an opaque fill paints nothing; the eight buttons are
+`ToolbarButton`s (`ArrangeBar.tsx:166`, `:178`) in two groups separated by `dividerGap` instead of `w-px` hairlines;
+the label is `text-caption` and `whitespace-nowrap` (`ArrangeBar.tsx:159` — it broke onto two lines on a narrow stage,
+before and after, in this PR's recording); the `transition-colors` and `disabled:opacity-40` the old `BUTTON` carried went
+with it — the primitives declare no transition (§2.7) and dim at `opacity-50` (§2.8), and nothing was added back: this
+is one of the surfaces the audit refuses motion on. (6) `PanelHeading level={2}` (`PropertyPanel.tsx:287`); the tag is
+`text-text-muted` (`:289`); the refusal message is `text-danger` (`:599`, 6.42 / 5.20 on `surface-raised`).
+Guarded by `tests/unit/design/property-panel-design.test.tsx` — the rendered class of every element a finding names, plus
+the swatch ring, the pipette and the bar's buttons; its header lists the mutations and what escapes — and by the three
+paths appended to `migrated-files-check.test.ts`'s `MIGRATED` list. `--check` over the three files: `PropertyPanel.tsx` 52
+utilities / 16 colour, `ColorControls.tsx` 28 / 5, `ArrangeBar.tsx` 14 / 2, every gate column 0, `RESULT: pass` (from
+legacy 29 + 8 + 15, `dark:` 16 + 4 + 8, arbitrary 4 + 0 + 1, palette 3 + 0 + 1, alpha 5 + 0 + 1). `semantic-contrast.test.ts`
+moved with it: the `ArrangeBar.tsx` AA row's "replacement present" needle is `<ToolbarButton`, the two `PropertyPanel.tsx`
+rows' is `text-text-muted`, and the `text-danger` / `text-warning` dark-twin clause exempts a file that carries no `dark:`
+variant at all (the roles swap in `:root` since M8b.2, and the `*-dark` twin is a retired token). `FontFamilyControl.tsx`,
+which renders inside the panel, is not in §7 row 3 and is untouched — still fully legacy (`--check`: legacy 25 / `dark:` 15 /
+arbitrary 5 / palette 6 / alpha 1, `RESULT: FAIL (5)`) and still on `focus:border-accent` (`FontFamilyControl.tsx:495/541`, a
+second focus recipe beside the panel's `FOCUS_RING`, R6); §7 row 3x and roadmap **M8b.3x** own it, together with the
+three small deferrals #78's review raised (the stale `Blur — the two HUDs` comment, `--spacing-inspector` against the 28px
+`Input` — the dock's content is ~300px now, so the Transform row needs a scroll at a 900px stage — and `Chip`'s
+interactive form).
 
 ### 4.6 Export dialogs
 
@@ -1076,7 +1131,8 @@ one agent and one PR; the work list is the numbered list in §4.
 | --- | --- | --- | --- | --- |
 | 1 | Chat panel + no-key gate (4.4) — **landed (M8b.3 surface 1)** | `ChatPanel.tsx` | U2, U4, U10, U12, U13, U18 | Button, Input, Chip, Notice, PanelHeading — the widest coverage, so it goes first |
 | 2 | App shell (4.1) — **landed (M8b.3 surface 2)** | `AppShell.tsx`, `MenuTabStrip.tsx`, `FormatBar.tsx`, `DesignModeToggle.tsx` | T5, U4, U10, U14, U15 | ToolbarButton, focus ring |
-| 3 | Property panel + colour controls + arrange bar (4.5) | `PropertyPanel.tsx`, `ColorControls.tsx`, `ArrangeBar.tsx` | T3, U3, U6, U7, U11 | Input, SubtleButton, ToolbarButton, Chip |
+| 3 | Property panel + colour controls + arrange bar (4.5) — **landed (M8b.3 surface 3)** | `PropertyPanel.tsx`, `ColorControls.tsx`, `ArrangeBar.tsx` | T3, U3, U6, U7, U11 | Input, SubtleButton, ToolbarButton, Chip |
+| 3x | Font family control (4.5 — it renders inside row 3's panel; M3.10 added it after this census, so row 3 never named it) — **roadmap M8b.3x** | `FontFamilyControl.tsx` | none in §3 (no pair was measured); `--check` reads legacy 25 / `dark:` 15 / arbitrary 5 / palette 6 / alpha 1, and `focus:border-accent` at `FontFamilyControl.tsx:495/541` is a second focus recipe inside the surface (R6) | Input, Button, `z-menu`, `shadow-floating` |
 | 4 | Settings dialog + Auth + Budget (4.8) — **landed (M8b.3 surface 4)** | `SettingsDialog.tsx`, `AuthTab.tsx`, `BudgetTab.tsx` | T1 (its Budget half), U1, U5, U16, U17 — and U2/U4's `BudgetTab.tsx` site | Dialog (now with the approved enter/exit motion), Input, Button (all five variants), Notice, PanelHeading |
 | 5 | Canvas + overlay + notice (4.3) | `SlideCanvas.tsx`, `SelectionOverlay.tsx`, `DesignNotice.tsx` | T2, T6, U8, U19 | HUD tokens, `edit`/`guide`, Notice |
 | 6 | Thumbnail rail + context menu (4.2) | `ThumbnailRail.tsx`, `ThumbnailPreview.tsx`, `SlideContextMenu.tsx` | U5, the halo | shadow-raised, focus ring, `z-menu` |
@@ -1105,19 +1161,19 @@ These were the one-line palette swaps that should not wait for M8b.2, grouped as
 and because the measured before/after is the evidence for the swap — but the `Site` column now points at
 the *fixed* line, and no M8b.3 agent should treat any row here as outstanding. Verified on `774b356` by
 reading each site, and re-checked on this branch after M8b.1c moved four of `SelectionOverlay.tsx`'s anchors: `DesignModeToggle.tsx` `:51` `text-chrome-muted dark:text-ink-muted` and `FormatBar.tsx` `:16` `dark:hover:bg-ink-line` (both superseded by role tokens in M8b.3 surface 2 — `text-text-muted` at `DesignModeToggle.tsx:71`, the primitives' `hover:bg-hover`);
-`ArrangeBar.tsx:20` `dark:hover:bg-ink-line`; `StatusBar.tsx:82/114` and `BudgetTab.tsx` lines 203 and 221 (as they stood on `4f9ffd8`; warning `Notice`s since M8b.3 surface 4)
+the arrange bar's `BUTTON` (line 20 on `870ea7a`; the recipe went with M8b.3 surface 3) `dark:hover:bg-ink-line`; `StatusBar.tsx:82/114` and `BudgetTab.tsx` lines 203 and 221 (as they stood on `4f9ffd8`; warning `Notice`s since M8b.3 surface 4)
 `text-amber-800`; `DesignNotice.tsx:57`, `SelectionOverlay.tsx:926` and `:940` `bg-amber-800`;
-`PropertyPanel.tsx:255` `text-chrome-muted` with no `/80`. What remains for M8b.3 is the *token*
+the property panel's element tag (line 255 on `870ea7a`; `text-text-muted` at `PropertyPanel.tsx:289` since M8b.3 surface 3) `text-chrome-muted` with no `/80`. What remains for M8b.3 is the *token*
 migration (`text-warning`, `bg-warning`, `text-text-muted`, `hover:bg-hover`), which §3.1 and §4 carry.
 
 | Site (post-fix line) | Defect, as measured on `a92337a` | Was | Fix, landed in #68 | Now |
 | --- | --- | --- | --- | --- |
 | `DesignModeToggle.tsx:71` (the glyph; `text-text-muted` since M8b.3 surface 2) | `✦` glyph has no `dark:` variant | 2.36 | `text-chrome-muted dark:text-ink-muted` | 5.81 |
 | `FormatBar.tsx:32` (`ToolbarButton`; its `hover:bg-hover` since M8b.3 surface 2) | `dark:hover:bg-ink-alt` on an `ink-alt` row | 1.00 | `dark:hover:bg-ink-line` | 1.24 (matches `DesignModeToggle`) |
-| `ArrangeBar.tsx:20` | same, over the `ink-alt/95` bar | 1.00 | `dark:hover:bg-ink-line` | 1.24 |
+| `ArrangeBar.tsx` line 20 on `870ea7a` (`ToolbarButton` at `ArrangeBar.tsx:166` since M8b.3 surface 3) | same, over the `ink-alt/95` bar | 1.00 | `dark:hover:bg-ink-line` | 1.24 |
 | `StatusBar.tsx:82/114`, `BudgetTab.tsx` lines 203 and 221 on `4f9ffd8` | `text-amber-600` at 11–12px | 3.06 | `text-amber-800` | 6.83 |
 | `DesignNotice.tsx:57`, `SelectionOverlay.tsx:926` | white on `amber-600` | 3.19 | `bg-amber-800` | 7.13 |
-| `PropertyPanel.tsx:255` | `text-chrome-muted/80` | 3.70 / 4.31 | drop `/80` | 5.68 / 5.88 |
+| `PropertyPanel.tsx` line 255 on `870ea7a` (`text-text-muted` at `PropertyPanel.tsx:289` since M8b.3 surface 3) | `text-chrome-muted/80` | 3.70 / 4.31 | drop `/80` | 5.68 / 5.88 |
 
 Each was one token in one class string; the `status-bar-meter` test matches `/amber/` and stayed green.
 `--contrast` is a calculator over the pair specs written in the script, not a source scanner, so it
@@ -1207,7 +1263,7 @@ the tree restored with `git checkout` afterwards.
 | 24 | A legacy declaration whose name collides with a canonical role does not fake a landed block | `--check` · main | `theme.css` declares M4.5's `--color-danger`/`--color-warning`, two canonical role names, on a tree where M8b.2 has not happened → `Role block: not landed (0/23 …)`, `RESULT: pass` — the one branch of `--check` that passes on an inconclusive result, which is why M8b.2's definition of done runs it with `--require-landed` (row 25) (before the quorum ignored the four pre-existing role names this printed `landed — 0/49`, `role block partial: 2/25`, `9/60`, `0/14`, `RESULT: FAIL (115)` on an unmutated tree). It still reds on a genuinely partial block: add `--color-surface`/`--color-guide` to the legacy block → `role block partial: 2/23 new role colours read from @theme (missing: surface-raised, …)`, `light \`--color-surface\`: theme.css has \`#eeeeee\``, `FAIL (114)` |
 | 25 | M8b.2's definition of done cannot be satisfied by an empty diff | `node scripts/design-inventory.mjs --check --require-landed` · main and landed | **main** (nothing landed): `Role block: not landed (0/23 new role colours declared anywhere in theme.css)` → `RESULT: FAIL (1)` — `--require-landed: the role block has not landed (0/23 new role colours in theme.css) — every gate below it was skipped, so this run confirms nothing about M8b.2`, exit 1. Plain `--check` on the identical tree prints `RESULT: pass`, exit 0, which is what made the old DoD (`--check` prints `RESULT: pass`) vacuous — a pass was possible with 23 roles landed *and* with 0, impossible only in between. **landed**: `Role block: landed — 49/49 declarations byte-equal to the canonical values`, `63 pairs, 0 failing`, `60/60 prescribed utilities emit; 14/14 reset-killed spellings stay dead`, `RESULT: pass`, exit 0. (`--check --final --require-landed` on the landed tree is still `FAIL (1) — --final: 328 references to retired tokens remain`: `--final` is M8b.3's gate, not M8b.2's.) |
 | 26 | No opaque `bg-accent` fill is painted `text-white` again (T7, closed by M8b.1c) | `pnpm exec vitest run tests/unit/design/semantic-contrast.test.ts` · this branch | **Rule 1 (same class-string segment)**: restore `text-white` at `ChatPanel.tsx:254` (re-run for M8b.3 surface 1 — the user bubble, the one `bg-accent` fill left in the file) → `[ "src/renderer/src/features/chat/ChatPanel.tsx:254 → text-white on an opaque bg-accent" ]` against an expected `[]`, `1 failed | 14 passed`, exit 1. **Rule 2 (the split pair)**: restore the pre-fix shape of `SelectionOverlay.tsx`'s size/rotation badge — `text-white` on the template literal's static head, a bare `bg-accent` in the interpolated arm — → the offender list names that arm's line with `bg-accent inherits a text-white declared within 6 lines`, exit 1. Rule 2 is the one a single-line grep cannot express; it is why the swap moved the foreground into each ternary arm. Non-vacuity is pinned on both halves — `fills > 0` (the scanner still finds accent fills) and `paired >= 6` (they still spell `text-on-fill` — lowered from 10 by M8b.3 surface 1, whose Send and Open Settings became `<Button>`, and from 8 by surface 4, whose Discard and Save token did the same, which spells the token inside the primitive; the roadmap row says to lower the floor then, not delete the clause), so deleting the classes cannot pass it silently. Known limit: the ±6-line window, measured green at ±20, ±40, ±100 and whole-file on this tree, so a fill inheriting `text-white` from further away would escape; M8b.4 owns the real fix |
-| 27 | A migrated surface stays inside `--check`'s six gate columns without anyone remembering to run it | `pnpm exec vitest run tests/unit/design/migrated-files-check.test.ts` · this branch | One `execFileSync` of `--check` over the whole `MIGRATED` list (one file when #76 landed, five since #75 rebased onto it and appended the app shell's four, eight since M8b.3 surface 4 appended the settings dialog's three; the spawn is the cost, 145–150 ms of test time at load 1–3.5, and one per file would be N× that) and `it.each` over the list, so a red is per file and names its columns, plus one `RESULT: pass` case over the run. **Mutation**: `bg-surface` → `bg-surface dark:bg-ink` on `ChatPanel.tsx`'s `<aside>` → `× src/renderer/src/features/chat/ChatPanel.tsx: every gate column is 0` with `features/chat/ChatPanel.tsx: legacy = 1, dark: = 1` above the row `| features/chat/ChatPanel.tsx | 98 | 27 | 1 | 1 | 0 | 0 | 0 | 0 |` (`expected [ 'legacy = 1', 'dark: = 1' ] to deeply equal []`), and `× the script prints RESULT: pass over the whole list` quoting `- features/chat/ChatPanel.tsx: legacy = 1` / `- features/chat/ChatPanel.tsx: dark = 1` / `RESULT: FAIL (2)` — `2 failed`, exit 1. **A wrong entry cannot pass as zeros**: `ChatPanle.tsx` appended to the list → `no per-file row for src/renderer/src/features/chat/ChatPanle.tsx — did --check refuse the path?` with `- src/renderer/src/features/chat/ChatPanle.tsx: no such file`, `RESULT: FAIL (1)`, both cases red. **Re-run for surface 2's rows (#75 on `6452c04`)**: `bg-shell-bg text-shell-fg dark:bg-ink` back on `AppShell.tsx:187` → `× src/renderer/src/app/AppShell.tsx: every gate column is 0` with `app/AppShell.tsx: legacy = 3, dark: = 1` over `| app/AppShell.tsx | 11 | 7 | 3 | 1 | 0 | 0 | 0 | 0 |`, RESULT case `FAIL (2)` — `2 failed | 5 passed`. **Known limit**: a role token of the wrong role keeps every column 0 — that is the per-surface rendered-class test (§4.4 for surface 1, `tests/unit/app-shell-design.test.tsx` for surface 2), which says in its header what it pins and what escapes |
+| 27 | A migrated surface stays inside `--check`'s six gate columns without anyone remembering to run it | `pnpm exec vitest run tests/unit/design/migrated-files-check.test.ts` · this branch | One `execFileSync` of `--check` over the whole `MIGRATED` list (one file when #76 landed, five since #75 rebased onto it and appended the app shell's four, eight since M8b.3 surface 4 appended the settings dialog's three; the spawn is the cost, 145–150 ms of test time at load 1–3.5, and one per file would be N× that) and `it.each` over the list, so a red is per file and names its columns, plus one `RESULT: pass` case over the run. **Mutation**: `bg-surface` → `bg-surface dark:bg-ink` on `ChatPanel.tsx`'s `<aside>` → `× src/renderer/src/features/chat/ChatPanel.tsx: every gate column is 0` with `features/chat/ChatPanel.tsx: legacy = 1, dark: = 1` above the row `| features/chat/ChatPanel.tsx | 98 | 27 | 1 | 1 | 0 | 0 | 0 | 0 |` (`expected [ 'legacy = 1', 'dark: = 1' ] to deeply equal []`), and `× the script prints RESULT: pass over the whole list` quoting `- features/chat/ChatPanel.tsx: legacy = 1` / `- features/chat/ChatPanel.tsx: dark = 1` / `RESULT: FAIL (2)` — `2 failed`, exit 1. **A wrong entry cannot pass as zeros**: `ChatPanle.tsx` appended to the list → `no per-file row for src/renderer/src/features/chat/ChatPanle.tsx — did --check refuse the path?` with `- src/renderer/src/features/chat/ChatPanle.tsx: no such file`, `RESULT: FAIL (1)`, both cases red. **Re-run for surface 2's rows (#75 on `6452c04`)**: `bg-shell-bg text-shell-fg dark:bg-ink` back on `AppShell.tsx:187` → `× src/renderer/src/app/AppShell.tsx: every gate column is 0` with `app/AppShell.tsx: legacy = 3, dark: = 1` over `| app/AppShell.tsx | 11 | 7 | 3 | 1 | 0 | 0 | 0 | 0 |`, RESULT case `FAIL (2)` — `2 failed | 5 passed`. **Known limit**: a role token of the wrong role keeps every column 0 — that is the per-surface rendered-class test (§4.4 for surface 1, `tests/unit/app-shell-design.test.tsx` for surface 2), which says in its header what it pins and what escapes **M8b.3 surface 3** appended `PropertyPanel.tsx`, `ColorControls.tsx` and `ArrangeBar.tsx` (eleven files on the list, with surface 4's three). Mutation, re-run: `bg-surface-raised` → `bg-surface-raised dark:bg-ink-alt` on the dock → `features/design/PropertyPanel.tsx: legacy = 1, dark: = 1` over `| features/design/PropertyPanel.tsx | 53 | 17 | 1 | 1 | 0 | 0 | 0 | 0 |` and `RESULT: FAIL (2)` — 2 failed. |
 | 28 | The settings dialog stays on the primitives and the `Dialog` primitive's motion stays on the tokens (M8b.3 surface 4) | `pnpm exec vitest run tests/unit/settings/settings-design.test.tsx tests/unit/ui/dialog.test.tsx` · this branch | Rendered-class pins on the five §3.1 rows and the class-visible work-list items, each mutation run with `--check` beside it: `<Input>` → a raw `<input>` spelling `bg-surface border-line` → `U1 … expected [ Array(8) ] to include 'bg-field'` **with `--check` still `RESULT: pass`**; the endpoint `Notice` `warning` → `info` → U16 reds on `border-warning`; the approaching-limit `Notice` → `info` → T1 reds on `bg-warning-soft`; the confirm `Notice` → `danger` → U17 reds on `border-warning`; Close → `variant="subtle"` → U5 reds on `border-line-strong`; Discard → `"secondary"` → the T7 pin reds on `bg-accent` (`semantic-contrast` stays green there — its floor is a count, the pin is this file); the selected tab → `border-line-strong` reds; `text-success` → `text-text-muted` reds; `tabular-nums` deleted reds; `accent-accent` → `accent-[var(--color-accent)]` reds here **and** in row 27 as `arbitrary = 1`. On the primitive: `shadow-overlay` → `shadow-floating` reds; dropping `starting:scale-98` reds both files; the exit reusing `duration-base` reds `exit is the fast step`; unmounting on the `open` edge without waiting reds `Unable to find an element with the role "dialog"`; a 200 ms timer in place of `getAnimations()` reds the fallback case (`expected <div role="dialog"> to be null`) and the nesting case (`Found multiple elements`). Gate-only mutations on the three files: `text-[12px] text-shell-fg dark:text-ink-fg` → `legacy = 2, dark = 1, arbitrary = 1` (and row 27's two cases); `bg-white` → `palette = 1`; `border-line/50` → `alpha = 1`; `text-txt` → `unknown = 1`. **Known escape, by declaration**: the About tab's `text-text-muted` → `text-text` keeps both halves green — not a §3.1 row, not a work-list item. **Review r1 added the layout pin** on the two primitive fixes every later surface inherits: moving `overflow-y-auto overscroll-contain` off the `Dialog` body → `scrolls in the body, not the panel … to include 'overscroll-contain'`, `1 failed \| 33 passed`; `px-5` → `px-4` on title, body and footer → the same case reds naming the region — before it, both stayed green across `dialog.test`, `settings-design` and `text-editing-gesture` |
 
 Observed on the landed tree and worth knowing before M8b.2: `pnpm exec vitest run
@@ -1315,13 +1371,13 @@ correctly*, so a citation that was wrong when it was written is invisible to the
 `--emit-citations` rebuilds the block from whatever the tree says today, the documented remedy for a
 red **always** produces green. A blind regenerate-and-paste therefore launders real staleness into a
 pass: when `--verify-doc` reds, read the moved lines it prints and fix the prose that cites them
-*before* replacing the block. **Ten of the 146 entries cite a line whose whitespace-collapsed
+*before* replacing the block. **Eight of the 164 entries cite a line whose whitespace-collapsed
 text is not unique inside its own file** — so a shift of exactly the right size could in principle land one of them on identical
-text and stay green. That was **fourteen of 143** before the `870ea7a` citation pass: correcting the fourteen wrong lines (§10's citation-accuracy bullet) retired the whole trivial-text class — `)`, `*`, `*/`, `>`, `budget,` and `name,` are no longer cited by anything. What is left is one `}` (`theme.css:212`, 19 matches, the closing brace of the `body` rule cited as a range end) and nine genuinely duplicated JSX class strings (`ArrangeBar.tsx:150/164`, `PropertyPanel.tsx:569/579/589`, `PresentControls.tsx:56/65`, and `AuthTab.tsx` lines 193/245 as they stood on `6452c04`) — each a pair or triple of controls that really are spelled identically, which is itself one of §2's findings. Recorded as a known property rather than fixed: 293 shift mutations (25 cited files
+text and stay green. That was **fourteen of 143** before the `870ea7a` citation pass: correcting the fourteen wrong lines (§10's citation-accuracy bullet) retired the whole trivial-text class — `)`, `*`, `*/`, `>`, `budget,` and `name,` are no longer cited by anything. What is left is one `}` (`theme.css:212`, 19 matches, the closing brace of the `body` rule cited as a range end) and, since M8b.3 surfaces 3 and 4, seven duplicated JSX lines in three groups: the `PresentControls.tsx:56/65` pair (two controls that really are spelled identically, which is itself one of §2's findings), and two groups surface 4 created by citing the open tag of a primitive — `<Input` at `AuthTab.tsx:183/227` and `<Notice tone="warning" icon="⚠">` at `BudgetTab.tsx:218/239/264` — identical by construction, since a primitive's open tag carries no class string. The five that were `ArrangeBar.tsx` lines 150/164 and `PropertyPanel.tsx` lines 569/579/589 on `870ea7a` (two `w-px` hairlines, three transform buttons) went with surface 3's migration, whose citations land on the unique `data-*` line of each control; `AuthTab.tsx`'s old pair (lines 193/245 on `6452c04`) went with surface 4's. Recorded as a known property rather than fixed: 293 shift mutations (25 cited files
 × six shift sizes, plus one insertion above each entry), run against the 143-entry manifest on `a92337a`,
 produced zero escapes, and every file holding such an entry also carries cited lines with unique text
 that red on the same shift. Re-counted after the M8b.3 reconciliation, the `870ea7a` citation pass and PR #73 round 3: **146** entries across
-**26** files, **12** of them non-unique; re-counted after M8b.3 surface 1, which rewrote every cited `ChatPanel.tsx` line and retired the duplicate pair at `ChatPanel.tsx` lines 125 and 307 (as they stood on `32ce6bb`): **146** entries across **26** files, **10** of them non-unique (the `}` and the nine JSX pairs above). `components/ui/Button.tsx` joined the cited set with §3.1's
+**26** files, **12** of them non-unique; re-counted after M8b.3 surface 1, which rewrote every cited `ChatPanel.tsx` line and retired the duplicate pair at `ChatPanel.tsx` lines 125 and 307 (as they stood on `32ce6bb`): **146** entries across **26** files, **10** of them non-unique (the `}` and the nine JSX pairs above); re-counted after M8b.3 surface 3 (on top of surface 2, which added the app shell's lines and retired none), which rewrote every cited line of `PropertyPanel.tsx`, `ColorControls.tsx` and `ArrangeBar.tsx`: **164** entries across **30** files, **8** of them non-unique (the `}` and the seven JSX lines above). `components/ui/Button.tsx` joined the cited set with §3.1's
 new T7 row; `SettingsDialog.tsx` line 213 and `AuthTab.tsx` line 199 (on `815bc61`) and the two lines of `SelectionOverlay.tsx`'s
 size/rotation badge joined it when T7's site list was corrected from six sites to nine. M8b.1c (#74)
 re-pointed the second of those two — the badge's `bg-accent` arm — from `:922` to `:926`, because the
@@ -1386,28 +1442,29 @@ src/renderer/src/features/deck/ThumbnailRail.tsx:168  99b6b30b  : 'border-chrome
 src/renderer/src/features/deck/ThumbnailRail.tsx:333  75c7f39d  className="flex w-[188px] shrink-0 flex-col border-r border-chrome-line…
 src/renderer/src/features/deck/ThumbnailRail.tsx:335  ba6e2a6f  <h2 className="px-3 py-2 text-[11px] font-semibold uppercase tracking-w…
 src/renderer/src/features/deck/ThumbnailRail.tsx:372  1e8f7b89  className="w-full rounded border border-dashed border-chrome-line py-1.…
-src/renderer/src/features/design/ArrangeBar.tsx:20  fd42a21e  'inline-flex h-7 w-7 items-center justify-center rounded border border-…
-src/renderer/src/features/design/ArrangeBar.tsx:145  8f2d5493  className="pointer-events-auto absolute left-1/2 top-2 z-10 flex -trans…
-src/renderer/src/features/design/ArrangeBar.tsx:150  e8be92c2  <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-chrome-line dark…
-src/renderer/src/features/design/ArrangeBar.tsx:164  e8be92c2  <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-chrome-line dark…
-src/renderer/src/features/design/ColorControls.tsx:106  a684ca14  className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover…
-src/renderer/src/features/design/ColorControls.tsx:196  3d54ce57  className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-…
-src/renderer/src/features/design/ColorControls.tsx:206  d71cccf6  className="rounded border border-chrome-line px-1.5 py-0.5 hover:border…
+src/renderer/src/features/design/ArrangeBar.tsx:126  bad1ad7e  const BAR = `pointer-events-auto absolute left-1/2 top-2 z-panel flex -…
+src/renderer/src/features/design/ArrangeBar.tsx:159  f9eaf32b  <span className="px-1 text-caption font-medium whitespace-nowrap text-t…
+src/renderer/src/features/design/ArrangeBar.tsx:166  127691ba  data-edge={edge}
+src/renderer/src/features/design/ColorControls.tsx:175  0fbefa05  'h-5 w-5 cursor-pointer rounded-control border border-line-strong hover…
+src/renderer/src/features/design/ColorControls.tsx:178  6b8fedb5  const PICKER = `h-6 w-8 cursor-pointer rounded-control border border-li…
+src/renderer/src/features/design/ColorControls.tsx:270  5f385458  <ToolbarButton
 src/renderer/src/features/design/DesignModeToggle.tsx:61  d6c6c15f  variant="secondary"
 src/renderer/src/features/design/DesignModeToggle.tsx:71  c52717d3  <span aria-hidden="true" className={enabled ? 'text-accent' : 'text-tex…
 src/renderer/src/features/design/DesignModeToggle.tsx:78  e34d0b44  className={`rounded-control px-1.5 py-0.5 text-caption font-semibold tr…
 src/renderer/src/features/design/DesignModeToggle.tsx:79  11e34f1f  enabled ? 'bg-accent text-on-fill' : 'bg-surface-sunken text-text-muted'
 src/renderer/src/features/design/DesignNotice.tsx:57  9c2e9ab3  className="pointer-events-auto flex items-center gap-2 rounded bg-amber…
 src/renderer/src/features/design/DesignNotice.tsx:63  7bb07198  className="shrink-0 rounded px-1 hover:bg-black/20"
-src/renderer/src/features/design/PropertyPanel.tsx:250  9a15eb47  className="h-64 shrink-0 overflow-y-auto border-t border-chrome-line bg…
-src/renderer/src/features/design/PropertyPanel.tsx:252  c314fc6d  <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibol…
-src/renderer/src/features/design/PropertyPanel.tsx:255  fbeceab9  <span className="font-normal normal-case text-chrome-muted dark:text-in…
-src/renderer/src/features/design/PropertyPanel.tsx:283  3cf06af1  <div className="mt-2">
-src/renderer/src/features/design/PropertyPanel.tsx:288  eb018bbf  className="inline-flex items-center gap-1 rounded border border-accent/…
-src/renderer/src/features/design/PropertyPanel.tsx:487  06d671f9  className: `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-c…
-src/renderer/src/features/design/PropertyPanel.tsx:569  4719820a  className="rounded border border-chrome-line px-2 py-0.5 hover:border-a…
-src/renderer/src/features/design/PropertyPanel.tsx:579  4719820a  className="rounded border border-chrome-line px-2 py-0.5 hover:border-a…
-src/renderer/src/features/design/PropertyPanel.tsx:589  4719820a  className="rounded border border-chrome-line px-2 py-0.5 hover:border-a…
+src/renderer/src/features/design/FontFamilyControl.tsx:495  0cb02bca  className="flex min-w-0 max-w-44 flex-1 items-center justify-between ga…
+src/renderer/src/features/design/FontFamilyControl.tsx:541  c3f16183  className="mb-1 w-full rounded border border-chrome-line bg-white px-1.…
+src/renderer/src/features/design/PropertyPanel.tsx:86  49166677  const TEXTAREA = `w-full min-w-0 rounded-control border border-line-str…
+src/renderer/src/features/design/PropertyPanel.tsx:92  21a35406  const ASK_CHIP = `inline-flex max-w-full cursor-pointer items-center ga…
+src/renderer/src/features/design/PropertyPanel.tsx:284  18c01ab0  className="flex h-inspector shrink-0 flex-col gap-2 overflow-y-auto bor…
+src/renderer/src/features/design/PropertyPanel.tsx:287  a7f2378c  <PanelHeading level={2}>Properties</PanelHeading>
+src/renderer/src/features/design/PropertyPanel.tsx:289  b126fe32  <span data-testid="property-panel-tag" className="text-text-muted">
+src/renderer/src/features/design/PropertyPanel.tsx:558  a7cec932  <Input {...common} inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : un…
+src/renderer/src/features/design/PropertyPanel.tsx:616  41485d19  data-testid="transform-flip-h"
+src/renderer/src/features/design/PropertyPanel.tsx:625  830b4cf1  data-testid="transform-flip-v"
+src/renderer/src/features/design/PropertyPanel.tsx:634  20574067  data-testid="transform-duplicate"
 src/renderer/src/features/design/SelectionOverlay.tsx:859  6e68a756  className={`absolute inset-0 outline-none ${isEditing ? '' : 'cursor-cr…
 src/renderer/src/features/design/SelectionOverlay.tsx:879  c6e5c922  <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-ac…
 src/renderer/src/features/design/SelectionOverlay.tsx:891  88971dbc  className="absolute bg-fuchsia-500"
@@ -1490,7 +1547,7 @@ src/renderer/src/styles/theme.css:200  657f7b25  body {
 src/renderer/src/styles/theme.css:201  4fd437f8  background-color: var(--color-surface);
 src/renderer/src/styles/theme.css:212  d10b36aa  }
 src/renderer/src/styles/theme.css:217  eff6fb6c  @media (prefers-reduced-motion: reduce) {
-tests/unit/canvas/slide-canvas-dock.test.tsx:85  be8e899b  expect(dock.className).toMatch(/\bh-64\b/)
+tests/unit/canvas/slide-canvas-dock.test.tsx:86  62b6562a  expect(dock.className).toMatch(/\bh-inspector\b/)
 tests/unit/design/theme-tokens.test.ts:48  f7ef67fa  const opener = /@theme(?:\s+static)?\s*\{/g
 tests/unit/design/theme-tokens.test.ts:130  c6152e4f  expect(namespaces).toEqual(
 tests/unit/statusbar/status-bar-meter.test.tsx:81  4de573d4  expect(cost().className).not.toMatch(/amber|red/)
