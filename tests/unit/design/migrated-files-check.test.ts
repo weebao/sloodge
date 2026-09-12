@@ -38,7 +38,7 @@ const MIGRATED = [
   'src/renderer/src/features/format/MenuTabStrip.tsx',
   'src/renderer/src/features/format/FormatBar.tsx',
   'src/renderer/src/features/design/DesignModeToggle.tsx',
-  // M8b.3 surface 4 — settings dialog (#78)
+  // M8b.3 surface 4 — settings dialog (#79)
   'src/renderer/src/features/settings/SettingsDialog.tsx',
   'src/renderer/src/features/settings/AuthTab.tsx',
   'src/renderer/src/features/settings/BudgetTab.tsx',
