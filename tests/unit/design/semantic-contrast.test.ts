@@ -331,16 +331,18 @@ describe('semantic colour tokens', () => {
     // that exist must still name `on-fill` — otherwise a deleted class would pass this silently.
     expect(fills, 'no opaque bg-accent found; the scanner has lost its subject').toBeGreaterThan(0)
     expect(offenders, 'use text-on-fill: white is 3.23:1 on the dark accent').toEqual([])
-    // A floor, not a census. It catches the swap being deleted wholesale, but it will also fall
-    // LEGITIMATELY when M8b.3 migrates these call sites onto `<Button>`, which spells `text-on-fill`
-    // once inside the primitive instead of ten times here. So it must not assert a cause it cannot
+    // A floor, not a census. It catches the swap being deleted wholesale, but it also falls
+    // LEGITIMATELY as M8b.3 migrates these call sites onto `<Button>`, which spells `text-on-fill`
+    // once inside the primitive instead of at each site. So it must not assert a cause it cannot
     // know: an M8b.3 agent reading "the swap has been undone" would be told something false.
+    // Lowered 10 → 8 by M8b.3 surface 1: `ChatPanel.tsx`'s Send and Open Settings buttons became
+    // `<Button variant="primary">`; its user bubble still spells the pair itself and stays counted.
     expect(
       paired,
-      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 10). Either the swap ` +
+      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 8). Either the swap ` +
         'was reverted, or these sites moved onto <Button>, which spells it internally — check ' +
         'which before lowering this floor.',
-    ).toBeGreaterThanOrEqual(10)
+    ).toBeGreaterThanOrEqual(8)
   })
 
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {

@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { elementContextLabel } from '../../../../shared/design/element-context'
 import { formatCostUsd } from '../../../../shared/agent/cost'
+import { Button, Chip, FOCUS_RING, Notice, PanelHeading } from '../../components/ui'
 import { useDeckStore } from '../../stores/deckStore'
 import { useChatContextStore } from './chatContextStore'
 import type { ChatMessage, ToolChip } from './transcript'
@@ -24,11 +25,36 @@ import { useChatSession } from './useChatSession'
  *
  * Deck hot-updates ride a separate feed (`deck:updated` → `deckStore.applyRemoteDeck`, wired in
  * `AppShell`), so the canvas and rail update mid-turn independently of this chat stream.
+ *
+ * M8b.3 surface 1 (ui-design-audit.md §4.4, §7 row 1): the view is drawn from the role tokens and
+ * the M8b.2 primitives — `Button` for Send / Stop / Open Settings, `Chip` for the context and tool
+ * pills, `Notice` for the error bubble, `PanelHeading` for the title — with no `dark:` twins (a role
+ * token swaps by mode on its own, R1), no palette colour, no invented alpha (R3) and no focus ring
+ * of its own (R6). Findings closed here: U2/U4 (composer fill and border), U10 (its focus ring), U12
+ * (context-chip border), U13 (auth-gate border), U18 (error-bubble border).
  */
 export type ChatPanelProps = {
   /** Opens Settings on the Auth tab. Supplied by `AppShell`, which owns the dialog. */
   onOpenAuthSettings?: (() => void) | undefined
 }
+
+/**
+ * The composer is a `<textarea>` and `Input` renders an `<input>`, so it cannot adopt the primitive
+ * itself. This is `Input`'s recipe without the fixed `h-control` — a three-row field is not a 28px
+ * control — spelling the same `bg-field` / `border-line-strong` pair the audit prescribes for U2 and
+ * U4 (field vs panel is identified by the border, census rows 40 and 54), and the shared
+ * `FOCUS_RING` for U10 rather than the `focus:border-accent` it replaced.
+ */
+const COMPOSER = `w-full min-w-0 resize-none rounded-control border border-line-strong bg-field px-2 py-1 text-ui text-text placeholder:text-text-muted disabled:cursor-default disabled:opacity-50 ${FOCUS_RING}`
+
+/**
+ * A message fades in on mount at `duration-base` — the one chat animation M8b.0 §3.1 approved.
+ * `@starting-style` (the `starting:` variant) fires only when the element enters the document, so a
+ * streaming bubble re-rendering on every delta never replays it; reduced-motion keeps opacity
+ * transitions at `duration-fast` (theme.css), so the cue survives the preference. The transcript is
+ * never smooth-scrolled (F7): the effect below assigns `scrollTop` directly.
+ */
+const ARRIVE = 'transition-opacity duration-base starting:opacity-0'
 
 export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Element {
   const { transcript, needsAuth, hasBridge, send, interrupt } = useChatSession()
@@ -95,20 +121,31 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
     [submit, canSend],
   )
 
+  // Turn boundaries, announced once each (ui-design-direction.md §3.2 #12). `role="log"` is already
+  // a polite live region, and a token-by-token stream inside one re-reads the growing answer on
+  // every delta; `aria-busy` on the log holds those announcements until the turn settles, and this
+  // one stable region says when that happens. Derived, not stored: the text only changes at the two
+  // boundaries, which is exactly when a live region should speak.
+  const announcement = streaming
+    ? 'Claude is responding'
+    : transcript.messages.length > 0
+      ? 'Claude has finished responding'
+      : ''
+
   return (
     <aside
       aria-label="Chat"
-      className="flex w-[320px] shrink-0 flex-col border-l border-chrome-line bg-chrome dark:border-ink-line dark:bg-ink"
+      className="flex w-chat shrink-0 flex-col border-l border-line bg-surface"
     >
-      <h2 className="border-b border-chrome-line px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-chrome-muted dark:border-ink-line dark:text-ink-muted">
-        Chat
-      </h2>
+      <div className="border-b border-line px-3 py-2">
+        <PanelHeading level={2}>Chat</PanelHeading>
+      </div>
 
       <div
         ref={logRef}
         role="log"
         aria-label="Conversation"
-        aria-live="polite"
+        aria-busy={streaming}
         className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3"
       >
         {transcript.messages.length === 0 ? (
@@ -117,14 +154,15 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
           transcript.messages.map((message) => <MessageBubble key={message.id} message={message} />)
         )}
       </div>
+      <p className="sr-only" aria-live="polite">
+        {announcement}
+      </p>
 
-      <div className="border-t border-chrome-line p-2 dark:border-ink-line">
+      <div className="flex flex-col gap-2 border-t border-line p-2">
         {needsKey ? <AuthGate onOpenSettings={onOpenAuthSettings} /> : null}
         {hasBridge ? null : (
           // The reason Send and Enter do nothing, on screen rather than only in the button's tooltip.
-          <p className="mb-2 text-[11px] text-chrome-muted dark:text-ink-muted">
-            Chat is unavailable in this window.
-          </p>
+          <p className="text-caption text-text-muted">Chat is unavailable in this window.</p>
         )}
 
         <label className="sr-only" htmlFor="chat-composer">
@@ -138,31 +176,28 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
           placeholder="Ask Claude…"
           onChange={onDraftChange}
           onKeyDown={onKeyDown}
-          className="w-full resize-none rounded border border-chrome-line bg-white p-2 text-[13px] text-shell-fg outline-none placeholder:text-chrome-muted focus:border-accent disabled:opacity-60 dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg"
+          className={COMPOSER}
         />
-        <div className="mt-2 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           {attachment !== null ? (
+            // The test id and tooltip sit on a wrapper because `Chip` owns its own attributes; the
+            // ✕ inside it is labelled "Remove element context" by the primitive.
             <span
               data-testid="chat-context-chip"
               title={`Element context: ${attachment.element.ancestorPath}`}
-              className="inline-flex items-center gap-1 rounded-full border border-accent/50 bg-accent/10 px-2 py-0.5 text-[11px] text-shell-fg dark:text-ink-fg"
+              className="flex min-w-0"
             >
-              {elementContextLabel(attachment)}
-              <button
-                type="button"
-                aria-label="Remove element context"
-                data-testid="chat-context-remove"
-                onClick={clearContext}
-                className="ml-0.5 rounded-full px-1 leading-none text-chrome-muted hover:text-shell-fg dark:text-ink-muted dark:hover:text-ink-fg"
-              >
-                <span aria-hidden="true">×</span>
-              </button>
+              <Chip tone="accent" label="element context" onRemove={clearContext}>
+                {elementContextLabel(attachment)}
+              </Chip>
             </span>
           ) : (
+            // An empty slot, not a chip: dashed `line-strong` so the outline is visible on the panel
+            // (3.79 / 3.52) where a hairline `line` would not be, and muted text because it is inert.
             <span
               data-testid="chat-context-empty"
               title="Select an element in Design Mode, then “Ask Claude about this element”"
-              className="inline-flex items-center gap-1 rounded-full border border-dashed border-chrome-line px-2 py-0.5 text-[11px] text-chrome-muted dark:border-ink-line dark:text-ink-muted"
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-line-strong px-2 py-0.5 text-caption text-text-muted"
             >
               <span aria-hidden="true">⊕</span> no context
             </span>
@@ -173,33 +208,30 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
             // SDK's price table, never billing truth (50-agent-integration.md §10). The status bar
             // shows the same number from the same accumulator (M2.5); this one stays because it sits
             // next to the composer where the spending actually happens.
-            <span className="text-[11px] text-chrome-muted dark:text-ink-muted">
+            <span className="text-caption text-text-muted">
               <span aria-hidden="true">≈</span>
               <span className="sr-only">approximately </span>{' '}
               {formatCostUsd(transcript.cost.totalUsd)} session
             </span>
           ) : null}
 
-          {streaming ? (
-            <button
-              type="button"
-              onClick={interrupt}
-              className="ml-auto inline-flex items-center gap-1 rounded border border-chrome-line px-3 py-1 text-[12px] font-medium text-shell-fg transition-colors hover:bg-chrome-line/40 dark:border-ink-line dark:text-ink-fg"
-            >
-              <span aria-hidden="true">◼</span> Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!canSend}
-              aria-disabled={!canSend}
-              title={hasBridge ? 'Send (Enter)' : 'Chat is unavailable in this window'}
-              className="ml-auto inline-flex items-center gap-1 rounded bg-accent px-3 py-1 text-[12px] font-medium text-on-fill transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              Send <span aria-hidden="true">➤</span>
-            </button>
-          )}
+          <span className="ml-auto">
+            {streaming ? (
+              <Button variant="secondary" onClick={interrupt}>
+                <span aria-hidden="true">◼</span> Stop
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={submit}
+                disabled={!canSend}
+                aria-disabled={!canSend}
+                title={hasBridge ? 'Send (Enter)' : 'Chat is unavailable in this window'}
+              >
+                Send <span aria-hidden="true">➤</span>
+              </Button>
+            )}
+          </span>
         </div>
       </div>
     </aside>
@@ -209,10 +241,10 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
 function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-      <span aria-hidden="true" className="text-lg text-chrome-muted dark:text-ink-muted">
+      <span aria-hidden="true" className="text-title text-text-muted">
         ✦
       </span>
-      <p className="text-[12px] leading-relaxed text-chrome-muted dark:text-ink-muted">
+      <p className="text-ui-sm text-text-muted">
         No messages yet. Describe the deck you want and Claude will build it slide by slide.
       </p>
     </div>
@@ -222,19 +254,19 @@ function EmptyState(): JSX.Element {
 function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
   if (message.kind === 'user') {
     return (
-      <div className="self-end rounded-lg bg-accent px-3 py-2 text-[13px] text-on-fill">
+      <div className={`self-end rounded-panel bg-accent px-3 py-2 text-ui text-on-fill ${ARRIVE}`}>
         <p className="whitespace-pre-wrap">{message.text}</p>
       </div>
     )
   }
 
   if (message.kind === 'error') {
+    // `alert`, deliberately: a failed turn is the one thing in this transcript that must interrupt.
     return (
-      <div
-        role="alert"
-        className="self-start rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
-      >
-        <p className="whitespace-pre-wrap">⚠ {message.text}</p>
+      <div className={`self-start ${ARRIVE}`}>
+        <Notice tone="danger" role="alert" icon="⚠">
+          <span className="whitespace-pre-wrap">{message.text}</span>
+        </Notice>
       </div>
     )
   }
@@ -246,7 +278,7 @@ function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
       <div
         role="status"
         data-testid="chat-notice"
-        className="self-start rounded-lg border border-dashed border-chrome-line px-3 py-2 text-[12px] text-chrome-muted dark:border-ink-line dark:text-ink-muted"
+        className={`self-start rounded-panel bg-surface-sunken px-3 py-2 text-ui-sm text-text-muted ${ARRIVE}`}
       >
         <p className="whitespace-pre-wrap">{message.text}</p>
       </div>
@@ -254,12 +286,14 @@ function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
   }
 
   return (
-    <div className="self-start rounded-lg bg-white px-3 py-2 text-[13px] text-shell-fg dark:bg-ink-alt dark:text-ink-fg">
-      <p className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-chrome-muted dark:text-ink-muted">
+    <div
+      className={`flex flex-col gap-1 self-start rounded-panel bg-surface-raised px-3 py-2 text-ui text-text shadow-raised ${ARRIVE}`}
+    >
+      <p className="flex items-center gap-1 text-caption font-semibold uppercase tracking-caps text-text-muted">
         <span aria-hidden="true">●</span> Claude
       </p>
       {message.tools.length > 0 ? (
-        <ul className="mb-1 flex flex-col gap-1">
+        <ul className="flex flex-col gap-1">
           {message.tools.map((tool) => (
             <ToolChipRow key={tool.toolUseId} chip={tool} />
           ))}
@@ -269,16 +303,18 @@ function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
         <p className="whitespace-pre-wrap">{message.text}</p>
       ) : message.streaming ? (
         message.tools.length === 0 ? (
-          <p className="text-chrome-muted dark:text-ink-muted">
-            <span className="inline-flex gap-0.5" aria-label="Claude is typing">
-              <span className="animate-pulse">●</span>
+          // `animate-working` is the 900ms opacity dip; under reduced motion theme.css runs it once,
+          // which leaves the static "…" the audit asks for.
+          <p className="text-text-muted">
+            <span className="animate-working" aria-label="Claude is typing">
+              …
             </span>
           </p>
         ) : null
       ) : message.tools.length === 0 ? (
         // A settled turn that produced no text and no tool calls: say so rather than leave a bare
         // "● Claude" header that reads as a rendering bug.
-        <p className="italic text-chrome-muted dark:text-ink-muted">(no response)</p>
+        <p className="text-text-muted italic">(no response)</p>
       ) : null}
     </div>
   )
@@ -286,8 +322,10 @@ function MessageBubble({ message }: { message: ChatMessage }): JSX.Element {
 
 function ToolChipRow({ chip }: { chip: ToolChip }): JSX.Element {
   return (
-    <li className="inline-flex w-fit items-center gap-1 rounded-full bg-chrome-line/40 px-2 py-0.5 text-[11px] text-chrome-muted dark:bg-ink-line/60 dark:text-ink-muted">
-      <span aria-hidden="true">{chip.glyph}</span> {chip.text}…
+    <li className="flex">
+      <Chip>
+        <span aria-hidden="true">{chip.glyph}</span> {chip.text}…
+      </Chip>
     </li>
   )
 }
@@ -299,21 +337,24 @@ function ToolChipRow({ chip }: { chip: ToolChip }): JSX.Element {
  * be exactly one place a credential is entered - two entry points means two validation paths, two
  * masking rules, and a real chance they drift. It also means the composer never has to explain the
  * subscription-vs-key choice in the width of a sidebar.
+ *
+ * `bg-accent-soft` with a full-strength `border-accent` (4.52 / 3.87 on its own tint, 4.97 / 5.09 on
+ * the panel) because this box is a call to action, not a label — the audit's U13 replacement.
  */
 function AuthGate({ onOpenSettings }: { onOpenSettings?: (() => void) | undefined }): JSX.Element {
   return (
-    <div className="mb-2 rounded border border-accent/40 bg-accent/5 p-2 text-[12px]">
-      <p className="mb-1 font-medium text-shell-fg dark:text-ink-fg">Set up authentication</p>
-      <p className="mb-2 text-[11px] text-chrome-muted dark:text-ink-muted">
-        Sign in with your Claude subscription, or add an API key, before Claude can build slides.
-      </p>
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        className="rounded bg-accent px-2 py-1 text-[12px] font-medium text-on-fill"
-      >
-        Open Settings
-      </button>
+    <div className="flex flex-col gap-2 rounded-panel border border-accent bg-accent-soft p-2 text-ui-sm text-text">
+      <div>
+        <p className="font-medium">Set up authentication</p>
+        <p>
+          Sign in with your Claude subscription, or add an API key, before Claude can build slides.
+        </p>
+      </div>
+      <div>
+        <Button variant="primary" onClick={onOpenSettings}>
+          Open Settings
+        </Button>
+      </div>
     </div>
   )
 }
