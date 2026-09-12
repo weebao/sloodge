@@ -90,6 +90,15 @@ const SOURCE_TOKEN = '<h1 style="color: var(--sl-accent, #ff0000); font-size: 44
 const SOURCE_TOKEN_BARE = '<h1 style="color: var(--sl-accent); font-size: 44px">Hello</h1>'
 /** A token that merely starts with the accent's name: the word boundary must not select accent. */
 const SOURCE_NEAR_MISS = '<h1 style="color: var(--sl-accent-fg); font-size: 44px">Hello</h1>'
+/** `var()` with internal whitespace — legal CSS, and the `\s*` in the token regex is what allows it. */
+const SOURCE_TOKEN_SPACED =
+  '<h1 style="color: var( --sl-accent , #ff0000); font-size: 44px">Hello</h1>'
+/**
+ * Accent's token with the *foreground* swatch's hex as the fallback. Only the token names accent, so
+ * a match that accepted either half would press two swatches in a row that is meant to be exclusive.
+ */
+const SOURCE_TOKEN_FOREIGN_FALLBACK =
+  '<h1 style="color: var(--sl-accent, #f0f0f5); font-size: 44px">Hello</h1>'
 const SHAPES = `<!doctype html><html><body>
 <div class="slide" data-sl-slide="X">
   <div class="a" style="position:absolute;left:10px;top:20px;width:100px;height:40px">A</div>
@@ -273,6 +282,33 @@ describe('M8b.3 surface 3 — the property panel on the design tokens', () => {
     expect(accent.getAttribute('aria-pressed'), 'var(--sl-accent) with no fallback').toBe('true')
     expect(classes(accent)).toContain('ring-2')
     for (const key of ['bg', 'fg', 'muted']) {
+      expect(screen.getByTestId(`theme-color-${key}`).getAttribute('aria-pressed')).toBe('false')
+    }
+  })
+
+  it('whitespace inside var() still selects — legal CSS the token regex must tolerate', () => {
+    mountPanel(SOURCE_TOKEN_SPACED)
+    const accent = screen.getByTestId('theme-color-accent')
+    expect(accent.getAttribute('aria-pressed'), 'var( --sl-accent , …) selects accent').toBe('true')
+    for (const key of ['bg', 'fg', 'muted']) {
+      expect(screen.getByTestId(`theme-color-${key}`).getAttribute('aria-pressed')).toBe('false')
+    }
+  })
+
+  it('only the token half of a var() selects, never the fallback hex', () => {
+    // `var(--sl-accent, #f0f0f5)` names accent and falls back to FOREGROUND's hex. Exactly one swatch
+    // may read pressed: a check that also matched the fallback would press `fg` as well, and a check
+    // that matched the fallback INSTEAD of the token would press `fg` alone.
+    mountPanel(SOURCE_TOKEN_FOREIGN_FALLBACK)
+    expect(
+      screen.getByTestId('theme-color-accent').getAttribute('aria-pressed'),
+      'the token names accent',
+    ).toBe('true')
+    expect(
+      screen.getByTestId('theme-color-fg').getAttribute('aria-pressed'),
+      "the fallback hex is foreground's, and a fallback is not a selection",
+    ).toBe('false')
+    for (const key of ['bg', 'muted']) {
       expect(screen.getByTestId(`theme-color-${key}`).getAttribute('aria-pressed')).toBe('false')
     }
   })

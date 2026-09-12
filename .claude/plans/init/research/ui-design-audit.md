@@ -244,16 +244,32 @@ tabs `rounded-t` 4px with a `border-b-2` underline (`SettingsDialog.tsx` line 17
 7 / dialogs 8 (M8b.0 §4.1); no chrome pill exists except genuine chips and the HUD. **Keep the ceiling;
 name the three steps.**
 
-### 2.4 Shadow — 6 spellings, 9 uses
+### 2.4 Shadow — 7 spellings, 10 uses
 
-`shadow-sm` (`ThumbnailRail.tsx:165`), `shadow-md` (the arrange bar, until M8b.3 surface 3 — `shadow-floating` with no border at `ArrangeBar.tsx:126`), `shadow-lg`
-(`SlideContextMenu.tsx:139`, `PresentControls.tsx:47`), `shadow-xl` (`SettingsDialog.tsx` line 146 on `6452c04` — `shadow-overlay` through the `Dialog` primitive, `Dialog.tsx:71`, since M8b.3 surface 4;
-`ExportPptxDialog.tsx:69`), and the bespoke `shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)]`
-on the canvas slide (`SlideCanvas.tsx:131`) — the only two raw `rgba()` literals in a component.
-Every value is black-alpha and none is redefined for dark, so on the `#1f1f22` ground they are
-invisible and separation falls back to the 1.24:1 hairline. Three of the five sit on elements that
-**also** carry a hairline border (thumbnail, arrange bar, menu, dialog) — the "border and floating
-shadow on the same element" pattern every source in M8b.0 §4.2 rejects.
+`shadow-sm` ×1 (`ThumbnailRail.tsx:165`), `shadow-raised` ×2 (`ChatPanel.tsx:287`, and
+`ColorControls.tsx:175` for this surface's swatch hover), `shadow-lg` ×3
+(`SlideContextMenu.tsx:139`, `PresentControls.tsx:47`, `FontFamilyControl.tsx:525`),
+`shadow-floating` ×1 (`ArrangeBar.tsx:126` — `shadow-md` until M8b.3 surface 3, now with no border),
+`shadow-overlay` ×1 (`Dialog.tsx:71`, which `SettingsDialog.tsx` reaches through the primitive since
+M8b.3 surface 4 — it was `shadow-xl` at line 146 on `6452c04`), `shadow-xl` ×1
+(`ExportPptxDialog.tsx:69`), and the bespoke
+`shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)]` on the canvas slide
+(`SlideCanvas.tsx:131`) — still the only two raw `rgba()` literals in a component.
+
+**The count rose from 6/9 because the token spellings land beside the legacy ones rather than
+replacing them in one step.** `shadow-raised`, `shadow-floating` and `shadow-overlay` are the three
+canonical steps (§5.3); `shadow-sm`, `shadow-lg`, `shadow-xl` and the bespoke value are what M8b.3
+surfaces 6, 8 and 9 plus M8b.3x still have to retire. Every legacy value is black-alpha and none is
+redefined for dark, so on the `#1f1f22` ground they are invisible and separation falls back to the
+1.24:1 hairline.
+
+The "border and floating shadow on the same element" pattern that every source in M8b.0 §4.2 rejects
+now survives at rest in exactly two places: the thumbnail card (`shadow-sm` + `border`) and the
+context menu (`shadow-lg` + `border border-chrome-line`), both owned by surface 6. The arrange bar
+left the pattern in surface 3 and the dialog in surface 4 — `ArrangeBar.tsx:126` and `Dialog.tsx:71`
+each carry no border. `ColorControls.tsx:175` pairs `border-line-strong` with a shadow only on
+`hover:`, which §4.5 item 4 prescribes as the swatch's lift and which §4.2 does not reject: the
+objection is to a resting separation treatment doing the same job twice, not to a hover affordance.
 
 ### 2.5 Type — 12 sizes, 4 weights, 4 leadings, 3 trackings
 
@@ -1425,6 +1441,7 @@ src/renderer/src/features/chat/ChatPanel.tsx:241  ed66b3c8  <span aria-hidden="t
 src/renderer/src/features/chat/ChatPanel.tsx:244  93d76557  <p className="text-ui-sm text-text-muted">
 src/renderer/src/features/chat/ChatPanel.tsx:254  d5ce2982  <div className={`self-end rounded-panel bg-accent px-3 py-2 text-ui tex…
 src/renderer/src/features/chat/ChatPanel.tsx:264  a3fff547  <Notice tone="danger" role="alert" icon="⚠">
+src/renderer/src/features/chat/ChatPanel.tsx:287  8b07f425  className={`flex flex-col gap-1 self-start rounded-panel bg-surface-rai…
 src/renderer/src/features/chat/ChatPanel.tsx:289  0efe4e0c  <p className="flex items-center gap-1 text-caption font-semibold upperc…
 src/renderer/src/features/chat/ChatPanel.tsx:306  1f33e946  <span className="animate-working" aria-label="Claude is typing">
 src/renderer/src/features/chat/ChatPanel.tsx:343  1c187494  <div className="flex flex-col gap-2 rounded-panel border border-accent …
@@ -1455,6 +1472,7 @@ src/renderer/src/features/design/DesignModeToggle.tsx:79  11e34f1f  enabled ? 'b
 src/renderer/src/features/design/DesignNotice.tsx:57  9c2e9ab3  className="pointer-events-auto flex items-center gap-2 rounded bg-amber…
 src/renderer/src/features/design/DesignNotice.tsx:63  7bb07198  className="shrink-0 rounded px-1 hover:bg-black/20"
 src/renderer/src/features/design/FontFamilyControl.tsx:495  0cb02bca  className="flex min-w-0 max-w-44 flex-1 items-center justify-between ga…
+src/renderer/src/features/design/FontFamilyControl.tsx:525  56996e95  className="z-20 w-64 rounded-md border border-chrome-line bg-white p-1 …
 src/renderer/src/features/design/FontFamilyControl.tsx:541  c3f16183  className="mb-1 w-full rounded border border-chrome-line bg-white px-1.…
 src/renderer/src/features/design/PropertyPanel.tsx:86  49166677  const TEXTAREA = `w-full min-w-0 rounded-control border border-line-str…
 src/renderer/src/features/design/PropertyPanel.tsx:92  21a35406  const ASK_CHIP = `inline-flex max-w-full cursor-pointer items-center ga…
