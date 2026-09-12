@@ -33,6 +33,11 @@ import { beforeAll, describe, expect, it } from 'vitest'
 const MIGRATED = [
   // M8b.3 surface 1 — chat panel (#76)
   'src/renderer/src/features/chat/ChatPanel.tsx',
+  // M8b.3 surface 2 — app shell (#75)
+  'src/renderer/src/app/AppShell.tsx',
+  'src/renderer/src/features/format/MenuTabStrip.tsx',
+  'src/renderer/src/features/format/FormatBar.tsx',
+  'src/renderer/src/features/design/DesignModeToggle.tsx',
 ] as const
 
 const RENDERER = 'src/renderer/src/'

@@ -9,9 +9,10 @@
  *  - **The file gate, run as a test.** `node scripts/design-inventory.mjs --check` over
  *    `AppShell.tsx`, `MenuTabStrip.tsx`, `FormatBar.tsx` and `DesignModeToggle.tsx` reds on a
  *    retired token, a `dark:` twin, a palette colour, an alpha suffix or an arbitrary value coming
- *    back. It is not spawned from here: #76 extracts one shared, list-driven spawn —
+ *    back. It is not spawned from here: #76 extracted one shared, list-driven spawn —
  *    `tests/unit/design/migrated-files-check.test.ts`, `it.each(MIGRATED)` — and the four files
- *    join that list when this PR rebases onto it. Until then the gate is command-run only.
+ *    are on that list since this PR rebased onto it (one row each; the AppShell row reds with
+ *    `legacy = 3, dark: = 1` when `bg-shell-bg text-shell-fg dark:bg-ink` comes back).
  *  - **The rendered class of each finding's element — this file.** The gate cannot see a *role*
  *    token that is the wrong role. Review r1 of #75 measured two that pass `--check` AND the whole
  *    suite: the toolbar row on `bg-surface` instead of `bg-surface-raised` (the tone step that
