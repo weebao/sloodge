@@ -196,7 +196,7 @@ Fluent documents (M8b.0 §4.4). **Nothing here needs a new scale.** What needs t
 
 | # | Finding | Sites |
 | --- | --- | --- |
-| S1 | 14 margin spellings, 27 uses — `mt-1` ×4, `mb-2` ×3, `mb-1` ×3, `mt-2` ×2, `mt-4` ×2, `mx-0.5` ×2, and one each of `mt-0.5`, `ml-0.5`, `mt-1.5`, `mb-1.5`, `mt-6`, `ml-2`, `ml-5`, `mx-1`. Margins on children are spacing done by eye; the parent's `gap` is the same value declared once. | `ChatPanel.tsx` (five sites, all parent `gap` since M8b.3 surface 1 — the composer column `ChatPanel.tsx:158`, the assistant bubble `:290`, the auth gate `:346`), `AuthTab.tsx:136/140`, `ExportPptxDialog.tsx:75/79/92/102/107`, `SlideCanvas.tsx:166`, `PropertyPanel.tsx:250/283`, `FormatBar.tsx:41/102`, `ArrangeBar.tsx:150/164`, `SettingsDialog.tsx:256`, `BudgetTab.tsx:242` |
+| S1 | 14 margin spellings, 27 uses — `mt-1` ×4, `mb-2` ×3, `mb-1` ×3, `mt-2` ×2, `mt-4` ×2, `mx-0.5` ×2, and one each of `mt-0.5`, `ml-0.5`, `mt-1.5`, `mb-1.5`, `mt-6`, `ml-2`, `ml-5`, `mx-1`. Margins on children are spacing done by eye; the parent's `gap` is the same value declared once. | `ChatPanel.tsx` (five sites, all parent `gap` since M8b.3 surface 1 — the composer column `ChatPanel.tsx:158`, the assistant bubble `:287`, the auth gate `:343`), `AuthTab.tsx:136/140`, `ExportPptxDialog.tsx:75/79/92/102/107`, `SlideCanvas.tsx:166`, `PropertyPanel.tsx:250/283`, `FormatBar.tsx:41/102`, `ArrangeBar.tsx:150/164`, `SettingsDialog.tsx:256`, `BudgetTab.tsx:242` |
 | S2 | The one genuinely off-grid value: `-mb-px` (`MenuTabStrip.tsx:21`) — the tab overlapping the strip's border by 1px. Legitimate technique; keep it, name it in the allow-list. | 1 |
 | S3 | Indentation by padding: `pl-5` ×3 + `ml-5` ×1 in `BudgetTab.tsx:242/267/295/300` to align under a checkbox — four places that must agree with the checkbox width by coincidence | 4 |
 | S4 | The two dialogs disagree on their own padding: Settings `px-5 py-3` header / `px-5 py-4` body / `px-5 py-3` footer (`SettingsDialog.tsx:148/189/197`); PPTX `p-6` throughout with `mt-4`/`mt-6` stacking (`ExportPptxDialog.tsx:69–107`) | 2 files |
@@ -220,7 +220,7 @@ is the other `rounded-sm`. Effective ramp: **4px** (47 uses: controls, chips, bu
 both dialogs), **pill** (12 uses: context chips, HUD pills, present controls, budget bar, rotate handle).
 
 Inconsistencies: chat bubbles were 8px while the auth card in the same column was 4px (both
-`rounded-panel` since M8b.3 surface 1 — `ChatPanel.tsx:254`, `:346`); the arrange bar (a floating toolbar) is 8px (`ArrangeBar.tsx:145`) while the
+`rounded-panel` since M8b.3 surface 1 — `ChatPanel.tsx:254`, `:343`); the arrange bar (a floating toolbar) is 8px (`ArrangeBar.tsx:145`) while the
 context menu (a floating menu) is 4px (`SlideContextMenu.tsx:139`); the dialog is 8px and its inner
 tabs `rounded-t` 4px with a `border-b-2` underline (`SettingsDialog.tsx:175`) — concentric radius
 (`outer = inner + padding`) holds nowhere. Ceiling is 8px everywhere, which matches Helium's `kMSmall`
@@ -389,7 +389,7 @@ quoted alongside.
 | U2 | field fill vs panel (`white` on `chrome`; `ink-alt` on `ink`) | 1.04 | 1.09 | `ChatPanel.tsx:48` (**Landed, M8b.3 surface 1** — `bg-field border-line-strong`, guarded by `tests/unit/chat/chat-panel-design.test.tsx` + `tests/unit/design/migrated-files-check.test.ts`), `BudgetTab.tsx:279` | same |
 | U3 | field fill vs property panel | 1.12 | 1.08 | `PropertyPanel.tsx:487` | same |
 | U4 | control border `chrome-line` on `white` | **1.30** | **1.24** | `FormatBar.tsx:45` select, `DesignModeToggle.tsx:47`, `StatusBar.tsx:217`, `ChatPanel.tsx:48` (**Landed, M8b.3 surface 1** — `border-line-strong`), `BudgetTab.tsx:279`, `ColorControls.tsx:196` | `border-line-strong` on controls (3.95 / 3.22); `line` stays for dividers, which are exempt |
-| U5 | control border `chrome-line` on `chrome` | **1.24** | **1.35** | `ThumbnailRail.tsx:168/372`, `ChatPanel.tsx` (**Landed, M8b.3 surface 1** — the empty context pill is `border-line-strong` at `ChatPanel.tsx:197`, Stop is `Button`'s `secondary` at `:220`), `AuthTab.tsx:128/193/245/251`, `BudgetTab.tsx:252/285`, `SettingsDialog.tsx:222` | `line-strong` (3.79 / 3.52) on interactive controls; thumbnails move to `shadow-raised` + `line` |
+| U5 | control border `chrome-line` on `chrome` | **1.24** | **1.35** | `ThumbnailRail.tsx:168/372`, `ChatPanel.tsx` (**Landed, M8b.3 surface 1** — the empty context pill is `border-line-strong` at `ChatPanel.tsx:197`, Stop is `Button`'s `secondary` at `:217`), `AuthTab.tsx:128/193/245/251`, `BudgetTab.tsx:252/285`, `SettingsDialog.tsx:222` | `line-strong` (3.79 / 3.52) on interactive controls; thumbnails move to `shadow-raised` + `line` |
 | U6 | control border on the property panel | **1.15** | **1.25** | `PropertyPanel.tsx:487/569/579/589`, `ColorControls.tsx:106/196/206` | `line-strong` |
 | U7 | arrange bar border | **1.30** | **1.24** | `ArrangeBar.tsx:145` | `shadow-floating` carries the separation; border → `line` (exempt) |
 | U8 | slide outline on the mat | **1.14** | **1.53** | `SlideCanvas.tsx:131` | `shadow-floating` + `outline-line`; the outline is decorative once the shadow is dark-adjusted |

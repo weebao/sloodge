@@ -67,6 +67,31 @@ const digest = (): string =>
     .join('\n')
 
 describe('M8b.3 — every migrated surface stays on the tokens (`--check` as a suite test)', () => {
+  /**
+   * The list is the gate. Review r2 found two ways to disable it without anything going red, and
+   * both are things a later surface PR could do by accident while appending its paths.
+   *
+   * An EMPTY list is the dangerous one: arg-less `--check` is the whole-renderer census mode, which
+   * prints `RESULT: pass` with `legacy 294` on the tree, so `it.each([])` runs nothing, the RESULT
+   * case passes, and nine migrated surfaces are guarded by a green suite. A `./`-prefixed path is the
+   * quieter one: the row is found under the un-prefixed name, so the entry reds with the *misleading*
+   * "did --check refuse the path?" while the digest shows a clean row.
+   */
+  it('the MIGRATED list is well formed, or this whole file guards nothing', () => {
+    expect(
+      MIGRATED.length,
+      'MIGRATED is empty — arg-less `--check` is census mode and passes',
+    ).toBeGreaterThan(0)
+    for (const file of MIGRATED) {
+      expect(file, `${file}: drop the ./ prefix — the row is keyed on the plain path`).not.toMatch(
+        /^\.\//,
+      )
+      expect(file, `${file}: must be under ${RENDERER}`).toMatch(new RegExp(`^${RENDERER}`))
+      expect(file, `${file}: --check scans .tsx and .css only`).toMatch(/\.(?:tsx|css)$/)
+    }
+    expect(new Set(MIGRATED).size, 'MIGRATED has a duplicate entry').toBe(MIGRATED.length)
+  })
+
   it.each(MIGRATED)('%s: every gate column is 0', (file) => {
     const short = file.slice(RENDERER.length)
     const row = output.split('\n').find((l) => l.startsWith(`| ${short} |`))
