@@ -12,6 +12,13 @@
  * Both inputs are `type="password"`, both send their value main-ward only, and both read back a
  * masked status. Nothing in this component can display a stored credential — there is no bridge call
  * that returns one.
+ *
+ * Presentation (M8b.3 surface 4, ui-design-audit.md §4.8): the credential fields are the `Input`
+ * primitive — `bg-field border-line-strong`, the fix for U1, where the field was painted the same
+ * `chrome` as the panel around it (1.00:1) on the one control a user pastes a secret into. Save
+ * token is `Button` `primary`, Save key `secondary`, the two Remove links `link` (accent, not muted
+ * grey); the status card is a `surface-sunken` well; the error and the endpoint warning are
+ * `Notice`s, whose `border-warning` closes U16 (`amber-500/50`, 1.45:1).
  */
 
 import { useCallback, useEffect, useState, type ChangeEvent, type JSX } from 'react'
@@ -22,6 +29,7 @@ import {
   type AuthStatus,
 } from '../../../../shared/agent/auth'
 import { describeEndpointWarning } from '../../../../shared/agent/endpoint'
+import { Button, Input, Notice, PanelHeading } from '../../components/ui'
 import { getAgentBridge } from '../chat/agentClient'
 import { useAuthStore } from '../../stores/authStore'
 
@@ -125,19 +133,14 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
     <div className="flex flex-col gap-6">
       <section
         aria-labelledby="settings-auth-current"
-        className="rounded-md border border-chrome-line bg-chrome-alt px-4 py-3 dark:border-ink-line dark:bg-ink-alt"
+        className="flex flex-col gap-1 rounded-panel bg-surface-sunken px-4 py-3"
       >
-        <h3
-          id="settings-auth-current"
-          className="text-[11px] font-medium uppercase tracking-wide text-chrome-muted dark:text-ink-muted"
-        >
-          Status
-        </h3>
-        <p className="mt-1 text-[13px] text-shell-fg dark:text-ink-fg" data-testid="auth-status">
+        <PanelHeading id="settings-auth-current">Status</PanelHeading>
+        <p className="text-ui text-text" data-testid="auth-status">
           {describeAuthStatus(status)}
         </p>
         {status.mode === 'subscription' && status.apiKey.configured ? (
-          <p className="mt-1 text-[11px] text-chrome-muted dark:text-ink-muted">
+          <p className="text-caption text-text-muted">
             An API key is also stored {maskedSuffix(status.apiKey)}. Remove the subscription token
             to use it instead.
           </p>
@@ -145,35 +148,31 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
       </section>
 
       {error !== null ? (
-        <p role="alert" className="text-[12px] text-red-600 dark:text-red-400">
+        // `alert`: the save the user just asked for did not happen, and they are about to move on.
+        <Notice tone="danger" role="alert" icon="⚠">
           {error}
-        </p>
+        </Notice>
       ) : null}
 
       {endpointWarning !== null ? (
-        <p
-          role="alert"
-          data-testid="auth-endpoint-warning"
-          className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-900 dark:text-amber-200"
-        >
-          {endpointWarning}
-        </p>
+        // `alert` rather than the primitive's polite default: this is the one notice that must be
+        // heard before the next keystroke, because the next keystroke may be a pasted credential.
+        <Notice tone="warning" role="alert" icon="⚠">
+          <span data-testid="auth-endpoint-warning">{endpointWarning}</span>
+        </Notice>
       ) : null}
 
       {/* --- preferred path ------------------------------------------------------------------- */}
       <section aria-labelledby="settings-auth-subscription" className="flex flex-col gap-2">
-        <h3
-          id="settings-auth-subscription"
-          className="text-[13px] font-semibold text-shell-fg dark:text-ink-fg"
-        >
+        <h3 id="settings-auth-subscription" className="text-ui font-semibold text-text">
           Sign in with your Claude subscription
         </h3>
-        <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
+        <p className="text-ui-sm text-text-muted">
           Recommended for Pro, Max, Team, and Enterprise plans — usage counts against your
           subscription instead of pay-as-you-go API billing. Run this in a terminal, then paste the
           token it prints:
         </p>
-        <code className="w-fit rounded bg-chrome-alt px-2 py-1 font-mono text-[12px] text-shell-fg dark:bg-ink-alt dark:text-ink-fg">
+        <code className="w-fit rounded-control bg-surface-sunken px-2 py-1 font-mono text-ui-sm text-text">
           {SETUP_TOKEN_COMMAND}
         </code>
 
@@ -181,7 +180,7 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
           Claude subscription token
         </label>
         <div className="flex gap-2">
-          <input
+          <Input
             id="settings-subscription-token"
             type="password"
             autoComplete="off"
@@ -190,39 +189,31 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
             value={token}
             disabled={busy}
             onChange={onTokenChange}
-            className="min-w-0 flex-1 rounded border border-chrome-line bg-chrome px-2 py-1 text-[13px] text-shell-fg dark:border-ink-line dark:bg-ink dark:text-ink-fg"
           />
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={saveToken}
             disabled={busy || token.trim().length === 0}
-            className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-on-fill disabled:opacity-50"
           >
             Save token
-          </button>
+          </Button>
         </div>
 
         {status.subscription.configured ? (
-          <button
-            type="button"
-            onClick={removeToken}
-            disabled={busy}
-            className="w-fit text-[12px] text-chrome-muted underline disabled:opacity-50 dark:text-ink-muted"
-          >
-            Remove subscription token
-          </button>
+          <div>
+            <Button variant="link" onClick={removeToken} disabled={busy}>
+              Remove subscription token
+            </Button>
+          </div>
         ) : null}
       </section>
 
       {/* --- fallback ------------------------------------------------------------------------- */}
       <section aria-labelledby="settings-auth-key" className="flex flex-col gap-2">
-        <h3
-          id="settings-auth-key"
-          className="text-[13px] font-semibold text-shell-fg dark:text-ink-fg"
-        >
+        <h3 id="settings-auth-key" className="text-ui font-semibold text-text">
           Or use an API key
         </h3>
-        <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
+        <p className="text-ui-sm text-text-muted">
           Billed per token to your Anthropic Console account.
           {subscriptionActive
             ? ' Currently inactive — the subscription token takes precedence.'
@@ -233,7 +224,7 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
           Anthropic API key
         </label>
         <div className="flex gap-2">
-          <input
+          <Input
             id="settings-api-key"
             type="password"
             autoComplete="off"
@@ -242,31 +233,22 @@ export function AuthTab({ status, onDirtyChange }: AuthTabProps): JSX.Element {
             value={key}
             disabled={busy}
             onChange={onKeyChange}
-            className="min-w-0 flex-1 rounded border border-chrome-line bg-chrome px-2 py-1 text-[13px] text-shell-fg dark:border-ink-line dark:bg-ink dark:text-ink-fg"
           />
-          <button
-            type="button"
-            onClick={saveKey}
-            disabled={busy || key.trim().length === 0}
-            className="rounded border border-chrome-line px-3 py-1 text-[13px] font-medium text-shell-fg disabled:opacity-50 dark:border-ink-line dark:text-ink-fg"
-          >
+          <Button onClick={saveKey} disabled={busy || key.trim().length === 0}>
             Save key
-          </button>
+          </Button>
         </div>
 
         {status.apiKey.configured ? (
-          <button
-            type="button"
-            onClick={removeKey}
-            disabled={busy}
-            className="w-fit text-[12px] text-chrome-muted underline disabled:opacity-50 dark:text-ink-muted"
-          >
-            Remove API key
-          </button>
+          <div>
+            <Button variant="link" onClick={removeKey} disabled={busy}>
+              Remove API key
+            </Button>
+          </div>
         ) : null}
       </section>
 
-      <p className="text-[11px] text-chrome-muted dark:text-ink-muted">
+      <p className="text-caption text-text-muted">
         Credentials are encrypted with your OS keychain and leave this machine only as requests to
         the configured Anthropic endpoint.
       </p>

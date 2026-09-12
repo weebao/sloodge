@@ -9,6 +9,19 @@
  * the meter is **per session** (it resets when Sloodge restarts) and the estimate is **approximate**
  * (§10 — a client-side price table, never billing truth). Both are the kind of thing that, left
  * unsaid, turn into a support case about a number that "went missing" or "doesn't match the bill".
+ *
+ * Presentation (M8b.3 surface 4, ui-design-audit.md §4.8): every standing message about state —
+ * the limit still being read, the approaching / used-up warnings, the uncap confirmation, a save
+ * that failed — is a `Notice`, whose tone gives it a tint, a border, an icon and an `sr-only`
+ * word, so none of them is status by colour alone. That is also what closes T1 and U17 here: the
+ * `Notice`'s `border-warning` replaces the `amber-500/60` confirm-box border (1.56:1), and its
+ * `text-text` body on `warning-soft` (16.62 / 12.05) replaces the 12px `amber-800` warn text. The
+ * bare warning text token would have measured 6.83 / 7.65 too, but the `semantic-contrast` clause
+ * that requires a `dark:` twin on that utility belongs to the status-bar PR (§5.9), and a twin is
+ * what R1 forbids on a migrated file — the `Notice` needs neither. The checkbox row is a two-column
+ * layout (the box, then everything it governs), so the label, the amount row and the copy under it
+ * align structurally rather than through four `pl-5`s; flex rather than `grid-cols-[auto_1fr]`,
+ * because an arbitrary value is a gate column (§7).
  */
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type JSX } from 'react'
@@ -20,6 +33,7 @@ import {
   type BudgetCap,
 } from '../../../../shared/agent/budget'
 import { formatCostUsd } from '../../../../shared/agent/cost'
+import { Button, Input, Notice } from '../../components/ui'
 import {
   selectBudgetCap,
   selectBudgetFailed,
@@ -180,10 +194,10 @@ export function BudgetTab(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="flex flex-col gap-1">
-        <p className="text-[13px] text-shell-fg dark:text-ink-fg">
+      <section className="flex flex-col gap-2">
+        <p className="text-ui text-text">
           This session has spent{' '}
-          <span data-testid="budget-spend" className="font-medium">
+          <span data-testid="budget-spend" className="font-medium tabular-nums">
             <span aria-hidden="true">≈</span>
             <span className="sr-only">approximately </span> {formatCostUsd(spentUsd)}
           </span>
@@ -194,117 +208,116 @@ export function BudgetTab(): JSX.Element {
               '.'
             )
           ) : (
-            <> of {formatCostUsd(knownCap)}.</>
+            <>
+              {' of '}
+              <span className="tabular-nums">{formatCostUsd(knownCap)}</span>.
+            </>
           )}
         </p>
         {!loaded ? (
-          <p
-            data-testid="budget-unloaded"
-            className="text-[12px] text-amber-800 dark:text-amber-500"
-          >
-            {probeFailed
-              ? 'Your saved limit could not be read here. Sloodge is still enforcing it; setting one below will store it.'
-              : 'Reading your saved limit…'}
-          </p>
+          <Notice tone="warning" icon="⚠">
+            <span data-testid="budget-unloaded">
+              {probeFailed
+                ? 'Your saved limit could not be read here. Sloodge is still enforcing it; setting one below will store it.'
+                : 'Reading your saved limit…'}
+            </span>
+          </Notice>
         ) : null}
-        <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
+        <p className="text-ui-sm text-text-muted">
           Estimated from Claude&rsquo;s published prices, not from your bill. The total covers this
           session only and starts again when Sloodge restarts.
         </p>
         {status.level === 'blocked' ? (
-          <p data-testid="budget-blocked" className="text-[12px] text-red-600 dark:text-red-400">
-            The budget is used up, so new messages are being refused. Raise the limit below to
-            continue.
-          </p>
+          <Notice tone="danger" icon="⚠">
+            <span data-testid="budget-blocked">
+              The budget is used up, so new messages are being refused. Raise the limit below to
+              continue.
+            </span>
+          </Notice>
         ) : null}
         {status.level === 'warn' ? (
-          <p className="text-[12px] text-amber-800 dark:text-amber-500">
+          <Notice tone="warning" icon="⚠">
             Approaching the limit. New messages stop once it is reached.
-          </p>
+          </Notice>
         ) : null}
       </section>
 
-      <section className="flex flex-col gap-2 border-t border-chrome-line pt-3 dark:border-ink-line">
-        <label className="flex items-center gap-2 text-[13px] text-shell-fg dark:text-ink-fg">
+      <section className="flex gap-2 border-t border-line pt-3">
+        {/* Column one: the box, centred on the label's first line (h-5 is text-ui's line box). */}
+        <span className="flex h-5 shrink-0 items-center">
           <input
+            id="settings-budget-limit"
             type="checkbox"
             checked={limited}
             disabled={!editable}
             onChange={onToggleLimit}
-            className="h-3.5 w-3.5 accent-[var(--color-accent,currentColor)]"
+            className="h-3.5 w-3.5 accent-accent"
           />
-          Limit what one session can spend
-        </label>
+        </span>
+        {/* Column two: everything the box governs, aligned to the label by construction. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <label htmlFor="settings-budget-limit" className="text-ui text-text">
+            Limit what one session can spend
+          </label>
 
-        {confirmingUncap ? (
-          <div
-            data-testid="budget-confirm-uncap"
-            className="ml-5 flex flex-col gap-2 rounded border border-amber-500/60 bg-amber-500/10 p-2.5"
-          >
-            <p className="text-[12px] text-shell-fg dark:text-ink-fg">
-              Remove the limit? Sloodge will keep answering for as long as you keep asking, with
-              nothing to stop a session that runs away.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={cancelUncap}
-                className="rounded border border-chrome-line px-2.5 py-1 text-[12px] text-shell-fg dark:border-ink-line dark:text-ink-fg"
-              >
-                Keep the limit
-              </button>
-              <button
-                type="button"
-                onClick={confirmUncap}
-                className="rounded bg-red-600 px-2.5 py-1 text-[12px] font-medium text-white"
-              >
-                Remove it
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="flex items-center gap-2 pl-5">
-          <span aria-hidden="true" className="text-[13px] text-chrome-muted dark:text-ink-muted">
-            $
-          </span>
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Session budget in dollars"
-            value={draft}
-            disabled={!limited || !editable}
-            onChange={onDraftChange}
-            onBlur={onCommit}
-            className="w-24 rounded border border-chrome-line bg-white px-2 py-1 text-[13px] text-shell-fg disabled:opacity-50 dark:border-ink-line dark:bg-ink-alt dark:text-ink-fg"
-          />
-          <button
-            type="button"
-            disabled={!limited || !editable}
-            onClick={onCommit}
-            className="rounded border border-chrome-line px-2.5 py-1 text-[12px] text-shell-fg disabled:opacity-50 dark:border-ink-line dark:text-ink-fg"
-          >
-            Save
-          </button>
-          {error === null && saved ? (
-            <span className="text-[12px] text-chrome-muted dark:text-ink-muted">Saved</span>
+          {confirmingUncap ? (
+            <Notice tone="warning" icon="⚠">
+              <div data-testid="budget-confirm-uncap" className="flex flex-col gap-2">
+                <p>
+                  Remove the limit? Sloodge will keep answering for as long as you keep asking, with
+                  nothing to stop a session that runs away.
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={cancelUncap}>Keep the limit</Button>
+                  <Button variant="danger" onClick={confirmUncap}>
+                    Remove it
+                  </Button>
+                </div>
+              </div>
+            </Notice>
           ) : null}
-        </div>
 
-        {error !== null ? (
-          <p role="alert" className="pl-5 text-[12px] text-red-600 dark:text-red-400">
-            {error}
+          <div className="flex items-center gap-2">
+            <span aria-hidden="true" className="text-ui text-text-muted">
+              $
+            </span>
+            {/* `Input` fills its container; a dollar amount does not want the whole row. */}
+            <div className="w-24">
+              <Input
+                type="text"
+                inputMode="decimal"
+                aria-label="Session budget in dollars"
+                value={draft}
+                disabled={!limited || !editable}
+                onChange={onDraftChange}
+                onBlur={onCommit}
+              />
+            </div>
+            <Button disabled={!limited || !editable} onClick={onCommit}>
+              Save
+            </Button>
+            {error === null && saved ? (
+              <span className="text-ui-sm text-success">
+                <span aria-hidden="true">✓</span> Saved
+              </span>
+            ) : null}
+          </div>
+
+          {error !== null ? (
+            <Notice tone="danger" role="alert" icon="⚠">
+              {error}
+            </Notice>
+          ) : null}
+
+          <p className="text-ui-sm text-text-muted">
+            When the limit is reached Sloodge stops accepting new messages. A message already being
+            answered is allowed to finish — unless you lower the limit below what this session has
+            already spent, in which case it is stopped. Sloodge learns what a message cost only once
+            it ends, so one long message can carry the total past the limit before anything stops
+            it, and that spend is counted. After a stop, raising the limit lets the next message
+            spend up to the new limit on its own, on top of what the session had already spent.
           </p>
-        ) : null}
-
-        <p className="pl-5 text-[12px] text-chrome-muted dark:text-ink-muted">
-          When the limit is reached Sloodge stops accepting new messages. A message already being
-          answered is allowed to finish — unless you lower the limit below what this session has
-          already spent, in which case it is stopped. Sloodge learns what a message cost only once
-          it ends, so one long message can carry the total past the limit before anything stops it,
-          and that spend is counted. After a stop, raising the limit lets the next message spend up
-          to the new limit on its own, on top of what the session had already spent.
-        </p>
+        </div>
       </section>
     </div>
   )

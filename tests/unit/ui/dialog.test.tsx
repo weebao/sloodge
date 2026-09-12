@@ -22,9 +22,19 @@
  * branch → the Escape test reds; drop the `restoreTo.focus()` line → the restore test reds; return
  * the tree without `createPortal` → the inert test reds, because the dialog inerts itself; make the
  * cleanup remove the attribute unconditionally instead of at a zero refcount → the nesting test reds.
+ *
+ * Motion (M8b.3 surface 4): the arrival is `@starting-style` + token durations and the exit holds
+ * the DOM only while a transition is running. happy-dom runs no transitions and has no
+ * `getAnimations`, so the exit case stubs one onto the prototype with a `finished` promise it
+ * controls — that is the only way to see the closing frame at all — and the fallback case is the
+ * plain environment. Mutations: drop `starting:scale-98` from the panel → the arrival test reds;
+ * make the exit reuse `duration-base` → the exit test reds on `duration-fast`; unmount on the
+ * `open` edge without waiting → the exit test reds on the dialog being gone before `finished`
+ * resolved; wait on a timer instead → the fallback test reds, because the dialog outlives the
+ * closed render in an environment with nothing to wait for.
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Button } from '../../../src/renderer/src/components/ui/Button'
 import { Dialog } from '../../../src/renderer/src/components/ui/Dialog'
@@ -175,6 +185,89 @@ describe('Dialog', () => {
 
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(last)
+  })
+
+  it('arrives from @starting-style on token durations: scrim fast, panel base', () => {
+    render(
+      <Dialog open title="Export" onClose={vi.fn()}>
+        {body}
+      </Dialog>,
+    )
+    const panel = screen.getByRole('dialog')
+    const klass = panel.className.split(/\s+/)
+    for (const part of [
+      'transition',
+      'duration-base',
+      'starting:opacity-0',
+      'starting:translate-y-1.5',
+      'starting:scale-98',
+    ]) {
+      expect(klass, `panel is missing ${part}`).toContain(part)
+    }
+    const scrim = panel.parentElement!.className.split(/\s+/)
+    expect(scrim).toContain('transition-opacity')
+    expect(scrim).toContain('duration-fast')
+    expect(scrim).toContain('starting:opacity-0')
+    expect(
+      [...klass, ...scrim].filter((c) => /^(?:duration|ease)-\[|^duration-\d|^ease-in$/.test(c)),
+      'durations are tokens and nothing eases in',
+    ).toEqual([])
+  })
+
+  it('leaves faster than it came, inert and untouchable, and unmounts when the transition finishes', async () => {
+    const opener = mountShell()
+    let finish!: () => void
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const proto = HTMLElement.prototype as { getAnimations?: () => Animation[] }
+    proto.getAnimations = () => [{ finished } as unknown as Animation]
+    try {
+      const view = render(
+        <Dialog open title="Export" onClose={vi.fn()}>
+          {body}
+        </Dialog>,
+      )
+      view.rerender(
+        <Dialog open={false} title="Export" onClose={vi.fn()}>
+          {body}
+        </Dialog>,
+      )
+      // Still painted, on the exit recipe — and already out of the user's way: the shell is
+      // released and focus is back on the opener before the fade has ended, not after.
+      const panel = screen.getByRole('dialog', { hidden: true })
+      const klass = panel.className.split(/\s+/)
+      expect(klass, 'exit is the fast step').toContain('duration-fast')
+      expect(klass, 'one duration, not two competing ones').not.toContain('duration-base')
+      for (const part of ['opacity-0', 'translate-y-1.5', 'scale-98']) {
+        expect(klass, `exit frame is missing ${part}`).toContain(part)
+      }
+      const scrim = panel.parentElement!
+      expect(scrim.className.split(/\s+/)).toContain('pointer-events-none')
+      expect(scrim.className.split(/\s+/)).toContain('opacity-0')
+      expect(scrim.hasAttribute('inert'), 'the fading dialog is not in the tab order').toBe(true)
+      expect(document.getElementById('sloodge-shell')!.hasAttribute('inert')).toBe(false)
+      expect(document.activeElement).toBe(opener)
+
+      finish()
+      await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).toBeNull())
+    } finally {
+      delete proto.getAnimations
+    }
+  })
+
+  it('unmounts at once when nothing is animating (no stylesheet, or a zeroed duration)', () => {
+    const view = render(
+      <Dialog open title="Export" onClose={vi.fn()}>
+        {body}
+      </Dialog>,
+    )
+    view.rerender(
+      <Dialog open={false} title="Export" onClose={vi.fn()}>
+        {body}
+      </Dialog>,
+    )
+    expect(screen.queryByRole('dialog', { hidden: true })).toBeNull()
   })
 
   it('names itself by its visible title', () => {

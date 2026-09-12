@@ -206,13 +206,15 @@ describe('SelectionOverlay — a session ending never steals focus (round-2 bloc
       </>,
     )
     const dialog = screen.getByRole('dialog')
-    // The dialog took focus on open (its own effect); the frame blurred and the session committed.
-    expect(document.activeElement).toBe(dialog)
+    // The dialog took focus on open (the `Dialog` primitive moves it to the first focusable — the
+    // Auth tab — since M8b.3 surface 4; before that Settings focused its own panel); the frame
+    // blurred and the session committed.
+    expect(dialog.contains(document.activeElement)).toBe(true)
     act(() => {
       useDesignStore.setState({ editing: null })
     })
 
-    expect(document.activeElement).toBe(dialog)
+    expect(dialog.contains(document.activeElement)).toBe(true)
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
