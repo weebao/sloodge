@@ -42,6 +42,10 @@ const MIGRATED = [
   'src/renderer/src/features/settings/SettingsDialog.tsx',
   'src/renderer/src/features/settings/AuthTab.tsx',
   'src/renderer/src/features/settings/BudgetTab.tsx',
+  // M8b.3 surface 3 — property panel (#78)
+  'src/renderer/src/features/design/PropertyPanel.tsx',
+  'src/renderer/src/features/design/ColorControls.tsx',
+  'src/renderer/src/features/design/ArrangeBar.tsx',
 ] as const
 
 const RENDERER = 'src/renderer/src/'

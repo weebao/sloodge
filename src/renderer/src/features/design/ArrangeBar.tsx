@@ -4,9 +4,20 @@
  * PowerPoint's contextual Arrange group. It owns no state: the buttons call `useArrangeActions`,
  * which commits each align/distribute as one undoable command, and the enable rules come straight
  * from the selection count (align ≥2, distribute ≥3).
+ *
+ * M8b.3 surface 3 (ui-design-audit.md §4.5, §7 row 3): the bar is drawn from the role tokens and
+ * the M8b.2 primitives — every button is a `ToolbarButton` (the same 28px `subtle` recipe the format
+ * bar draws, so the two toolbars stop being two recipes, C2/C10), the label is `text-caption`, the
+ * groups are separated by `dividerGap` rather than a `w-px` hairline (§5.6 `Divider`), and the bar
+ * floats on `shadow-floating` alone — the `border` that sat on top of a `shadow-md` was U7 (1.30 /
+ * 1.24:1, invisible in dark where the black-alpha shadow vanished too). Opaque `bg-surface-raised`
+ * rather than the work list's `/95` + `backdrop-blur-hud`: an alpha suffix on a role token is what
+ * rule R3 forbids and the `--check` gate's `alpha` column counts (only `hud-fg/70` is allowed), and a
+ * blur behind an opaque fill paints nothing.
  */
 
 import { useCallback, type JSX, type ReactNode } from 'react'
+import { ToolbarButton, dividerGap } from '../../components/ui'
 import { useDesignStore } from './designStore'
 import { useArrangeActions } from './useArrangeActions'
 import type { AlignEdge, DistributeAxis } from '../../../../shared/design/arrange'
@@ -15,9 +26,6 @@ export type ArrangeBarProps = {
   /** The slide whose source the align/distribute commands patch. */
   readonly slideId: string
 }
-
-const BUTTON =
-  'inline-flex h-7 w-7 items-center justify-center rounded border border-transparent text-shell-fg transition-colors hover:border-chrome-line hover:bg-chrome-alt disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-transparent disabled:hover:bg-transparent dark:text-ink-fg dark:hover:border-ink-line dark:hover:bg-ink-line'
 
 function Icon({ children }: { children: ReactNode }): JSX.Element {
   return (
@@ -114,6 +122,12 @@ const DISTRIBUTE_LABEL: Readonly<Record<DistributeAxis, string>> = {
 
 const DISTRIBUTE_ORDER: readonly DistributeAxis[] = ['horizontal', 'vertical']
 
+/** Label, align group, distribute group — three groups, separated by space (§5.6 `Divider`). */
+const BAR = `pointer-events-auto absolute left-1/2 top-2 z-panel flex -translate-x-1/2 items-center ${dividerGap()} rounded-panel bg-surface-raised px-1.5 py-1 shadow-floating`
+
+/** Buttons inside one group sit tight; the gap between groups is the divider. */
+const GROUP = `flex items-center ${dividerGap('tight')}`
+
 export function ArrangeBar({ slideId }: ArrangeBarProps): JSX.Element | null {
   const count = useDesignStore((state) => state.selections.length)
   const actions = useArrangeActions(slideId)
@@ -138,44 +152,38 @@ export function ArrangeBar({ slideId }: ArrangeBarProps): JSX.Element | null {
   if (count < 2) return null
 
   return (
-    <div
-      role="toolbar"
-      aria-label="Arrange"
-      data-testid="arrange-bar"
-      className="pointer-events-auto absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-chrome-line bg-white/95 px-1.5 py-1 shadow-md backdrop-blur dark:border-ink-line dark:bg-ink-alt/95"
-    >
-      <span className="px-1 text-[11px] font-medium text-chrome-muted dark:text-ink-muted">
+    <div role="toolbar" aria-label="Arrange" data-testid="arrange-bar" className={BAR}>
+      {/* `whitespace-nowrap`: the bar is shrink-to-fit inside a centred absolute box, so on a narrow
+          stage the label was the first thing to give and broke onto two lines (seen in this PR's
+          recording, before and after). */}
+      <span className="px-1 text-caption font-medium whitespace-nowrap text-text-muted">
         {count} selected
       </span>
-      <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-chrome-line dark:bg-ink-line" />
-      {ALIGN_ORDER.map((edge) => (
-        <button
-          key={edge}
-          type="button"
-          data-edge={edge}
-          aria-label={ALIGN_LABEL[edge]}
-          title={ALIGN_LABEL[edge]}
-          className={BUTTON}
-          onClick={onAlignClick}
-        >
-          {ALIGN_ICON[edge]}
-        </button>
-      ))}
-      <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-chrome-line dark:bg-ink-line" />
-      {DISTRIBUTE_ORDER.map((axis) => (
-        <button
-          key={axis}
-          type="button"
-          data-axis={axis}
-          aria-label={DISTRIBUTE_LABEL[axis]}
-          title={DISTRIBUTE_LABEL[axis]}
-          disabled={!actions.canDistribute}
-          className={BUTTON}
-          onClick={onDistributeClick}
-        >
-          {DISTRIBUTE_ICON[axis]}
-        </button>
-      ))}
+      <div className={GROUP}>
+        {ALIGN_ORDER.map((edge) => (
+          <ToolbarButton
+            key={edge}
+            data-edge={edge}
+            label={ALIGN_LABEL[edge]}
+            onClick={onAlignClick}
+          >
+            {ALIGN_ICON[edge]}
+          </ToolbarButton>
+        ))}
+      </div>
+      <div className={GROUP}>
+        {DISTRIBUTE_ORDER.map((axis) => (
+          <ToolbarButton
+            key={axis}
+            data-axis={axis}
+            label={DISTRIBUTE_LABEL[axis]}
+            disabled={!actions.canDistribute}
+            onClick={onDistributeClick}
+          >
+            {DISTRIBUTE_ICON[axis]}
+          </ToolbarButton>
+        ))}
+      </div>
     </div>
   )
 }

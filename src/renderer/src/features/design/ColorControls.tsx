@@ -42,12 +42,28 @@
  * Each target and each theme swatch is its own small component, so every handler is a `useCallback`
  * closed over the field it edits rather than an inline arrow allocated per render — and the field no
  * longer has to be smuggled through a `data-*` attribute and cast back.
+ *
+ * ## Tokens (M8b.3 surface 3 — ui-design-audit.md §4.5 item 4, §3.1 U4/U6)
+ *
+ * Every control edge is `border-line-strong` (3.95 / 3.76:1 on `field`, 3.95 / 3.22 on
+ * `surface-raised`); the `chrome-line` hairline it replaces measured 1.15–1.30:1 against the panel and
+ * against a white swatch. The theme swatch's `hover:ring-2` was the app's sixth hover mechanism and
+ * the only ring drawn on hover anywhere; hover is now `shadow-raised` (a lift, not a halo) and the
+ * ring is reserved for the **selected** swatch — the one whose token or hex the element's source
+ * already carries — which also sets `aria-pressed`, so the state is never colour alone. The
+ * eyedropper is a `ToolbarButton` with an SVG pipette: the `💧` emoji rendered in whatever colour
+ * font the platform had (M8b.0 #15) and could not follow `currentColor`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import type { PropertyField } from '../../../../shared/design/property-model'
 import { applyPickedColor, sameColor, toColorInputValue } from '../../../../shared/design/color'
-import { themeSwatchWriteValue, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
+import {
+  themeSwatchWriteValue,
+  themeTokenName,
+  type ThemeSwatch,
+} from '../../../../shared/design/theme-swatches'
+import { FOCUS_RING, ToolbarButton } from '../../components/ui'
 import type { ColorPicker } from './eyedropper'
 
 /** The subset of fields that name a colour channel. */
@@ -76,37 +92,90 @@ export interface ColorControlsProps {
   readonly lock?: string | null
 }
 
+/**
+ * Does the element's current source value already name this swatch — as the `var(--sl-*)` reference
+ * a swatch click writes (with or without its hex fallback), or as the same colour spelled literally?
+ * `sameColor` parses both sides, so `red` matches a `#ff0000` swatch; a `var()` it cannot parse
+ * falls to the token test. Word-bounded on the token name so `--sl-accent` does not claim
+ * `--sl-accent-fg`.
+ *
+ * "Selected" means *names this colour, by token or by value* — deliberately, and with two edges the
+ * default four swatches never reach: two theme keys that share a hex both read `aria-pressed` under a
+ * literal source (they are, by value, the same colour), and a literal `#4c8dff` shows the accent swatch
+ * pressed although clicking it would still rewrite the source to `var(--sl-accent, #4c8dff)` — a
+ * re-themeable spelling of a colour the element already has, not a colour change. Preferring the
+ * token and hiding the value match would make the pressed state lie the other way round: an element
+ * painted the theme's accent by hand would show no swatch as current.
+ */
+function isSwatchSelected(current: string | null, swatch: ThemeSwatch): boolean {
+  if (current === null) return false
+  if (sameColor(current, swatch.hex)) return true
+  const token = themeTokenName(swatch.key)
+  return new RegExp(`var\\(\\s*${token}\\s*[,)]`).test(current)
+}
+
+/** A 16px pipette on `currentColor`, so it reads in both modes and dims with `disabled:opacity-50`. */
+function EyedropperIcon(): JSX.Element {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M10.5 2.5a1.9 1.9 0 0 1 2.7 2.7l-1.2 1.2-2.7-2.7z" />
+      <path d="M9.3 3.7 3.2 9.8 2.5 13.5l3.7-.7 6.1-6.1" />
+      <path d="M8.2 4.8l3 3" />
+    </svg>
+  )
+}
+
 /** A theme-token swatch button. Its own component so the click handler closes over its write value. */
 function ThemeSwatchButton({
   swatch,
   field,
   targetLabel,
+  current,
   onPick,
   lock,
 }: {
   readonly swatch: ThemeSwatch
   readonly field: ColorField
   readonly targetLabel: string
+  readonly current: string | null
   readonly onPick: (field: ColorField, value: string) => void
   readonly lock: string | null
 }): JSX.Element {
   const write = useMemo(() => themeSwatchWriteValue(swatch), [swatch])
   const style = useMemo(() => ({ backgroundColor: swatch.hex }), [swatch.hex])
   const onClick = useCallback((): void => onPick(field, write), [onPick, field, write])
+  const selected = isSwatchSelected(current, swatch)
 
   return (
     <button
       type="button"
       data-testid={`theme-${field}-${swatch.key}`}
       aria-label={`Apply theme color ${swatch.label} to ${targetLabel}`}
+      aria-pressed={selected}
       title={lock ?? swatch.label}
       onClick={onClick}
       disabled={lock !== null}
       style={style}
-      className="h-5 w-5 rounded border border-chrome-line hover:ring-2 hover:ring-accent disabled:opacity-50 dark:border-ink-line"
+      className={`${SWATCH} ${selected ? 'ring-2 ring-accent' : ''} ${FOCUS_RING}`}
     />
   )
 }
+
+/** The theme swatch: a `line-strong` edge (the fill is the colour itself), lifted on hover. */
+const SWATCH =
+  'h-5 w-5 cursor-pointer rounded-control border border-line-strong hover:shadow-raised disabled:cursor-default disabled:opacity-50'
+
+/** The native colour input, drawn as a wider swatch with the same edge. */
+const PICKER = `h-6 w-8 cursor-pointer rounded-control border border-line-strong bg-transparent p-0 disabled:cursor-default disabled:opacity-50 ${FOCUS_RING}`
 
 /** One target's row: the native swatch, the eyedropper button, and the theme quick row. */
 function ColorTargetRow({
@@ -181,7 +250,7 @@ function ColorTargetRow({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="w-12 shrink-0 text-chrome-muted dark:text-ink-muted">{label}</span>
+      <span className="w-12 shrink-0 text-text-muted">{label}</span>
       <input
         ref={inputRef}
         type="color"
@@ -193,20 +262,20 @@ function ColorTargetRow({
         onBlur={onAbort}
         disabled={lock !== null}
         title={lock ?? undefined}
-        className="h-6 w-8 cursor-pointer rounded border border-chrome-line bg-transparent p-0 disabled:cursor-default disabled:opacity-50 dark:border-ink-line"
+        className={PICKER}
       />
       {picker !== null ? (
-        <button
-          type="button"
+        // `ToolbarButton` names itself from `label` (tooltip included); the lock sentence overrides
+        // the tooltip only, the way every other control here shows it.
+        <ToolbarButton
           data-testid={`eyedrop-${field}`}
-          aria-label={`Sample ${label} color with the eyedropper`}
+          label={`Sample ${label} color with the eyedropper`}
           onClick={onEyedrop}
           disabled={lock !== null}
-          title={lock ?? undefined}
-          className="rounded border border-chrome-line px-1.5 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
+          {...(lock === null ? {} : { title: lock })}
         >
-          <span aria-hidden="true">💧</span>
-        </button>
+          <EyedropperIcon />
+        </ToolbarButton>
       ) : null}
       <div className="flex flex-wrap items-center gap-1">
         {swatches.map((swatch) => (
@@ -215,6 +284,7 @@ function ColorTargetRow({
             swatch={swatch}
             field={field}
             targetLabel={label}
+            current={current}
             onPick={onThemePick}
             lock={lock}
           />
