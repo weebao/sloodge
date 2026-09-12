@@ -81,8 +81,9 @@ describe('SlideCanvas — the property dock never moves the slide', () => {
     // Nothing mounted or unmounted around the mat, so nothing for `useElementSize` to re-measure.
     expect(screen.getByTestId('property-panel')).toBe(dock)
     expect(dock.className).toBe(before.className)
-    // The height is a fixed token with internal scrolling, not the content's height.
-    expect(dock.className).toMatch(/\bh-64\b/)
+    // The height is a fixed token with internal scrolling, not the content's height. `h-inspector`
+    // is the 256px `h-64` was, named (theme.css `--spacing-inspector`; M8b.3 surface 3).
+    expect(dock.className).toMatch(/\bh-inspector\b/)
     expect(dock.className).toMatch(/\boverflow-y-auto\b/)
     expect(stage.style.width).toBe(before.width)
     expect(stage.style.height).toBe(before.height)

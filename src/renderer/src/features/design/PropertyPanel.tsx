@@ -31,6 +31,23 @@
  * hit a different element and no caret opened (round-2 review, executed in Electron). A layout that
  * jumps on select is a defect in its own right, and the working layout — an element selected — is
  * the one with the panel open, so reserving it costs the never-selected state only.
+ *
+ * ## Tokens and primitives (M8b.3 surface 3 — ui-design-audit.md §4.5, §7 row 3)
+ *
+ * The dock is `bg-surface-raised` behind a `border-line` edge at `h-inspector` (the 256px `h-64`
+ * was, named) — opaque, because the mat it sits on is opaque and a 95% tint of it bought nothing.
+ * Fields are the `Input` primitive (`bg-field border-line-strong`, U3/U6 — the old `bg-white` field
+ * measured 1.12:1 against the panel and its hairline 1.15:1) with the shared focus ring instead of
+ * a `focus:border-accent` colour swap; the Content field is a `<textarea>`, which `Input` cannot
+ * render, so it spells `Input`'s recipe minus the fixed `h-control` (the same deviation the chat
+ * composer records). Flip / Duplicate are `Button`'s `subtle` variant; the heading is
+ * `PanelHeading`; the element tag is `text-text-muted` with no alpha (T3). "Ask Claude" is a chip —
+ * `Chip`'s own classes, but spelled here rather than mounted: `Chip`'s interactive form is a tinted
+ * `<span>` around an unstyled `<button>` so a ✕ can sit beside it, and this one control is what
+ * two test files and the font picker's focus-return address **by element** (`ask-claude-element`
+ * must be the focusable). `bg-accent-soft` with no border closes U11 (`accent/60` was 2.49 / 1.82).
+ *
+ * The panel must not animate — it mounts with Design Mode and sizes the canvas (M8b.0 §3.1).
  */
 
 import { useCallback, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
@@ -49,6 +66,7 @@ import {
 } from '../../../../shared/design/property-model'
 import { themeColorSwatches, type ThemeSwatch } from '../../../../shared/design/theme-swatches'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
+import { Button, FOCUS_RING, Input, PanelHeading } from '../../components/ui'
 import { useChatContextStore } from '../chat/chatContextStore'
 import type { SlideView } from '../../stores/deckStore'
 import { getSlideHtml, selectSlideViews, useDeckStore } from '../../stores/deckStore'
@@ -59,6 +77,19 @@ import { FontFamilyControl, type SystemFontLoader } from './FontFamilyControl'
 import { createEyeDropperPicker, hasEyeDropper, type ColorPicker } from './eyedropper'
 import { BLOCK_NOTICE } from './textBlockNotice'
 import type { ElementInspectApi } from './useElementInspect'
+
+/**
+ * The Content field's recipe: `Input`'s minus `h-control`, because a textarea that grows to a few
+ * rows is not a 28px control. `py-1` puts the one-row case at 28px (a 20px `text-ui` line + 8), so
+ * the row lines up with the two `Input`s beside it.
+ */
+const TEXTAREA = `w-full min-w-0 rounded-control border border-line-strong bg-field px-2 py-1 text-ui text-text placeholder:text-text-muted disabled:cursor-default disabled:opacity-50 field-sizing-content max-h-20 resize-none ${FOCUS_RING}`
+
+/**
+ * "Ask Claude about this element" — `Chip`'s `BASE` + `accent` tone, interactive (`hover:bg-hover`),
+ * as one `<button>`. See the header for why it is not `<Chip onClick>`.
+ */
+const ASK_CHIP = `inline-flex max-w-full cursor-pointer items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-caption text-text hover:bg-hover ${FOCUS_RING}`
 
 const FIELD_LABELS: Readonly<Record<PropertyField, string>> = {
   text: 'Text',
@@ -244,27 +275,28 @@ export function PropertyPanel({
     <section
       aria-label="Properties"
       data-testid="property-panel"
-      // `h-64` + `overflow-y-auto`, not content height: the dock's size must not depend on what is
-      // selected (see the header). 256px is the fields' unwrapped height at a 740px-wide canvas plus
-      // a little slack; narrower canvases wrap the field rows and scroll inside the dock.
-      className="h-64 shrink-0 overflow-y-auto border-t border-chrome-line bg-shell-bg/95 px-4 py-2.5 text-[12px] dark:border-ink-line dark:bg-ink-alt/95"
+      // `h-inspector` (256px) + `overflow-y-auto`, not content height: the dock's size must not
+      // depend on what is selected (see the header). 256px is the fields' unwrapped height at a
+      // 740px-wide canvas plus a little slack; narrower canvases wrap the field rows and scroll
+      // inside the dock.
+      className="flex h-inspector shrink-0 flex-col gap-2 overflow-y-auto border-t border-line bg-surface-raised px-4 py-2.5 text-ui-sm text-text"
     >
-      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-chrome-muted dark:text-ink-muted">
-        <span>Properties</span>
+      <div className="flex items-center gap-2">
+        <PanelHeading level={2}>Properties</PanelHeading>
         {selection === null ? null : (
-          <span className="font-normal normal-case text-chrome-muted dark:text-ink-muted">
+          <span data-testid="property-panel-tag" className="text-text-muted">
             {selection.tag}
             {selection.id ? `#${selection.id}` : ''}
           </span>
         )}
       </div>
       {selection === null ? (
-        <p data-testid="property-panel-empty" className="text-chrome-muted dark:text-ink-muted">
+        <p data-testid="property-panel-empty" className="text-text-muted">
           Click an element to see its properties. Double-click text, or press Enter, to edit it in
           place.
         </p>
       ) : element === null || values === null ? (
-        <p className="text-chrome-muted dark:text-ink-muted">Selection is no longer available.</p>
+        <p className="text-text-muted">Selection is no longer available.</p>
       ) : (
         <>
           <PropertyFields
@@ -280,12 +312,12 @@ export function PropertyPanel({
             moveLock={moveLock}
             elementLock={elementLock}
           />
-          <div className="mt-2">
+          <div>
             <button
               type="button"
               data-testid="ask-claude-element"
               onClick={onAskClick}
-              className="inline-flex items-center gap-1 rounded border border-accent/60 bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-shell-fg hover:bg-accent/20 dark:text-ink-fg"
+              className={ASK_CHIP}
             >
               <span aria-hidden="true">✨</span> Ask Claude about this element…
             </button>
@@ -317,6 +349,20 @@ interface PropertyFieldsProps {
 }
 
 const NUMERIC_FIELDS: ReadonlySet<PropertyField> = new Set(['x', 'y', 'width', 'height'])
+
+/**
+ * Fields whose value is a number the eye compares across rows: `tabular-nums` so `10px` and `100px`
+ * line up. It sits on the `<label>`, not the control — `Input` owns its class list — and reaches the
+ * control because `font-variant-numeric` inherits and Tailwind's preflight gives form controls
+ * `font: inherit`, which would otherwise reset it.
+ */
+const TABULAR_FIELDS: ReadonlySet<PropertyField> = new Set([
+  'fontSize',
+  'x',
+  'y',
+  'width',
+  'height',
+])
 
 /**
  * The disabled Content field's own two-word marker, visible without hovering for the hint. Short
@@ -484,13 +530,17 @@ function PropertyFields({
       onChange: handleChange,
       onBlur: handleBlur,
       onKeyDown: handleKeyDown,
-      className: `${grow ? 'min-w-0 flex-1' : 'w-18'} rounded border border-chrome-line bg-white px-1.5 py-0.5 text-shell-fg outline-none focus:border-accent disabled:opacity-50 dark:border-ink-line dark:bg-ink dark:text-ink-fg`,
     }
+    const tabular = TABULAR_FIELDS.has(name) ? ' tabular-nums' : ''
     return (
       <label
-        className={grow ? 'flex min-w-0 flex-1 items-center gap-1.5' : 'flex items-center gap-1.5'}
+        className={
+          grow
+            ? `flex min-w-0 flex-1 items-center gap-1.5${tabular}`
+            : `flex items-center gap-1.5${tabular}`
+        }
       >
-        <span className="text-chrome-muted dark:text-ink-muted">{FIELD_LABELS[name]}</span>
+        <span className="text-text-muted">{FIELD_LABELS[name]}</span>
         {name === 'text' ? (
           // A textarea, not an `<input type="text">`, because the field has to be able to hold the
           // element's decoded text *exactly*: an input's value sanitization strips CR/LF on
@@ -499,13 +549,12 @@ function PropertyFields({
           // line (M3.12 round-1 review). The read → commit-unchanged → no-op invariant has to hold
           // through the control the user touches, not only in the model. One row tall for the
           // single-line case, growing with the content to a few lines.
-          <textarea
-            {...common}
-            rows={1}
-            className={`${common.className} field-sizing-content max-h-20 resize-none`}
-          />
+          <textarea {...common} rows={1} className={TEXTAREA} />
         ) : (
-          <input {...common} inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined} />
+          // `Input` is `w-full`; the fixed-width fields get their width from this wrapper.
+          <span className={grow ? 'min-w-0 flex-1' : 'w-18 shrink-0'}>
+            <Input {...common} inputMode={NUMERIC_FIELDS.has(name) ? 'numeric' : undefined} />
+          </span>
         )}
       </label>
     )
@@ -545,7 +594,7 @@ function PropertyFields({
           // out from under the pointer.
           role="alert"
           data-testid="prop-refusal"
-          className="text-[11px] leading-tight text-red-600 dark:text-red-400"
+          className="text-caption text-danger"
           title="This edit would make the slide fail its own export check, so it was not applied. The check ignores spaces, so “local storage” reads as “localStorage”."
         >
           {refusal}
@@ -559,37 +608,34 @@ function PropertyFields({
         lock={elementLock}
       />
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-chrome-muted dark:text-ink-muted">Transform</span>
-        <button
-          type="button"
+        <span className="text-text-muted">Transform</span>
+        <Button
+          variant="subtle"
           data-testid="transform-flip-h"
           onClick={flipH}
           disabled={buttonLock !== null}
           title={buttonLock ?? undefined}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip H
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="subtle"
           data-testid="transform-flip-v"
           onClick={flipV}
           disabled={buttonLock !== null}
           title={buttonLock ?? undefined}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Flip V
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="subtle"
           data-testid="transform-duplicate"
           onClick={duplicate}
           disabled={elementLock !== null}
           title={elementLock ?? undefined}
-          className="rounded border border-chrome-line px-2 py-0.5 hover:border-accent disabled:opacity-50 dark:border-ink-line"
         >
           Duplicate
-        </button>
+        </Button>
       </div>
     </div>
   )

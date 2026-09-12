@@ -185,11 +185,16 @@ describe('semantic colour tokens', () => {
       '1.00:1 hover on the dark toolbar row',
       '<ToolbarButton',
     ],
+    // M8b.3 surface 3 moved the arrange bar's eight buttons onto `ToolbarButton`, whose
+    // `hover:bg-hover` is a census-measured role pair (`hover` on `surface-raised`, 1.18 / 1.24:1),
+    // so the file spells no hover of its own. The "replacement present" half is therefore the JSX
+    // open tag of the primitive — the same needle FormatBar.tsx uses for the same reason: the bare
+    // name also appears in the header's prose and would stay green with every JSX use deleted.
     [
       'features/design/ArrangeBar.tsx',
       'dark:hover:bg-ink-alt',
       '1.00:1 hover on the dark arrange bar',
-      'dark:hover:bg-ink-line',
+      '<ToolbarButton',
     ],
     ['features/statusbar/StatusBar.tsx', 'amber-600', '3.06:1 on chrome at 11px', 'text-amber-800'],
     // M8b.3 surface 4 moved the Budget tab's warn lines onto the `Notice` primitive, whose warning
@@ -216,17 +221,20 @@ describe('semantic colour tokens', () => {
       '3.19:1 under white text at 11px',
       'bg-amber-800',
     ],
+    // M8b.3 surface 3: the element tag is the role token `text-text-muted` (6.41 / 5.81:1 on
+    // `surface-raised`), which swaps by mode in `:root`; neither mode-bound spelling M8b.1a pinned
+    // exists in the file any more, so the replacement both rows prove present is the role token.
     [
       'features/design/PropertyPanel.tsx',
       'text-chrome-muted/80',
       '3.70:1 on the property dock',
-      'text-chrome-muted',
+      'text-text-muted',
     ],
     [
       'features/design/PropertyPanel.tsx',
       'dark:text-ink-muted/80',
       '4.31:1 on the property dock',
-      'dark:text-ink-muted',
+      'text-text-muted',
     ],
   ]
 
@@ -379,20 +387,31 @@ describe('semantic colour tokens', () => {
     ).toBeGreaterThanOrEqual(6)
   })
 
-  it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
+  /**
+   * Since M8b.2 (#69) `--color-danger` and `--color-warning` swap by mode in `:root` (dark
+   * `oklch(0.704 0.191 22.2)` / `oklch(0.769 0.188 70.1)`), so on a **migrated** file the bare
+   * `text-danger` is the dark-readable spelling and the `*-dark` twin is both retired (`--check`'s
+   * `legacy` column) and a `dark:` variant (its `dark:` column). "Migrated" is R1's own definition —
+   * the file carries no `dark:` variant at all — so a file still on the mode-bound tokens (StatusBar)
+   * keeps this pair until its own surface PR, and a migrated file that grows a `dark:` anywhere is
+   * back under the rule. Mutations: drop `dark:text-danger-dark` from StatusBar.tsx and the
+   * `unpaired` list names the line; add `dark:text-ink-muted` to any line of PropertyPanel.tsx and
+   * its `text-danger` (the refusal message, M8b.3 surface 3) is listed too.
+   */
+  it('every text-danger / text-warning utility in the renderer carries its dark twin, unless the file has migrated off dark: entirely', () => {
     const unpaired: string[] = []
     let seen = 0
     for (const file of sourceFiles(RENDERER_ROOT)) {
-      readFileSync(file, 'utf8')
-        .split('\n')
-        .forEach((line, i) => {
-          for (const m of line.matchAll(/(?<![\w:-])text-(danger|warning)(?![\w-])/g)) {
-            seen += 1
-            if (!line.includes(`dark:text-${m[1]!}-dark`)) {
-              unpaired.push(`${relative(process.cwd(), file)}:${i + 1} → ${m[0]}`)
-            }
+      const src = readFileSync(file, 'utf8')
+      const migrated = !/(?<![\w-])dark:/.test(src)
+      src.split('\n').forEach((line, i) => {
+        for (const m of line.matchAll(/(?<![\w:-])text-(danger|warning)(?![\w-])/g)) {
+          seen += 1
+          if (!migrated && !line.includes(`dark:text-${m[1]!}-dark`)) {
+            unpaired.push(`${relative(process.cwd(), file)}:${i + 1} → ${m[0]}`)
           }
-        })
+        }
+      })
     }
     // A pin that passes on the empty set is silent when the affordance it exists for is deleted.
     expect(seen).toBeGreaterThan(0)
