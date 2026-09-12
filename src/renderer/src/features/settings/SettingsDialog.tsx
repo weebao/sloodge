@@ -1,20 +1,27 @@
 /**
  * The Settings dialog (M2.7) — opened from File ▸ Settings… and `Ctrl/⌘+,`.
  *
- * A lightweight controlled overlay rather than a Radix dialog, matching `ExportPptxDialog` (M4.3):
- * the app still has no dialog primitive and this milestone adds zero UI dependencies. It goes further
- * than that one in three places the export dialog can get away with skipping, because this dialog
- * holds a text field a user can lose work in: Escape closes, focus moves into the dialog on open and
- * returns to the opener on close, and a dirty draft survives an accidental dismissal.
+ * Drawn on the `Dialog` primitive since M8b.3 surface 4 (ui-design-audit.md §4.8 item 1), which
+ * owns the scrim, Escape, the focus trap and restore, and `inert` on the shell; this file owns what
+ * the primitive cannot know — a dirty draft survives an accidental dismissal. Every close path
+ * (Escape, scrim click, the Close button) goes through the reducer's `request-close`, which either
+ * closes or swaps the footer for the discard confirmation, so the three are identical by
+ * construction rather than by three handlers agreeing.
  *
  * Auth (M2.7) and Budget (M2.5) are the substance. Model and About remain honest stubs — each says
  * what it will hold and which milestone fills it, rather than rendering a control that silently does
  * nothing.
+ *
+ * Tokens and primitives only (M8b.3 surface 4): `Button` for Close / Keep editing / Discard, role
+ * tokens with no `dark:` twin (R1), no palette colour, no arbitrary value. The tab strip is not a
+ * primitive — no surface but this one has tabs — so it imports the shared `FOCUS_RING` rather than
+ * spelling a ring of its own (R6), the same arrangement the chat composer has.
  */
 
 import {
   useCallback,
   useEffect,
+  useMemo,
   useReducer,
   useRef,
   type JSX,
@@ -33,6 +40,7 @@ import {
   type SettingsTab,
 } from './settingsState'
 import { AGENT_MODEL_IDS, DEFAULT_AGENT_MODEL } from '../../../../shared/agent/types'
+import { Button, Dialog, FOCUS_RING } from '../../components/ui'
 import { selectAuthStatus, useAuthStore } from '../../stores/authStore'
 
 export type SettingsDialogProps = {
@@ -42,54 +50,34 @@ export type SettingsDialogProps = {
   onClose: () => void
 }
 
-export function SettingsDialog({
-  open,
-  initialTab,
-  onClose,
-}: SettingsDialogProps): JSX.Element | null {
+/**
+ * One tab of the strip. `-mb-px` sits the tab's 2px underline on the strip's 1px baseline rather
+ * than 1px above it; the selected state is the accent underline plus weight, the idle state is
+ * muted text that comes up to full on hover (§4.8 item 2).
+ */
+const TAB = `-mb-px shrink-0 cursor-pointer rounded-t-control border-b-2 px-3 py-1.5 text-ui ${FOCUS_RING}`
+const TAB_SELECTED = `${TAB} border-accent font-medium text-text`
+const TAB_IDLE = `${TAB} border-transparent text-text-muted hover:text-text`
+
+export function SettingsDialog({ open, initialTab, onClose }: SettingsDialogProps): JSX.Element {
   const [state, dispatch] = useReducer(settingsReducer, INITIAL_SETTINGS_STATE)
   const status = useAuthStore(selectAuthStatus)
-  const panelRef = useRef<HTMLDivElement | null>(null)
-  const openerRef = useRef<Element | null>(null)
 
-  // Mirror the parent's `open` into the reducer, which owns tab + dirty. Recording the opener here
-  // (rather than in the focus effect) captures it before the dialog steals focus.
+  // Mirror the parent's `open` into the reducer, which owns tab + dirty.
   useEffect(() => {
-    if (open) {
-      openerRef.current = document.activeElement
-      dispatch({ type: 'open', ...(initialTab !== undefined ? { tab: initialTab } : {}) })
-    }
+    if (open) dispatch({ type: 'open', ...(initialTab !== undefined ? { tab: initialTab } : {}) })
   }, [open, initialTab])
-
-  // A dialog that opens without focus leaves the keyboard stranded on the page behind it.
-  useEffect(() => {
-    if (state.open) panelRef.current?.focus()
-  }, [state.open])
-
-  const close = useCallback(() => {
-    const opener = openerRef.current
-    // Restore focus before the parent unmounts us, or the browser drops it on <body>.
-    if (opener instanceof HTMLElement) opener.focus()
-    onClose()
-  }, [onClose])
 
   // `request-close` may be swallowed by the dirty guard, so the parent is only told once the reducer
   // actually closes. Watching the reducer (not the click) keeps Escape, backdrop, and Close identical.
   const wasOpen = useRef(false)
   useEffect(() => {
-    if (wasOpen.current && !state.open) close()
+    if (wasOpen.current && !state.open) onClose()
     wasOpen.current = state.open
-  }, [state.open, close])
+  }, [state.open, onClose])
 
   const onDirtyChange = useCallback((dirty: boolean) => {
     dispatch({ type: 'set-dirty', dirty })
-  }, [])
-
-  const onKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.stopPropagation()
-      dispatch({ type: 'request-close' })
-    }
   }, [])
 
   /**
@@ -122,39 +110,37 @@ export function SettingsDialog({
     dispatch({ type: 'confirm-discard' })
   }, [])
 
-  /** The backdrop closes; a click inside the panel must not bubble out to it. */
-  const stopPropagation = useCallback((event: MouseEvent<HTMLDivElement>) => {
-    event.stopPropagation()
-  }, [])
+  // Rendered closed rather than returned as null: `Dialog` holds its DOM for the exit transition,
+  // and an early `null` here would unmount it before that frame is drawn.
+  const isOpen = open && state.open
 
-  if (!open || !state.open) return null
+  // Memoised so the `Dialog` sees one footer identity per state, not a new tree every render.
+  const footer = useMemo(
+    () =>
+      state.confirmingDiscard ? (
+        <>
+          <span className="grow text-ui-sm text-text">Discard the credential you typed?</span>
+          <Button variant="subtle" onClick={cancelDiscard}>
+            Keep editing
+          </Button>
+          <Button variant="primary" onClick={confirmDiscard}>
+            Discard
+          </Button>
+        </>
+      ) : (
+        <Button onClick={requestClose}>Close</Button>
+      ),
+    [state.confirmingDiscard, cancelDiscard, confirmDiscard, requestClose],
+  )
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      role="presentation"
-      onClick={requestClose}
-    >
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        tabIndex={-1}
-        onKeyDown={onKeyDown}
-        onClick={stopPropagation}
-        className="flex max-h-[85vh] w-[34rem] max-w-[92vw] flex-col rounded-lg border border-chrome-line bg-chrome shadow-xl outline-none dark:border-ink-line dark:bg-ink"
-      >
-        <header className="border-b border-chrome-line px-5 py-3 dark:border-ink-line">
-          <h2
-            id="settings-title"
-            className="text-[15px] font-semibold text-shell-fg dark:text-ink-fg"
-          >
-            Settings
-          </h2>
-        </header>
-
-        <div role="tablist" aria-label="Settings sections" className="flex gap-1 px-4 pt-3">
+    <Dialog open={isOpen} title="Settings" onClose={requestClose} footer={footer}>
+      <div className="flex min-h-0 flex-1 flex-col gap-4">
+        <div
+          role="tablist"
+          aria-label="Settings sections"
+          className="flex shrink-0 gap-1 border-b border-line"
+        >
           {SETTINGS_TABS.map((tab) => {
             const selected = state.tab === tab
             return (
@@ -170,11 +156,7 @@ export function SettingsDialog({
                 data-tab={tab}
                 onKeyDown={onTabKeyDown}
                 onClick={onTabClick}
-                className={
-                  selected
-                    ? 'rounded-t border-b-2 border-accent px-3 py-1.5 text-[13px] font-medium text-shell-fg dark:text-ink-fg'
-                    : 'rounded-t border-b-2 border-transparent px-3 py-1.5 text-[13px] text-chrome-muted hover:text-shell-fg dark:text-ink-muted dark:hover:text-ink-fg'
-                }
+                className={selected ? TAB_SELECTED : TAB_IDLE}
               >
                 {SETTINGS_TAB_LABELS[tab]}
               </button>
@@ -186,47 +168,15 @@ export function SettingsDialog({
           role="tabpanel"
           id={`settings-panel-${state.tab}`}
           aria-labelledby={`settings-tab-${state.tab}`}
-          className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+          className="min-h-0 flex-1 overflow-y-auto"
         >
           {state.tab === 'auth' ? <AuthTab status={status} onDirtyChange={onDirtyChange} /> : null}
           {state.tab === 'model' ? <ModelTab /> : null}
           {state.tab === 'budget' ? <BudgetTab /> : null}
           {state.tab === 'about' ? <AboutTab /> : null}
         </div>
-
-        <footer className="flex items-center justify-end gap-2 border-t border-chrome-line px-5 py-3 dark:border-ink-line">
-          {state.confirmingDiscard ? (
-            <>
-              <span className="mr-auto text-[12px] text-shell-fg dark:text-ink-fg">
-                Discard the credential you typed?
-              </span>
-              <button
-                type="button"
-                onClick={cancelDiscard}
-                className="rounded px-3 py-1 text-[13px] text-chrome-muted dark:text-ink-muted"
-              >
-                Keep editing
-              </button>
-              <button
-                type="button"
-                onClick={confirmDiscard}
-                className="rounded bg-accent px-3 py-1 text-[13px] font-medium text-on-fill"
-              >
-                Discard
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={requestClose}
-              className="rounded border border-chrome-line px-3 py-1 text-[13px] text-shell-fg dark:border-ink-line dark:text-ink-fg"
-            >
-              Close
-            </button>
-          )}
-        </footer>
       </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -244,16 +194,16 @@ function ModelTab(): JSX.Element {
   }
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
+      <p className="text-ui-sm text-text-muted">
         Sloodge currently runs every turn on the default model. Switching mid-session needs the
         model seam wired through IPC; until then this lists what is available.
       </p>
       <ul className="flex flex-col gap-1">
         {AGENT_MODEL_IDS.map((id) => (
-          <li key={id} className="text-[13px] text-shell-fg dark:text-ink-fg">
+          <li key={id} className="flex items-baseline gap-2 text-ui text-text">
             <span className="font-medium">{labels[id] ?? id}</span>
             {id === DEFAULT_AGENT_MODEL ? (
-              <span className="ml-2 text-[11px] text-chrome-muted dark:text-ink-muted">in use</span>
+              <span className="text-caption text-text-muted">in use</span>
             ) : null}
           </li>
         ))}
@@ -264,12 +214,12 @@ function ModelTab(): JSX.Element {
 
 function AboutTab(): JSX.Element {
   return (
-    <div className="flex flex-col gap-2 text-[13px] text-shell-fg dark:text-ink-fg">
+    <div className="flex flex-col gap-2 text-ui text-text">
       <p className="font-medium">Sloodge</p>
-      <p className="text-[12px] text-chrome-muted dark:text-ink-muted">
+      <p className="text-ui-sm text-text-muted">
         An AI-native slide editor. Every slide is a self-contained HTML document.
       </p>
-      <p className="text-[12px] text-chrome-muted dark:text-ink-muted">Powered by Claude.</p>
+      <p className="text-ui-sm text-text-muted">Powered by Claude.</p>
     </div>
   )
 }

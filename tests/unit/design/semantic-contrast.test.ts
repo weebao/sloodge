@@ -192,7 +192,18 @@ describe('semantic colour tokens', () => {
       'dark:hover:bg-ink-line',
     ],
     ['features/statusbar/StatusBar.tsx', 'amber-600', '3.06:1 on chrome at 11px', 'text-amber-800'],
-    ['features/settings/BudgetTab.tsx', 'amber-600', '3.06:1 on chrome at 12px', 'text-amber-800'],
+    // M8b.3 surface 4 moved the Budget tab's warn lines onto the `Notice` primitive, whose warning
+    // tone is `text-text` on `warning-soft` (16.62 / 12.05:1) — the file spells no warn colour of
+    // its own any more, so the "replacement present" half is the JSX open tag with the tone, the
+    // same shape #75 uses for `<ToolbarButton`. It proves the 3.06:1 spelling is gone and that the
+    // primitive is still what draws the warning; a wrong-role token on the same lines is the
+    // rendered-class test's business (`tests/unit/settings/settings-design.test.tsx`).
+    [
+      'features/settings/BudgetTab.tsx',
+      'amber-600',
+      '3.06:1 on chrome at 12px',
+      '<Notice tone="warning"',
+    ],
     [
       'features/design/DesignNotice.tsx',
       'amber-600',
@@ -358,12 +369,14 @@ describe('semantic colour tokens', () => {
     // know: an M8b.3 agent reading "the swap has been undone" would be told something false.
     // Lowered 10 → 8 by M8b.3 surface 1: `ChatPanel.tsx`'s Send and Open Settings buttons became
     // `<Button variant="primary">`; its user bubble still spells the pair itself and stays counted.
+    // Lowered 8 → 6 by M8b.3 surface 4: `SettingsDialog.tsx`'s Discard and `AuthTab.tsx`'s Save
+    // token are `<Button variant="primary">` too — neither file spells `bg-accent` any more.
     expect(
       paired,
-      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 8). Either the swap ` +
+      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 6). Either the swap ` +
         'was reverted, or these sites moved onto <Button>, which spells it internally — check ' +
         'which before lowering this floor.',
-    ).toBeGreaterThanOrEqual(8)
+    ).toBeGreaterThanOrEqual(6)
   })
 
   it('every text-danger / text-warning utility in the renderer carries its dark twin', () => {
