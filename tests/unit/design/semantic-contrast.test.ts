@@ -385,12 +385,14 @@ describe('semantic colour tokens', () => {
     // `<Button variant="primary">`; its user bubble still spells the pair itself and stays counted.
     // Lowered 8 → 6 by M8b.3 surface 4: `SettingsDialog.tsx`'s Discard and `AuthTab.tsx`'s Save
     // token are `<Button variant="primary">` too — neither file spells `bg-accent` any more.
+    // Lowered 6 → 5 by M8b.3 surface 6: `SlideContextMenu.tsx`'s item hover is `bg-hover`, not an
+    // accent fill (audit §4.2 item 6) — that pair is gone from the file, not moved onto <Button>.
     expect(
       paired,
-      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 6). Either the swap ` +
-        'was reverted, or these sites moved onto <Button>, which spells it internally — check ' +
-        'which before lowering this floor.',
-    ).toBeGreaterThanOrEqual(6)
+      `only ${String(paired)} opaque bg-accent fills spell text-on-fill (was 5). Either the swap ` +
+        'was reverted, or these sites moved onto <Button>, which spells it internally, or a fill ' +
+        'was removed outright — check which before lowering this floor.',
+    ).toBeGreaterThanOrEqual(5)
   })
 
   /**

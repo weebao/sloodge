@@ -71,6 +71,7 @@ export const REAL_FILESYSTEM_TESTS = [
   'tests/unit/agent/skills-contract.test.ts',
   'tests/unit/canvas/host-csp.test.ts',
   'tests/unit/canvas/sandbox-invariant.test.ts',
+  'tests/unit/design/outline-none-conflict.test.ts',
   'tests/unit/design/semantic-contrast.test.ts',
   'tests/unit/design/theme-tokens.test.ts',
   'tests/unit/document/store-extraction-deadline.test.ts',

@@ -11,6 +11,7 @@ import {
   type MouseEvent,
 } from 'react'
 import type { SlideId } from '../../../../shared/document/types'
+import { Button, FOCUS_RING, PanelHeading } from '../../components/ui'
 import type { SlideView } from '../../stores/deckStore'
 import {
   SlideContextMenu,
@@ -153,19 +154,24 @@ const ThumbnailCard = memo(function ThumbnailCard({
         aria-current={selected ? 'true' : undefined}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
-        // `outline-none` kills the UA outline (it would frame the whole row, thumbnail included);
-        // `focus-visible` puts a real ring back for the keyboard, which is the point of returning
-        // focus here at all. Pointer-driven focus stays unringed — the browser's own heuristic.
-        className={`flex w-full items-start gap-2 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 ${
-          selected ? 'text-accent' : 'text-chrome-muted dark:text-ink-muted'
+        // The shared ring (R6), and nothing else about focus on this element. Not `outline-none`:
+        // Tailwind v4's `outline-none` sets `--tw-outline-style: none`, which `focus-visible:outline-2`
+        // reads back as its style, so the pair together paints no ring at all. Not `ring-offset-1`:
+        // an offset with no colour is Tailwind's default `#fff`, which was the white halo around a
+        // focused thumbnail on the dark rail (audit §2.6). Pointer-driven focus stays unringed —
+        // `focus-visible` is the browser's own heuristic, which is the point of returning focus here.
+        className={`flex w-full items-start gap-2 rounded-control text-left ${FOCUS_RING} ${
+          selected ? 'text-accent' : 'text-text-muted'
         }`}
       >
-        <span className="w-3 pt-1 text-[11px] tabular-nums">{number}</span>
+        <span className="w-3 pt-1 text-caption tabular-nums">{number}</span>
         <span
-          className={`overflow-hidden rounded-sm border bg-white shadow-sm transition-colors dark:bg-ink-alt ${
-            selected
-              ? 'border-accent ring-1 ring-accent'
-              : 'border-chrome-line hover:border-chrome-muted dark:border-ink-line'
+          // One separator, not three: the raised shadow's 1px ring is the card's edge at rest, the
+          // accent ring is the selection, and hover lifts the shadow without changing a colour. No
+          // `transition-*` here: selection is core navigation (Alt+Arrow, 100+/day) and the canvas
+          // swaps instantly, so a ring that fades in behind it reads as lag (M8b.0 §3.1 F4).
+          className={`overflow-hidden rounded-control bg-surface-raised shadow-raised hover:shadow-floating ${
+            selected ? 'ring-2 ring-accent' : ''
           }`}
           style={THUMBNAIL_BOX_STYLE}
         >
@@ -330,13 +336,16 @@ export function ThumbnailRail({
     <nav
       ref={railRef}
       aria-label="Slides"
-      className="flex w-[188px] shrink-0 flex-col border-r border-chrome-line bg-chrome dark:border-ink-line dark:bg-ink"
+      className="flex w-rail shrink-0 flex-col border-r border-line bg-surface"
     >
-      <h2 className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-chrome-muted dark:text-ink-muted">
-        Slides
-      </h2>
+      <div className="px-3 py-2">
+        <PanelHeading level={2}>Slides</PanelHeading>
+      </div>
 
-      <ol ref={setScroller} className="flex-1 space-y-1 overflow-y-auto px-3 pb-2">
+      {/* `pt-0.5`: the scroller clips what leaves it, and the first card's focus ring sits 4px
+          outside its button — 2px of offset and 2px of outline — with only the card's 2px
+          indicator border between it and the scroller's edge. */}
+      <ol ref={setScroller} className="flex-1 space-y-1 overflow-y-auto px-3 pt-0.5 pb-2">
         {slides.map((slide, index) => (
           <ThumbnailCard
             key={slide.id}
@@ -364,15 +373,15 @@ export function ThumbnailRail({
         ))}
       </ol>
 
-      <div className="border-t border-chrome-line p-2 dark:border-ink-line">
-        <button
-          type="button"
-          onClick={handleAdd}
-          title="New slide"
-          className="w-full rounded border border-dashed border-chrome-line py-1.5 text-[12px] text-chrome-muted transition-colors hover:border-accent hover:text-accent dark:border-ink-line dark:text-ink-muted"
-        >
-          + New
-        </button>
+      <div className="border-t border-line p-2">
+        {/* `Button` takes no className, so the full width and the dashed affordance live on a
+            wrapper: a grid item is blockified and stretched, and the frame surrounds the primitive's
+            own hover and pressed fills instead of re-spelling them here. */}
+        <div className="grid rounded-control border border-dashed border-line-strong">
+          <Button variant="subtle" onClick={handleAdd} title="New slide">
+            + New
+          </Button>
+        </div>
       </div>
 
       {menu !== null && (
