@@ -11,7 +11,9 @@
  *
  * It does not auto-dismiss, deliberately (round-5 minor, upheld on review): the notice is the only
  * account of why an edit did not stick, and a timer that removed it would leave a user who looked
- * away with vanished work and no explanation. It has an explicit ✕, and a new caret clears it.
+ * away with vanished work and no explanation. It has an explicit ✕, and a new caret clears it. The
+ * ✕ is the glyph the `Chip` primitive's remove button draws, in the same recipe, so the two
+ * dismiss affordances in the app are one shape.
  *
  * `SlideCanvas` owns the `aria-live="polite"` host this renders into, and its position with it: a
  * region inserted already carrying its text is commonly not announced, so it has to outlive the
@@ -24,6 +26,7 @@
  */
 
 import { useCallback, useEffect, type JSX } from 'react'
+import { FOCUS_RING, Notice } from '../../components/ui'
 import { useDesignStore } from './designStore'
 
 export type DesignNoticeProps = {
@@ -49,22 +52,26 @@ export function DesignNotice({ slideId }: DesignNoticeProps): JSX.Element | null
 
   if (notice === null || stale) return null
   return (
-    // `status` rather than `alert`, matching the chat transcript's notice: the element is intact and
-    // back to its stored text, so this is a caveat on what the user just did, not a failure.
-    <div
-      role="status"
-      data-testid="design-notice"
-      className="pointer-events-auto flex items-center gap-2 rounded bg-amber-800 px-2 py-1 text-[11px] leading-4 text-white"
-    >
-      <span>{notice.text}</span>
-      <button
-        type="button"
-        aria-label="Dismiss"
-        className="shrink-0 rounded px-1 hover:bg-black/20"
-        onClick={onDismiss}
-      >
-        ✕
-      </button>
+    // The `Notice` primitive's warning tone (ui-design-audit.md §4.3 item 5): `warning-soft` fill,
+    // `warning` edge, the ⚠ and the sr-only "Warning:" carrying the status without the colour. Its
+    // default role is `status` rather than `alert`, matching the chat transcript's notice: the
+    // element is intact and back to its stored text, so this is a caveat on what the user just did,
+    // not a failure. `pointer-events-auto` on a wrapper, because the canvas's live-region host is
+    // `pointer-events-none` so that an empty region never sits between the pointer and the overlay.
+    <div className="pointer-events-auto">
+      <Notice tone="warning" icon="⚠" data-testid="design-notice">
+        <span className="flex items-center gap-2">
+          <span>{notice.text}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            className={`shrink-0 cursor-pointer rounded-full px-0.5 leading-none hover:bg-hover ${FOCUS_RING}`}
+            onClick={onDismiss}
+          >
+            ✕
+          </button>
+        </span>
+      </Notice>
     </div>
   )
 }

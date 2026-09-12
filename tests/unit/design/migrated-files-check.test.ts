@@ -46,6 +46,10 @@ const MIGRATED = [
   'src/renderer/src/features/design/PropertyPanel.tsx',
   'src/renderer/src/features/design/ColorControls.tsx',
   'src/renderer/src/features/design/ArrangeBar.tsx',
+  // M8b.3 surface 5 — canvas + overlay (#81)
+  'src/renderer/src/features/canvas/SlideCanvas.tsx',
+  'src/renderer/src/features/design/SelectionOverlay.tsx',
+  'src/renderer/src/features/design/DesignNotice.tsx',
 ] as const
 
 const RENDERER = 'src/renderer/src/'

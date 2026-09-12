@@ -209,17 +209,23 @@ describe('semantic colour tokens', () => {
       '3.06:1 on chrome at 12px',
       '<Notice tone="warning"',
     ],
+    // M8b.3 surface 5 moved the refused-edit notice onto the `Notice` primitive (warning tone:
+    // `text-text` on `warning-soft`, 16.62 / 12.05:1), so the file spells no warning colour of its
+    // own and the "replacement present" half is the primitive's open tag with its tone — the same
+    // shape as the BudgetTab row. The editing label in `SelectionOverlay.tsx` is now the `edit` role
+    // (`bg-edit text-on-fill`, 5.26 / 7.14:1); `bg-edit` is what proves the M8b.1a fix was replaced
+    // rather than deleted. Wrong-role tokens on either are `canvas-design.test.tsx`'s business.
     [
       'features/design/DesignNotice.tsx',
       'amber-600',
       '3.19:1 under white text at 11px',
-      'bg-amber-800',
+      '<Notice tone="warning"',
     ],
     [
       'features/design/SelectionOverlay.tsx',
       'amber-600',
       '3.19:1 under white text at 11px',
-      'bg-amber-800',
+      'bg-edit',
     ],
     // M8b.3 surface 3: the element tag is the role token `text-text-muted` (6.41 / 5.81:1 on
     // `surface-raised`), which swaps by mode in `:root`; neither mode-bound spelling M8b.1a pinned
@@ -279,11 +285,11 @@ describe('semantic colour tokens', () => {
    * and 5.83:1. `Button.tsx:33` already spelt it; nine other sites did not.
    *
    * Why a scanner and not nine more `AA_REGRESSIONS` rows. Five of the files lose `text-white`
-   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` keeps five
-   * legitimate `text-white` uses (over `bg-black/70` HUD pills and the fixed `bg-amber-800`
-   * editing frame, 7.13:1 and unaffected by the mode), so a file-level pin would either red on
-   * innocent code or be scoped so narrowly it stops watching. The subject here is a *pair*, so
-   * the guard looks for the pair.
+   * entirely, so a blanket spelling pin would work there — but `SelectionOverlay.tsx` kept five
+   * legitimate `text-white` uses when this landed (over `bg-black/70` HUD pills and the fixed
+   * `bg-amber-800` editing frame, 7.13:1 and unaffected by the mode; `text-hud-fg` and `text-on-fill`
+   * since M8b.3 surface 5), so a file-level pin would either red on innocent code or be scoped so
+   * narrowly it stops watching. The subject here is a *pair*, so the guard looks for the pair.
    *
    * Two rules, because the defect is not always on one line. Class strings are split into
    * segments at every quote, backtick and `${`/`}` boundary, so the two arms of a ternary are

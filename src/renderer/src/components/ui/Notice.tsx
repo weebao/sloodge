@@ -16,11 +16,19 @@
  * the tone colour on its own tint, which would be a second reading surface to measure per tone.
  */
 
-import { type JSX, type ReactNode } from 'react'
+import { type HTMLAttributes, type JSX, type ReactNode } from 'react'
 
 export type NoticeTone = 'info' | 'success' | 'warning' | 'danger'
 
-export type NoticeProps = {
+/**
+ * The remaining `<div>` attributes (`id`, `aria-*`, `data-*`) pass through to the root, as they do
+ * on `Button`, so a surface can name its notice for a test or a label without wrapping it — the
+ * class list and the role stay the primitive's own.
+ */
+export type NoticeProps = Omit<
+  HTMLAttributes<HTMLDivElement>,
+  'className' | 'role' | 'children'
+> & {
   readonly tone?: NoticeTone
   /** Drawn before the text. A glyph or an SVG — the non-colour half of the status. */
   readonly icon?: ReactNode
@@ -43,9 +51,10 @@ export function Notice({
   icon,
   role = 'status',
   children,
+  ...rest
 }: NoticeProps): JSX.Element {
   return (
-    <div role={role} className={`${BASE} ${TONE[tone].klass}`}>
+    <div {...rest} role={role} className={`${BASE} ${TONE[tone].klass}`}>
       <span className="sr-only">{TONE[tone].word}: </span>
       {icon === undefined ? null : (
         <span aria-hidden="true" className="shrink-0 leading-none">

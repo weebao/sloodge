@@ -111,6 +111,7 @@ import { snapRectToGuides, type GuideLine } from '../../../../shared/design/smar
 import { buildSlideMap } from '../../../../shared/design/slide-map'
 import type { ElementSpan, SlideMap } from '../../../../shared/design/types'
 import { isTextEditable } from '../../../../shared/design/text-edit'
+import { FOCUS_RING } from '../../components/ui'
 import { readTransformShape } from '../../../../shared/design/transform-commit'
 import { moveRefusal } from '../../../../shared/design/property-model'
 import { lockNotice, lockRefusal } from '../../../../shared/design/lock'
@@ -876,7 +877,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           style={hoverStyle}
         >
           {hover ? (
-            <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-accent px-1 text-[11px] leading-4 text-on-fill">
+            <span className="absolute -top-5 left-0 rounded-control bg-accent px-1 text-caption whitespace-nowrap text-on-fill">
               {label(hover)}
             </span>
           ) : null}
@@ -888,17 +889,19 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         <div
           key={`${guide.orientation}-${String(guide.position)}`}
           data-testid="design-guide"
-          className="absolute bg-fuchsia-500"
+          className="absolute bg-guide"
           style={guideStyles[index]}
         />
       ))}
 
-      {/* Per-element outlines while multi-selected. */}
+      {/* Per-element outlines while multi-selected: 1px solid, against the group's 2px dashed box.
+          Full-strength `accent`, not `accent/70` — an alpha on a role token is rule R3's one
+          forbidden shape, and the weight difference already tells member from group. */}
       {memberStyles.map((style, index) => (
         <div
           key={selections[index]?.slId ?? index}
           data-testid="design-member"
-          className="absolute border border-accent/70"
+          className="absolute border border-accent"
           style={style}
         />
       ))}
@@ -911,19 +914,21 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
             isMulti
               ? 'absolute border-2 border-dashed border-accent'
               : // §4.1: while editing, the selection box becomes a "text caret frame" — a distinct
-                // dashed amber frame, so the two modes are never confused at a glance.
-                `absolute border-2 ${isEditing ? 'border-dashed border-amber-500' : 'border-accent'}`
+                // dashed frame in the `edit` role (blue, 5.26 / 5.70:1 over a white slide — U19), so
+                // the two modes are never confused at a glance, and the warning hue stays for status.
+                `absolute border-2 ${isEditing ? 'border-dashed border-edit' : 'border-accent'}`
           }
           style={selectionStyle}
           onPointerDown={moveLocked ? undefined : onBodyPointerDown}
         >
           <span
-            className={`absolute -top-5 right-0 whitespace-nowrap rounded px-1 text-[11px] leading-4 ${
-              // M8b.1c: the foreground moves into the branch that owns the fill. `accent` swaps
-              // with the mode, so its text must be the `on-fill` role token (white was 3.23:1 on
-              // the dark accent); the amber editing frame is a fixed dark fill in both modes,
-              // where `on-fill` would be 2.64:1 — so that branch keeps white.
-              isEditing ? 'bg-amber-800 text-white' : 'bg-accent text-on-fill'
+            className={`absolute -top-5 right-0 rounded-control px-1 text-caption whitespace-nowrap tabular-nums ${
+              // M8b.1c put the foreground into the branch that owns the fill, because the two fills
+              // then needed different foregrounds. Both are `on-fill` now (5.19 / 5.83 on `accent`,
+              // 5.26 / 7.14 on `edit`), and it stays in each arm on purpose: `semantic-contrast`'s
+              // pair scanner reads fill and foreground from one class-string segment, and a fill
+              // that names none is judged by whatever text colour sits within six lines of it.
+              isEditing ? 'bg-edit text-on-fill' : 'bg-accent text-on-fill'
             }`}
           >
             {isEditing
@@ -937,7 +942,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           {lockBadge !== null && !isEditing ? (
             <span
               data-testid="design-transform-lock"
-              className="absolute -top-5 left-0 max-w-full truncate whitespace-nowrap rounded bg-amber-800 px-1 text-[11px] leading-4 text-white"
+              className="absolute -top-5 left-0 max-w-full truncate rounded-control bg-warning px-1 text-caption whitespace-nowrap text-on-fill"
               title={lockBadge}
             >
               {lockBadge}
@@ -947,7 +952,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
           {canEditSelection && !isEditing ? (
             <span
               data-testid="design-edit-hint"
-              className="absolute -bottom-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-[11px] leading-4 text-white"
+              className="absolute -bottom-5 left-0 rounded-full bg-hud px-2 text-caption whitespace-nowrap text-hud-fg"
             >
               Double-click or press Enter to edit text
             </span>
@@ -963,7 +968,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                   data-testid={`design-handle-${handle.key}`}
                   data-handle={handle.key}
                   aria-hidden="true"
-                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-white"
+                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 border border-accent bg-surface-raised"
                   style={handleStyles[index]}
                   onPointerDown={onHandlePointerDown}
                   // A handle is a control, not a view of the element under it: never fall through.
@@ -981,7 +986,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
                 data-testid="design-handle-rotate"
                 data-handle="rotate"
                 aria-hidden="true"
-                className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-white"
+                className="absolute top-0 left-1/2 h-3 w-3 -translate-x-1/2 rounded-full border border-accent bg-surface-raised"
                 style={ROTATE_HANDLE}
                 onPointerDown={onRotatePointerDown}
                 onClick={stop}
@@ -991,25 +996,33 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         </div>
       ) : null}
 
-      {/* The marquee rectangle while sweeping. */}
+      {/* The marquee rectangle while sweeping. The fill has to be see-through — it is drawn over
+          the very elements it is selecting — and `accent-soft` is an opaque ground, while an alpha
+          on the token (`bg-accent/10`) is the shape rule R3 forbids. So the tint is a child layer
+          painted `accent` at `opacity-10`: the same composite, the edge stays full-strength. */}
       {marqueeStyle ? (
         <div
           data-testid="design-marquee"
-          className="absolute border border-accent bg-accent/10"
+          className="absolute border border-accent"
           style={marqueeStyle}
-        />
+        >
+          <div aria-hidden="true" className="absolute inset-0 bg-accent opacity-10" />
+        </div>
       ) : null}
 
       {crumbs.length > 0 ? (
         <nav
           aria-label="Selection breadcrumb"
-          className="absolute bottom-1 left-1 flex max-w-full items-center gap-1 overflow-hidden rounded bg-black/70 px-2 py-1 text-[11px] text-white"
+          className="absolute bottom-1 left-1 flex max-w-full items-center gap-1 overflow-hidden rounded-full bg-hud px-2 py-1 text-caption text-hud-fg"
           style={NO_POINTER}
         >
+          {/* Parents and separators are the one permitted alpha, `hud-fg/70` (5.17:1 on the pill
+              over a white slide) — a colour, not `opacity`, which would also fade the pill's fill
+              behind the glyphs. */}
           {crumbs.map((crumb, index) => (
             <span key={crumb.slId} className="flex items-center gap-1">
-              {index > 0 ? <span className="opacity-50">›</span> : null}
-              <span className={index === crumbs.length - 1 ? 'font-semibold' : 'opacity-80'}>
+              {index > 0 ? <span className="text-hud-fg/70">›</span> : null}
+              <span className={index === crumbs.length - 1 ? 'font-semibold' : 'text-hud-fg/70'}>
                 {label(crumb)}
               </span>
             </span>
@@ -1021,7 +1034,7 @@ export function SelectionOverlay({ frameRef, slideId, scale }: SelectionOverlayP
         <button
           type="button"
           data-testid="design-clear-selection"
-          className="absolute bottom-1 right-1 rounded bg-black/70 px-2 py-1 text-[11px] leading-4 text-white hover:bg-black/85"
+          className={`absolute right-1 bottom-1 rounded-full bg-hud px-2 py-1 text-caption text-hud-fg hover:bg-hud-strong ${FOCUS_RING}`}
           style={CAPTURE_POINTER}
           onClick={onClearClick}
         >

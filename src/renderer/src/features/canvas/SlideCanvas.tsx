@@ -101,7 +101,7 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
   return (
     <main
       aria-label="Slide canvas"
-      className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas-mat/25 dark:bg-black/40"
+      className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas"
     >
       <div
         ref={matRef}
@@ -127,8 +127,10 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
               interactive={!designModeActive || editing !== null}
               // `outline` rather than `border`: an outline is painted outside the box without
               // joining the layout, so the framed slide stays exactly the scaled 16:9 rectangle
-              // `fitSlide` computed instead of being two pixels wider than it.
-              frameClassName="bg-white outline outline-1 outline-chrome-line shadow-[0_1px_2px_rgba(0,0,0,0.12),0_8px_24px_rgba(0,0,0,0.10)] dark:bg-ink-alt dark:outline-ink-line"
+              // `fitSlide` computed instead of being two pixels wider than it. `bg-surface-raised`
+              // is the ground the census measures the overlay's accent / edit / guide against
+              // (ui-design-audit.md §5.2 pairs 47, 49, 50); it shows only until the document paints.
+              frameClassName="bg-surface-raised outline outline-1 outline-line shadow-floating"
             />
             {designModeActive ? (
               <>
@@ -142,7 +144,7 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
               // the state on the canvas is what makes it a mode rather than a malfunction.
               <div
                 data-testid="canvas-live-hint"
-                className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-black/70 px-3 py-1 text-[11px] leading-4 text-white"
+                className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-hud px-3 py-1 text-caption text-hud-fg"
               >
                 Live slide — Design Mode is off. Press Ctrl/⌘+D to select and edit.
               </div>
@@ -155,15 +157,17 @@ export function SlideCanvas({ slides, currentIndex }: SlideCanvasProps): JSX.Ele
             <div
               aria-live="polite"
               data-testid="design-notice-region"
-              className="pointer-events-none absolute bottom-9 left-1/2 flex max-w-[80%] -translate-x-1/2 justify-center"
+              className="pointer-events-none absolute bottom-9 left-1/2 flex max-w-4/5 -translate-x-1/2 justify-center"
             >
               <DesignNotice slideId={slide.id} />
             </div>
           </div>
         ) : (
-          <div className="select-none text-center">
-            <p className="text-[15px] font-medium text-shell-fg dark:text-ink-fg">No slides</p>
-            <p className="mt-1.5 text-[12px] text-chrome-muted dark:text-ink-muted">
+          // Both lines are `text-text`, not muted: the mat is not a reading surface (rule R5 —
+          // `text-muted` on `canvas` was T6, 4.34:1 in light), so the caption is the body colour.
+          <div className="flex flex-col gap-1.5 text-center select-none">
+            <p className="text-title font-medium text-text">No slides</p>
+            <p className="text-ui-sm text-text">
               Nothing here yet — ask Claude to draft this slide.
             </p>
           </div>

@@ -366,7 +366,7 @@ over-animated app to rein in; it is an under-specified one with four genuine gap
 **Checked and clean:** no `transition: all`, no own `@keyframes`, no `scale(0)`, no animated
 layout properties, no transform-origin errors (both dialogs are modals — correctly centred, and the
 skills explicitly exempt modals), and the three `requestAnimationFrame` sites
-(`useDragGesture.ts:133`, `useRotateGesture.ts:96`, `useMarqueeGesture.ts:101`) are pointer-event
+(`useDragGesture.ts:206`, `useRotateGesture.ts:96`, `useMarqueeGesture.ts:101`) are pointer-event
 coalescing for direct manipulation, which is exactly right and **must not** be converted to CSS.
 
 **The six motion opportunities that survived the gate**, in leverage order — present-mode slide
