@@ -40,8 +40,11 @@
  * bar's class + `border border-line-strong` (U7, gate green) and `shadow-floating` → `shadow-raised`
  * (U7); the chip's `bg-accent-soft` → `bg-surface-sunken` (U11, gate green) and + `border
  * border-accent` (U11); the swatch's `ring-2 ring-accent` deleted (selected state); the pipette
- * `<svg>` → the old `💧` span; the arrange bar's `<ToolbarButton` → a raw `<button>`; and
- * `h-inspector` → `h-64` on the dock (this file and `slide-canvas-dock.test.tsx`).
+ * `<svg>` → the old `💧` span; the arrange bar's `<ToolbarButton` → a raw `<button>`;
+ * `h-inspector` → `h-64` on the dock (this file and `slide-canvas-dock.test.tsx`); review r1's
+ * `isSwatchSelected` token branch → `return false` (green before the token case existed — 7 files,
+ * 166 tests; now the token case reds on `aria-pressed`, `expected 'false' to be 'true'`); and
+ * `max-w-full` dropped from `ASK_CHIP` (the Chip-parity case reds naming the missing class).
  *
  * What neither half can show: that the tokens paint the ratios the audit measured. happy-dom applies
  * no stylesheet; the values are the census's business (`--check`, rows 40–48), not this file's.
@@ -52,6 +55,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SlHit } from '../../../src/shared/design/bridge-protocol'
 import { buildSlideMap } from '../../../src/shared/design/slide-map'
 import type { ElementSpan } from '../../../src/shared/design/types'
+import { Chip } from '../../../src/renderer/src/components/ui'
 import { ArrangeBar } from '../../../src/renderer/src/features/design/ArrangeBar'
 import { PropertyPanel } from '../../../src/renderer/src/features/design/PropertyPanel'
 import { useDesignStore } from '../../../src/renderer/src/features/design/designStore'
@@ -70,8 +74,12 @@ const RING = [
 ] as const
 
 const NOW = 1_700_000_000_000
-/** `#4c8dff` is the default theme's Accent swatch, so that swatch is the selected one. */
+/** `#4c8dff` is the default theme's Accent swatch, so that swatch is the selected one (by value). */
 const SOURCE = '<h1 style="color: #4c8dff; font-size: 44px">Hello</h1>'
+/** What a swatch click writes (`themeSwatchWriteValue`): selected by token — the primary path. */
+const SOURCE_TOKEN = '<h1 style="color: var(--sl-accent, #4c8dff); font-size: 44px">Hello</h1>'
+/** A token that merely starts with the accent's name: the word boundary must not select accent. */
+const SOURCE_NEAR_MISS = '<h1 style="color: var(--sl-accent-fg); font-size: 44px">Hello</h1>'
 const SHAPES = `<!doctype html><html><body>
 <div class="slide" data-sl-slide="X">
   <div class="a" style="position:absolute;left:10px;top:20px;width:100px;height:40px">A</div>
@@ -123,9 +131,9 @@ function seed(html: string): void {
   useDeckStore.getState().setSlideHtml(slideId, html, slideId, 'seed')
 }
 
-function mountPanel(): void {
-  seed(SOURCE)
-  const map = buildSlideMap(slideId, SOURCE)
+function mountPanel(source: string = SOURCE): void {
+  seed(source)
+  const map = buildSlideMap(slideId, source)
   useDesignStore.setState({ enabled: true, hover: null, selection: hit(map.order[0]!, 'h1') })
   render(<PropertyPanel slide={currentSlide()} picker={PICKER} />)
 }
@@ -232,6 +240,33 @@ describe('M8b.3 surface 3 — the property panel on the design tokens', () => {
     }
   })
 
+  it('the selected swatch is found by its token reference — what a click writes — not only by hex', () => {
+    // `themeSwatchWriteValue` writes `var(--sl-accent, #4c8dff)`, which `sameColor` cannot parse, so
+    // after a click only the token branch of `isSwatchSelected` makes the swatch read pressed.
+    mountPanel(SOURCE_TOKEN)
+    const accent = screen.getByTestId('theme-color-accent')
+    expect(
+      accent.getAttribute('aria-pressed'),
+      'token branch: var(--sl-accent, …) selects accent',
+    ).toBe('true')
+    expect(classes(accent)).toContain('ring-2')
+    for (const key of ['bg', 'fg', 'muted']) {
+      const other = screen.getByTestId(`theme-color-${key}`)
+      expect(other.getAttribute('aria-pressed'), `${key} is not the referenced token`).toBe('false')
+      expect(classes(other)).not.toContain('ring-2')
+    }
+  })
+
+  it("a token that only starts with the swatch's name selects nothing (word boundary)", () => {
+    mountPanel(SOURCE_NEAR_MISS)
+    for (const key of ['bg', 'fg', 'accent', 'muted']) {
+      expect(
+        screen.getByTestId(`theme-color-${key}`).getAttribute('aria-pressed'),
+        `var(--sl-accent-fg) must not select ${key}`,
+      ).toBe('false')
+    }
+  })
+
   it('the eyedropper is an SVG on a ToolbarButton, not an emoji', () => {
     mountPanel()
     const button = screen.getByTestId('eyedrop-color')
@@ -257,6 +292,17 @@ describe('M8b.3 surface 3 — the property panel on the design tokens', () => {
       'U11: no alpha improvisation (R3)',
     ).toEqual([])
     for (const part of RING) expect(klass).toContain(part)
+  })
+
+  it("the chip carries every class Chip's accent tone renders, so it cannot drift from the primitive", () => {
+    // `ASK_CHIP` spells `Chip`'s recipe by hand (see PropertyPanel.tsx's header for why it is not
+    // `<Chip onClick>`); this pins the copy to the original rather than to a second string literal.
+    mountPanel()
+    const { container } = render(<Chip tone="accent">reference</Chip>)
+    const reference = classes(container.firstElementChild!)
+    expect(reference.length).toBeGreaterThan(3)
+    const ask = classes(screen.getByTestId('ask-claude-element'))
+    for (const c of reference) expect(ask, `ASK_CHIP is missing Chip's ${c}`).toContain(c)
   })
 })
 

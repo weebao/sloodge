@@ -276,9 +276,11 @@ export function PropertyPanel({
       aria-label="Properties"
       data-testid="property-panel"
       // `h-inspector` (256px) + `overflow-y-auto`, not content height: the dock's size must not
-      // depend on what is selected (see the header). 256px is the fields' unwrapped height at a
-      // 740px-wide canvas plus a little slack; narrower canvases wrap the field rows and scroll
-      // inside the dock.
+      // depend on what is selected (see the header). The content is ~300px unwrapped now that the
+      // fields are 28px `Input`s in a `gap-2` column (it was ~256px with the old 22px fields), so the
+      // dock scrolls by design — the Transform row and the chip sit below the fold until the user
+      // scrolls, and narrower canvases wrap the field rows and scroll further. Re-deriving
+      // `--spacing-inspector` against the 28px control is roadmap M8b.3x, not a per-surface tweak.
       className="flex h-inspector shrink-0 flex-col gap-2 overflow-y-auto border-t border-line bg-surface-raised px-4 py-2.5 text-ui-sm text-text"
     >
       <div className="flex items-center gap-2">

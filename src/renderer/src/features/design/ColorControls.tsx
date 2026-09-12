@@ -98,6 +98,14 @@ export interface ColorControlsProps {
  * `sameColor` parses both sides, so `red` matches a `#ff0000` swatch; a `var()` it cannot parse
  * falls to the token test. Word-bounded on the token name so `--sl-accent` does not claim
  * `--sl-accent-fg`.
+ *
+ * "Selected" means *names this colour, by token or by value* — deliberately, and with two edges the
+ * default four swatches never reach: two theme keys that share a hex both read `aria-pressed` under a
+ * literal source (they are, by value, the same colour), and a literal `#4c8dff` shows the accent swatch
+ * pressed although clicking it would still rewrite the source to `var(--sl-accent, #4c8dff)` — a
+ * re-themeable spelling of a colour the element already has, not a colour change. Preferring the
+ * token and hiding the value match would make the pressed state lie the other way round: an element
+ * painted the theme's accent by hand would show no swatch as current.
  */
 function isSwatchSelected(current: string | null, swatch: ThemeSwatch): boolean {
   if (current === null) return false
