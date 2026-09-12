@@ -289,22 +289,50 @@ different things: hover outline, multi-select box, editing frame, "+ New" and em
 `SettingsDialog.tsx:146` restore nothing. Every other interactive element (≈40) relies on the UA
 default, which Chromium draws in `-webkit-focus-ring-color` — a blue that is nowhere in the palette.
 
-### 2.7 Motion — 4 utilities, 14 uses
+### 2.7 Motion — 5 utilities, 12 uses
 
-`transition-colors` ×10, `transition-opacity` ×2 (`PresentControls.tsx:42`; chat Send's moved into `Button` in M8b.3 surface 1, and `ChatPanel.tsx:57` now spells one for the bubbles' `@starting-style` arrival),
-`duration-300` ×1 (`PresentControls.tsx:42`), `animate-pulse` ×1 (the chat typing dot — `animate-working` at `ChatPanel.tsx:306` since M8b.3 surface 1). No `ease-*`,
-so all ten colour transitions run on Tailwind's default `150ms cubic-bezier(0.4, 0, 0.2, 1)` — an
-ease-in-out on state feedback that `emil-design-eng` and M8b.0 §5.5 both want instant-in. The pulse
-is a 2s loop with no `prefers-reduced-motion` guard; the renderer contains that media query zero
-times. M8b.0 §3.1 F1–F7 stand unchanged and are not repeated.
+`transition-colors` ×7 (`ThumbnailRail.tsx:165` and `:372`, `ArrangeBar.tsx:20`,
+`PresentControls.tsx:56`, `:65` and `:77`, `StatusBar.tsx:217`), `transition-opacity` ×2
+(`PresentControls.tsx:42`, and `ChatPanel.tsx:57` for the bubbles' `@starting-style` arrival — chat
+Send's moved into `Button` in M8b.3 surface 1), `duration-base` ×1 (`ChatPanel.tsx:57`),
+`duration-300` ×1 (`PresentControls.tsx:42`), `animate-working` ×1 (the chat typing dot,
+`ChatPanel.tsx:306`).
+
+**The count fell from 14 to 12 because the primitives declare no transition at all**, and that is
+worth stating rather than reading as a miscount. §5.6 specifies every `Button` / `ToolbarButton` /
+`Input` variant as state classes with no `transition-*`, and `src/renderer/src/components/ui/`
+matches the spec — it contains no `transition` of any kind. So each control M8b.3 moves onto a
+primitive trades a 150ms colour fade for an instant one. That is M8b.0 §5.5's policy and F4's
+frequency gate applied ("100+/day ⇒ no animation"), not an omission — but it is a per-control
+behaviour change, so it is recorded here rather than left to be inferred from a falling number.
+
+**Two claims this section made before M8b.2 are now inverted.** (a) There is no bare Tailwind default
+left to inherit: `theme.css:105` sets `--ease-*: initial` (deleting the `ease-*` utilities outright),
+`theme.css:108` sets `--default-transition-duration: 120ms` and `theme.css:109`
+`--default-transition-timing-function: var(--ease-out)`, so the seven bare `transition-colors` above
+run 120ms on the instant-in curve `emil-design-eng` and M8b.0 §5.5 asked for — correct *by default*
+now, where they were wrong by accident before. (b) `animate-pulse`'s unguarded 2s loop is gone:
+`animate-working` is 900ms (`theme.css:111`), and the `prefers-reduced-motion` block the renderer
+previously contained zero times is now at `theme.css:217`, reducing motion (iteration count 1,
+colour and opacity only) rather than removing it.
+
+The one hand-typed value left is `duration-300` at `PresentControls.tsx:42`, symmetric across appear
+and hide — M8b.0 §3.1 F3, and surface 9's work. Of F1–F7, F1, F5, F6 and F7 landed in M8b.2 (#69);
+F2 and F4 stand.
 
 ### 2.8 Opacity, z-index, blur
 
-**Opacity** (8 spellings, 18 uses): disabled state is `opacity-30` (present controls), `opacity-40`
-(arrange bar, send button), `opacity-50` (eight settings controls + property fields), `opacity-60`
-(composer) — **four disabled opacities**. Also `opacity-40` for the dragged thumbnail, `hover:opacity-90`
-on the send button, `opacity-50`/`opacity-80` on breadcrumb text (`SelectionOverlay.tsx:1011/1012`) —
-the last two are text colour done with opacity, which composites unpredictably over the HUD.
+**Opacity** (7 spellings, 31 uses — fewer spellings, more uses, because the primitives spread one
+of them): `opacity-50` ×20 is now the dominant disabled value and sits *in* the primitives
+(`Button.tsx:30`, `Input.tsx:19`, `ToolbarButton.tsx:43`) as well as the settings and property
+controls; `opacity-40` ×2 (`ArrangeBar.tsx:20`, and the dragged thumbnail at `ThumbnailRail.tsx:147`);
+`opacity-30` ×2 (`PresentControls.tsx:56`, `:65`). **`opacity-60` is gone** — it was the composer's,
+retired by M8b.3 surface 1 — so the **four** disabled opacities this section opened with are now
+**three**, converging on `opacity-50` as the primitives spread. `opacity-90` ×3 is `Button`'s own
+hover/active pair (`Button.tsx:33`, `:37`, `:38`). `opacity-0` ×2 and `opacity-100` ×1 belong to the
+two `transition-opacity` sites in §2.7, not to state styling. Unchanged: `opacity-50`/`opacity-80` on
+breadcrumb text (`SelectionOverlay.tsx:1011/1012`) is text colour done with opacity, which composites
+unpredictably over the HUD.
 
 **Z-index**: `z-50` claimed by four independent surfaces (`SlideContextMenu.tsx:139`,
 `ExportPptxDialog.tsx:61`, `PresentSurface.tsx:154`, `SettingsDialog.tsx:134`); `z-10` by the arrange
@@ -1304,7 +1332,10 @@ src/renderer/src/app/AppShell.tsx:161  90e1dfe2  useMenuActions(editHandlers, ex
 src/renderer/src/app/AppShell.tsx:173  b6d3b7c8  const startPresent = useCallback(() => {
 src/renderer/src/app/AppShell.tsx:187  7b914d3d  className="flex h-screen w-screen flex-col overflow-hidden bg-surface t…
 src/renderer/src/app/AppShell.tsx:196  7f12d497  <div className="flex shrink-0 items-stretch border-b border-line bg-sur…
+src/renderer/src/components/ui/Button.tsx:30  bbe342ef  'inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.…
 src/renderer/src/components/ui/Button.tsx:33  5862ec9c  primary: 'h-control rounded-control px-3 bg-accent text-on-fill hover:o…
+src/renderer/src/components/ui/Input.tsx:19  f8acf667  'h-control w-full min-w-0 rounded-control border border-line-strong bg-…
+src/renderer/src/components/ui/ToolbarButton.tsx:43  e3ca1d42  'inline-flex h-control w-control shrink-0 cursor-pointer items-center j…
 src/renderer/src/features/canvas/SlideCanvas.tsx:104  b558a8e2  className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas-mat/2…
 src/renderer/src/features/canvas/SlideCanvas.tsx:131  d68aeea9  frameClassName="bg-white outline outline-1 outline-chrome-line shadow-[…
 src/renderer/src/features/canvas/SlideCanvas.tsx:145  c4f11b2d  className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-…
@@ -1332,6 +1363,7 @@ src/renderer/src/features/chat/ChatPanel.tsx:351  366b28c5  <Button variant="pri
 src/renderer/src/features/deck/SlideContextMenu.tsx:139  078da045  className="fixed z-50 min-w-[140px] rounded border border-chrome-line b…
 src/renderer/src/features/deck/SlideContextMenu.tsx:169  aabd3530  className="block w-full px-3 py-1 text-left text-shell-fg hover:bg-acce…
 src/renderer/src/features/deck/ThumbnailPreview.tsx:81  f0451da5  className="flex h-full w-full items-center justify-center px-2 text-cen…
+src/renderer/src/features/deck/ThumbnailRail.tsx:147  70cd3401  className={`relative border-y-2 border-transparent ${dragging ? 'opacit…
 src/renderer/src/features/deck/ThumbnailRail.tsx:159  68687e60  className={`flex w-full items-start gap-2 rounded text-left outline-non…
 src/renderer/src/features/deck/ThumbnailRail.tsx:160  6e21dfd0  selected ? 'text-accent' : 'text-chrome-muted dark:text-ink-muted'
 src/renderer/src/features/deck/ThumbnailRail.tsx:163  03fead84  <span className="w-3 pt-1 text-[11px] tabular-nums">{number}</span>
@@ -1443,9 +1475,14 @@ src/renderer/src/features/statusbar/StatusBar.tsx:204  252ed100  : 'text-warning
 src/renderer/src/features/statusbar/StatusBar.tsx:217  8d16ea67  className="ml-auto inline-flex items-center gap-1.5 rounded border bord…
 src/renderer/src/styles/theme.css:40  0b1f8774  --color-surface-sunken: oklch(0.955 0.003 286);
 src/renderer/src/styles/theme.css:49  7d8138b1  --color-accent: oklch(0.554 0.176 34.8);
+src/renderer/src/styles/theme.css:105  40c37903  --ease-*: initial;
+src/renderer/src/styles/theme.css:108  6b66fd8a  --default-transition-duration: 120ms;
+src/renderer/src/styles/theme.css:109  d7922612  --default-transition-timing-function: var(--ease-out);
+src/renderer/src/styles/theme.css:111  12268590  --animate-working: working 900ms var(--ease-in-out) infinite;
 src/renderer/src/styles/theme.css:200  657f7b25  body {
 src/renderer/src/styles/theme.css:201  4fd437f8  background-color: var(--color-surface);
 src/renderer/src/styles/theme.css:212  d10b36aa  }
+src/renderer/src/styles/theme.css:217  eff6fb6c  @media (prefers-reduced-motion: reduce) {
 tests/unit/canvas/slide-canvas-dock.test.tsx:85  be8e899b  expect(dock.className).toMatch(/\bh-64\b/)
 tests/unit/design/theme-tokens.test.ts:48  f7ef67fa  const opener = /@theme(?:\s+static)?\s*\{/g
 tests/unit/design/theme-tokens.test.ts:130  c6152e4f  expect(namespaces).toEqual(
