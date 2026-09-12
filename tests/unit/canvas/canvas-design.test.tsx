@@ -157,8 +157,15 @@ const VENDOR = String.raw`(?:-?(?:webkit|moz|ms|o)-?)?`
 const MOTION_UTILITY = new RegExp(
   `^(?:transition(?:-${VALUE})?|(?:duration|delay|ease|animate)-${VALUE}|\\[${VENDOR}(?:transition|animation)[^\\]]*\\])$`,
 )
-/** `transition-none`, `animate-none`, `duration-initial` and kin compile to the NEGATION of motion. */
-const MOTION_OFF = /-(?:none|initial)$/
+/**
+ * The NEGATION of motion, which must not be reported as motion: `transition-none`, `animate-none`,
+ * `duration-initial` and kin. Three spellings the bare `-none|-initial` suffix cannot see, all
+ * unused today and all found by review r4 as false positives: a zero (`duration-0`), the bracketed
+ * form (`duration-[initial]`), and an arbitrary property whose value is itself off
+ * (`[transition:none]`). A guard that reds legitimate code is the one that gets deleted.
+ */
+const MOTION_OFF =
+  /-(?:none|initial|0)$|-\[(?:none|initial|0s?|0ms)\]$|^\[[^\]]*:\s*(?:none|initial|0s|0ms)\]$/
 const isMotion = (token: string): boolean => {
   const { utility, variants } = utilityOf(token)
   return (
@@ -167,8 +174,9 @@ const isMotion = (token: string): boolean => {
 }
 
 /**
- * Every inline style property that moves something over time, vendor-prefixed or not (React writes
- * `WebkitTransition` as `-webkit-transition`, which happy-dom enumerates). `transitionDuration` alone
+ * Every inline style property that moves something over time, vendor-prefixed or not. React writes
+ * `WebkitTransition` as an own property that happy-dom does NOT enumerate — see the note in
+ * `movingParts`, which is why the own keys are read as well. `transitionDuration` alone
  * is enough — `transition-property` defaults to `all` — so the shorthand is not the only spelling to
  * refuse.
  */
@@ -749,5 +757,34 @@ describe('M8b.3 surface 5 — the motion detector reads a utility through any va
   it.each(INLINE_STILL)('an inline %s is not', (prop, style) => {
     const { container } = render(<span style={style}>x</span>)
     expect(movingParts(container), `an inline ${prop} moves nothing`).toEqual([])
+  })
+
+  /**
+   * The CLASS branch of `movingParts`, and the walk that reaches it. The rows above prove `isMotion`
+   * in isolation and the inline rows prove the style branch; until review r4 measured it, nothing
+   * drove the class branch at all — deleting it, narrowing the walk from `querySelectorAll('*')` to
+   * `children`, or filtering `transition` out of `classes()` each left this file at `63 passed`. The
+   * motion class sits two levels down for that reason, and the still case keeps the pair honest.
+   */
+  it('a motion class is read on an element and on a descendant at any depth', () => {
+    const { container } = render(
+      <div className="transition-colors">
+        <span className="text-caption">
+          <b className="duration-(--x)">x</b>
+        </span>
+      </div>,
+    )
+    expect(movingParts(container)).toEqual(['DIV.transition-colors', 'B.duration-(--x)'])
+  })
+
+  it('a tree whose only classes are still reports nothing', () => {
+    const { container } = render(
+      <div className="rounded-control">
+        <span className="text-caption">
+          <b className="transition-none">x</b>
+        </span>
+      </div>,
+    )
+    expect(movingParts(container)).toEqual([])
   })
 })
