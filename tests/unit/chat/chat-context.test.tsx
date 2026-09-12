@@ -124,7 +124,9 @@ describe('ChatPanel — element-context chip', () => {
 
   it('the chip is removable — the × button clears the context', () => {
     attach(h3Bundle())
-    fireEvent.click(screen.getByTestId('chat-context-remove'))
+    // Queried by accessible name, not test id: the ✕ is drawn by the `Chip` primitive (M8b.3), which
+    // labels it "Remove <label>" — so this also pins that the chip still names what it removes.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove element context' }))
     expect(screen.queryByTestId('chat-context-chip')).toBeNull()
     expect(screen.getByTestId('chat-context-empty')).toBeTruthy()
     expect(useChatContextStore.getState().attachment).toBeNull()
