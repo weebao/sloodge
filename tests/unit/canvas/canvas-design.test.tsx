@@ -29,7 +29,7 @@
  * and the one place the audit refuses it, so the refusal is asserted on the rendered tree in each of
  * the eight overlay states that draw a distinct element — hover, single selection, breadcrumb with
  * ancestors, editing, group, locked, marquee, mid-drag with guides — and on the canvas with Design
- * Mode on and off, sweeping from the render root so a wrapper is inside it: no motion utility on any
+ * Mode on, off and with no slides at all, sweeping from the render root so a wrapper is inside it: no motion utility on any
  * element (`utilityOf` sets the variants aside unparsed, so `[&:not(:hover)]:transition`,
  * `hover:!transition-opacity`, `data-[state=open]:transition` and `duration-(--x)` all read as what
  * they are), and no inline style property in the `transition*` / `animation*` families —
@@ -37,7 +37,9 @@
  * locked states and missed three spellings; r2 found seven more shapes a variant grammar had not
  * enumerated, the wrapper outside the sweep root and the breadcrumb state unvisited — hence a
  * detector that never reads variants, and `it('the motion detector …')` below, which is its own
- * mutation subject. The
+ * mutation subject; r3 found the value grammar four functional spellings short (`(--x,fallback)`,
+ * `(type:--x)`), no vendor prefixes, three negations (`transition-none`, `animate-none`,
+ * `duration-initial`) flagged as motion, and the empty-deck canvas outside every sweep. The
  * three `requestAnimationFrame` sites in the gesture hooks (`useDragGesture.ts:206`,
  * `useRotateGesture.ts:96`, `useMarqueeGesture.ts:101`) are pointer-event coalescing, not motion,
  * and are not this file's subject.
@@ -72,11 +74,15 @@
  * `[&:not(:hover)]:transition`, `duration-(--x)`, `transition-(--x)`, `md:[&>span]:!duration-300` and
  * `supports-[display:grid]:animate-working` on the selection box, a `transition` on the notice's
  * `pointer-events-auto` wrapper and an inline `transitionDuration` on a breadcrumb parent (1 each);
+ * `duration-(--x,150ms)`, `transition-(--x,opacity)`, `duration-(length:--x)`, `duration-(time:--x)`
+ * and `[-webkit-transition:opacity_1s]` on the selection box, an inline `WebkitTransition` on the
+ * handles and a `transition` on the empty deck's "No slides" line (1 each);
  * member `border-accent` →
  * `border-accent/70` and marquee fill `bg-accent opacity-10` → `bg-accent/10` red here AND the
  * shared gate (`alpha = 1`).
  */
 
+import type { CSSProperties } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SlHit, SlRect } from '../../../src/shared/design/bridge-protocol'
@@ -132,8 +138,15 @@ function utilityOf(token: string): {
   return { utility: raw.replace(/^!/, '').replace(/!$/, ''), variants: segments }
 }
 
-/** A utility value in every v4 spelling: a name, a `(--var)` functional variable, or a `[…]` literal. */
-const VALUE = String.raw`(?:[\w.%/-]+|\(--[\w-]+\)|\[[^\]]*\])`
+/**
+ * A utility value in the three v4 shapes: a name, a `(…)` functional value — `(--x)`, the
+ * `(--x,fallback)` form and the `(type:--x)` type-hint form all included, which is why the group is
+ * `[^)]*` and not a bare `--var` (review r3 found the other two forms compiling to real transitions)
+ * — or a `[…]` literal.
+ */
+const VALUE = String.raw`(?:[\w.%/-]+|\([^)]*\)|\[[^\]]*\])`
+/** `-webkit-` and friends, on an arbitrary property or an inline style name. */
+const VENDOR = String.raw`(?:-?(?:webkit|moz|ms|o)-?)?`
 /**
  * Every Tailwind utility that moves something over time: `transition` and `transition-*`,
  * `duration-*`, `delay-*`, `ease-*`, `animate-*` (each in the three value spellings — a lone
@@ -142,26 +155,32 @@ const VALUE = String.raw`(?:[\w.%/-]+|\(--[\w-]+\)|\[[^\]]*\])`
  * to feed a transition, so it is caught on the variants side.
  */
 const MOTION_UTILITY = new RegExp(
-  `^(?:transition(?:-${VALUE})?|(?:duration|delay|ease|animate)-${VALUE}|\\[(?:transition|animation)[^\\]]*\\])$`,
+  `^(?:transition(?:-${VALUE})?|(?:duration|delay|ease|animate)-${VALUE}|\\[${VENDOR}(?:transition|animation)[^\\]]*\\])$`,
 )
+/** `transition-none`, `animate-none`, `duration-initial` and kin compile to the NEGATION of motion. */
+const MOTION_OFF = /-(?:none|initial)$/
 const isMotion = (token: string): boolean => {
   const { utility, variants } = utilityOf(token)
-  return MOTION_UTILITY.test(utility) || variants.includes('starting')
+  return (
+    (MOTION_UTILITY.test(utility) && !MOTION_OFF.test(utility)) || variants.includes('starting')
+  )
 }
 
 /**
- * Every inline style property that moves something over time. `transitionDuration` alone is enough
- * — `transition-property` defaults to `all` — so the shorthand is not the only spelling to refuse.
+ * Every inline style property that moves something over time, vendor-prefixed or not (React writes
+ * `WebkitTransition` as `-webkit-transition`, which happy-dom enumerates). `transitionDuration` alone
+ * is enough — `transition-property` defaults to `all` — so the shorthand is not the only spelling to
+ * refuse.
  */
-const MOTION_STYLE = /^(?:transition|animation)/
+const MOTION_STYLE = /^(?:webkit|moz|ms|o)?(?:transition|animation)/i
 
-/** No motion utility and no inline transition/animation anywhere under `root`, `root` included. */
-function expectStill(root: Element, what: string): void {
+/** Every motion utility and inline transition/animation under `root`, `root` included — `[]` when still. */
+function movingParts(root: Element): string[] {
   const moving: string[] = []
   for (const el of [root, ...root.querySelectorAll('*')]) {
     for (const klass of classes(el)) if (isMotion(klass)) moving.push(`${el.tagName}.${klass}`)
     const style = (el as HTMLElement).style
-    // `style` enumerates the properties that are SET on the element (React writes each one).
+    // `style` enumerates the properties that are SET on the element (React writes each one) …
     for (let i = 0; i < style.length; i += 1) {
       const name = style[i] ?? ''
       const camel = name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
@@ -169,9 +188,36 @@ function expectStill(root: Element, what: string): void {
         moving.push(`${el.tagName} style.${camel}=${style.getPropertyValue(name)}`)
       }
     }
+    // … except a vendor-prefixed one: React assigns `style.WebkitTransition = …`, which a browser
+    // turns into the `-webkit-transition` declaration but happy-dom's CSSStyleDeclaration keeps as a
+    // plain own property — not enumerated, not in `cssText`, not in the attribute (probed in review
+    // r3). So the own keys are read too; in a browser they are the same declarations twice.
+    for (const [key, value] of Object.entries(style as unknown as Record<string, unknown>)) {
+      if (MOTION_STYLE.test(key) && typeof value === 'string' && value !== '') {
+        moving.push(`${el.tagName} style.${key}=${value}`)
+      }
+    }
   }
-  expect(moving, `${what} must not animate (audit §4.3 item 6, M8b.0 §3.1)`).toEqual([])
+  return moving
 }
+
+function expectStill(root: Element, what: string): void {
+  expect(movingParts(root), `${what} must not animate (audit §4.3 item 6, M8b.0 §3.1)`).toEqual([])
+}
+
+/** Hoisted so the probe spans' props are not fresh objects (react-perf). */
+const INLINE_MOTION: readonly (readonly [string, CSSProperties])[] = [
+  ['transitionDuration', { transitionDuration: '150ms' }],
+  ['transition', { transition: 'opacity 1s' }],
+  ['animationName', { animationName: 'spin' }],
+  ['WebkitTransition', { WebkitTransition: 'opacity 1s' }],
+  ['WebkitAnimationDuration', { WebkitAnimationDuration: '1s' }],
+]
+const INLINE_STILL: readonly (readonly [string, CSSProperties])[] = [
+  ['transform', { transform: 'rotate(90deg)' }],
+  ['opacity', { opacity: 0.5 }],
+  ['left', { left: '10px' }],
+]
 
 /** The one alpha rule R3 permits is `hud-fg/70`; every other colour utility with a `/` is a finding. */
 function expectNoAlphaBut(root: Element, allowed: readonly string[], what: string): void {
@@ -316,15 +362,20 @@ describe('M8b.3 surface 5 — the canvas on the design tokens', () => {
     expect(caption).not.toContain('text-text-muted')
   })
 
-  it('item 6 — nothing under the canvas animates, with Design Mode on or off', () => {
+  it('item 6 — nothing under the canvas animates: Design Mode on, off, and the empty deck', () => {
     useDesignStore.setState({ enabled: false })
     const off = render(<SlideCanvas slides={slides} currentIndex={0} />)
     expectStill(screen.getByRole('main', { name: 'Slide canvas' }), 'the canvas (Design Mode off)')
     off.unmount()
 
     useDesignStore.setState({ enabled: true })
-    render(<SlideCanvas slides={slides} currentIndex={0} />)
+    const on = render(<SlideCanvas slides={slides} currentIndex={0} />)
     expectStill(screen.getByRole('main', { name: 'Slide canvas' }), 'the canvas (Design Mode on)')
+    on.unmount()
+
+    // The empty branch is its own tree (no stage, no overlay) — review r3 found it outside every sweep.
+    render(<SlideCanvas slides={NO_SLIDES} currentIndex={-1} />)
+    expectStill(screen.getByRole('main', { name: 'Slide canvas' }), 'the canvas (no slides)')
   })
 })
 
@@ -620,9 +671,12 @@ describe('M8b.3 surface 5 — the refused-edit notice on the Notice primitive', 
  * The detector is a test subject too: a guard that quietly reads a motion spelling as inert is the
  * house failure mode. Positive rows are the shapes review r1 / r2 found escaping (each compiled to a
  * real `transition-*` rule against the repo's Tailwind 4.3.3 by the reviewer) plus two invented here;
- * negative rows are things that carry a `:`/`[`/`!` but move nothing. Mutations, observed: drop the
+ * negative rows are things that carry a `:`/`[`/`!` but move nothing, and the `-none` / `-initial`
+ * forms, which compile to the negation of motion (review r3: a guard that reds innocent code is the
+ * guard that gets deleted). Mutations, observed: drop the
  * bracket masking from `utilityOf` and the two arbitrary-property rows red — `[transition:opacity_100ms]`
- * splits inside its own brackets and reads as the utility `opacity_100ms]` (the variant-shaped rows
+ * splits inside its own brackets and reads as the utility `opacity_100ms]` — and so do the two
+ * `(type:--x)` rows, whose `:` sits inside the utility's own parentheses (the variant-shaped rows
  * survive that mutation, because the last segment of `[&:not(:hover)]:transition` is still
  * `transition`; the masking is for the utility's own brackets, not the variants'); strip only a
  * leading `!` and `transition!` reds; drop the `(--var)` spelling from `VALUE` and `duration-(--x)`
@@ -649,6 +703,12 @@ describe('M8b.3 surface 5 — the motion detector reads a utility through any va
     'starting:opacity-0',
     '[transition:opacity_100ms]',
     '[animation:spin_1s_linear_infinite]',
+    'duration-(--x,150ms)',
+    'transition-(--x,opacity)',
+    'duration-(length:--x)',
+    'duration-(time:--x)',
+    '[-webkit-transition:opacity_1s]',
+    '[-webkit-animation:spin_1s]',
   ])('%s is motion', (token) => {
     expect(isMotion(token)).toBe(true)
   })
@@ -664,7 +724,30 @@ describe('M8b.3 surface 5 — the motion detector reads a utility through any va
     'hover:bg-hud-strong',
     'data-[state=open]:bg-accent',
     'focus-visible:outline-2',
+    'transition-none',
+    'animate-none',
+    'duration-initial',
+    'ease-initial',
+    'transitional',
+    'durations-3',
   ])('%s is not', (token) => {
     expect(isMotion(token)).toBe(false)
+  })
+
+  /**
+   * The inline-style side, through React, so the vendor-prefixed path is the one React actually
+   * takes (an own property under happy-dom, a declaration in a browser). Mutation: drop the vendor
+   * group from `MOTION_STYLE` and the `WebkitTransition` row reds; drop the own-key scan and it reds too.
+   */
+  it.each(INLINE_MOTION)('an inline %s is motion', (prop, style) => {
+    const { container } = render(<span style={style}>x</span>)
+    const found = movingParts(container)
+    expect(found, `an inline ${prop} must be read as motion`).toHaveLength(1)
+    expect(found[0]).toContain(`style.${prop}`)
+  })
+
+  it.each(INLINE_STILL)('an inline %s is not', (prop, style) => {
+    const { container } = render(<span style={style}>x</span>)
+    expect(movingParts(container), `an inline ${prop} moves nothing`).toEqual([])
   })
 })
