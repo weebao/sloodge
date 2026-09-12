@@ -12,7 +12,7 @@ import { formatCostUsd } from '../../../../shared/agent/cost'
 import { Button, Chip, FOCUS_RING, Notice, PanelHeading } from '../../components/ui'
 import { useDeckStore } from '../../stores/deckStore'
 import { useChatContextStore } from './chatContextStore'
-import type { ChatMessage, ToolChip } from './transcript'
+import type { ChatMessage, ToolChip, Transcript } from './transcript'
 import { useChatSession } from './useChatSession'
 
 /**
@@ -124,13 +124,10 @@ export function ChatPanel({ onOpenAuthSettings }: ChatPanelProps = {}): JSX.Elem
   // Turn boundaries, announced once each (ui-design-direction.md §3.2 #12). `role="log"` is already
   // a polite live region, and a token-by-token stream inside one re-reads the growing answer on
   // every delta; `aria-busy` on the log holds those announcements until the turn settles, and this
-  // one stable region says when that happens. Derived, not stored: the text only changes at the two
-  // boundaries, which is exactly when a live region should speak.
-  const announcement = streaming
-    ? 'Claude is responding'
-    : transcript.messages.length > 0
-      ? 'Claude has finished responding'
-      : ''
+  // one stable region says how it settled — keyed on the turn state, not on `streaming` alone, so
+  // Stop is not read out as a finish (`announce`, below). Derived, not stored: the text changes
+  // only at a boundary, which is exactly when a live region should speak.
+  const announcement = announce(transcript)
 
   return (
     <aside
@@ -357,4 +354,26 @@ function AuthGate({ onOpenSettings }: { onOpenSettings?: (() => void) | undefine
       </div>
     </div>
   )
+}
+
+/**
+ * What the `sr-only` region says for the turn's state. A finish is only a finish: Stop settles the
+ * turn as `interrupted` with no bubble of its own, so this sentence is the one thing that tells a
+ * screen-reader user their Stop took. A failed turn says nothing here — the reducer appends the
+ * `role="alert"` bubble on every `error` event, including a budget refusal that never streamed, and
+ * that assertive region is the announcement; a second sentence would read the failure twice, or
+ * call a refused send a "response". `idle` before the first turn is the empty string, so mount says
+ * nothing.
+ */
+function announce(transcript: Transcript): string {
+  switch (transcript.turnState) {
+    case 'streaming':
+      return 'Claude is responding'
+    case 'interrupted':
+      return 'Response stopped'
+    case 'error':
+      return ''
+    case 'idle':
+      return transcript.messages.length > 0 ? 'Claude has finished responding' : ''
+  }
 }

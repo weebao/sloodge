@@ -2,26 +2,43 @@
  * @vitest-environment happy-dom
  *
  * M8b.3 surface 1 (ui-design-audit.md §4.4, §7 row 1): the chat panel stays on the role tokens and
- * the M8b.2 primitives, and the six findings it closed — U2, U4, U10, U12, U13, U18 — stay closed.
+ * the M8b.2 primitives, the six findings it closed — U2, U4, U10, U12, U13, U18 — stay closed, and
+ * the one behaviour change the surface carried (M8b.0 §3.2 #12, the live region) stays landed.
  *
  * Two halves, because neither can see the other's regression:
  *
- *  - **The file gate, run as a test** — `chat-panel-check.test.ts` next door spawns
- *    `node scripts/design-inventory.mjs --check <file>` over this one file, so a retired token, a
- *    `dark:` twin, a palette colour, an alpha suffix or an arbitrary value coming back reds
- *    `pnpm test` (it lives in a `.ts` file because `.tsx` tests are typechecked under the web
- *    tsconfig, which has no Node types to spawn with).
+ *  - **The file gate, run as a test** — `tests/unit/design/migrated-files-check.test.ts` spawns
+ *    `node scripts/design-inventory.mjs --check` once over every migrated file, `ChatPanel.tsx`
+ *    among them, so a retired token, a `dark:` twin, a palette colour, an alpha suffix or an
+ *    arbitrary value coming back reds `pnpm test` (a `.ts` file, because `.tsx` tests are
+ *    typechecked under the web tsconfig, which has no Node types to spawn with).
  *  - **The rendered class of each finding's element.** The gate cannot see a *role* token that is
  *    the wrong role: `bg-surface` on the composer instead of `bg-field` is U2 back at 1.04:1 with
  *    every column still 0, `border-line` instead of `border-line-strong` is U4 back at 1.27:1, and
  *    a deleted `FOCUS_RING` is U10 back with no ring at all. So each element is rendered and its
  *    class list read — the same shape as `focus-ring.test.tsx`, for the same reason.
  *
+ * **What this file pins, exactly:** the six §3.1 rows above, each on the one element the row names,
+ * plus the live-region shape. **What it knowingly does not catch** — wrong-role regressions on
+ * elements that are not a §3.1 row escape both halves, and were shown to in review: the empty
+ * context pill `border-line-strong` → `border-line` (a U5 site; 3.79 → 1.27 on the panel), the
+ * assistant bubble `bg-surface-raised` → `bg-surface` (work-list item 3; only `shadow-raised`'s ring
+ * would then separate it from the panel), and Send `variant="primary"` → `"secondary"`. Each keeps
+ * `--check` green and this file green. They are outside the six findings this guard is named for;
+ * a later pass that wants them pinned adds a row per element here, not a wider assertion.
+ *
  * Mutations, each run on this branch: `bg-field` → `bg-surface` (U2), `border-line-strong` →
  * `border-line` (U4), `${FOCUS_RING}` → `focus:border-accent` (U10), the context chip's
  * `tone="accent"` → `"neutral"` (U12), the gate's `border-accent` → `border-line` (U13), the error
  * notice's `tone="danger"` → `"warning"` (U18) — each reds its row here while `--check` stays green;
- * `bg-surface` → `bg-surface dark:bg-ink` on the aside reds the sibling's gate row, `RESULT: FAIL (2)`.
+ * `bg-surface` → `bg-surface dark:bg-ink` on the aside reds the shared gate's `ChatPanel.tsx` row
+ * (`legacy = 1, dark: = 1`, `RESULT: FAIL (2)`). Live region: deleting `aria-busy={streaming}` and
+ * the announcer paragraph together reds the #12 case on the explicit-`aria-live` count (`expected
+ * +0 to be 1` — the announcer was the one) and the outcome case on `aria-busy` (`expected null to
+ * be 'false'`); putting `aria-live="polite"` back on the log reds the count the other way
+ * (`expected 2 to be 1`); restoring the `streaming`-only derivation reds the outcome case on Stop
+ * (`expected 'Claude has finished responding' to be 'Response stopped'`). Before these two cases,
+ * review deleted the whole change and `tests/unit/chat` + `tests/unit/design` stayed at 2488 passed.
  *
  * What neither half can show: that the tokens paint the ratios the audit measured. happy-dom applies
  * no stylesheet; the values are the census's business (`--check`, rows 40–48), not this file's.
@@ -200,5 +217,62 @@ describe('M8b.3 surface 1 — the chat panel on the design tokens', () => {
     const klass = classes(screen.getByRole('alert'))
     expect(klass, 'U18: border-danger (5.88 / 5.58 on its tint)').toContain('border-danger')
     expect(klass, 'U18: bg-danger-soft, not red-50 / red-950').toContain('bg-danger-soft')
+  })
+
+  it('M8b.0 §3.2 #12 — the log is aria-busy while a turn streams and one stable region announces its boundaries', async () => {
+    const emit = await mountConfigured(CONFIGURED)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    const log = screen.getByRole('log')
+    // The item's first half is a removal: `role="log"` is polite already, and an explicit
+    // `aria-live` on top of it is the per-delta re-read. So the panel carries exactly one explicit
+    // live attribute, on the `sr-only` announcer — which is also how the announcer is found.
+    const live = screen.getByLabelText('Chat').querySelectorAll('[aria-live]')
+    expect(live.length, '#12: the log must not carry its own aria-live').toBe(1)
+    const announcer = live[0]!
+    expect(announcer).not.toBe(log)
+    expect(announcer.getAttribute('aria-live')).toBe('polite')
+    expect(classes(announcer)).toContain('sr-only')
+    expect(log.getAttribute('aria-busy'), 'idle before the first turn').toBe('false')
+    expect(announcer.textContent, 'mount says nothing').toBe('')
+
+    fireEvent.change(composer(), { target: { value: 'build it' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    expect(log.getAttribute('aria-busy'), '#12: aria-busy holds the log while it streams').toBe(
+      'true',
+    )
+    expect(announcer.textContent).toBe('Claude is responding')
+
+    emit({ type: 'turn-end', snapshotUsd: 0, generation: 0, subtype: 'success' })
+    expect(log.getAttribute('aria-busy'), '#12: the log is released when the turn settles').toBe(
+      'false',
+    )
+    expect(announcer.textContent).toBe('Claude has finished responding')
+  })
+
+  it('the announcer says how the turn ended: Stop is not a finish, and a failed turn leaves the alert to speak', async () => {
+    const emit = await mountConfigured(CONFIGURED)
+    await waitFor(() => expect(composer().disabled).toBe(false))
+    const announcer = screen.getByLabelText('Chat').querySelector('[aria-live]')!
+    const send = (): void => {
+      fireEvent.change(composer(), { target: { value: 'build it' } })
+      fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    }
+
+    send()
+    fireEvent.click(screen.getByRole('button', { name: /stop/i }))
+    expect(screen.getByRole('log').getAttribute('aria-busy')).toBe('false')
+    expect(
+      announcer.textContent,
+      'Stop settles the turn with no bubble; this is its only cue',
+    ).toBe('Response stopped')
+
+    send()
+    expect(announcer.textContent).toBe('Claude is responding')
+    emit({ type: 'error', kind: 'auth', message: '401', recoverable: false })
+    expect(screen.getByRole('log').getAttribute('aria-busy')).toBe('false')
+    expect(screen.getByRole('alert'), 'the error bubble is the announcement').toBeTruthy()
+    expect(announcer.textContent, 'a failed turn is not read as a finish, and not read twice').toBe(
+      '',
+    )
   })
 })
