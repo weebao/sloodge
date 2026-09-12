@@ -119,7 +119,7 @@ export function SettingsDialog({ open, initialTab, onClose }: SettingsDialogProp
     () =>
       state.confirmingDiscard ? (
         <>
-          <span className="mr-auto text-ui-sm text-text">Discard the credential you typed?</span>
+          <span className="grow text-ui-sm text-text">Discard the credential you typed?</span>
           <Button variant="subtle" onClick={cancelDiscard}>
             Keep editing
           </Button>
