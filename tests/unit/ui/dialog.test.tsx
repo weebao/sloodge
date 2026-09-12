@@ -32,6 +32,14 @@
  * `open` edge without waiting → the exit test reds on the dialog being gone before `finished`
  * resolved; wait on a timer instead → the fallback test reds, because the dialog outlives the
  * closed render in an environment with nothing to wait for.
+ *
+ * Layout (M8b.3 surface 4, review r1): the two fixes that went to this primitive so every later
+ * surface inherits them are pinned, because an inherited fix with no guard is undone silently.
+ * The BODY is the scroll container and carries `overscroll-contain` — the first cut scrolled the
+ * whole card, so Settings' Close button scrolled away under a long Budget tab — and title, body
+ * and footer keep ui-design-audit.md §4.8 item 1's `px-5`. Mutations: move `overflow-y-auto
+ * overscroll-contain` off the body → the layout test reds on `overscroll-contain`; `px-5` → `px-4`
+ * on the three regions → it reds naming the region.
  */
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -268,6 +276,38 @@ describe('Dialog', () => {
       </Dialog>,
     )
     expect(screen.queryByRole('dialog', { hidden: true })).toBeNull()
+  })
+
+  it('scrolls in the body, not the panel, and keeps the px-5 rhythm on title, body and footer', () => {
+    render(
+      <Dialog open title="Export" onClose={vi.fn()} footer={footer}>
+        {body}
+      </Dialog>,
+    )
+    const panel = screen.getByRole('dialog')
+    const bodyEl = screen.getByLabelText('First').parentElement!
+    const title = document.getElementById(panel.getAttribute('aria-labelledby')!)!
+    const footerEl = screen.getByRole('button', { name: 'Done' }).parentElement!
+    expect(bodyEl.parentElement, 'the body is a direct child of the panel').toBe(panel)
+    const bodyClass = bodyEl.className.split(/\s+/)
+    expect(bodyClass, 'the body is the scroll container').toContain('overflow-y-auto')
+    expect(bodyClass, 'a flick past the end must not scroll the deck behind').toContain(
+      'overscroll-contain',
+    )
+    expect(bodyClass, 'it shrinks inside the capped panel instead of growing it').toContain(
+      'min-h-0',
+    )
+    expect(
+      panel.className.split(/\s+/).filter((c) => c.startsWith('overflow')),
+      'the panel does not scroll — its title and footer stay put',
+    ).toEqual([])
+    for (const [name, el] of [
+      ['title', title],
+      ['body', bodyEl],
+      ['footer', footerEl],
+    ] as const) {
+      expect(el.className.split(/\s+/), `${name} keeps §4.8's px-5 rhythm`).toContain('px-5')
+    }
   })
 
   it('names itself by its visible title', () => {
