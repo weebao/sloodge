@@ -26,10 +26,17 @@
  * drag, and a fade on a guide means the guide arrives after the snap it exists to explain — and the
  * canvas's fit scale is driven by a continuous `ResizeObserver`, so any transition there lags every
  * window drag by its own duration. The overlay is the most tempting place in the app to add motion
- * and the one place the audit refuses it, so the refusal is asserted on the rendered tree: no class
- * from the motion namespaces on any element, and no inline `transition` or `animation`. The three
- * `requestAnimationFrame` sites in the gesture hooks are pointer-event coalescing, not motion, and
- * are not this file's subject.
+ * and the one place the audit refuses it, so the refusal is asserted on the rendered tree in each of
+ * the seven overlay states that draw a distinct element — hover, single selection, editing, group,
+ * locked, marquee, mid-drag with guides — and on the canvas with Design Mode on and off: no class from
+ * the motion namespaces on any element behind any variant chain (`transition`, `transition-*`,
+ * `duration-*`, `delay-*`, `ease-*`, `animate-*`, `starting:`, the `[transition:…]` /
+ * `[animation:…]` arbitrary properties, `!` on either side), and no inline style property in the
+ * `transition*` / `animation*` families — `transitionDuration` alone animates `all`. Review r1 found
+ * the first cut skipped the marquee and locked states and missed those last three spellings. The
+ * three `requestAnimationFrame` sites in the gesture hooks (`useDragGesture.ts:206`,
+ * `useRotateGesture.ts:96`, `useMarqueeGesture.ts:101`) are pointer-event coalescing, not motion,
+ * and are not this file's subject.
  *
  * **What this file pins, exactly:** the mat (item 1, C7), the slide frame (item 1, U8), the four HUD
  * pills and the HUD hover (item 2, C6), the guides (item 3, C9), the editing frame and its label
@@ -51,10 +58,14 @@
  * `bg-hud` (1); lock badge `bg-warning` → `bg-accent` (1); handle `bg-surface-raised` → `bg-surface`
  * (1); breadcrumb parent `text-hud-fg/70` → `opacity-80` (1); clear `hover:bg-hud-strong` →
  * `hover:bg-hud` (1); clear `${FOCUS_RING}` deleted (1); `Notice tone="warning"` → `"info"` (1);
- * a `transition-colors` on the selection box, a `transition` on the mat and an inline
- * `transition: 'left 100ms'` on the handle style each red the still-tree case (1 each, gate green —
- * the gate has no motion column); member `border-accent` → `border-accent/70` and marquee fill
- * `bg-accent opacity-10` → `bg-accent/10` red here AND the shared gate (`alpha = 1`).
+ * lock badge `rounded-control` → `rounded` (1); ✕ `rounded-full` → `rounded` (1); `icon="⚠"`
+ * deleted (1); the `pointer-events-auto` wrapper dropped (1); a `transition-colors` on the
+ * selection box, on the marquee box, on the marquee tint and on the lock badge, a `transition` on
+ * the mat, an inline `transition: 'left 100ms'` and an inline `transitionDuration: '150ms'` on the
+ * handle style, a `[transition:opacity_100ms]` and a `transition!` on the selection box each red a
+ * still-tree case (gate green — the gate has no motion column); member `border-accent` →
+ * `border-accent/70` and marquee fill `bg-accent opacity-10` → `bg-accent/10` red here AND the
+ * shared gate (`alpha = 1`).
  */
 
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
@@ -89,7 +100,13 @@ const classes = (el: Element | null | undefined): string[] =>
  * caught by whatever they prefix.
  */
 const MOTION =
-  /^(?:[\w[\]&>*@-]+:)*(?:transition(?:-[a-z-]+)?|duration-[\w-]+|delay-[\w-]+|ease-[\w-]+|animate-[\w-]+|starting:.+)$/
+  /^!?(?:[\w[\]&>*@-]+:)*(?:transition(?:-[a-z-]+)?|duration-[\w-]+|delay-[\w-]+|ease-[\w-]+|animate-[\w-]+|starting:.+|\[(?:transition|animation)[^\]]*\])!?$/
+
+/**
+ * Every inline style property that moves something over time. `transitionDuration` alone is enough
+ * — `transition-property` defaults to `all` — so the shorthand is not the only spelling to refuse.
+ */
+const MOTION_STYLE = /^(?:transition|animation)/
 
 /** No class from the motion namespaces and no inline transition/animation anywhere under `root`. */
 function expectStill(root: Element, what: string): void {
@@ -97,11 +114,13 @@ function expectStill(root: Element, what: string): void {
   for (const el of [root, ...root.querySelectorAll('*')]) {
     for (const klass of classes(el)) if (MOTION.test(klass)) moving.push(`${el.tagName}.${klass}`)
     const style = (el as HTMLElement).style
-    if (style.transition !== '' || style.transitionProperty !== '') {
-      moving.push(`${el.tagName} style.transition=${style.transition || style.transitionProperty}`)
-    }
-    if (style.animation !== '' || style.animationName !== '') {
-      moving.push(`${el.tagName} style.animation=${style.animation || style.animationName}`)
+    // `style` enumerates the properties that are SET on the element (React writes each one).
+    for (let i = 0; i < style.length; i += 1) {
+      const name = style[i] ?? ''
+      const camel = name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
+      if (MOTION_STYLE.test(camel)) {
+        moving.push(`${el.tagName} style.${camel}=${style.getPropertyValue(name)}`)
+      }
     }
   }
   expect(moving, `${what} must not animate (audit §4.3 item 6, M8b.0 §3.1)`).toEqual([])
@@ -403,14 +422,17 @@ describe('M8b.3 surface 5 — the selection overlay on the design tokens', () =>
 
   it('the lock badge is the warning role with on-fill text (a status, so the status hue)', () => {
     seed(LOCKED)
-    overlay()
+    const root = overlay()
 
     const badge = classes(screen.getByTestId('design-transform-lock'))
     expect(badge).toContain('bg-warning')
     expect(badge).toContain('text-on-fill')
     expect(badge).toContain('text-caption')
+    // `rounded` emits nothing since `--radius-*: initial`; the corner has to be the named step.
+    expect(badge).toContain('rounded-control')
     expect(badge.some((k) => k === 'text-white' || k.startsWith('bg-amber'))).toBe(false)
     expect(screen.queryByTestId('design-handle-se')).toBeNull()
+    expectStill(root, 'the overlay with a locked selection')
   })
 
   it('item 3 — multi-select: member outlines are full-strength accent, the group box dashed', () => {
@@ -452,6 +474,7 @@ describe('M8b.3 surface 5 — the selection overlay on the design tokens', () =>
     const tint = classes(marquee.firstElementChild)
     expect(tint).toEqual(expect.arrayContaining(['bg-accent', 'opacity-10']))
     expectNoAlphaBut(root, ['text-hud-fg/70'], 'the overlay while sweeping')
+    expectStill(root, 'the overlay while sweeping a marquee')
 
     fireEvent.pointerUp(window, { clientX: 200, clientY: 150 })
   })
@@ -524,9 +547,22 @@ describe('M8b.3 surface 5 — the refused-edit notice on the Notice primitive', 
     expect(notice.textContent).toMatch(/^Warning: /)
     expect(notice.textContent).toContain('That text is too long')
 
+    // The visible half of "not colour alone": the primitive's icon slot, hidden from the reader
+    // because the sr-only tone word already says it.
+    const icon = notice.querySelector('[aria-hidden="true"]')
+    expect(icon?.textContent, 'the ⚠ is the non-colour half of the status').toBe('⚠')
+
     const dismiss = screen.getByRole('button', { name: /dismiss/i })
     expect(classes(dismiss)).toEqual(expect.arrayContaining([...RING, 'hover:bg-hover']))
+    // The Chip remove button's recipe: a pill, not the dead `rounded`.
+    expect(classes(dismiss)).toContain('rounded-full')
     expect(classes(dismiss).some((k) => k.includes('/'))).toBe(false)
+    // The canvas's live-region host is `pointer-events-none`; without this wrapper the ✕ cannot be
+    // clicked in the real app (happy-dom's `fireEvent` does not honour pointer-events, so only the
+    // class can be asserted).
+    expect(classes(notice.parentElement), 'pointer-events-auto wrapper').toContain(
+      'pointer-events-auto',
+    )
     expectStill(notice, 'the notice')
   })
 })
